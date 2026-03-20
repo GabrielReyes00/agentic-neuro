@@ -1,0 +1,51 @@
+# === Virtual Environment ===
+.venv/
+
+# === LanceDB Database (8GB+, tracked separately) ===
+neurosurgery_v4.lance/
+
+# === Anki ChromaDB Dedup Store ===
+data/chromadb_store_anki_memory/
+
+# === Knowledge Graph (SQLite — user data, never wipe) ===
+data/knowledge_graph.db
+data/knowledge_graph.db-wal
+data/knowledge_graph.db-shm
+
+# === Ephemeral Session Files (regenerated per query) ===
+data/Sessions/scratch_context.md
+data/Sessions/transform_output.md
+data/Sessions/synthesis_digest.md
+data/Sessions/learner_context.json
+data/Sessions/retrieval_gap.json
+data/Sessions/retrieval_coverage.json
+data/Sessions/frontier_cache.md
+data/Sessions/active_lesson_sections.json
+data/Sessions/active_lesson_plan.md
+data/Sessions/session_digest_*.md
+data/Sessions/figures/
+
+# === Telemetry & Logs ===
+data/Sessions/search_telemetry.jsonl
+
+# === Python ===
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# === macOS ===
+.DS_Store
+._*
+
+# === IDE ===
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# === Model Caches (downloaded at runtime) ===
+.cache/
+models/

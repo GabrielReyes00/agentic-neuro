@@ -1,0 +1,69 @@
+"""Pydantic schemas for strict stage outputs."""
+
+from __future__ import annotations
+
+from typing import List, Literal
+
+from pydantic import BaseModel, Field, model_validator
+
+
+class TopicOutput(BaseModel):
+    topic: str = Field(min_length=2, max_length=60)
+
+
+class ClaimModel(BaseModel):
+    claim_id: str = Field(min_length=2, max_length=16)
+    subject: str = Field(min_length=1, max_length=200)
+    verb: str = Field(min_length=1, max_length=120)
+    object: str = Field(min_length=1, max_length=260)
+    claim_text: str = Field(min_length=8, max_length=420)
+
+
+class ClaimExtractionOutput(BaseModel):
+    claims: List[ClaimModel]
+
+    @model_validator(mode="after")
+    def _ensure_unique_ids(self):
+        ids = [c.claim_id for c in self.claims]
+        if len(ids) != len(set(ids)):
+            raise ValueError("claim_id values must be unique")
+        return self
+
+
+class CardDraft(BaseModel):
+    claim_id: str = Field(min_length=2, max_length=16)
+    card_type: Literal["cloze", "qa"]
+    category: str = Field(default="", max_length=60)
+    cloze_text: str = Field(default="", max_length=600)
+    answer_text: str = Field(default="", max_length=200)
+    front: str = Field(default="", max_length=500)
+    back: str = Field(default="", max_length=500)
+
+    @model_validator(mode="after")
+    def _enforce_card_shape(self):
+        if self.card_type == "cloze":
+            if not self.cloze_text.strip() or "{{c1::" not in self.cloze_text:
+                raise ValueError("cloze card requires cloze_text containing {{c1::...}}")
+            if not self.answer_text.strip():
+                raise ValueError("cloze card requires answer_text")
+            return self
+
+        if not self.front.strip() or not self.back.strip():
+            raise ValueError("qa card requires front/back")
+        return self
+
+
+class CardDraftOutput(BaseModel):
+    cards: List[CardDraft]
+
+    @model_validator(mode="after")
+    def _ensure_unique_claim_mapping(self):
+        ids = [c.claim_id for c in self.cards]
+        if len(ids) != len(set(ids)):
+            raise ValueError("exactly one card per claim_id is required")
+        return self
+
+
+class BlindGuessOutput(BaseModel):
+    guess: str = Field(min_length=1, max_length=200)
+    rationale: str = Field(default="", max_length=500)

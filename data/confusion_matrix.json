@@ -1,0 +1,107 @@
+[
+  {
+    "concept_a": "nimodipine dosing (60mg q4h for vasospasm prophylaxis after SAH)",
+    "concept_b": "methylprednisolone NASCIS dosing (30mg/kg bolus for acute spinal cord injury)",
+    "disambiguation_axis": "indication and drug class — calcium channel blocker (SAH) vs corticosteroid (SCI); NASCIS protocol now largely abandoned",
+    "source": "manual",
+    "first_added": "2026-03-16T00:00:00"
+  },
+  {
+    "concept_a": "cerebral salt wasting (CSW)",
+    "concept_b": "syndrome of inappropriate antidiuretic hormone (SIADH)",
+    "disambiguation_axis": "volume status — CSW is hypovolemic hyponatremia (treat with isotonic/hypertonic fluids); SIADH is euvolemic/hypervolemic (treat with fluid restriction; opposite treatment",
+    "source": "manual",
+    "first_added": "2026-03-16T00:00:00"
+  },
+  {
+    "concept_a": "CPP target (60-70 mmHg in TBI)",
+    "concept_b": "MAP target (varies by diagnosis — ~80-90 in TBI, <140 in ICH)",
+    "disambiguation_axis": "CPP is the goal (perfusion); MAP is the controllable input to achieve it; 60 belongs to CPP not MAP",
+    "source": "manual",
+    "first_added": "2026-03-16T00:00:00"
+  },
+  {
+    "concept_a": "vasospasm risk window (days 4-14 after SAH)",
+    "concept_b": "rebleed risk window (highest in first 24h after SAH, especially first 6h)",
+    "disambiguation_axis": "timing and mechanism — rebleed = re-rupture of aneurysm (early); vasospasm = smooth muscle contraction from blood products (delayed)",
+    "source": "manual",
+    "first_added": "2026-03-16T00:00:00"
+  },
+  {
+    "concept_a": "Cushing reflex (hypertension as compensatory response to rising ICP)",
+    "concept_b": "primary hypertension (independent elevated MAP not driven by ICP)",
+    "disambiguation_axis": "causality — Cushing is BP rising TO protect CPP; treat ICP first. Primary HTN is the primary problem; treat MAP directly",
+    "source": "manual",
+    "first_added": "2026-03-16T00:00:00"
+  },
+  {
+    "concept_a": "uncal herniation (lateral transtentorial — compresses CN III and contralateral peduncle)",
+    "concept_b": "central transtentorial herniation (downward displacement of diencephalon through tentorial notch)",
+    "disambiguation_axis": "direction and structures — uncal = lateral mass effect, CN III palsy first; central = symmetric downward, Cheyne-Stokes breathing first",
+    "source": "manual",
+    "first_added": "2026-03-16T00:00:00"
+  },
+  {
+    "concept_a": "epidural hematoma CT appearance (biconvex/lenticular hyperdense collection, does not cross sutures)",
+    "concept_b": "subdural hematoma CT appearance (crescent-shaped hyperdense collection, crosses sutures, follows brain contour)",
+    "disambiguation_axis": "shape and suture crossing — biconvex = EDH (limited by sutures); crescent = SDH (crosses sutures freely)",
+    "source": "manual",
+    "first_added": "2026-03-16T00:00:00"
+  },
+  {
+    "concept_a": "anterior cord syndrome (motor loss + pain/temp loss; preserved proprioception/vibration)",
+    "concept_b": "central cord syndrome (upper extremity > lower extremity weakness; bladder dysfunction; most common incomplete injury)",
+    "disambiguation_axis": "which tracts are spared — anterior = dorsal columns spared (proprioception OK); central = peripherally located tracts spared (legs better than arms)",
+    "source": "manual",
+    "first_added": "2026-03-16T00:00:00"
+  },
+  {
+    "concept_a": "Fisher grade (CT grading of subarachnoid blood volume — grades 1-4)",
+    "concept_b": "Hunt-Hess grade (clinical grading of SAH severity based on neurological exam — grades 1-5)",
+    "disambiguation_axis": "what is graded — Fisher = imaging (blood on CT); Hunt-Hess = clinical exam (LOC, headache, deficits)",
+    "source": "manual",
+    "first_added": "2026-03-16T00:00:00"
+  },
+  {
+    "concept_a": "vasodilating antihypertensives worsen ICP in TBI (hydralazine, nitroprusside — cerebral arteriolar dilation increases CBV)",
+    "concept_b": "nicardipine acceptable in ICH/SAH (autoregulation partially intact; benefit of BP reduction outweighs mild vasodilation)",
+    "disambiguation_axis": "autoregulation status — TBI has lost autoregulation so vasodilation transmits directly to ICP; ICH/SAH have partial autoregulation buffering",
+    "source": "manual",
+    "first_added": "2026-03-16T00:00:00"
+  },
+  {
+    "concept_a": "L4-L5 disc herniation (compresses L5 nerve root — foot drop, great toe extension weakness, dorsal foot numbness)",
+    "concept_b": "L5-S1 disc herniation (compresses S1 nerve root — plantar flexion weakness, Achilles reflex loss, lateral foot/sole numbness)",
+    "disambiguation_axis": "dermatomal and myotomal distribution — L5 = EHL, medial/dorsal foot; S1 = plantar flexion, Achilles reflex, lateral foot",
+    "source": "manual",
+    "first_added": "2026-03-16T00:00:00"
+  },
+  {
+    "concept_a": "posterior reversible encephalopathy syndrome (PRES — vasogenic edema from failed autoregulation, usually posterior cortex)",
+    "concept_b": "hypertensive encephalopathy (diffuse cerebral edema from breakthrough hyperperfusion, not necessarily posterior)",
+    "disambiguation_axis": "distribution and mechanism — PRES = preferentially posterior (less sympathetic innervation), predominantly white matter; hypertensive encephalopathy = diffuse",
+    "source": "manual",
+    "first_added": "2026-03-16T00:00:00"
+  },
+  {
+    "concept_a": "GCS motor score (1-6 scale: 1=no response, 6=obeys commands — component of total GCS 3-15)",
+    "concept_b": "modified Rankin scale (0-6 scale: 0=no symptoms, 6=death — functional outcome measure used post-stroke or post-op)",
+    "disambiguation_axis": "timing and purpose — GCS is real-time acute consciousness assessment; mRS is functional outcome at days-weeks post-event",
+    "source": "manual",
+    "first_added": "2026-03-16T00:00:00"
+  },
+  {
+    "concept_a": "ventriculoperitoneal shunt (VP shunt — CSF diverted to peritoneum; first-line for most hydrocephalus)",
+    "concept_b": "ventriculoatrial shunt (VA shunt — CSF diverted to right atrium; used when peritoneum is contraindicated)",
+    "disambiguation_axis": "distal limb destination and indications — VP = peritoneum (default); VA = atrium (abdominal adhesions, peritonitis, prior failed VP)",
+    "source": "manual",
+    "first_added": "2026-03-16T00:00:00"
+  },
+  {
+    "concept_a": "diabetes insipidus (DI — deficient ADH, produces large volumes dilute urine, hypernatremia)",
+    "concept_b": "cerebral salt wasting (CSW — natriuresis with volume depletion, hyponatremia)",
+    "disambiguation_axis": "serum sodium — DI = hypernatremia + dilute urine (Na >145); CSW = hyponatremia + concentrated urine with high urine Na",
+    "source": "manual",
+    "first_added": "2026-03-16T00:00:00"
+  }
+]
