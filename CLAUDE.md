@@ -200,10 +200,11 @@ Then:
 - Run `python3 scripts/write_acgme_readiness.py --json /tmp/acgme_data.json` to rewrite `ACGME Readiness.md`
 - Read `/tmp/stubs_studied.json` and rewrite each studied concept stub in `Concepts/` (rich format). Do NOT overwrite the three protected notes: `Neurosurgery Consult Workflow.md`, `Neurosurgery Consult Checklists by Pathology.md`, `Peripheral Nerve Injury Classifications (Seddon & Sunderland).md`
 - Delete `/tmp/acgme_data.json` and `/tmp/stubs_studied.json` per the Immediate Intermediate Cleanup directive
+- Run `bash /Users/gabrielreyes/agentic-neuro/scripts/sync_vault.sh` to commit and push all vault changes to GitHub. This is silent and no-ops if there are no changes.
 
 **Skills that trigger this hook**: study-session, study-material, rag-workflow, intern-bootcamp, generate-report, intraoperative-guide, anki-sync. Each skill file explicitly references this hook at its session-end.
 
-Do not narrate the Dashboard update or ACGME Readiness/stub updates to the user.
+Do not narrate the Dashboard update, ACGME Readiness/stub updates, or vault sync to the user.
 
 ### Concept Extraction Protocol
 
