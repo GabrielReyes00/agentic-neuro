@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import List, Literal
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -30,6 +30,17 @@ class ClaimExtractionOutput(BaseModel):
         return self
 
 
+class CardImage(BaseModel):
+    """Image attachment for an Anki card."""
+
+    filename: str = Field(max_length=120)
+    data_b64: str = Field(default="")
+    source_url: str = Field(default="", max_length=500)
+    attribution: str = Field(default="", max_length=300)
+    placement: Literal["front", "back", "both"] = "back"
+    alt_text: str = Field(default="", max_length=300)
+
+
 class CardDraft(BaseModel):
     claim_id: str = Field(min_length=2, max_length=16)
     card_type: Literal["cloze", "qa"]
@@ -38,6 +49,7 @@ class CardDraft(BaseModel):
     answer_text: str = Field(default="", max_length=200)
     front: str = Field(default="", max_length=500)
     back: str = Field(default="", max_length=500)
+    image: Optional[CardImage] = None
 
     @model_validator(mode="after")
     def _enforce_card_shape(self):

@@ -1,0 +1,27 @@
+description = "Extract flashcards from session and sync to Anki via AnkiConnect — with validation and image enrichment"
+
+prompt = """
+ACTIVE COMMAND: /anki-sync — Full Anki card pipeline with validation.
+
+This is a 9-step workflow. Follow ALL steps in the instruction file below in exact order. DO NOT skip or merge steps — each step has a STOP condition that must be satisfied before proceeding to the next.
+
+STEP EXECUTION ORDER (enforce strictly):
+1. Capture transcript to disk
+2. Resolve subdeck from user
+3. Confusable pairs query
+4. Claim extraction (sub-task) -> writes current_claims.json
+5. Novelty filtering -> if empty, STOP
+6. Card drafting + BLIND VALIDATION (sub-task) -> MUST complete validation before writing final_cards.json
+6.5. CLI validation gate -> run validate_final_cards and STOP on any failure
+7. Image enrichment (sub-task) -> MUST complete vision validation before writing image_selections.json
+8. Process images + dispatch to Anki
+9. KG logging, Obsidian write, cleanup (ALL mandatory)
+
+Step 6 validation is MANDATORY — do not write final_cards.json until the sub-task has performed blind validation on every card. A card that fails blind validation must be rewritten before inclusion. The final_cards payload must include per-card blind_validation metadata and a top-level validation_report; Step 6.5 enforces this in CLI before dispatch.
+
+User's request: {{args}}
+
+---
+
+@{.gemini/commands/anki-sync.md}
+"""

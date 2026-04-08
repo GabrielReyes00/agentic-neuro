@@ -28,6 +28,11 @@ import time
 import re
 from datetime import datetime, timedelta
 
+# ── Venv & working directory guard ───────────────────────────────────────────
+if __name__ == "__main__":
+    from _env_guard import check_environment
+    check_environment("frontier_search.py")
+
 # ── Configuration ──────────────────────────────────────────────────────────────
 NCBI_API_KEY = os.environ.get("NCBI_API_KEY", "").strip()
 DEFAULT_MAX_RESULTS = 3

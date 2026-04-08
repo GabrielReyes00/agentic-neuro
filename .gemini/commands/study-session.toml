@@ -1,0 +1,21 @@
+description = "Adaptive 30-minute study session — recall bridge, targeted remediation, new territory, transfer challenge"
+
+prompt = """
+ACTIVE COMMAND: /study-session — Adaptive study session from knowledge graph gaps.
+
+This is a multi-step interactive workflow with MANDATORY background hooks. Follow ALL steps in the instruction file below. Steps marked "Silent" or "Background" are NOT optional.
+
+CRITICAL HOOKS THAT MUST FIRE (do not skip):
+- Step 1: Knowledge graph data gathering (single bash call) BEFORE presenting plan
+- After Components 1 and 2: ./src/log_turn.sh for each learner response
+- After Components 1 and 2: heartbeat.sh --status "in-progress" checkpoint
+- After Transfer: log_transfer call
+- Session end: heartbeat.sh --status "complete" + Obsidian file write
+- Post-session hook MUST complete before session ends
+
+User's request: {{args}}
+
+---
+
+@{.gemini/commands/study-session.md}
+"""

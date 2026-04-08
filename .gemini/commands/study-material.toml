@@ -1,0 +1,22 @@
+description = "Generate study material from a PDF/PPTX file and run interactive Socratic drill with KG logging"
+
+prompt = """
+ACTIVE COMMAND: /study-material — File-based study material generation and interactive drill.
+
+This is a multi-phase workflow (Phase 1: Generate, Phase 2: Drill) with MANDATORY background hooks. Follow ALL phases and steps in the instruction file below.
+
+CRITICAL HOOKS THAT MUST FIRE (do not skip):
+- Phase 1 Step 0: preflight.sh before extraction
+- Phase 1 Step 3: INDEX.md pre-write guard before vault write
+- Phase 2: ./src/log_turn.sh after EVERY learner response
+- Phase 2: heartbeat.sh --doc checkpoint every 3 user turns
+- Phase 2 session end: final heartbeat + upsert <slug>_review.md
+- After vault write: Concept extraction to Concepts/
+- Final: Universal Post-Session Hook
+
+User's request: {{args}}
+
+---
+
+@{.gemini/commands/study-material.md}
+"""

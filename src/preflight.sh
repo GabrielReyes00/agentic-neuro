@@ -1,0 +1,131 @@
+#!/usr/bin/env bash
+# preflight.sh — Batch pre-flight for all learning skills
+# Combines: learner context + transform directives + case log sync + optional doc_status
+#           + last session narrative + concept review queue
+# Usage: ./src/preflight.sh "query" [--doc "Study Material/slug.md"] [--skill "study-session"]
+#
+# Outputs (all to data/Sessions/):
+#   learner_context.json         — knowledge graph context for the query
+#   transform_directives.json    — pre-computed directives from learner context + confusion matrix
+#   case_log_sync.txt            — new case logs found (if any)
+#   doc_status.json              — document study state (only if --doc provided)
+#   last_session_narrative.json  — most recent session narrative for these topics
+#   concept_review_queue.json    — SM-2 scheduled concepts due for review
+
+set -euo pipefail
+
+cd /Users/gabrielreyes/agentic-neuro
+source .venv/bin/activate
+
+QUERY="${1:?Usage: preflight.sh \"query\" [--doc \"Study Material/slug.md\"] [--skill X]}"
+shift
+
+DOC=""
+SKILL=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --doc) DOC="$2"; shift 2 ;;
+        --skill) SKILL="$2"; shift 2 ;;
+        *) echo "Unknown arg: $1" >&2; exit 1 ;;
+    esac
+done
+
+SESSIONS="data/Sessions"
+mkdir -p "$SESSIONS"
+
+echo "=== PREFLIGHT START ==="
+
+# 0. Apply decay — passive decay without a daemon; fires at the start of every session
+#    so that confidence decay and SM-2 due-date marking are always current, even after
+#    study breaks.
+echo "[0/7] Applying knowledge decay..."
+python3 src/knowledge_graph.py apply_decay 2>&1 | tail -1
+
+# 1. Learner context
+echo "[1/7] Fetching learner context..."
+python3 src/knowledge_graph.py context "$QUERY" --output "$SESSIONS/learner_context.json" 2>&1
+
+# 2. Transform directives
+echo "[2/7] Preparing transform directives..."
+python3 src/lance_retriever.py prepare_directives "$QUERY" --output "$SESSIONS/transform_directives.json" 2>&1
+
+# 3. Case log sync — find new case logs not yet in knowledge_graph.db
+echo "[3/7] Scanning Case Log for new entries..."
+CASE_LOG_DIR="/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Case Log"
+SYNC_FILE="$SESSIONS/case_log_sync.txt"
+
+if [[ -d "$CASE_LOG_DIR" ]]; then
+    # List all case log files
+    CASE_FILES=$(find "$CASE_LOG_DIR" -name "*.md" -not -name "INDEX.md" -not -name "_*" 2>/dev/null | sort)
+
+    # Query existing clinical_case events from knowledge graph
+    EXISTING=$(python3 -c "
+import sqlite3, json, os
+db_path = 'data/knowledge_graph.db'
+if os.path.exists(db_path):
+    conn = sqlite3.connect(db_path)
+    rows = conn.execute(\"SELECT se.metadata FROM signal_events se WHERE se.source='case_log'\").fetchall()
+    conn.close()
+    for r in rows:
+        try:
+            d = json.loads(r[0])
+            if 'source_file' in d:
+                print(d['source_file'])
+        except: pass
+" 2>/dev/null || true)
+
+    NEW_COUNT=0
+    > "$SYNC_FILE"
+    while IFS= read -r f; do
+        [[ -z "$f" ]] && continue
+        BASENAME=$(basename "$f")
+        if ! echo "$EXISTING" | grep -qF "$BASENAME"; then
+            echo "$f" >> "$SYNC_FILE"
+            ((NEW_COUNT++))
+        fi
+    done <<< "$CASE_FILES"
+
+    echo "  Found $NEW_COUNT new case log(s)"
+else
+    echo "  Case Log directory not found — skipping"
+    > "$SYNC_FILE"
+fi
+
+# 4. Doc status (optional)
+if [[ -n "$DOC" ]]; then
+    echo "[4/7] Checking doc_status for: $DOC"
+    python3 src/knowledge_graph.py doc_status "$DOC" > "$SESSIONS/doc_status.json" 2>&1
+else
+    echo "[4/7] No --doc specified — skipping doc_status"
+fi
+
+# 5. Last session narrative — inject prior teaching strategy
+echo "[5/7] Fetching last session narrative..."
+TOPIC_WORD=$(echo "$QUERY" | awk '{print $1}')
+LAST_NAR_CMD="python3 src/knowledge_graph.py last_session_narrative"
+[[ -n "$SKILL" ]] && LAST_NAR_CMD+=" --skill \"$SKILL\""
+LAST_NAR_CMD+=" --topic \"$TOPIC_WORD\""
+eval $LAST_NAR_CMD > "$SESSIONS/last_session_narrative.json" 2>/dev/null || echo '{"status":"none_found"}' > "$SESSIONS/last_session_narrative.json"
+echo "  Last narrative written to $SESSIONS/last_session_narrative.json"
+
+# 6. Concept review queue — SM-2 scheduled concepts due
+echo "[6/7] Fetching concept review queue..."
+python3 src/knowledge_graph.py concept_review_queue --n 10 > "$SESSIONS/concept_review_queue.json" 2>/dev/null || echo '{"due_concepts":[],"count":0}' > "$SESSIONS/concept_review_queue.json"
+QUEUE_COUNT=$(python3 -c "import json; d=json.load(open('$SESSIONS/concept_review_queue.json')); print(d.get('count',0))" 2>/dev/null || echo 0)
+echo "  $QUEUE_COUNT concept(s) due for review"
+
+# 7. ZPD difficulty recommendation
+echo "[7/7] Computing difficulty target..."
+python3 src/knowledge_graph.py difficulty_target > "$SESSIONS/difficulty_target.json" 2>/dev/null || echo '{"status":"insufficient_data","recommended_depth":2}' > "$SESSIONS/difficulty_target.json"
+ZPD_STATUS=$(python3 -c "import json; d=json.load(open('$SESSIONS/difficulty_target.json')); print(d.get('zpd_status','unknown'))" 2>/dev/null || echo "unknown")
+echo "  ZPD status: $ZPD_STATUS"
+
+echo "=== PREFLIGHT COMPLETE ==="
+echo "Outputs:"
+echo "  $SESSIONS/learner_context.json"
+echo "  $SESSIONS/transform_directives.json"
+echo "  $SESSIONS/case_log_sync.txt ($(wc -l < "$SYNC_FILE" | tr -d ' ') new)"
+[[ -n "$DOC" ]] && echo "  $SESSIONS/doc_status.json"
+echo "  $SESSIONS/last_session_narrative.json"
+echo "  $SESSIONS/concept_review_queue.json ($QUEUE_COUNT due)"
+echo "  $SESSIONS/difficulty_target.json (zpd=$ZPD_STATUS)"

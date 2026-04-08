@@ -258,6 +258,145 @@ If no, proceed with existing data. The Anki sync also runs automatically after e
 
 Direct and informative. Present data cleanly. When showing status, frame it encouragingly but honestly — highlight both strengths and gaps. This is a personal dashboard, not a clinical interaction.
 
+## Obsidian Dashboard Write (Silent — after presenting to user)
+
+After rendering the dashboard, gap analysis, milestone report, or any visual summary to the user, silently write/update the Dashboard.md file at `/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Dashboard.md` using the Write tool.
+
+**Coverage numbers MUST come from `dashboard` JSON using `domain.encountered / domain.total` (both fields are correct after the COUNT(DISTINCT curriculum_id) fix). Never hallucinate or carry forward stale percentages from memory.**
+
+**Dashboard.md structure:**
+```markdown
+---
+updated: YYYY-MM-DD
+---
+
+> [!abstract] Overview
+> **Curriculum coverage**: X.X% — N of 264 topics touched | **Events logged**: N | **Last session**: Mon DD, YYYY
+
+---
+
+## Curriculum Progress
+
+Coverage is measured against the ACGME curriculum (264 topics across 10 domains). A topic is "touched" only when a session, RAG search, or bootcamp encounter is logged against a curriculum-mapped entry.
+
+| Domain | Milestone | Touched | Coverage |
+|--------|-----------|---------|----------|
+| Critical Care | PC-8 | N / 25 | N% |
+| Vascular Neurological Surgery | PC-5 | N / 28 | N% |
+| Pediatric Neurological Surgery | PC-6 | N / 25 | N% |
+| Traumatic Brain Injury | PC-7 | N / 25 | N% |
+| Med Knowledge — Neurosciences & Neuropathology | MK-2 | N / 26 | N% |
+| Spinal Neurological Surgery | PC-4 | N / 29 | N% |
+| Brain Tumor | PC-1 | N / 32 | N% |
+| Med Knowledge — Neuroanatomy & Neuroimaging | MK-1 | N / 24 | N% |
+| Pain & Peripheral Nerve | PC-3 | N / 25 | N% |
+| Surgical Treatment of Epilepsy & Movement Disorders | PC-2 | N / 25 | N% |
+
+---
+
+## Study Queue
+
+> [!tip] This Week
+> [2-3 sentence synthesized recommendation based on top gap domain and unresolved concept gaps]
+
+### Priority Gaps
+
+| Topic | Domain | Note |
+|-------|--------|------|
+[top gaps from `gaps --top 8`, plain text — wikilink only if a vault doc exists for the topic]
+
+### Concept Gaps to Address
+
+These concepts were missed in previous sessions and have not yet been confirmed correct.
+
+| Concept | Topic | Error Type |
+|---------|-------|------------|
+[deduplicated entries from `concept_review_queue`, capitalize concept names, omit duplicates]
+
+---
+
+## Recent Activity
+
+| Date | Source | Activity |
+|------|--------|----------|
+[last 7-10 events from `recent_activity`, grouped by date, cleaned topic names — no sentence fragments]
+
+---
+
+## Patterns & Calibration
+
+> [!note] No calibration data yet
+> Complete a `/intern-bootcamp` session to build your confidence calibration profile and surface recurring error patterns.
+
+[Replace callout with actual data once calibration_profile and cognitive_patterns return results]
+
+---
+
+## Vault Assets
+
+> [!example] Notes in this vault
+> **Reports** (N): [wikilinked list or "None yet"]
+> **Operative Guides** (N): [wikilinked list or "None yet — use /intraoperative-guide to generate one"]
+> **Study Material** (N): [wikilinked list or "None yet"]
+> **Concepts** (N): [wikilinked list]
+
+---
+
+## What Changed (Last Session)
+
+> [!info] Last session — Mon DD, YYYY
+> **Skill**: <skill that ran>
+> **Topics Touched**: <topics>
+> **Vault Writes**: <files created/updated>
+> **Next Priority**: <top gap or next action>
+```
+
+**Cross-reference discovery:** Before writing, run:
+```bash
+ls "/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Reports/"*.md "/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Operative Guides/"*.md "/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Study Material/"*.md "/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Concepts/"*.md 2>/dev/null
+```
+
+Use filenames to populate Vault Assets with accurate wikilinks.
+
+**Style rules (enforced):**
+- No `# Dashboard` H1 in the body — the filename is already the title; adding it creates a duplicate in Obsidian
+- No `tags:` in frontmatter — only `updated:` date
+- No emojis anywhere
+- Use Obsidian callout blocks (`> [!type] Title`) for all prose/stat sections — they provide visual backdrop separation
+- Tables for structured data (curriculum progress, gaps, activity)
+- Concept names in the review table are Title Cased, not lowercase sentence fragments
+
+Do not narrate the Dashboard.md write to the user.
+
+## ACGME Readiness Update (Silent — after every Dashboard write)
+
+After writing Dashboard.md, regenerate `ACGME Readiness.md` and update studied concept stubs:
+
+```bash
+cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
+  python3 src/knowledge_graph.py acgme_readiness > /tmp/acgme_data.json && \
+  python3 src/knowledge_graph.py export_concept_stubs --only-studied > /tmp/stubs_studied.json
+```
+
+Then:
+1. Read `/tmp/acgme_data.json` and rewrite `/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/ACGME Readiness.md` using `python3 scripts/write_acgme_readiness.py --json /tmp/acgme_data.json`
+2. Read `/tmp/stubs_studied.json` — for each entry, write an updated rich stub to `/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Concepts/<filename>` using the rich stub format (confidence, depth, encounter_count, last_studied, status, confusable_atlas_entries). Do NOT overwrite the three protected notes: `Neurosurgery Consult Workflow.md`, `Neurosurgery Consult Checklists by Pathology.md`, `Peripheral Nerve Injury Classifications (Seddon & Sunderland).md`.
+3. Delete `/tmp/acgme_data.json` and `/tmp/stubs_studied.json` after processing.
+
+Do not narrate these writes to the user.
+
+## Initial Batch Setup (One-Time, on first /knowledge-map run after Pillar 6 implementation)
+
+If `Concepts/INDEX.md` does not exist yet, run the full batch stub write:
+
+```bash
+cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
+  python3 scripts/write_concept_stubs.py && \
+  python3 scripts/write_acgme_readiness.py
+```
+
+This writes all 265 concept stubs + INDEX.md + ACGME Readiness.md. Run once only — subsequent updates use `--only-studied` to minimize writes.
+
 ## Future Phases (Not Yet Implemented)
 
 - **Phase 5**: Rotation-aware recommendations via GCal integration (auto-detect rotation from calendar events)

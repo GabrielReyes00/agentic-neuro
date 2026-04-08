@@ -1,3 +1,8 @@
+---
+name: inbox_workflow
+description: Agentic email triage pipeline — fetches Exchange inbox for a specified time window, categorizes messages, extracts action items as reminders and calendar events, and guides response drafting with user approval. Always invoke this skill when the user wants to check, process, or triage their email inbox — "go through my inbox", "triage my emails", "check my mail", "process my inbox". Do not attempt to answer inline for these requests.
+---
+
 # Inbox Workflow Command
 
 This command implements a multi-phase agentic workflow that triages your Exchange inbox, organizes emails by category with content summaries, generates actionable reminders and calendar events, and interactively drafts email responses with mandatory user approval before sending.
@@ -450,6 +455,11 @@ Reminders created: 4
 Calendar events created: 2
 Responses sent: 3
 Responses skipped: 1
+```
+
+**Cleanup (Silent):**
+```bash
+rm -f /Users/gabrielreyes/agentic-neuro/data/Sessions/voice_profile_cache.json
 ```
 
 ---

@@ -96,7 +96,7 @@ Store this as `DAYS_BACK` for use in Phase 1.
 
 ## Phase 1: Collect & Categorize Emails (Subagent)
 
-Spawn a `general-purpose` subagent to handle all email fetching and categorization. Raw email bodies stay in the subagent's context and never enter the main agent.
+Spawn a `general-purpose` subagent (use `model: "haiku"`) to handle all email fetching and categorization. Raw email bodies stay in the subagent's context and never enter the main agent.
 
 **Subagent prompt:**
 
@@ -258,7 +258,7 @@ After reminders and calendar events are handled, ask the user:
 
 ### Step 0: Voice Calibration (run once before the first draft)
 
-Before drafting the first response, spawn a `general-purpose` subagent to perform voice calibration. This runs once per session — subsequent drafts reuse the cached result.
+Before drafting the first response, spawn a `general-purpose` subagent (use `model: "sonnet"`) to perform voice calibration. This runs once per session — subsequent drafts reuse the cached result.
 
 **Subagent prompt:**
 
@@ -338,7 +338,7 @@ What should our response include? (or type "skip" to skip this email)
 - "Ask if we can push the deadline by a week"
 - "Skip" → move to the next email
 
-**Step 3: Draft Response (Subagent)** — Spawn a `general-purpose` subagent to draft the reply. The subagent reads the full email body in its own context, keeping raw email content out of the main conversation.
+**Step 3: Draft Response (Subagent)** — Spawn a `general-purpose` subagent (use `model: "sonnet"`) to draft the reply. The subagent reads the full email body in its own context, keeping raw email content out of the main conversation.
 
 **Subagent prompt:**
 

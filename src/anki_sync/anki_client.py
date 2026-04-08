@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from html import escape
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -20,9 +21,18 @@ class AnkiDispatchResult:
     error: str
 
 
+def _format_text(text: str) -> str:
+    """Convert markdown-lite text to Anki HTML."""
+    t = text.replace("\\n", "<br>")
+    t = re.sub(r"\*\*(.*?)\*\*", r"<b>\1</b>", t)
+    t = re.sub(r"\*(.*?)\*", r"<i>\1</i>", t)
+    return t
+
+
 class AnkiClient:
     def __init__(self, url: str):
         self.url = url
+        self._model_fields_cache: dict[str, set[str]] = {}
 
     def _invoke(self, action: str, timeout: int = 8, **params):
         payload = {"action": action, "version": 6, "params": params}
@@ -61,8 +71,48 @@ class AnkiClient:
         if missing:
             raise RuntimeError(f"Required built-in Anki models missing: {', '.join(missing)}")
 
+    def _model_fields(self, model_name: str) -> set[str]:
+        if model_name not in self._model_fields_cache:
+            names = self._invoke("modelFieldNames", modelName=model_name) or []
+            self._model_fields_cache[model_name] = set(names)
+        return self._model_fields_cache[model_name]
+
+    def store_media_file(self, filename: str, data_b64: str) -> None:
+        """Store an image file in Anki's collection.media folder via AnkiConnect."""
+        self._invoke(
+            "storeMediaFile",
+            filename=filename,
+            data=data_b64,
+            deleteExisting=True,
+        )
+
+    def _build_image_html(self, card: CardDraft) -> str:
+        """Build the <img> HTML block for a card's image, if present."""
+        if not card.image:
+            return ""
+        img = card.image
+        image_html = (
+            f'<div class="card-image">'
+            f'<img src="{escape(img.filename, quote=True)}" alt="{escape(img.alt_text, quote=True)}">'
+            f'</div>'
+        )
+        if img.attribution:
+            image_html += f'<div class="image-attribution">{escape(img.attribution)}</div>'
+        return image_html
+
     def add_card(self, card: CardDraft, deck_name: str, tags: list[str] | None = None) -> AnkiDispatchResult:
         safe_tags = tags or ["Neuro-Agent", "CLI-Export", "anki-sync"]
+
+        # Store the image file first if present
+        if card.image and card.image.data_b64:
+            try:
+                self.store_media_file(card.image.filename, card.image.data_b64)
+            except Exception as e:  # noqa: BLE001
+                # Image storage failure is non-fatal — card still gets created without image
+                import sys
+                print(f"Warning: failed to store image {card.image.filename}: {e}", file=sys.stderr)
+                card.image = None  # clear so we don't reference a missing file
+
         note = {
             "deckName": deck_name,
             "options": {"allowDuplicate": False},
@@ -71,17 +121,31 @@ class AnkiClient:
             "modelName": "",
         }
 
+        img_html = self._build_image_html(card)
+
         if card.card_type == "cloze":
             note["modelName"] = "Cloze"
-            note["fields"] = {
-                "Text": card.cloze_text.replace("\\n", "<br>"),
-                "Extra": "",
-            }
+            cloze_fields = self._model_fields("Cloze")
+            extra_field = "Extra" if "Extra" in cloze_fields else "Back Extra" if "Back Extra" in cloze_fields else None
+            fields = {"Text": _format_text(card.cloze_text)}
+            if extra_field:
+                fields[extra_field] = img_html
+            note["fields"] = fields
         else:
             note["modelName"] = "Basic"
+            front_text = _format_text(card.front)
+            back_text = _format_text(card.back)
+
+            if card.image:
+                placement = card.image.placement
+                if placement in ("back", "both"):
+                    back_text += f"<br>{img_html}"
+                if placement in ("front", "both"):
+                    front_text = f"{img_html}<br>{front_text}"
+
             note["fields"] = {
-                "Front": card.front.replace("\\n", "<br>"),
-                "Back": card.back.replace("\\n", "<br>"),
+                "Front": front_text,
+                "Back": back_text,
             }
 
         try:

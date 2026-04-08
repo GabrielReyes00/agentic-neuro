@@ -1,0 +1,13 @@
+description = "Knowledge graph dashboard — gaps, progress, ACGME milestones, review queue, cognitive patterns"
+
+prompt = """
+ACTIVE COMMAND: /knowledge-map — Learner knowledge graph dashboard and gap analysis.
+
+Query the knowledge graph database and render a formatted dashboard. Present all requested views (heatmap, gaps, review queue, cognitive patterns) based on user's request.
+
+User's request: {{args}}
+
+---
+
+@{.gemini/commands/knowledge-map.md}
+"""

@@ -1,0 +1,21 @@
+description = "Neurosurgery intern simulation — night float scenarios, cross-cover, order drills, chief debrief"
+
+prompt = """
+ACTIVE COMMAND: /intern-bootcamp — Multi-phase intern simulation for PGY-1 neurosurgery.
+
+This is a multi-step interactive workflow with MANDATORY background hooks. Follow ALL phases and steps in the instruction file below. Steps marked "Silent" or "Background" are NOT optional — they write to the knowledge graph and Obsidian vault. Execute them without narrating them to the user.
+
+CRITICAL HOOKS THAT MUST FIRE (do not skip):
+- Pre-flight: ./src/preflight.sh before any scenario
+- Heartbeat: heartbeat.sh checkpoint every ~3 significant clinical decisions (Phase 1)
+- KG log: log_bootcamp after Phase 2 debrief
+- Obsidian write: session log file after KG log
+- Concept extraction: after Obsidian write
+- Post-session hook: after concept extraction (FINAL MANDATORY STEP)
+
+User's request: {{args}}
+
+---
+
+@{.gemini/commands/intern-bootcamp.md}
+"""

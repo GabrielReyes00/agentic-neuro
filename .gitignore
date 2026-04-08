@@ -8,6 +8,9 @@ neurosurgery_v4.lance/
 data/chromadb_store_anki_memory/
 
 # === Knowledge Graph (SQLite — user data, never wipe) ===
+knowledge_graph.db
+knowledge_graph.db-wal
+knowledge_graph.db-shm
 data/knowledge_graph.db
 data/knowledge_graph.db-wal
 data/knowledge_graph.db-shm
@@ -25,8 +28,22 @@ data/Sessions/active_lesson_plan.md
 data/Sessions/session_digest_*.md
 data/Sessions/figures/
 
+# === Test/Benchmark Outputs ===
+data/Sessions/test*_*.md
+data/Sessions/benchmark_*.json
+
 # === Telemetry & Logs ===
 data/Sessions/search_telemetry.jsonl
+data/Sessions/case_log_sync.txt
+data/Sessions/concept_review_queue.json
+data/Sessions/difficulty_target.json
+data/Sessions/last_session_narrative.json
+data/Sessions/transform_directives.json
+
+# === Local User Config / Scratch ===
+data/pgy_config.json
+temp_report.md
+.claude/scheduled_tasks.lock
 
 # === Python ===
 __pycache__/

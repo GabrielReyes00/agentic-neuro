@@ -7,11 +7,9 @@ description: Queries the RAG vector database and displays a formatted inventory 
 
 This command retrieves a list of all textbooks currently ingested in the local vector database (`neurosurgery_v4 (LanceDB)`) and presents them to the user as a clean inventory table.
 
-> **CRITICAL: Working Directory.** ALL shell commands in this command MUST be prefixed with `cd /Users/gabrielreyes/agentic-neuro &&`. The CLI may be running from `~`, not from `~/agentic-neuro/`.
+> Shell prefix: per CLAUDE.md § Shell Prefix.
 
 ## Step 1: Fetch the Inventory
-
-Run the following command to retrieve the textbook inventory directly from the local RAG database:
 
 ```bash
 cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && python3 src/lance_retriever.py list_textbooks

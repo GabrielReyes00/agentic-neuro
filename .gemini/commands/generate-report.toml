@@ -1,0 +1,19 @@
+description = "Multi-agent research report generator — comprehensive neurosurgical topic review with citations"
+
+prompt = """
+ACTIVE COMMAND: /generate-report — Multi-agent research report with textbook supplementation.
+
+This is a multi-phase workflow with MANDATORY background hooks. Follow ALL phases (0-6) in the instruction file below.
+
+CRITICAL HOOKS THAT MUST FIRE (do not skip):
+- Phase 0: preflight.sh BEFORE any research
+- After report synthesis: INDEX.md pre-write guard check
+- After vault write: Concept extraction (2-5 concepts to Concepts/)
+- Final step: Universal Post-Session Hook (Dashboard update)
+
+User's topic: {{args}}
+
+---
+
+@{.gemini/commands/generate-report.md}
+"""

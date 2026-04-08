@@ -1,6 +1,29 @@
+---
+name: rag_workflow
+description: RAG Knowledge Workflow — full retrieval, transform, and learning pipeline for deep textbook-grounded answers. Invoke via /rag-workflow or when the user explicitly asks to search textbooks, look something up in the database, or says "RAG this". Do NOT auto-trigger on general clinical questions — answer those from model knowledge first.
+---
+
 # RAG Knowledge Workflow
 
-This file contains the full RAG pipeline instructions. It is loaded automatically when the Capability Router detects a clinical/mechanistic question.
+## MANDATORY BACKGROUND HOOKS
+
+Execute these at every trigger point. None are narrated to the user.
+
+| Trigger | Action | Skip condition |
+|---------|--------|----------------|
+| Before every RAG query | `./src/preflight.sh "query"` (Step 0) | Never skip |
+| After EVERY Gym/Socratic user response | `./src/log_turn.sh` (single call: activity feed + concept mastery) | Never skip |
+| After EVERY Gym interaction (after `log_turn.sh` fires) | `heartbeat.sh --session-mode ... --status "in-progress"` (Step 4.5) | Never skip |
+| After session ends | `heartbeat.sh --session-mode ... --status "complete"` + Obsidian file write (Step 5.5) | Never skip |
+| After Obsidian write | Concept extraction to `Concepts/` | Never skip |
+| After concept extraction | Post-Session Hook (apply_decay + dashboard) | Never skip — FINAL mandatory step |
+| After post-session hook | `rm -f data/Sessions/*.json data/Sessions/scratch_context.md data/Sessions/transform_output.md` | Never skip |
+
+`log_turn.sh` is the required per-turn logger because it writes BOTH `log_event` and `log_study` in one deterministic call.
+
+---
+
+This file contains the full RAG pipeline instructions. Invoke via `/rag-workflow` or when the user explicitly asks to search textbooks, look something up in the database, or says "RAG this". Do NOT auto-trigger on general clinical questions — answer those from model knowledge first.
 
 **Pipeline: Assess -> Retrieve -> Transform -> Gap Check -> Present**
 
@@ -8,15 +31,17 @@ Complex queries decompose into atomic sub-queries for independent retrieval, the
 
 **Tone**: Expert cognitive coach for PGY-1-PGY-3. High-level, zero fluff. Surgical schemas and mental models over rote enumeration. Challenge the *why*.
 
-### Step 0: Learner Context Pre-Flight
+### Step 0: Learner Context Pre-Flight + Transform Directives
 
-**Run before every RAG query, bootcamp, and intraop guide.** Silent — do not narrate.
+**Run before every RAG query.** Silent — do not narrate. Uses `src/preflight.sh` to batch all pre-flight steps:
 
 ```bash
-cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && python3 src/knowledge_graph.py context "query" --output data/Sessions/learner_context.json
+cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && ./src/preflight.sh "query"
 ```
 
-Returns JSON with per-topic state, adaptive guidance, cross-capability patterns, suggested depth, remediation directives, transfer candidates.
+This produces `data/Sessions/learner_context.json` (per-topic state, adaptive guidance, suggested depth, transfer candidates) + `data/Sessions/transform_directives.json` (compact directives for Transform sub-task) + case log sync check.
+
+If `case_log_sync.txt` lists new files, run Case Log Proactive Sync per GEMINI.md Case Log Proactive Sync — read each new case, log events, add gap topics, notify user.
 
 **Adaptation rules** (from context JSON):
 | Field | Action |
@@ -75,8 +100,10 @@ Delegate to a sub-task:
 > Read `/Users/gabrielreyes/agentic-neuro/.gemini/commands/rag-transform.md` for full instructions.
 > **QUERY**: {query} | **TEMPLATE**: {template}
 > **CONTEXT_PATH**: `/Users/gabrielreyes/agentic-neuro/data/Sessions/scratch_context.md`
-> **LEARNER_CONTEXT_PATH**: `/Users/gabrielreyes/agentic-neuro/data/Sessions/learner_context.json`
+> **DIRECTIVES_PATH**: `/Users/gabrielreyes/agentic-neuro/data/Sessions/transform_directives.json`
 > Read both files, apply template with learner-aware personalization, write to `/Users/gabrielreyes/agentic-neuro/data/Sessions/transform_output.md`.
+> Note: Passages in scratch_context.md are tagged with IDs (P1, P2, ...). Include passage IDs in all citations for grounding verification.
+> `rag-transform` is internal-only. Do not invoke `/rag-transform` as a user command.
 
 ### Step 3.5: Gap Check
 
@@ -127,6 +154,18 @@ When the user asks a follow-up question about a synthesis already delivered in t
 
 **Immediately run Step 5 after any Gym response.** Do not narrate.
 
+**Real-Time Turn Logging (`log_turn.sh`)**: After EVERY significant Gym/Socratic response from the user (before proceeding to the next question or topic), log both signals in one call:
+
+```bash
+cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
+./src/log_turn.sh --topic "<topic>" --source "rag" \
+  --signal-type "<correct_recall|incorrect_recall|partial_recall>" --depth <N> --category "<domain>" \
+  --topics "<topic>" --understood "<concept if correct>" \
+  --gap-details '[{"concept":"<concept if wrong>","error_type":"<type>","error_process":"<process>","misconception":"<what they got wrong>","root_cause":"<why>","remediation":"<what to review>"}]'
+```
+
+`log_turn.sh` ensures: (a) activity feed writes in real time, and (b) `concept_mastery` captures nuanced error taxonomy for future adaptation.
+
 ### Spaced Verification Protocol
 
 Concepts decay. Knowledge graph tracks last confirmation + spaced interval (`base * (1 + 0.3 * times_confirmed)^1.5`; base=3d with errors, 7d clean). Overdue concepts appear in `learner_context()`. **User should never feel artificially quizzed** — verification woven invisibly:
@@ -140,23 +179,47 @@ Concepts decay. Knowledge graph tracks last confirmation + spaced interval (`bas
 **Channel 4 — Transfer Challenge**: `transfer_candidates` (confirmed 2+ times, never cross-validated) in related domain -> test in new context without telling user. Log outcome:
 ```bash
 # Success:
+cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
 python3 src/knowledge_graph.py log_transfer --concept "X" --topic "Y" --context "Z" --success
 # Failure (omit --success -> flips to "unknown" with error_type "application_failure"):
+cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
 python3 src/knowledge_graph.py log_transfer --concept "X" --topic "Y" --context "Z"
 ```
 
 **Verification logging**: correct -> `log_study --understood "concept"` (resets interval, increments `times_confirmed`). Wrong -> `log_study --gaps "concept"` or `--gap-details` (flips to "unknown"). Aggressive: one correct resets, one failure flips.
 
-### Step 5: Log Learning Signal
+### Step 4.5: Crash-Safe Heartbeat (Silent — after every Gym interaction)
 
-**After Gym interaction or topic change.** Captures per-concept mastery. Do not narrate.
+After every significant Gym/Socratic exchange (where `log_turn.sh` just fired), silently write a checkpoint:
 
 ```bash
-# Simple form
+cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
+./src/heartbeat.sh --session-mode \
+  --skill "rag-workflow" --slug "<topic-slug>" --topics "<topics>" \
+  --depth <N> --domain "<domain>" \
+  --understood "<understood concepts so far>" --gaps "<gap concepts so far>" \
+  --turn-num <turn_count> --status "in-progress" --obsidian-write \
+  --topic-name "<Topic Name>" \
+  --understood-detail "<understood detail>" \
+  --gaps-detail "<gaps detail>"
+```
+
+This creates/updates `Review Sessions/<topic-slug>.md` with crash-safe checkpoints. If the session exits unexpectedly, the vault retains all progress up to the last Gym interaction.
+
+### Step 5: Log Learning Signal
+
+**For Gym interactions**: This is already executed in the Gym Follow-Up Protocol above (`log_turn.sh`). Do NOT run it again — that would double-log.
+
+**For topic changes WITHOUT a Gym interaction** (user asks a follow-up question, changes subject, or you deliver new material and the user absorbs it without responding to a Gym question): log only `log_study` here. Use the full prefix.
+
+```bash
+# Simple form (topic change, no Gym response)
+cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
 python3 src/knowledge_graph.py log_study --topics "t1,t2" --understood "concept A,concept B" --gaps "missed concept" --depth 2
 
 # Rich form (preferred when error cause is identifiable)
-python3 src/knowledge_graph.py log_study --topics "t1" --understood "A,B" --gap-details '[{"concept":"nimodipine 60mg q4h","error_type":"cross_contamination","misconception":"confused with methylprednisolone 30mg/kg","remediation":"re-anchored to trial data"}]' --depth 2
+cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
+python3 src/knowledge_graph.py log_study --topics "t1" --understood "A,B" --gap-details '[{"concept":"nimodipine 60mg q4h","error_type":"cross_contamination","error_process":"context_misapplication","misconception":"confused with methylprednisolone 30mg/kg","root_cause":"did not distinguish vasospasm prophylaxis from spinal cord injury protocol","remediation":"re-anchored to trial data"}]' --depth 2
 ```
 
 **Error types**: `numerical_recall` (forgot values) | `conceptual_confusion` (confused related concepts) | `cross_contamination` (wrong subspecialty protocol) | `application_failure` (knows fact, can't apply) | `reasoning_gap` (missing causal step) | `omission` (never encountered)
@@ -173,6 +236,98 @@ python3 src/knowledge_graph.py log_pattern --type "cross_contamination_prone" --
 ```
 Types: `strong_mechanistic_learner`, `cross_contamination_prone`, `numerical_recall_weak`, `visual_spatial_strength`, `application_transfer_gap`
 
+### Step 5.5: Obsidian Session Log + Concept Extraction (Silent)
+
+**Session routing**: If this RAG session was initiated as part of a **doc-anchored Socratic session** (user directed at a specific vault document), do NOT write a timestamped `YYYY-MM-DD_rag.md` file. Instead, follow the doc-anchored session protocol in GEMINI.md — the session record goes into `Review Sessions/<slug>_review.md`. Skip the write below and proceed to Concept Extraction only.
+
+For **standalone RAG sessions** (textbook lookup, general query), finalize the crash-safe session file:
+
+```bash
+cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
+./src/heartbeat.sh --session-mode \
+  --skill "rag-workflow" --slug "<topic-slug>" --topics "<topics>" \
+  --depth <N> --domain "<domain>" \
+  --understood "<understood concepts>" --gaps "<gap concepts>" \
+  --gap-details '<gap-details JSON>' \
+  --turn-num <final_turn> --status "complete" --obsidian-write \
+  --topic-name "<Topic Name>" --score "<score>"  \
+  --understood-detail "<understood detail>" \
+  --gaps-detail "<gaps detail>"
+```
+
+Then use the file write tool to replace the checkpoint content with the full session log at:
+`/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Review Sessions/<topic-slug>.md`
+
+```markdown
+---
+date: YYYY-MM-DD
+skill: "rag-workflow"
+query: "<original query>"
+template: "<template used>"
+topic: "<primary topic>"
+tags:
+  - type/session
+  - skill/rag
+  - domain/<domain>
+  - source/agent
+---
+# RAG Session — <Topic>
+
+## Query
+<original query>
+
+## Key Insights
+- [2-3 most important points from the synthesis]
+
+## Gym Performance
+| Turn | Question Type | Assessment | Confidence Signal | Error Type |
+|------|--------------|------------|------------------|-----------|
+| 1 | Initial Gym | correct/partial/incorrect | high/low | -- or <type> |
+
+## Gaps Identified
+- [Concept missed] — [error_type] — [specific misconception]
+
+## Related in This Vault
+[Wikilinks to matching vault content]
+```
+
+**INDEX update** is handled by heartbeat.sh `--obsidian-write`. Do not duplicate.
+
+**Concept Extraction**: Identify 2-5 atomic concepts from the synthesis that are:
+- Named clinical entities (syndromes, classifications, procedures, structures)
+- NOT already in `Concepts/` (check via `ls "/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Concepts/"*.md 2>/dev/null`)
+- Important enough to be referenced across multiple topics
+
+For each new concept, write to:
+`/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Concepts/<Concept Name>.md`
+
+```markdown
+---
+aliases: [<common abbreviations or alternate names>]
+created: YYYY-MM-DD
+extracted_from: "rag-workflow: <query>"
+tags:
+  - type/concept
+  - domain/<domain>
+  - source/agent
+---
+
+**<Concept Name>**: <Core definition, 2-3 sentences.>
+
+**Clinical Relevance**: <1-2 sentences connecting to practice.>
+
+**Key Distinctions**: <Most important differentiating features from confusable entities.>
+```
+
+Keep atomic — one concept per file. These are glossary entries, not reports. Only create concepts that would be useful as wikilink targets.
+
+**Post-Session Hook (Silent):** After the Obsidian write, run the Universal Post-Session Hook (see GEMINI.md) to update Dashboard.md.
+
+**Final Cleanup:** Delete temporary session files:
+```bash
+cd /Users/gabrielreyes/agentic-neuro && rm -f data/Sessions/*.json data/Sessions/scratch_context.md data/Sessions/transform_output.md data/Sessions/*.jsonl
+```
+
 ### Post-Interaction Routing
 
 After logging gaps with a clear `error_type`, offer ONE targeted remediation (highest `times_missed` or just-logged gap). User must opt in.
@@ -185,21 +340,35 @@ After logging gaps with a clear `error_type`, offer ONE targeted remediation (hi
 | `application_failure` | Bootcamp scenario |
 | `reasoning_gap` | Scaffolded walkthrough |
 
-Routing: `drill`/`socratic` -> RAG with template override | `disambiguation` -> confusion_matrix.json comparison | `scenario` -> focused bootcamp | `scaffold` -> RAG with `textbook-chapter`
+Routing: `drill`/`socratic` -> RAG with template override | `disambiguation` -> run `python3 src/knowledge_graph.py confusable_pairs --topic "<topic>"` (full prefix required) then generate a side-by-side disambiguation table from the KG result | `scenario` -> focused bootcamp | `scaffold` -> RAG with `textbook-chapter`
 
 ### Search Architecture
 
 LanceDB (`neurosurgery_v4.lance`) — 46,714 rows, 22 books.
 
+**Models & Indexing:**
 - **Embeddings**: BAAI/bge-m3 1024-dim (dense + sparse) via FlagEmbedding
 - **Reranker**: cross-encoder/ms-marco-MiniLM-L-6-v2 (~22MB, sigmoid scoring)
+- **Medical NER**: SciSpacy `en_ner_bc5cdr_md` — CHEMICAL/DISEASE entity extraction (lazy-loaded, ~200ms first call). Regex fallback if unavailable.
 - **Indexing**: IVF-PQ on dense vectors + 5 FTS indexes (child_text, heading, section_path, table_markdown, caption_text)
-- **Retrieval**: Dense ANN + FTS fused via RRF (k=60)
-- **Parent-child**: Each row stores `child_text` (~512 tok, retrieval) and `parent_text` (~2048 tok, context delivery)
-- **Pre-filter**: Reference/bibliography chunks stripped before reranking
-- **Defaults**: `min_similarity=0.35`, `max_per_source=10`, `n_results=35`, `min_sources=3`
-- **Flags**: `--visual` (image extraction) | `--append` (multi-query merge, 220-char dedup, 20 passage cap) | `--force-refresh` (bypass retrieval cache)
-- **Status output**: `OK {n} passages | {s} sources | {ms}ms`
+
+**Retrieval Pipeline (in order):**
+1. **Dense ANN + FTS** fused via RRF (k=60), `n_results=35`
+2. **Pre-filter**: Reference/bibliography chunks stripped before reranking
+3. **Cross-encoder rerank**: MiniLM-L6 sigmoid scoring, floor at 0.15
+4. **Entity-aware filtering**: NER extracts query entities (CHEMICAL/DISEASE) -> heading embedding similarity (BGE-M3) + distinctive keyword matching penalize off-topic passages. Drug-disease context filter: passages matching a drug but not the disease get 0.1x multiplier.
+5. **Parent-child expansion**: Child chunks expanded to parent_text with heading-aware trimming (BGE-M3 encodes intra-passage sections, keeps sections with sim >= 0.42 to query)
+6. **Adaptive Context Distillation**: Multi-axis queries auto-decomposed -> CE scores passages per axis -> entity co-occurrence check -> **MMR budget allocation** (lambda=0.7, Jaccard similarity for redundancy) per axis with source diversity. Bypass with `--no-distill`.
+7. **Gap-fill retrieval**: Axes with zero passage coverage get targeted supplemental retrieval (max 2 gap fills), filtered with original query's drug-disease context.
+8. **Learner-Aware Reranking**: Reads `learner_context.json` -> gap concepts get +0.05 tiebreaker, confirmed concepts get -0.03. Bypass with `--no-learner`.
+
+**Output signals:**
+- `data/Sessions/scratch_context.md` — budgeted passages for Transform sub-task
+- `data/Sessions/retrieval_coverage.json` — per-source passage counts, per-axis coverage strength
+- **Status**: `OK {n} passages | {s} sources | {ms}ms`
+
+**Flags**: `--visual` (image extraction) | `--append` (multi-query merge, 220-char dedup, 20 passage cap) | `--force-refresh` (backward compat) | `--no-distill` (bypass axis distillation) | `--no-learner` (bypass KG rerank modifier)
+**Defaults**: `min_similarity=0.35`, `max_per_source=10`, `n_results=35`, `min_sources=3`
 
 ### Cache Architecture
 
@@ -210,8 +379,9 @@ No disk cache needed — LanceDB IVF-PQ queries are fast enough without caching.
 | LanceDB connection + table | Process lifetime | Singleton, opened once |
 | BGE-M3 embedding model | Process lifetime | ~4s first load, then instant |
 | MiniLM-L6 reranker | Process lifetime | ~1s first load, then instant |
+| SciSpacy NER model | Process lifetime | ~200ms first load, lazy singleton |
 | Frontier cache (`frontier_cache.md`) | 10-min TTL | Written by frontier_search.py, read by lance_retriever.py |
 
 `clear_cache` is a no-op. `--force-refresh` accepted for backward compatibility.
 
-Latencies: fresh cold ~12-15s (includes model load) | fresh warm ~6-10s | `compare_multi` 3-query ~20-30s | gap pass +6-10s
+Latencies: fresh cold ~28-33s (includes model load + NER) | fresh warm ~10-15s (frontier concurrent) | `compare_multi` 3-query ~30-45s | gap pass +6-10s
