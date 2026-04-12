@@ -828,16 +828,14 @@ def _format_citation(row: dict) -> str:
 
 # ── Core retrieval ───────────────────────────────────────────────────────────
 
-def _encode_query(query: str) -> Tuple[List[float], Dict[int, float]]:
-    """Encode query with BGE-M3 → (dense_vec, sparse_weights)."""
+def _encode_query(query: str) -> List[float]:
+    """Encode query with BGE-M3 → dense_vec. Sparse channel uses LanceDB FTS."""
     model = _get_embedding_model()
     out = model.encode(
         [query], batch_size=1, max_length=512,
-        return_dense=True, return_sparse=True,
+        return_dense=True, return_sparse=False,
     )
-    dense = out["dense_vecs"][0].astype(np.float32).tolist()
-    sparse = out["lexical_weights"][0]
-    return dense, sparse
+    return out["dense_vecs"][0].astype(np.float32).tolist()
 
 
 def _dense_search(table, query_vec: List[float], n_results: int = DEFAULT_N_RESULTS):
@@ -1804,7 +1802,7 @@ def retrieve(
     table = _get_lance_table(lance_dir, table_name)
 
     t0 = time.perf_counter()
-    query_dense, query_sparse = _encode_query(query)
+    query_dense = _encode_query(query)
     encode_ms = round((time.perf_counter() - t0) * 1000, 2)
 
     dense_hits, dense_ms = _dense_search(table, query_dense, n_results)
@@ -1916,12 +1914,19 @@ def retrieve(
 
 # ── Context building ─────────────────────────────────────────────────────────
 
-def _load_frontier_notes() -> str:
-    """Read frontier_cache.md if it exists and is fresh (<5 min)."""
+def _load_frontier_notes(min_mtime: float | None = None) -> str:
+    """Read frontier_cache.md if it exists and is fresh (<5 min).
+
+    If ``min_mtime`` is provided, only accept cache files modified at or after
+    that epoch timestamp. This prevents stale cross-query frontier reuse.
+    """
     cache_path = BASE_DIR / "data" / "Sessions" / "frontier_cache.md"
     try:
         if cache_path.exists():
-            age_sec = time.time() - cache_path.stat().st_mtime
+            cache_mtime = cache_path.stat().st_mtime
+            if min_mtime is not None and cache_mtime < min_mtime:
+                return ""
+            age_sec = time.time() - cache_mtime
             if age_sec < 300:
                 cached = cache_path.read_text(encoding="utf-8", errors="ignore").strip()
                 if cached and "No frontier evidence found" not in cached:
@@ -2544,17 +2549,17 @@ def _log_to_knowledge_graph(query: str, confidence: str = "medium",
 
 # ── High-level CLI commands ──────────────────────────────────────────────────
 
-def _run_frontier_search(query: str) -> str:
+def _run_frontier_search(query: str) -> bool:
     """Run frontier_search.py as a subprocess to fetch PMC evidence.
 
     Always invoked by compare() to ensure up-to-date literature is available.
     Respects the frontier cache (10-min TTL + query overlap) inside
     frontier_search.py itself, so redundant fetches are avoided.
-    Returns the frontier text or empty string on failure.
+    Returns True on success, False on failure.
     """
     frontier_script = BASE_DIR / "src" / "frontier_search.py"
     if not frontier_script.exists():
-        return ""
+        return False
 
     venv_python = str(BASE_DIR / ".venv" / "bin" / "python3")
     python_bin = venv_python if os.path.isfile(venv_python) else sys.executable
@@ -2568,12 +2573,16 @@ def _run_frontier_search(query: str) -> str:
             capture_output=True, text=True, timeout=45,
             cwd=str(BASE_DIR),
         )
+        if proc.returncode != 0:
+            stderr_tail = (proc.stderr or "")[-400:].strip()
+            print(f"[WARN] Frontier search failed with exit code {proc.returncode}: {stderr_tail}", file=sys.stderr)
+            return False
         # frontier_search.py writes to frontier_cache.md via file handshake
         # and also prints the result to stdout — we rely on the file handshake
-        return ""  # _load_frontier_notes() will read the cache file
+        return True  # _load_frontier_notes() will read the cache file
     except (subprocess.TimeoutExpired, Exception) as e:
         print(f"[WARN] Frontier search failed: {e}", file=sys.stderr)
-        return ""
+        return False
 
 
 def _detect_coverage_gaps(hits: list, axes: List[str]) -> List[str]:
@@ -2629,9 +2638,14 @@ def compare(query: str, append: bool = False, output_file: str = "",
     # Threading works here because frontier runs in a subprocess (no GIL contention).
     import threading
     frontier_thread = None
+    frontier_started_at = None
+    frontier_status = {"ok": False}
     if not no_frontier:
+        frontier_started_at = time.time()
+        def _frontier_worker():
+            frontier_status["ok"] = _run_frontier_search(query)
         frontier_thread = threading.Thread(
-            target=_run_frontier_search, args=(query,), daemon=True
+            target=_frontier_worker, daemon=True
         )
         frontier_thread.start()
 
@@ -2640,6 +2654,9 @@ def compare(query: str, append: bool = False, output_file: str = "",
     # Wait for frontier to finish before building context (need frontier_cache.md)
     if frontier_thread is not None:
         frontier_thread.join(timeout=45)
+        if frontier_thread.is_alive():
+            frontier_status["ok"] = False
+            print("[WARN] Frontier search timed out; skipping frontier evidence for this run.", file=sys.stderr)
 
     # Adaptive Context Distillation (between retrieval and context building)
     pre_distill_count = len(result["hits"])
@@ -2739,7 +2756,12 @@ def compare(query: str, append: bool = False, output_file: str = "",
         "distilled": result.get("distilled", False),
     })
 
-    frontier_text = _load_frontier_notes()
+    if no_frontier:
+        frontier_text = ""
+    elif frontier_status["ok"] and frontier_started_at is not None:
+        frontier_text = _load_frontier_notes(min_mtime=frontier_started_at)
+    else:
+        frontier_text = ""
     prompt_content = build_scratch_context(result, frontier_text, visual=visual)
 
     if output_file:
@@ -2783,10 +2805,16 @@ def compare_multi(queries: list, max_passages: int = 20, no_distill: bool = Fals
     # Launch frontier search concurrently with first retrieval
     import threading
     frontier_thread = None
+    frontier_started_at = None
+    frontier_status = {"ok": False}
+    frontier_text_once = ""
     if not no_frontier and queries:
         combined_query = " ".join(queries[:2])
+        frontier_started_at = time.time()
+        def _frontier_worker_multi():
+            frontier_status["ok"] = _run_frontier_search(combined_query)
         frontier_thread = threading.Thread(
-            target=_run_frontier_search, args=(combined_query,), daemon=True
+            target=_frontier_worker_multi, daemon=True
         )
         frontier_thread.start()
 
@@ -2811,8 +2839,13 @@ def compare_multi(queries: list, max_passages: int = 20, no_distill: bool = Fals
         # Wait for frontier before first context build
         if frontier_thread is not None:
             frontier_thread.join(timeout=45)
+            if frontier_thread.is_alive():
+                frontier_status["ok"] = False
+                print("[WARN] Frontier search timed out; skipping frontier evidence for this run.", file=sys.stderr)
+            elif frontier_status["ok"] and frontier_started_at is not None:
+                frontier_text_once = _load_frontier_notes(min_mtime=frontier_started_at)
             frontier_thread = None  # Only join once
-        frontier_text = _load_frontier_notes()
+        frontier_text = frontier_text_once if not no_frontier else ""
         prompt = build_scratch_context(result, frontier_text)
         results_content.append(prompt)
         elapsed = time.time() - t0

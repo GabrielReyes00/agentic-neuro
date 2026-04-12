@@ -1,16 +1,9 @@
-description = "Deep textbook-grounded RAG pipeline — search textbooks, retrieve, transform, and Socratic teach"
+description = "Deep textbook-grounded RAG pipeline — retrieve, transform, Socratic teach"
 
 prompt = """
-ACTIVE COMMAND: /rag-workflow — Full textbook retrieval + Socratic teaching pipeline.
+ACTIVE COMMAND: /rag-workflow — Full textbook retrieval + teaching pipeline (Steps 0-5.5).
 
-This is a multi-step workflow with MANDATORY background hooks. Follow ALL steps (0 through 5.5) in the instruction file below. Steps marked "Silent" or "Background" are NOT optional — they write to the knowledge graph and Obsidian vault.
-
-CRITICAL HOOKS THAT MUST FIRE (do not skip):
-- Step 0: preflight.sh before retrieval
-- After EVERY Gym/Socratic user response: ./src/log_turn.sh
-- After EVERY Gym interaction: heartbeat.sh Step 4.5 checkpoint
-- After session: heartbeat.sh --status "complete" + Obsidian file write
-- Concept extraction and Post-session hook MUST complete before session ends
+Silent/background steps are NOT optional. MANDATORY: preflight, log_turn.sh after EVERY Gym response, heartbeat after every interaction, session-end + Obsidian write, concept extraction, post-session hook.
 
 User's query: {{args}}
 

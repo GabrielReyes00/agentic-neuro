@@ -1,20 +1,33 @@
 #!/usr/bin/env python3
 """Generate ACGME Readiness.md from acgme_readiness JSON.
 
-Usage: python3 scripts/write_acgme_readiness.py [--json /tmp/acgme_data.json]
+Usage:
+  python3 scripts/write_acgme_readiness.py
+  python3 scripts/write_acgme_readiness.py --json /tmp/acgme_data.json --output "/path/to/ACGME Readiness.md"
 """
 
 import json
+import argparse
 import subprocess
 import sys
 from pathlib import Path
 from datetime import date
 
 VAULT = Path("/Users/gabrielreyes/Documents/Obsidian/agentic-neuro")
-OUTPUT = VAULT / "ACGME Readiness.md"
+DEFAULT_OUTPUT = VAULT / "ACGME Readiness.md"
 PROJECT_ROOT = Path(__file__).parent.parent
 
 DEPTH_LABELS = {0: "-", 1: "Surface", 2: "Mechanistic", 3: "Applied"}
+DEFAULT_JSON_PATH = Path("/tmp/acgme_data.json")
+REQUIRED_KEYS = {
+    "current_pgy",
+    "total_in_scope",
+    "topics_at_target",
+    "topics_touched",
+    "topics_never_studied",
+    "coverage_pct",
+    "domains",
+}
 
 
 def depth_label(depth: int) -> str:
@@ -26,8 +39,8 @@ def build_topic_row(t: dict) -> str:
     stub_file = t.get("concept_stub", "")
     if stub_file:
         fname = stub_file.replace("Concepts/", "").replace(".md", "")
-        display = name[:55] + ("..." if len(name) > 55 else "")
-        name_cell = f"[[Concepts/{fname}|{display}]]"
+        # No alias: pipe in [[target|alias]] breaks table column parsing
+        name_cell = f"[[{fname}]]"
     else:
         name_cell = name[:60]
     studied = "Yes" if t.get("studied") else "No"
@@ -82,7 +95,7 @@ def build_domain_section(dom: dict) -> str:
             if stub:
                 fname = stub.replace("Concepts/", "").replace(".md", "")
                 short = name_t[:50] + ("..." if len(name_t) > 50 else "")
-                gap_links.append(f"[[Concepts/{fname}|{short}]]")
+                gap_links.append(f"[[{fname}|{short}]]")
             else:
                 gap_links.append(name_t[:60])
         lines.append("**Highest-priority gaps**: " + ", ".join(gap_links))
@@ -110,7 +123,7 @@ def build_never_started_section(data: dict) -> str:
             if stub:
                 fname = stub.replace("Concepts/", "").replace(".md", "")
                 short = name_t[:60] + ("..." if len(name_t) > 60 else "")
-                lines.append(f"- [[Concepts/{fname}|{short}]]")
+                lines.append(f"- [[{fname}|{short}]]")
             else:
                 lines.append(f"- {name_t}")
         lines.append("")
@@ -126,7 +139,7 @@ def build_document(data: dict, today: str) -> str:
     never = data["topics_never_studied"]
     cov_pct = data["coverage_pct"]
 
-    # Frontmatter
+    # Metadata block goes at the BOTTOM per vault format directive
     fm = f"""---
 resident_year: PGY-{pgy}
 updated: {today}
@@ -140,8 +153,7 @@ tags:
   - source/agent
 ---"""
 
-    header = f"""
-# ACGME Readiness -- PGY-{pgy}
+    header = f"""# ACGME Readiness -- PGY-{pgy}
 *Gabriel Reyes | Baylor College of Medicine | Updated: {today}*
 
 > **{total} topics** in scope for PGY-{pgy} | **{at_target}/{total}** at target depth | **{touched}/{total}** touched | **{never}/{total}** never studied
@@ -158,34 +170,87 @@ tags:
 
     never_section = build_never_started_section(data)
 
-    return fm + header + domain_sections + never_section
+    return header + domain_sections + never_section + "\n" + fm
+
+
+def _run_acgme_export() -> dict:
+    result = subprocess.run(
+        ["python3", "src/knowledge_graph.py", "acgme_readiness"],
+        capture_output=True, text=True, cwd=PROJECT_ROOT,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"acgme_readiness failed: {result.stderr[:500]}")
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"acgme_readiness returned malformed JSON: {exc}") from exc
+    return data
+
+
+def _validate_payload(data: dict) -> None:
+    if not isinstance(data, dict):
+        raise ValueError("payload must be a JSON object")
+    missing = sorted(REQUIRED_KEYS - set(data.keys()))
+    if missing:
+        raise ValueError(f"payload missing required keys: {', '.join(missing)}")
+    if not isinstance(data.get("domains"), list):
+        raise ValueError("payload field 'domains' must be a list")
 
 
 def main():
-    json_path = "/tmp/acgme_data.json"
-    if len(sys.argv) > 2 and sys.argv[1] == "--json":
-        json_path = sys.argv[2]
+    parser = argparse.ArgumentParser(description="Generate ACGME Readiness.md from acgme_readiness JSON")
+    parser.add_argument("--json", default=str(DEFAULT_JSON_PATH), help="Input JSON path (defaults to /tmp/acgme_data.json)")
+    parser.add_argument("--output", default=str(DEFAULT_OUTPUT), help="Output markdown path")
+    args = parser.parse_args()
+
+    json_path = Path(args.json).expanduser()
+    output_path = Path(args.output).expanduser()
 
     try:
-        with open(json_path) as f:
+        with json_path.open(encoding="utf-8") as f:
             data = json.load(f)
     except FileNotFoundError:
-        # Regenerate
-        result = subprocess.run(
-            ["python3", "src/knowledge_graph.py", "acgme_readiness"],
-            capture_output=True, text=True, cwd=PROJECT_ROOT,
-        )
-        if result.returncode != 0:
-            print(f"ERROR: {result.stderr[:500]}", file=sys.stderr)
+        try:
+            data = _run_acgme_export()
+        except RuntimeError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
             sys.exit(1)
-        data = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        if json_path == DEFAULT_JSON_PATH:
+            print(f"WARN: malformed JSON at {json_path} ({exc}); regenerating", file=sys.stderr)
+            try:
+                data = _run_acgme_export()
+            except RuntimeError as regen_exc:
+                print(f"ERROR: {regen_exc}", file=sys.stderr)
+                sys.exit(1)
+        else:
+            print(f"ERROR: malformed JSON in {json_path}: {exc}", file=sys.stderr)
+            sys.exit(1)
+    except OSError as exc:
+        print(f"ERROR: could not read {json_path}: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        _validate_payload(data)
+    except ValueError as exc:
+        if json_path == DEFAULT_JSON_PATH:
+            print(f"WARN: invalid payload at {json_path} ({exc}); regenerating", file=sys.stderr)
+            try:
+                data = _run_acgme_export()
+                _validate_payload(data)
+            except (RuntimeError, ValueError) as regen_exc:
+                print(f"ERROR: {regen_exc}", file=sys.stderr)
+                sys.exit(1)
+        else:
+            print(f"ERROR: invalid readiness payload in {json_path}: {exc}", file=sys.stderr)
+            sys.exit(1)
 
     today = date.today().isoformat()
     content = build_document(data, today)
 
-    OUTPUT.parent.mkdir(parents=True, exist_ok=True)
-    OUTPUT.write_text(content, encoding="utf-8")
-    print(f"Written {OUTPUT}")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(content, encoding="utf-8")
+    print(f"Written {output_path}")
     print(f"  PGY-{data['current_pgy']} | {data['total_in_scope']} topics | {data['topics_touched']} touched | {data['topics_at_target']} at target")
 
 

@@ -99,13 +99,13 @@ fi
 
 # ---- Step 2: log_study ----
 echo "[2/3] log_study..."
-LOG_STUDY_CMD="python3 src/knowledge_graph.py log_study --topics \"$TOPICS\" --depth $DEPTH"
+LOG_STUDY_ARGS=(python3 src/knowledge_graph.py log_study --topics "$TOPICS" --depth "$DEPTH")
 
-[[ -n "$UNDERSTOOD" ]] && LOG_STUDY_CMD+=" --understood \"$UNDERSTOOD\""
-[[ -n "$GAPS" ]] && LOG_STUDY_CMD+=" --gaps \"$GAPS\""
-[[ -n "$GAP_DETAILS" ]] && LOG_STUDY_CMD+=" --gap-details '$GAP_DETAILS'"
+[[ -n "$UNDERSTOOD" ]] && LOG_STUDY_ARGS+=(--understood "$UNDERSTOOD")
+[[ -n "$GAPS" ]] && LOG_STUDY_ARGS+=(--gaps "$GAPS")
+[[ -n "$GAP_DETAILS" ]] && LOG_STUDY_ARGS+=(--gap-details "$GAP_DETAILS")
 
-eval $LOG_STUDY_CMD 2>&1
+"${LOG_STUDY_ARGS[@]}" 2>&1
 
 # ---- Step 3: Obsidian write (optional) ----
 if [[ "$OBSIDIAN_WRITE" == true ]]; then
@@ -128,29 +128,31 @@ if [[ "$OBSIDIAN_WRITE" == true ]]; then
         if [[ -f "$SESSION_FILE" ]]; then
             if [[ "$STATUS" == "complete" ]]; then
                 # Replace last IN-PROGRESS status with COMPLETE
-                python3 -c "
-content = open('$SESSION_FILE').read()
+                python3 - "$SESSION_FILE" <<'PY'
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+content = path.read_text(encoding="utf-8")
 # Replace the last 'Status: IN-PROGRESS' with 'Status: COMPLETE'
-idx = content.rfind('Status: IN-PROGRESS')
+idx = content.rfind("Status: IN-PROGRESS")
 if idx >= 0:
-    content = content[:idx] + 'Status: COMPLETE' + content[idx+len('Status: IN-PROGRESS'):]
-open('$SESSION_FILE', 'w').write(content)
-"
+    content = content[:idx] + "Status: COMPLETE" + content[idx + len("Status: IN-PROGRESS"):]
+path.write_text(content, encoding="utf-8")
+PY
                 # ---- log_session_narrative (Redesign Phase) ----
                 if [[ -n "$NEXT_STRATEGY" || -n "$NARRATIVE_SUMMARY" ]]; then
                     echo "[session-narrative] Logging session narrative..."
-                    NARRATIVE_CMD="python3 src/knowledge_graph.py log_session_narrative"
-                    NARRATIVE_CMD+=" --skill \"$SKILL\""
-                    NARRATIVE_CMD+=" --topics \"$TOPICS\""
-                    [[ -n "$NARRATIVE_SUMMARY" ]] && NARRATIVE_CMD+=" --summary \"$NARRATIVE_SUMMARY\""
-                    [[ -n "$NEXT_STRATEGY" ]] && NARRATIVE_CMD+=" --strategy \"$NEXT_STRATEGY\""
-                    [[ "$NARRATIVE_FAILURES" != "[]" ]] && NARRATIVE_CMD+=" --teaching-failures '$NARRATIVE_FAILURES'"
-                    [[ "$NARRATIVE_SUCCESSES" != "[]" ]] && NARRATIVE_CMD+=" --teaching-successes '$NARRATIVE_SUCCESSES'"
-                    [[ "$KEY_CONFUSIONS" != "[]" ]] && NARRATIVE_CMD+=" --key-confusions '$KEY_CONFUSIONS'"
-                    [[ "$DEPTH_PROFILE" != "{}" ]] && NARRATIVE_CMD+=" --depth-profile '$DEPTH_PROFILE'"
-                    [[ -n "$SESSION_SUCCESS_RATE" ]] && NARRATIVE_CMD+=" --session-success-rate $SESSION_SUCCESS_RATE"
-                    NARRATIVE_CMD+=" --turns $TURN_NUM"
-                    eval $NARRATIVE_CMD 2>&1
+                    NARRATIVE_ARGS=(python3 src/knowledge_graph.py log_session_narrative --skill "$SKILL" --topics "$TOPICS")
+                    [[ -n "$NARRATIVE_SUMMARY" ]] && NARRATIVE_ARGS+=(--summary "$NARRATIVE_SUMMARY")
+                    [[ -n "$NEXT_STRATEGY" ]] && NARRATIVE_ARGS+=(--strategy "$NEXT_STRATEGY")
+                    [[ "$NARRATIVE_FAILURES" != "[]" ]] && NARRATIVE_ARGS+=(--teaching-failures "$NARRATIVE_FAILURES")
+                    [[ "$NARRATIVE_SUCCESSES" != "[]" ]] && NARRATIVE_ARGS+=(--teaching-successes "$NARRATIVE_SUCCESSES")
+                    [[ "$KEY_CONFUSIONS" != "[]" ]] && NARRATIVE_ARGS+=(--key-confusions "$KEY_CONFUSIONS")
+                    [[ "$DEPTH_PROFILE" != "{}" ]] && NARRATIVE_ARGS+=(--depth-profile "$DEPTH_PROFILE")
+                    [[ -n "$SESSION_SUCCESS_RATE" ]] && NARRATIVE_ARGS+=(--session-success-rate "$SESSION_SUCCESS_RATE")
+                    NARRATIVE_ARGS+=(--turns "$TURN_NUM")
+                    "${NARRATIVE_ARGS[@]}" 2>&1
                 fi
 
                 # Append final session summary
@@ -221,14 +223,23 @@ INDEX_EOF
         else
             if grep -q "${SLUG}.md" "$INDEX_FILE"; then
                 # Update existing row
-                python3 -c "
+                python3 - "$INDEX_FILE" "$SLUG" "$TOPIC_NAME" "$DATE" "$SKILL" "$STATUS" <<'PY'
 import re
-path = '$INDEX_FILE'
-new_row = '| [$TOPIC_NAME](${SLUG}.md) | $DATE | $SKILL | $STATUS |'
-content = open(path).read()
-content = re.sub(r'\|[^\n]*${SLUG}\.md[^\n]*', new_row, content)
-open(path, 'w').write(content)
-"
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+slug = re.escape(sys.argv[2])
+topic_name = sys.argv[3]
+date = sys.argv[4]
+skill = sys.argv[5]
+status = sys.argv[6]
+
+new_row = f"| [{topic_name}]({sys.argv[2]}.md) | {date} | {skill} | {status} |"
+content = path.read_text(encoding="utf-8")
+content = re.sub(rf"\|[^\n]*{slug}\.md[^\n]*", new_row, content)
+path.write_text(content, encoding="utf-8")
+PY
             else
                 echo "| [$TOPIC_NAME](${SLUG}.md) | $DATE | $SKILL | $STATUS |" >> "$INDEX_FILE"
             fi
@@ -311,14 +322,24 @@ INDEX_EOF
         else
             if grep -q "${SLUG}_review.md" "$INDEX_FILE"; then
                 # Update existing row
-                python3 -c "
+                python3 - "$INDEX_FILE" "$SLUG" "$TOPIC_NAME" "$DATE" "$SESSION_NUM" "$COV_PCT" <<'PY'
 import re
-path = '$INDEX_FILE'
-new_row = '| [$TOPIC_NAME](${SLUG}_review.md) | $DATE | $SESSION_NUM | ${COV_PCT}% |'
-content = open(path).read()
-content = re.sub(r'\|[^\n]*${SLUG}_review\.md[^\n]*', new_row, content)
-open(path, 'w').write(content)
-"
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+slug_raw = sys.argv[2]
+slug = re.escape(slug_raw)
+topic_name = sys.argv[3]
+date = sys.argv[4]
+session_num = sys.argv[5]
+coverage = sys.argv[6]
+
+new_row = f"| [{topic_name}]({slug_raw}_review.md) | {date} | {session_num} | {coverage}% |"
+content = path.read_text(encoding="utf-8")
+content = re.sub(rf"\|[^\n]*{slug}_review\.md[^\n]*", new_row, content)
+path.write_text(content, encoding="utf-8")
+PY
             else
                 echo "| [$TOPIC_NAME](${SLUG}_review.md) | $DATE | $SESSION_NUM | ${COV_PCT}% |" >> "$INDEX_FILE"
             fi

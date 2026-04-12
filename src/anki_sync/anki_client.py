@@ -9,7 +9,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 
-from .schemas import CardDraft
+from .schemas import CardDraft, CardImage
 
 
 @dataclass
@@ -86,32 +86,32 @@ class AnkiClient:
             deleteExisting=True,
         )
 
-    def _build_image_html(self, card: CardDraft) -> str:
+    def _build_image_html(self, image: CardImage | None) -> str:
         """Build the <img> HTML block for a card's image, if present."""
-        if not card.image:
+        if not image:
             return ""
-        img = card.image
         image_html = (
             f'<div class="card-image">'
-            f'<img src="{escape(img.filename, quote=True)}" alt="{escape(img.alt_text, quote=True)}">'
+            f'<img src="{escape(image.filename, quote=True)}" alt="{escape(image.alt_text, quote=True)}">'
             f'</div>'
         )
-        if img.attribution:
-            image_html += f'<div class="image-attribution">{escape(img.attribution)}</div>'
+        if image.attribution:
+            image_html += f'<div class="image-attribution">{escape(image.attribution)}</div>'
         return image_html
 
     def add_card(self, card: CardDraft, deck_name: str, tags: list[str] | None = None) -> AnkiDispatchResult:
         safe_tags = tags or ["Neuro-Agent", "CLI-Export", "anki-sync"]
+        image = card.image
 
         # Store the image file first if present
-        if card.image and card.image.data_b64:
+        if image and image.data_b64:
             try:
-                self.store_media_file(card.image.filename, card.image.data_b64)
+                self.store_media_file(image.filename, image.data_b64)
             except Exception as e:  # noqa: BLE001
                 # Image storage failure is non-fatal — card still gets created without image
                 import sys
-                print(f"Warning: failed to store image {card.image.filename}: {e}", file=sys.stderr)
-                card.image = None  # clear so we don't reference a missing file
+                print(f"Warning: failed to store image {image.filename}: {e}", file=sys.stderr)
+                image = None
 
         note = {
             "deckName": deck_name,
@@ -121,7 +121,7 @@ class AnkiClient:
             "modelName": "",
         }
 
-        img_html = self._build_image_html(card)
+        img_html = self._build_image_html(image)
 
         if card.card_type == "cloze":
             note["modelName"] = "Cloze"
@@ -136,8 +136,8 @@ class AnkiClient:
             front_text = _format_text(card.front)
             back_text = _format_text(card.back)
 
-            if card.image:
-                placement = card.image.placement
+            if image:
+                placement = image.placement
                 if placement in ("back", "both"):
                     back_text += f"<br>{img_html}"
                 if placement in ("front", "both"):

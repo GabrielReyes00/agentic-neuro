@@ -1,11 +1,9 @@
-description = "Agentic email triage — fetch inbox, categorize, extract action items, draft responses with approval gate"
+description = "Agentic email triage — fetch, categorize, action items, draft with approval gate"
 
 prompt = """
-ACTIVE COMMAND: /inbox-workflow — Multi-phase Exchange inbox triage pipeline.
+ACTIVE COMMAND: /inbox-workflow — Exchange inbox triage.
 
-HARD CONSTRAINT: No email may be sent or drafted for sending without explicit user review and approval. This constraint cannot be overridden.
-
-This is a multi-phase workflow (fetch -> categorize -> action items -> response drafting). Follow ALL phases in the instruction file. Email categorization is delegated to a sub-task. Raw email bodies stay in the sub-task context — only structured JSON enters the main context.
+HARD CONSTRAINT: No email sent without explicit user approval. Cannot be overridden. Raw bodies stay in sub-task; structured JSON only in main context.
 
 User's request: {{args}}
 

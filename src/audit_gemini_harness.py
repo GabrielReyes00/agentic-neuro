@@ -36,6 +36,8 @@ def run_checks() -> List[Check]:
     rag_toml = _read(ROOT / ".gemini" / "commands" / "rag-workflow.toml")
     study_toml = _read(ROOT / ".gemini" / "commands" / "study-session.toml")
     study_material_toml = _read(ROOT / ".gemini" / "commands" / "study-material.toml")
+    generate_report_md = _read(ROOT / ".gemini" / "commands" / "generate-report.md")
+    generate_report_toml = _read(ROOT / ".gemini" / "commands" / "generate-report.toml")
     anki_cli = _read(ROOT / "src" / "anki_sync_cli.py")
 
     checks.append(Check(
@@ -102,6 +104,32 @@ def run_checks() -> List[Check]:
         name="query_gate_script_exists",
         ok=(ROOT / "src" / "gemini_query_gate.py").exists(),
         detail="src/gemini_query_gate.py should exist",
+    ))
+
+    checks.append(Check(
+        name="universal_post_session_hook_script_exists",
+        ok=(ROOT / "src" / "universal_post_session_hook.py").exists(),
+        detail="src/universal_post_session_hook.py should exist for deterministic post-session finalization",
+    ))
+
+    checks.append(Check(
+        name="gemini_md_uses_universal_hook_script",
+        ok="src/universal_post_session_hook.py" in gemini_md and "post_session_hook_report.json" in gemini_md,
+        detail="GEMINI.md should route universal post-session work through universal_post_session_hook.py with report output",
+    ))
+
+    checks.append(Check(
+        name="generate_report_hard_verification_present",
+        ok="src/universal_post_session_hook.py" in generate_report_md
+        and "post_session_hook_report.json" in generate_report_md
+        and "Hard verification" in generate_report_md,
+        detail="generate-report.md should invoke the hook runner and define hard verification behavior",
+    ))
+
+    checks.append(Check(
+        name="generate_report_toml_mentions_hard_verification",
+        ok="post_session_hook_report.json" in generate_report_toml and "HARD VERIFICATION REQUIREMENT" in generate_report_toml,
+        detail="generate-report.toml should require explicit post-session verification reporting",
     ))
 
     return checks

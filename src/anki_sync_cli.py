@@ -55,6 +55,7 @@ except ImportError as e:
     # Define minimal stubs/imports if needed for standard logic to not crash
     class CardDraft: pass 
     class ClaimModel: pass
+    NoveltyStore = None  # type: ignore[assignment]
     from src.anki_sync.anki_client import AnkiClient, make_deck_name
 
 RUNS_DIR = BASE_DIR / "data" / "Sessions" / "anki_sync_runs"
@@ -160,6 +161,14 @@ def _validate_final_cards_payload() -> tuple[list, dict]:
 def filter_novelty():
     """Reads current_claims.json, filters against ChromaDB, writes novel_claims.json"""
     try:
+        if not HAS_SCHEMAS or NoveltyStore is None:
+            print(
+                "Error in filter_novelty: required dependencies unavailable "
+                "(pydantic + chromadb + fastembed).",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
         claims_list = _read_json_list("current_claims.json", "claims")
         if not claims_list:
             _write_json("novel_claims.json", [])
@@ -256,12 +265,26 @@ def dispatch():
         
         claims_data = _read_json_list("novel_claims.json", "claims")
         persisted_claims = []
+        persisted_claim_texts: list[str] = []
         for c in claims_data:
-            claim = ClaimModel.model_validate(c)
-            if claim.claim_id in success_claim_ids:
+            if HAS_SCHEMAS:
+                claim = ClaimModel.model_validate(c)
+                claim_id = claim.claim_id
+                claim_text = claim.claim_text
+            else:
+                if not isinstance(c, dict):
+                    continue
+                claim_id = str(c.get("claim_id", "")).strip()
+                claim_text = str(c.get("claim_text", "")).strip()
+                if not claim_id:
+                    continue
+                claim = c
+            if claim_id in success_claim_ids:
                 persisted_claims.append(claim)
+                if claim_text:
+                    persisted_claim_texts.append(claim_text)
                 
-        if persisted_claims:
+        if persisted_claims and HAS_SCHEMAS and NoveltyStore is not None:
             db_path = str(BASE_DIR / "data" / "chromadb_store_anki_memory")
             collection = "neurosurgery_memory_v1"
             store = NoveltyStore(db_path=db_path, collection_name=collection, embedding_model="BAAI/bge-small-en-v1.5")
@@ -278,7 +301,7 @@ def dispatch():
             _kg.log_anki_creation(
                 topic=topic,
                 card_count=created,
-                claim_texts=[c.claim_text for c in persisted_claims] if persisted_claims else None,
+                claim_texts=persisted_claim_texts if persisted_claim_texts else None,
             )
         except Exception:
             pass  # Knowledge graph must never block Anki sync

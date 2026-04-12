@@ -1,20 +1,9 @@
-description = "Step-by-step operative walkthrough — surgical phases, danger zones, anatomical landmarks, bail-out maneuvers"
+description = "Step-by-step operative walkthrough — danger zones, landmarks, bail-outs"
 
 prompt = """
-ACTIVE COMMAND: /intraoperative-guide — Full intraoperative protocol for a surgical procedure.
+ACTIVE COMMAND: /intraoperative-guide — Full operative protocol with mandatory hooks.
 
-This is a multi-step workflow with MANDATORY background hooks. Follow ALL steps in the instruction file below, including all silent post-output steps.
-
-CRITICAL HOOKS THAT MUST FIRE (do not skip):
-- Pre-flight: preflight.sh "procedure name" BEFORE any content
-- RAG retrieval: lance_retriever.py compare with --visual flag
-- Transform sub-task: read rag-transform.md instructions
-- Cross-reference discovery: ls vault folders before writing
-- Vault write: Operative Guides/<slug>.md + INDEX.md update
-- Knowledge graph signal: log_study with operative concepts
-- Concept extraction: 2-5 operative concepts to Concepts/
-- Post-session hook: Universal Post-Session Hook (FINAL MANDATORY STEP)
-- Cleanup: rm temporary session files after all writes complete
+MANDATORY: preflight, RAG retrieval (--visual), transform sub-task, cross-reference discovery, vault write + INDEX, log_study, concept extraction, post-session hook, cleanup.
 
 User's request: {{args}}
 

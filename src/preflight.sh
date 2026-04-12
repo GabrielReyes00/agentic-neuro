@@ -55,37 +55,47 @@ CASE_LOG_DIR="/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Case Log"
 SYNC_FILE="$SESSIONS/case_log_sync.txt"
 
 if [[ -d "$CASE_LOG_DIR" ]]; then
-    # List all case log files
-    CASE_FILES=$(find "$CASE_LOG_DIR" -name "*.md" -not -name "INDEX.md" -not -name "_*" 2>/dev/null | sort)
+    # Use a single Python pass to avoid O(N×M) shell loops on larger case logs.
+    NEW_COUNT=$(python3 - <<'PY'
+import json
+import sqlite3
+from pathlib import Path
 
-    # Query existing clinical_case events from knowledge graph
-    EXISTING=$(python3 -c "
-import sqlite3, json, os
-db_path = 'data/knowledge_graph.db'
-if os.path.exists(db_path):
-    conn = sqlite3.connect(db_path)
-    rows = conn.execute(\"SELECT se.metadata FROM signal_events se WHERE se.source='case_log'\").fetchall()
-    conn.close()
-    for r in rows:
-        try:
-            d = json.loads(r[0])
-            if 'source_file' in d:
-                print(d['source_file'])
-        except: pass
-" 2>/dev/null || true)
+case_log_dir = Path("/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Case Log")
+sync_file = Path("data/Sessions/case_log_sync.txt")
+db_path = Path("data/knowledge_graph.db")
 
-    NEW_COUNT=0
-    > "$SYNC_FILE"
-    while IFS= read -r f; do
-        [[ -z "$f" ]] && continue
-        BASENAME=$(basename "$f")
-        if ! echo "$EXISTING" | grep -qF "$BASENAME"; then
-            echo "$f" >> "$SYNC_FILE"
-            ((NEW_COUNT++))
-        fi
-    done <<< "$CASE_FILES"
+existing: set[str] = set()
+if db_path.exists():
+    conn = sqlite3.connect(str(db_path))
+    try:
+        rows = conn.execute(
+            "SELECT se.metadata FROM signal_events se WHERE se.source='case_log'"
+        ).fetchall()
+        for (raw_meta,) in rows:
+            if not raw_meta:
+                continue
+            try:
+                meta = json.loads(raw_meta)
+            except Exception:
+                continue
+            source_file = meta.get("source_file")
+            if source_file:
+                existing.add(Path(source_file).name)
+    finally:
+        conn.close()
 
-    echo "  Found $NEW_COUNT new case log(s)"
+case_files = sorted(
+    p for p in case_log_dir.glob("*.md")
+    if p.name != "INDEX.md" and not p.name.startswith("_")
+)
+new_files = [str(p) for p in case_files if p.name not in existing]
+sync_file.write_text("\n".join(new_files) + ("\n" if new_files else ""), encoding="utf-8")
+print(len(new_files))
+PY
+)
+
+    echo "  Found ${NEW_COUNT:-0} new case log(s)"
 else
     echo "  Case Log directory not found — skipping"
     > "$SYNC_FILE"
@@ -102,10 +112,10 @@ fi
 # 5. Last session narrative — inject prior teaching strategy
 echo "[5/7] Fetching last session narrative..."
 TOPIC_WORD=$(echo "$QUERY" | awk '{print $1}')
-LAST_NAR_CMD="python3 src/knowledge_graph.py last_session_narrative"
-[[ -n "$SKILL" ]] && LAST_NAR_CMD+=" --skill \"$SKILL\""
-LAST_NAR_CMD+=" --topic \"$TOPIC_WORD\""
-eval $LAST_NAR_CMD > "$SESSIONS/last_session_narrative.json" 2>/dev/null || echo '{"status":"none_found"}' > "$SESSIONS/last_session_narrative.json"
+LAST_NAR_ARGS=(python3 src/knowledge_graph.py last_session_narrative)
+[[ -n "$SKILL" ]] && LAST_NAR_ARGS+=(--skill "$SKILL")
+LAST_NAR_ARGS+=(--topic "$TOPIC_WORD")
+"${LAST_NAR_ARGS[@]}" > "$SESSIONS/last_session_narrative.json" 2>/dev/null || echo '{"status":"none_found"}' > "$SESSIONS/last_session_narrative.json"
 echo "  Last narrative written to $SESSIONS/last_session_narrative.json"
 
 # 6. Concept review queue — SM-2 scheduled concepts due

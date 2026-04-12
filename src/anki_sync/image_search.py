@@ -259,7 +259,7 @@ def search_openi(query: str, max_results: int = 5) -> list[ImageCandidate]:
         with urllib.request.urlopen(req, timeout=15) as resp:
             data = json.loads(resp.read().decode("utf-8"))
         _OPENI_LAST_ERROR = None
-    except (urllib.error.URLError, json.JSONDecodeError, OSError, Exception) as e:
+    except (urllib.error.URLError, json.JSONDecodeError, TimeoutError, OSError) as e:
         # SSL handshake failures, timeouts, etc. — graceful degradation
         _OPENI_LAST_ERROR = str(e)
         return []

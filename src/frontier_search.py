@@ -396,6 +396,9 @@ def fetch_pmc_full_text(
                     _overlap = len(_q_words & _fl_words) / max(1, len(_q_words))
                     if _overlap >= 0.6:
                         print(f"Frontier cache fresh ({int(_cache_age)}s old) — reusing cached results")
+                        # Refresh cache timestamp so downstream readers can confirm
+                        # this invocation produced/confirmed frontier content.
+                        _write_cache(_cached_text, output_file)
                         return _cached_text
     except Exception:
         pass  # Silently fall through to live fetch

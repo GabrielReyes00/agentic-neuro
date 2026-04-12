@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 import sqlite3
 from collections import defaultdict
@@ -52,6 +53,48 @@ SIGNAL_DELTAS: dict[str, float] = {
     "anki_review": 0.0,  # variable — caller passes via metadata
 }
 
+# Signal-type → quality weight for stability computation.
+# Higher weight = stronger evidence of durable retention.
+SIGNAL_QUALITY_WEIGHTS: dict[str, float] = {
+    "correct_recall": 1.0,
+    "drill": 0.8,
+    "anki_review": 0.6,
+    "study_session": 0.5,
+    "lecture_received": 0.4,
+    "partial_recall": 0.3,
+    "socratic_response": 0.5,
+    "card_created": 0.2,
+    "query": 0.1,
+    "deepening_query": 0.15,
+    "incorrect_recall": 0.0,
+    "weakness_identified": 0.0,
+}
+
+
+def compute_stability(encounter_count: int, signal_quality_sum: float,
+                       signal_type_count: int) -> float:
+    """Compute stability factor for a topic from its encounter history.
+
+    Returns a multiplier on the decay half-life in [1.0, 10.0].
+    Higher stability = slower decay = longer retention.
+    """
+    encounter_bonus = math.log2(1 + encounter_count)
+    diversity_bonus = min(1.0, signal_type_count * 0.25)
+    raw = 1.0 + encounter_bonus + signal_quality_sum + diversity_bonus
+    return max(1.0, min(10.0, raw))
+
+
+def compute_difficulty(correct_count: int, incorrect_count: int) -> float:
+    """Estimate topic difficulty from recall signal history.
+
+    Uses a Bayesian estimate with a weak prior toward 0.5 (unknown).
+    Returns difficulty in [0.1, 1.0]. Higher = harder.
+    """
+    total = correct_count + incorrect_count + 2  # +2 pseudo-observations
+    error_rate = (incorrect_count + 1) / total
+    return max(0.1, min(1.0, error_rate))
+
+
 # Question-word prefixes stripped during topic extraction
 _QUESTION_PREFIXES = [
     "what is the", "what is", "what are the", "what are",
@@ -74,6 +117,96 @@ _DOMAIN_CATEGORY_MAP: dict[str, str] = {
     "Trauma": "trauma",
     "Pediatric Neurosurgery": "pediatric",
     "Critical Care & General Neurosurgery": "critical_care",
+}
+
+# Canonical ACGME domain names — the single source of truth for category values.
+# All categories written to the DB should be one of these or empty string.
+CANONICAL_DOMAINS: set[str] = {
+    "Vascular Neurological Surgery",
+    "Traumatic Brain Injury",
+    "Critical Care",
+    "Brain Tumor",
+    "Medical Knowledge \u2014 Neuroanatomy and Neuroimaging",
+    "Spinal Neurological Surgery",
+    "Pediatric Neurological Surgery",
+    "Surgical Treatment of Epilepsy and Movement Disorders",
+    "Medical Knowledge \u2014 Neurosciences, Neuropathology, and Neurology",
+    "Pain and Peripheral Nerve Disorders",
+    "Anatomy",
+}
+
+# Legacy category → canonical domain normalization
+_CATEGORY_NORMALIZE: dict[str, str] = {
+    "vascular": "Vascular Neurological Surgery",
+    "vascular_neurological_surgery": "Vascular Neurological Surgery",
+    "spine": "Spinal Neurological Surgery",
+    "spinal_neurological_surgery": "Spinal Neurological Surgery",
+    "tumor_(neuro-oncology)": "Brain Tumor",
+    "brain_tumor": "Brain Tumor",
+    "tumor": "Brain Tumor",
+    "trauma": "Traumatic Brain Injury",
+    "traumatic_brain_injury": "Traumatic Brain Injury",
+    "critical_care": "Critical Care",
+    "critical_care_and_general_neurosurgery": "Critical Care",
+    "pediatric": "Pediatric Neurological Surgery",
+    "pediatric_neurological_surgery": "Pediatric Neurological Surgery",
+    "functional_and_stereotactic": "Surgical Treatment of Epilepsy and Movement Disorders",
+    "functional": "Surgical Treatment of Epilepsy and Movement Disorders",
+    "surgical_treatment_of_epilepsy_and_movement_disorders": "Surgical Treatment of Epilepsy and Movement Disorders",
+    "pain_and_peripheral_nerve_disorders": "Pain and Peripheral Nerve Disorders",
+    "medical_knowledge_\u2014_neuroanatomy_and_neuroimaging": "Medical Knowledge \u2014 Neuroanatomy and Neuroimaging",
+    "medical_knowledge_\u2014_neurosciences,_neuropathology,_and_neurology": "Medical Knowledge \u2014 Neurosciences, Neuropathology, and Neurology",
+    "Anatomy": "Anatomy",
+}
+
+# Keyword → canonical domain for category inference on new topics.
+# Checked in order; first match wins. More specific patterns first.
+_CATEGORY_KEYWORDS: list[tuple[str, list[str]]] = [
+    ("Vascular Neurological Surgery", [
+        "aneurysm", "acha", "anterior choroidal artery", "vasospasm",
+        "subarachnoid hemorrhage", "clipping", "coiling", "flow diversion",
+        "circle of willis", "endothelin", "nimodipine", "cavernous malformation",
+        "arteriovenous malformation", "dural av fistula", "endovascular",
+    ]),
+    ("Traumatic Brain Injury", [
+        "traumatic brain injury", "epidural hematoma", "subdural hematoma",
+        "decompressive craniectomy", "secondary injury",
+    ]),
+    ("Critical Care", [
+        "intracranial pressure", "cerebral perfusion pressure", "neurocritical",
+        "antihypertensive", "hypertensive encephalopathy", "autonomic dysreflexia",
+        "osmotherapy", "mannitol",
+    ]),
+    ("Brain Tumor", [
+        "meningioma", "glioma", "glioblastoma", "temozolomide", "tumor",
+        "pituitary adenoma", "craniotomy",
+    ]),
+    ("Medical Knowledge \u2014 Neuroanatomy and Neuroimaging", [
+        "internal capsule", "basal ganglia", "thalamus", "hippocampus",
+        "papez circuit", "fornix", "cingulum", "limbic", "brainstem",
+        "cranial nerve", "somatotopic",
+    ]),
+    ("Spinal Neurological Surgery", [
+        "cervical", "lumbar", "thoracic", "spondylolisthesis", "laminectomy",
+        "disc herniation", "syringomyelia", "chiari",
+    ]),
+    ("Pediatric Neurological Surgery", [
+        "hydrocephalus", "ventriculoperitoneal shunt", "external ventricular drain",
+    ]),
+    ("Surgical Treatment of Epilepsy and Movement Disorders", [
+        "deep brain stimulation", "capsulotomy", "responsive neurostimulation",
+    ]),
+]
+
+# Maximum topic name length. Longer strings are likely sentences, not topics.
+_MAX_TOPIC_LENGTH = 120
+
+# Stopwords stripped from token-overlap matching
+_TOPIC_STOPWORDS: set[str] = {
+    "the", "a", "an", "and", "or", "of", "in", "for", "to", "with",
+    "is", "are", "was", "were", "by", "on", "at", "from", "after",
+    "these", "this", "that", "how", "what", "does", "do", "target",
+    "management", "treatment", "surgical", "clinical",
 }
 
 
@@ -102,6 +235,9 @@ class KnowledgeGraph:
         try:
             with self.conn:
                 self.conn.executescript(_SCHEMA_SQL)
+                self.conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_topics_canonical_name ON topics(canonical_name)"
+                )
             # ── Schema migrations — safe to re-run (idempotent) ──
 
             # concept_mastery.transfer_validated (original)
@@ -143,6 +279,8 @@ class KnowledgeGraph:
                 "ALTER TABLE topics ADD COLUMN clinical_context TEXT DEFAULT ''",
                 "ALTER TABLE topics ADD COLUMN specificity_level INTEGER DEFAULT 1",
                 "ALTER TABLE topics ADD COLUMN parent_topic TEXT DEFAULT ''",
+                "ALTER TABLE topics ADD COLUMN stability_factor REAL DEFAULT 1.0",
+                "ALTER TABLE topics ADD COLUMN difficulty REAL DEFAULT 0.5",
             ]:
                 try:
                     self.conn.execute(col_sql)
@@ -257,9 +395,42 @@ class KnowledgeGraph:
     # Topic CRUD
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _normalize_category(category: str) -> str:
+        """Normalize a category string to a canonical ACGME domain name."""
+        if not category:
+            return ""
+        if category in CANONICAL_DOMAINS:
+            return category
+        return _CATEGORY_NORMALIZE.get(category, category)
+
+    @staticmethod
+    def _infer_category(display_name: str) -> str:
+        """Infer category from topic name keywords. Returns canonical domain or ''."""
+        name_lower = display_name.lower()
+        for domain, keywords in _CATEGORY_KEYWORDS:
+            for kw in keywords:
+                if kw in name_lower:
+                    return domain
+        return ""
+
+    @staticmethod
+    def _topic_tokens(name: str) -> set[str]:
+        """Extract meaningful tokens from a topic name for similarity matching."""
+        tokens = set(re.split(r"[\s\-_(),:;/]+", name.lower()))
+        return tokens - _TOPIC_STOPWORDS - {""}
+
+    @staticmethod
+    def _escape_like(value: str) -> str:
+        return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
     def _find_topic(self, canonical_name: str) -> dict | None:
         """Look up by canonical_name, then aliases, then substring LIKE match."""
         try:
+            canonical_name = (canonical_name or "").strip()
+            if not canonical_name:
+                return None
+
             # Exact canonical match
             row = self.conn.execute(
                 "SELECT * FROM topics WHERE canonical_name = ?", (canonical_name,)
@@ -267,63 +438,207 @@ class KnowledgeGraph:
             if row:
                 return dict(row)
 
-            # Alias match
-            rows = self.conn.execute("SELECT * FROM topics").fetchall()
-            for r in rows:
-                aliases = json.loads(r["aliases"]) if r["aliases"] else []
-                if canonical_name in aliases:
-                    return dict(r)
+            escaped = self._escape_like(canonical_name)
 
-            # Substring LIKE match (handles "vasospasm" finding "cerebral vasospasm after SAH")
+            # Alias match (JSON string contains exact alias token)
             row = self.conn.execute(
-                "SELECT * FROM topics WHERE canonical_name LIKE ? ORDER BY encounter_count DESC LIMIT 1",
-                (f"%{canonical_name}%",),
+                """SELECT * FROM topics
+                   WHERE aliases LIKE ? ESCAPE '\\'
+                   ORDER BY encounter_count DESC
+                   LIMIT 1""",
+                (f'%"{escaped}"%',),
             ).fetchone()
             if row:
                 return dict(row)
 
-            # Reverse: query contains the stored canonical_name
-            for r in rows:
-                if r["canonical_name"] in canonical_name:
-                    return dict(r)
+            # Substring LIKE match (handles "vasospasm" finding
+            # "cerebral vasospasm after SAH") with tighter ranking.
+            if len(canonical_name) >= 4:
+                rows = self.conn.execute(
+                    """SELECT * FROM topics
+                       WHERE canonical_name LIKE ? ESCAPE '\\'
+                       ORDER BY ABS(LENGTH(canonical_name) - ?) ASC, encounter_count DESC
+                       LIMIT 5""",
+                    (f"%{escaped}%", len(canonical_name)),
+                ).fetchall()
+                if rows:
+                    boundary_pat = re.compile(
+                        rf"(?<![a-z0-9]){re.escape(canonical_name)}(?![a-z0-9])"
+                    )
+                    for r in rows:
+                        cname = (r["canonical_name"] or "").lower()
+                        if boundary_pat.search(cname):
+                            return dict(r)
+                    return dict(rows[0])
+
+            # Reverse containment only for longer canonical names to reduce
+            # accidental collisions on short generic tokens.
+            if len(canonical_name) >= 8:
+                row = self.conn.execute(
+                    """SELECT * FROM topics
+                       WHERE ? LIKE '%' || canonical_name || '%'
+                       ORDER BY LENGTH(canonical_name) DESC, encounter_count DESC
+                       LIMIT 1""",
+                    (canonical_name,),
+                ).fetchone()
+                if row:
+                    return dict(row)
+
+            # Token-overlap matching — catches near-duplicates like
+            # "cerebral vasospasm pathophysiology and management" vs
+            # "cerebral vasospasm pathophysiology diagnosis".
+            # Only runs for multi-word topics to avoid false positives.
+            input_tokens = self._topic_tokens(canonical_name)
+            if len(input_tokens) >= 3:
+                # Fetch studied topics (encounter_count > 0) as candidates
+                candidates = self.conn.execute(
+                    "SELECT * FROM topics WHERE encounter_count > 0 ORDER BY encounter_count DESC"
+                ).fetchall()
+                best, best_score = None, 0.0
+                for cand in candidates:
+                    cand_tokens = self._topic_tokens(cand["canonical_name"])
+                    if not cand_tokens:
+                        continue
+                    overlap = input_tokens & cand_tokens
+                    shorter = min(len(input_tokens), len(cand_tokens))
+                    if shorter < 2:
+                        continue
+                    score = len(overlap) / shorter
+                    if score > best_score and score >= 0.70 and len(overlap) >= 2:
+                        best_score = score
+                        best = cand
+                if best:
+                    return dict(best)
 
             return None
         except Exception as exc:
             print(f"[knowledge_graph] _find_topic error: {exc}", file=sys.stderr)
             return None
 
+    def _lookup_curriculum_id(self, canonical_name: str, display_name: str = "") -> int | None:
+        """Return curriculum_id for a canonical topic name, or None if not in curriculum.
+
+        Tries three strategies:
+        1. Exact match on topic_name (snake_case key)
+        2. Normalized match: underscores→spaces on both sides
+        3. Case-insensitive display_name match
+        """
+        # Strategy 1: exact topic_name match
+        row = self.conn.execute(
+            "SELECT curriculum_id FROM curriculum_topics WHERE LOWER(topic_name) = ?",
+            (canonical_name,),
+        ).fetchone()
+        if row:
+            return row["curriculum_id"]
+
+        # Strategy 2: normalized match (underscores/hyphens → spaces)
+        import re
+        normalized = re.sub(r"[_\-]+", " ", canonical_name).strip().lower()
+        row = self.conn.execute(
+            "SELECT curriculum_id FROM curriculum_topics WHERE LOWER(REPLACE(REPLACE(topic_name, '_', ' '), '-', ' ')) = ?",
+            (normalized,),
+        ).fetchone()
+        if row:
+            return row["curriculum_id"]
+
+        # Strategy 3: display_name match
+        if display_name:
+            row = self.conn.execute(
+                "SELECT curriculum_id FROM curriculum_topics WHERE LOWER(display_name) = ?",
+                (display_name.strip().lower(),),
+            ).fetchone()
+            if row:
+                return row["curriculum_id"]
+
+        return None
+
     def _upsert_topic(self, canonical_name: str, display_name: str, category: str = "") -> int:
-        """Find or create a topic. Returns topic_id."""
+        """Find or create a topic. Returns topic_id.
+
+        Applies three data-quality guards:
+        1. Truncates sentence-length topics (>_MAX_TOPIC_LENGTH) to prevent
+           full sentences from becoming topic names.
+        2. Normalizes category to canonical ACGME domain names.
+        3. Infers category from keywords when not provided.
+        """
         try:
+            # Guard: truncate sentence-length topic names
+            if len(canonical_name) > _MAX_TOPIC_LENGTH:
+                canonical_name = canonical_name[:_MAX_TOPIC_LENGTH].rsplit(" ", 1)[0]
+                display_name = display_name[:_MAX_TOPIC_LENGTH].rsplit(" ", 1)[0]
+
+            # Normalize category
+            category = self._normalize_category(category)
+
             existing = self._find_topic(canonical_name)
             if existing:
+                updates: list[str] = []
+                params: list = []
+
                 # Add display_name as alias if different from canonical
                 if display_name.lower() != canonical_name:
                     aliases = json.loads(existing["aliases"]) if existing["aliases"] else []
                     norm_display = display_name.strip().lower()
                     if norm_display not in aliases and norm_display != canonical_name:
                         aliases.append(norm_display)
-                        with self.conn:
-                            self.conn.execute(
-                                "UPDATE topics SET aliases = ? WHERE topic_id = ?",
-                                (json.dumps(aliases), existing["topic_id"]),
-                            )
+                        updates.append("aliases = ?")
+                        params.append(json.dumps(aliases))
+
+                # Back-fill curriculum_id if missing
+                if existing["curriculum_id"] is None:
+                    cid = self._lookup_curriculum_id(canonical_name, display_name)
+                    if cid is not None:
+                        updates.append("curriculum_id = ?")
+                        params.append(cid)
+
+                # Back-fill category if missing
+                if not existing["category"] and category:
+                    updates.append("category = ?")
+                    params.append(category)
+                elif not existing["category"]:
+                    inferred = self._infer_category(display_name)
+                    if inferred:
+                        updates.append("category = ?")
+                        params.append(inferred)
+
+                if updates:
+                    params.append(existing["topic_id"])
+                    with self.conn:
+                        self.conn.execute(
+                            f"UPDATE topics SET {', '.join(updates)} WHERE topic_id = ?",
+                            params,
+                        )
                 return existing["topic_id"]
 
-            # Insert new topic
+            # Insert new topic — resolve curriculum_id at creation time
+            curriculum_id = self._lookup_curriculum_id(canonical_name, display_name)
             now = datetime.now(timezone.utc).isoformat()
             aliases: list[str] = []
             norm_display = display_name.strip().lower()
             if norm_display != canonical_name:
                 aliases.append(norm_display)
 
+            # Infer category if not provided
+            if not category:
+                category = self._infer_category(display_name)
+                # Also try curriculum domain if we found a curriculum_id
+                if not category and curriculum_id:
+                    cur_row = self.conn.execute(
+                        "SELECT domain FROM curriculum_topics WHERE curriculum_id = ?",
+                        (curriculum_id,),
+                    ).fetchone()
+                    if cur_row:
+                        category = cur_row["domain"]
+
             with self.conn:
                 cur = self.conn.execute(
                     """INSERT INTO topics
                        (canonical_name, display_name, aliases, category,
-                        confidence, depth, encounter_count, first_seen, last_seen)
-                       VALUES (?, ?, ?, ?, 0.0, 0, 0, ?, ?)""",
-                    (canonical_name, display_name, json.dumps(aliases), category, now, now),
+                        confidence, depth, encounter_count, first_seen, last_seen,
+                        curriculum_id)
+                       VALUES (?, ?, ?, ?, 0.0, 0, 0, ?, ?, ?)""",
+                    (canonical_name, display_name, json.dumps(aliases), category, now, now,
+                     curriculum_id),
                 )
                 return cur.lastrowid  # type: ignore[return-value]
         except Exception as exc:
@@ -391,6 +706,7 @@ class KnowledgeGraph:
                            WHERE topic_id = ?""",
                         (new_conf, new_depth, now, topic_id),
                     )
+                    self._update_stability(topic_id)
         except Exception as exc:
             print(f"[knowledge_graph] log_signal error: {exc}", file=sys.stderr)
 
@@ -560,6 +876,7 @@ class KnowledgeGraph:
                         "UPDATE topics SET confidence = ? WHERE topic_id = ?",
                         (new_conf, tid),
                     )
+                self._update_stability(tid)
 
                 # ── Upsert concept mastery dictionary ──
                 now_dt = self._parse_ts(now) or datetime.now(timezone.utc)
@@ -1005,28 +1322,74 @@ class KnowledgeGraph:
         except Exception:
             return None
 
-    def apply_decay(self, topic_id: int = None) -> None:
-        """Apply Ebbinghaus forgetting-curve decay to topic confidence.
+    def _update_stability(self, topic_id: int) -> None:
+        """Recompute stability_factor and difficulty for a topic from its signal history."""
+        row = self.conn.execute(
+            "SELECT encounter_count FROM topics WHERE topic_id = ?",
+            (topic_id,),
+        ).fetchone()
+        if not row:
+            return
 
-        If topic_id is given, apply to that topic only; otherwise batch-decay
-        all topics.
+        signals = self.conn.execute(
+            "SELECT signal_type, COUNT(*) as cnt FROM signal_events "
+            "WHERE topic_id = ? GROUP BY signal_type",
+            (topic_id,),
+        ).fetchall()
+
+        quality_sum = 0.0
+        distinct_types = 0
+        correct_count = 0
+        incorrect_count = 0
+
+        for sig in signals:
+            st = sig["signal_type"]
+            cnt = sig["cnt"]
+            quality_sum += SIGNAL_QUALITY_WEIGHTS.get(st, 0.0) * cnt
+            distinct_types += 1
+            if st in ("correct_recall", "drill"):
+                correct_count += cnt
+            elif st in ("incorrect_recall", "weakness_identified"):
+                incorrect_count += cnt
+
+        stability = compute_stability(row["encounter_count"], quality_sum, distinct_types)
+        difficulty = compute_difficulty(correct_count, incorrect_count)
+
+        with self.conn:
+            self.conn.execute(
+                "UPDATE topics SET stability_factor = ?, difficulty = ? WHERE topic_id = ?",
+                (stability, difficulty, topic_id),
+            )
+
+    def apply_decay(self, topic_id: int = None) -> None:
+        """Apply stability-weighted forgetting-curve decay to topic confidence.
+
+        Half-life formula:
+            half_life_hours = 48 * (2 ** max(0, depth - 1)) * stability_factor
+
+        stability_factor is computed from encounter history, signal quality,
+        and signal diversity.  Topics with more high-quality encounters decay
+        much slower.
         """
         try:
             now = datetime.now(timezone.utc)
             if topic_id is not None:
                 rows = self.conn.execute(
-                    "SELECT topic_id, confidence, depth, last_decay_ts, last_seen FROM topics WHERE topic_id = ?",
+                    "SELECT topic_id, confidence, depth, last_decay_ts, last_seen, "
+                    "       stability_factor FROM topics WHERE topic_id = ?",
                     (topic_id,),
                 ).fetchall()
             else:
                 rows = self.conn.execute(
-                    "SELECT topic_id, confidence, depth, last_decay_ts, last_seen FROM topics"
+                    "SELECT topic_id, confidence, depth, last_decay_ts, last_seen, "
+                    "       stability_factor FROM topics"
                 ).fetchall()
 
             for row in rows:
                 tid = row["topic_id"]
                 old_confidence = row["confidence"]
                 depth = row["depth"]
+                stability = row["stability_factor"] if row["stability_factor"] else 1.0
 
                 # Determine reference timestamp
                 ref_ts = self._parse_ts(row["last_decay_ts"]) or self._parse_ts(row["last_seen"])
@@ -1037,7 +1400,7 @@ class KnowledgeGraph:
                 if hours_since <= 1:
                     continue  # skip if decayed recently
 
-                half_life_hours = 48 * (2 ** max(0, depth - 1))
+                half_life_hours = 48 * (2 ** max(0, depth - 1)) * stability
                 decay_factor = 0.5 ** (hours_since / half_life_hours)
                 new_confidence = max(0.0, min(1.0, old_confidence * decay_factor))
 
@@ -1181,15 +1544,21 @@ class KnowledgeGraph:
             print(f"[knowledge_graph] load_curriculum error: {exc}", file=sys.stderr)
             return {"loaded": 0, "skipped": 0}
 
-    def generate_recommendations(self, n: int = 10, rotation_filter: str = None) -> list[dict]:
+    def generate_recommendations(
+        self,
+        n: int = 10,
+        rotation_filter: str = None,
+        apply_decay_first: bool = False,
+    ) -> list[dict]:
         """Core gap detection: decay all topics, score curriculum gaps, return top N.
 
         Returns a list of dicts with curriculum info, learner info, gap_score,
         and gap_type.
         """
         try:
-            # Step 1: batch decay
-            self.apply_decay()
+            # Optional state refresh for CLI workflows that expect decay now.
+            if apply_decay_first:
+                self.apply_decay()
 
             # Step 2: get all curriculum topics
             curriculum_rows = self.conn.execute(
@@ -4916,7 +5285,9 @@ CREATE TABLE IF NOT EXISTS topics (
     first_seen      TEXT,
     last_seen       TEXT,
     last_decay_ts   TEXT,
-    curriculum_id   INTEGER
+    curriculum_id   INTEGER,
+    stability_factor REAL DEFAULT 1.0,
+    difficulty      REAL DEFAULT 0.5
 );
 CREATE INDEX IF NOT EXISTS idx_topics_canonical ON topics(canonical_name);
 CREATE INDEX IF NOT EXISTS idx_topics_category ON topics(category);
@@ -5625,7 +5996,11 @@ def main() -> None:
             print(f"Curriculum loaded: {result['loaded']} topics, {result['skipped']} already existed")
 
         elif args.command == "gaps":
-            recs = kg.generate_recommendations(n=args.top, rotation_filter=args.rotation)
+            recs = kg.generate_recommendations(
+                n=args.top,
+                rotation_filter=args.rotation,
+                apply_decay_first=True,
+            )
             print(kg.format_recommendations(recs, rotation=args.rotation))
 
         elif args.command == "apply_decay":
