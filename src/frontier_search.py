@@ -17,7 +17,6 @@ textbook retrieval.  Best practices implemented:
 import sys
 import os
 from typing import Optional, List, Tuple
-from pathlib import Path
 import urllib.request
 import urllib.parse
 import json
@@ -27,6 +26,8 @@ import textwrap
 import time
 import re
 from datetime import datetime, timedelta
+
+from kg_constants import SESSIONS_DIR
 
 # ── Venv & working directory guard ───────────────────────────────────────────
 if __name__ == "__main__":
@@ -44,8 +45,7 @@ MAX_RETRIES = 3
 RETRY_BACKOFF_BASE = 1.5  # seconds; doubles each retry
 RELEVANCE_THRESHOLD = 0.25  # min keyword overlap to keep an article
 
-BASE_DIR = Path(__file__).resolve().parent.parent
-DEFAULT_FRONTIER_CACHE = BASE_DIR / "data" / "Sessions" / "frontier_cache.md"
+DEFAULT_FRONTIER_CACHE = SESSIONS_DIR / "frontier_cache.md"
 
 # Study types to prefer (PubMed publication type filters)
 # These are appended as OR-joined filters when available.
@@ -292,7 +292,9 @@ def _request_with_retry(url: str) -> bytes:
                 wait = RETRY_BACKOFF_BASE * (2 ** attempt)
                 time.sleep(wait)
 
-    raise last_error  # type: ignore
+    if last_error is None:
+        raise RuntimeError("request retries exhausted")
+    raise last_error
 
 
 def _extract_article_text(xml_data: bytes) -> Optional[dict]:

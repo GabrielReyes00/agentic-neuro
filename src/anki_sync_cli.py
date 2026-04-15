@@ -2,8 +2,9 @@
 """
 Lightweight Anki Sync CLI tools.
 Handles ChromaDB semantic novelty filtering and AnkiConnect dispatch.
-All LLM reasoning is handled natively by the Gemini CLI or Claude Code Agent workflow.
 """
+
+from __future__ import annotations
 
 import warnings
 warnings.filterwarnings("ignore", message="urllib3 v2 only supports OpenSSL")
@@ -13,8 +14,20 @@ import json
 import os
 import re
 import time
-from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Mapping
+
+from kg_constants import BASE_DIR, DATA_DIR, SESSIONS_DIR
+from src.anki_sync.payloads import (
+    ImageAuditRow,
+    ImageCandidatePayload,
+    ImageSearchRequest,
+    ImageSearchResultPayload,
+    ImageSelectionPayload,
+    ThumbnailManifestEntry,
+    ThumbnailRecord,
+    ValidationReportPayload,
+)
 
 # Suppress ChromaDB telemetry warnings before any chromadb import
 os.environ.setdefault("ANONYMIZED_TELEMETRY", "False")
@@ -39,8 +52,6 @@ class _TelemetryFilter:
 
 sys.stderr = _TelemetryFilter(sys.stderr)
 
-# Make sure we can import from the rest of the source
-BASE_DIR = Path(__file__).resolve().parent.parent
 sys.path.append(str(BASE_DIR))
 
 try:
@@ -52,24 +63,23 @@ except ImportError as e:
     print(f"Warning: Essential sync dependencies (pydantic) missing: {e}", file=sys.stderr)
     print("Falling back to simplified sync logic (validation disabled).", file=sys.stderr)
     HAS_SCHEMAS = False
-    # Define minimal stubs/imports if needed for standard logic to not crash
     class CardDraft: pass 
     class ClaimModel: pass
-    NoveltyStore = None  # type: ignore[assignment]
+    NoveltyStore = None
     from src.anki_sync.anki_client import AnkiClient, make_deck_name
 
-RUNS_DIR = BASE_DIR / "data" / "Sessions" / "anki_sync_runs"
+RUNS_DIR = SESSIONS_DIR / "anki_sync_runs"
 REQUIRED_BLIND_VALIDATION_FIELDS = ("prompt_visible", "self_guess", "exact_match", "revision_count")
 
 
-def _read_json(filename: str) -> dict:
+def _read_json(filename: str) -> dict[str, object]:
     path = RUNS_DIR / filename
     if not path.exists():
         raise FileNotFoundError(f"Expected to find {path}")
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _read_json_list(filename: str, key: str) -> list:
+def _read_json_list(filename: str, key: str) -> list[object]:
     """Reads JSON from file. If it's a dict with the key, returns that list. If it's a list, returns it."""
     path = RUNS_DIR / filename
     if not path.exists():
@@ -82,13 +92,13 @@ def _read_json_list(filename: str, key: str) -> list:
     return []
 
 
-def _write_json(filename: str, data):
+def _write_json(filename: str, data: object) -> None:
     RUNS_DIR.mkdir(parents=True, exist_ok=True)
     path = RUNS_DIR / filename
     path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
-def _validate_blind_validation_meta(raw_card: dict, idx: int):
+def _validate_blind_validation_meta(raw_card: Mapping[str, object], idx: int) -> None:
     """Enforce evidence that blind validation occurred for each drafted card."""
     meta = raw_card.get("blind_validation")
     if not isinstance(meta, dict):
@@ -116,7 +126,7 @@ def _validate_blind_validation_meta(raw_card: dict, idx: int):
         raise ValueError(f"Card {idx}: blind_validation.revision_count must be an integer >= 0")
 
 
-def _validate_final_cards_payload() -> tuple[list, dict]:
+def _validate_final_cards_payload() -> tuple[list[CardDraft | dict[str, object]], ValidationReportPayload]:
     """Validate final_cards.json and return (cards, report)."""
     path = RUNS_DIR / "final_cards.json"
     if not path.exists():
@@ -145,7 +155,7 @@ def _validate_final_cards_payload() -> tuple[list, dict]:
             "validation_report.cards_refined is 0 with >3 cards; likely blind validation was skipped"
         )
 
-    validated_cards = []
+    validated_cards: list[CardDraft | dict[str, object]] = []
     for idx, card in enumerate(cards, start=1):
         if not isinstance(card, dict):
             raise ValueError(f"Card {idx} is not a JSON object")
@@ -155,11 +165,15 @@ def _validate_final_cards_payload() -> tuple[list, dict]:
         else:
             validated_cards.append(card)
 
-    return validated_cards, report
+    validated_report: ValidationReportPayload = {
+        "cards_drafted": drafted,
+        "cards_refined": refined,
+    }
+    return validated_cards, validated_report
 
 
 def filter_novelty():
-    """Reads current_claims.json, filters against ChromaDB, writes novel_claims.json"""
+    """Reads current_claims.json, filters against the Anki novelty store, writes novel_claims.json."""
     try:
         if not HAS_SCHEMAS or NoveltyStore is None:
             print(
@@ -181,11 +195,11 @@ def filter_novelty():
         else:
             claims = claims_list
         
-        db_path = str(BASE_DIR / "data" / "chromadb_store_anki_memory")
+        db_path = str(DATA_DIR / "chromadb_store_anki_memory")
         collection = "neurosurgery_memory_v1"
         fastembed_model = "BAAI/bge-small-en-v1.5"
         
-        # Initialize the ChromaDB store for memory if it doesn't already exist
+        # This ChromaDB store is only for Anki claim novelty, not learner memory.
         store = NoveltyStore(db_path=db_path, collection_name=collection, embedding_model=fastembed_model)
         
         novelty_threshold = 0.88
@@ -227,7 +241,7 @@ def validate_final_cards():
 
 
 def dispatch():
-    """Reads final_cards.json and current_topic.json, sends to AnkiConnect, saves to ChromaDB"""
+    """Reads final_cards.json/current_topic.json, sends to AnkiConnect, updates Anki novelty store."""
     try:
         cards, _report = _validate_final_cards_payload()
         if not cards:
@@ -260,7 +274,7 @@ def dispatch():
         duplicate = len([r for r in dispatch_results if r.status == "duplicate"])
         failed = len([r for r in dispatch_results if r.status == "failed"])
         
-        # Persist the successful claims into ChromaDB memory store
+        # Persist successful claims into the Anki novelty store.
         success_claim_ids = {r.claim_id for r in dispatch_results if r.status in ("created", "duplicate")}
         
         claims_data = _read_json_list("novel_claims.json", "claims")
@@ -285,14 +299,14 @@ def dispatch():
                     persisted_claim_texts.append(claim_text)
                 
         if persisted_claims and HAS_SCHEMAS and NoveltyStore is not None:
-            db_path = str(BASE_DIR / "data" / "chromadb_store_anki_memory")
+            db_path = str(DATA_DIR / "chromadb_store_anki_memory")
             collection = "neurosurgery_memory_v1"
             store = NoveltyStore(db_path=db_path, collection_name=collection, embedding_model="BAAI/bge-small-en-v1.5")
             store.persist_claims(persisted_claims, metadata={"topic": topic, "deck": deck_name})
 
         print(f"Dispatch complete! Created: {created} | Duplicates: {duplicate} | Failed: {failed}")
         if persisted_claims:
-            print(f"Stored {len(persisted_claims)} conceptual rules into long-term Memory ChromaDB.")
+            print(f"Stored {len(persisted_claims)} conceptual rules in the Anki novelty store.")
 
         # ── Knowledge Graph signal (silent, never blocks) ──
         try:
@@ -328,12 +342,12 @@ def search_images():
             print("No image_search_requests.json found.", file=sys.stderr)
             sys.exit(1)
 
-        requests_data = json.loads(requests_path.read_text(encoding="utf-8"))
+        requests_data: list[ImageSearchRequest] = json.loads(requests_path.read_text(encoding="utf-8"))
         if not requests_data:
             print("No search requests to process.")
             return
 
-        all_candidates = []
+        all_candidates: list[ImageSearchResultPayload] = []
         total_cards = len(requests_data)
         for i, req in enumerate(requests_data):
             claim_id = req["claim_id"]
@@ -343,11 +357,13 @@ def search_images():
             print(f"  [{i+1}/{total_cards}] Searching for {claim_id} ({image_type})...", flush=True)
 
             if not queries:
-                all_candidates.append({
-                    "claim_id": claim_id,
-                    "source_used": "none",
-                    "candidates": [],
-                })
+                all_candidates.append(
+                    ImageSearchResultPayload(
+                        claim_id=claim_id,
+                        source_used="none",
+                        candidates=[],
+                    )
+                )
                 continue
 
             candidates, source = _search(image_type, queries, max_results=3)
@@ -367,24 +383,26 @@ def search_images():
                 sources = {c.source for c in candidates}
                 source_used = source if len(sources) == 1 else "mixed"
 
-            all_candidates.append({
-                "claim_id": claim_id,
-                "source_used": source_used,
-                "candidates": [
-                    {
-                        "url": c.url,
-                        "thumbnail_url": c.thumbnail_url,
-                        "title": c.title,
-                        "source": c.source,
-                        "license": c.license,
-                        "width": c.width,
-                        "height": c.height,
-                        "description": c.description,
-                        "attribution": c.attribution,
-                    }
-                    for c in candidates
-                ],
-            })
+            all_candidates.append(
+                ImageSearchResultPayload(
+                    claim_id=claim_id,
+                    source_used=source_used,
+                    candidates=[
+                        ImageCandidatePayload(
+                            url=c.url,
+                            thumbnail_url=c.thumbnail_url,
+                            title=c.title,
+                            source=c.source,
+                            license=c.license,
+                            width=c.width,
+                            height=c.height,
+                            description=c.description,
+                            attribution=c.attribution,
+                        )
+                        for c in candidates
+                    ],
+                )
+            )
 
             # Rate-limit pacing: 1.5s between cards to avoid Wikimedia throttling
             if i < total_cards - 1:
@@ -418,7 +436,7 @@ def download_thumbnails():
             print("No image_candidates.json found.", file=sys.stderr)
             sys.exit(1)
 
-        candidates_data = json.loads(candidates_path.read_text(encoding="utf-8"))
+        candidates_data: list[ImageSearchResultPayload] = json.loads(candidates_path.read_text(encoding="utf-8"))
         if not isinstance(candidates_data, list):
             print("image_candidates.json must be a list.", file=sys.stderr)
             sys.exit(1)
@@ -428,7 +446,7 @@ def download_thumbnails():
             shutil.rmtree(thumb_dir)
         thumb_dir.mkdir(parents=True)
 
-        manifest = []
+        manifest: list[ThumbnailManifestEntry] = []
         max_per_card = 3
         total_cards = len(candidates_data)
 
@@ -438,7 +456,7 @@ def download_thumbnails():
 
             print(f"  [{i+1}/{total_cards}] Downloading thumbnails for {cid}...", flush=True)
 
-            card_thumbs = []
+            card_thumbs: list[ThumbnailRecord] = []
             for j, cand in enumerate(cands):
                 thumb_url = cand.get("thumbnail_url") or cand.get("url", "")
                 if not thumb_url:
@@ -449,20 +467,22 @@ def download_thumbnails():
                     raw = download_image(thumb_url, timeout=10, max_retries=1)
                     thumb_bytes = base64.b64decode(make_thumbnail_b64(raw))
                     filepath.write_bytes(thumb_bytes)
-                    card_thumbs.append({
-                        "index": j,
-                        "file": str(filepath),
-                        "source_url": cand.get("url", ""),
-                        "title": cand.get("title", ""),
-                        "attribution": cand.get("attribution", ""),
-                    })
+                    card_thumbs.append(
+                        ThumbnailRecord(
+                            index=j,
+                            file=str(filepath),
+                            source_url=cand.get("url", ""),
+                            title=cand.get("title", ""),
+                            attribution=cand.get("attribution", ""),
+                        )
+                    )
                 except Exception as e:  # noqa: BLE001
                     print(f"    Skipped {cid} candidate {j+1}: {e}", file=sys.stderr)
 
                 # Pacing between downloads
                 time.sleep(0.8)
 
-            manifest.append({"claim_id": cid, "thumbnails": card_thumbs})
+            manifest.append(ThumbnailManifestEntry(claim_id=cid, thumbnails=card_thumbs))
 
         manifest_path = thumb_dir / "manifest.json"
         manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
@@ -504,7 +524,7 @@ def process_selected_images():
             print("No cards found in final_cards.json.")
             return
 
-        raw_candidates = []
+        raw_candidates: list[ImageSearchResultPayload] = []
         candidates_path = RUNS_DIR / "image_candidates.json"
         if candidates_path.exists():
             raw_candidates = json.loads(candidates_path.read_text(encoding="utf-8"))
@@ -515,14 +535,14 @@ def process_selected_images():
         }
 
         selections_path = RUNS_DIR / "image_selections.json"
-        selections_raw = []
+        selections_raw: list[ImageSelectionPayload] = []
         if selections_path.exists():
             maybe = json.loads(selections_path.read_text(encoding="utf-8"))
             if isinstance(maybe, list):
                 selections_raw = maybe
 
         # Build selection map. Explicit vision-validated selections are required.
-        selections_by_claim = {}
+        selections_by_claim: dict[str, ImageSelectionPayload] = {}
         for item in selections_raw:
             if not isinstance(item, dict):
                 continue
@@ -553,7 +573,7 @@ def process_selected_images():
                     return text[:300]
             return "clinical image"
 
-        audit_rows = []
+        audit_rows: list[ImageAuditRow] = []
         enriched = 0
         failed = 0
 
@@ -569,9 +589,16 @@ def process_selected_images():
             if not preferred_url or not _has_vision_validation(selection):
                 failed += 1
                 status = "no_validated_selection" if not preferred_url else "missing_vision_metadata"
-                audit_rows.append({"claim_id": cid, "source_used": source_used,
-                    "candidates_found": len(candidate_list), "selected_url": preferred_url or None,
-                    "status": status, "error": f"{status} for this claim"})
+                audit_rows.append(
+                    ImageAuditRow(
+                        claim_id=cid,
+                        source_used=source_used,
+                        candidates_found=len(candidate_list),
+                        selected_url=preferred_url or None,
+                        status=status,
+                        error=f"{status} for this claim",
+                    )
+                )
                 continue
 
             # Build URL list: preferred + any fallbacks
@@ -607,14 +634,28 @@ def process_selected_images():
                     "alt_text": _alt_text(selection, chosen_candidate),
                 }
                 enriched += 1
-                audit_rows.append({"claim_id": cid, "source_used": source_used,
-                    "candidates_found": len(candidate_list), "selected_url": chosen_candidate.get("url"),
-                    "status": "enriched", "error": ""})
+                audit_rows.append(
+                    ImageAuditRow(
+                        claim_id=cid,
+                        source_used=source_used,
+                        candidates_found=len(candidate_list),
+                        selected_url=chosen_candidate.get("url"),
+                        status="enriched",
+                        error="",
+                    )
+                )
             else:
                 failed += 1
-                audit_rows.append({"claim_id": cid, "source_used": source_used,
-                    "candidates_found": len(candidate_list), "selected_url": None,
-                    "status": "download_failed", "error": last_error})
+                audit_rows.append(
+                    ImageAuditRow(
+                        claim_id=cid,
+                        source_used=source_used,
+                        candidates_found=len(candidate_list),
+                        selected_url=None,
+                        status="download_failed",
+                        error=last_error,
+                    )
+                )
 
             time.sleep(1.0)  # rate-limit pacing
 

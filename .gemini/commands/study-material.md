@@ -7,7 +7,7 @@ description: Reads a PDF/PPTX/vault markdown file, generates comprehensive study
 
 Produce a study artifact from a source document, then run adaptive one-question-at-a-time drilling with crash-safe logging and cumulative review tracking.
 
-All §1 directives apply. All §7 session-end hooks are mandatory (preflight, log_turn, heartbeat, concept extraction, post-session hook).
+All §1 directives apply. All §7 session-end hooks are mandatory (preflight, `record-answer`, heartbeat, concept extraction, post-session hook).
 
 ## Triggering
 
@@ -129,6 +129,12 @@ ls "/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Review Sessions/<Title>
 
 ### Core Loop
 
+**Session timestamp (set once at drill start, reuse for all exchanges):**
+```bash
+SESSION_TS=$(date -u +%Y-%m-%dT%H:%M:%S+00:00)
+```
+Initialize a turn counter at 0. Increment before each `record-answer` call.
+
 One question at a time: ask → wait → evaluate → respond:
 - correct: brief confirm + enrichment
 - partial: targeted probe
@@ -136,6 +142,22 @@ One question at a time: ask → wait → evaluate → respond:
 - skip/IDK: immediate explanation
 
 Tag confidence silently (`high|low`) from language cues.
+
+**Per-answer memory logging (silent, after each drill answer is evaluated):**
+```bash
+cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
+python3 src/memory_orchestrator.py record-answer \
+  --session-ts "$SESSION_TS" --turn <N> --skill "study-material" \
+  --topic "<topic>" --concept "<Q# concept being tested>" \
+  --question "<the question text from the study doc>" \
+  --answer "<user's answer, verbatim or close paraphrase>" \
+  --correct <0|1|2> \
+  [--correction "<your correction/explanation if incorrect>"] \
+  [--error-type "<type>"] [--misconception "<specific wrong belief>"] \
+  [--root-cause "<why>"] [--remediation "<what should fix it>"] \
+  [--teaching-approach "<drill-recall|drill-discrimination|drill-mechanism|drill-integration>"] \
+  [--depth <N>] [--domain "<domain>"] [--response-confidence "high|low"]
+```
 
 ### Ordering
 

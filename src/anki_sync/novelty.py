@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
-from typing import Any, Iterable
+from collections.abc import Iterable, Mapping
 
 from .schemas import ClaimModel
 
@@ -79,19 +79,23 @@ class NoveltyStore:
 
         return novel, decisions
 
-    def persist_claims(self, claims: list[ClaimModel], metadata: dict[str, Any] | None = None) -> None:
+    def persist_claims(
+        self,
+        claims: list[ClaimModel],
+        metadata: Mapping[str, str | int | float | bool] | None = None,
+    ) -> None:
         if not claims:
             return
         embeddings = self._embed([c.claim_text for c in claims])
 
         ids: list[str] = []
         docs: list[str] = []
-        metas: list[dict[str, Any]] = []
+        metas: list[dict[str, str | int | float | bool]] = []
         for claim in claims:
             claim_hash = hashlib.sha256(claim.claim_text.encode("utf-8")).hexdigest()[:24]
             ids.append(f"claim-{claim_hash}")
             docs.append(claim.claim_text)
-            row_meta: dict[str, Any] = {
+            row_meta: dict[str, str | int | float | bool] = {
                 "claim_id": claim.claim_id,
                 "subject": claim.subject,
                 "verb": claim.verb,

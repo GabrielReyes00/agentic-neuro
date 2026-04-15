@@ -1,0 +1,1243 @@
+================================================================================
+LONG-TERM AGENTIC MEMORY REDESIGN — COMPLETE IMPLEMENTATION PLAN
+================================================================================
+
+PURPOSE: This document is an agent-executable implementation plan. An AI agent
+reading this should be able to execute every step sequentially, updating the
+STATUS fields as it goes. If the work must span multiple sessions due to rate
+limits, the agent should pick up from the first PENDING step.
+
+OWNER: Gabriel Reyes, PGY-1 Neurosurgery, Baylor College of Medicine
+REPO: /Users/gabrielreyes/agentic-neuro
+DATE CREATED: 2026-04-12
+LAST UPDATED: 2026-04-13 (Phase 5 & 6 complete — all 6 phases done)
+
+CONTEXT: This repo is a neurosurgery learning system powered by Claude Code and
+Gemini CLI. It tracks learner mastery via a knowledge graph (SQLite), retrieves
+textbook content via LanceDB (46K chunks, BGE-M3 1024d), writes to an Obsidian
+vault, and manages spaced repetition. We recently built a "Lossless Long-Term
+Episodic Memory System" (Phases 1-5) that captures learning exchange content
+in SQLite `learning_exchanges` + `episode_summaries` tables and embeds them
+in a LanceDB `episodic_memory` table for semantic retrieval.
+
+After studying the rohitg00/agentmemory repo (a 4-tier memory system for coding
+agents), we identified 4 architectural ideas worth integrating into our system.
+This plan describes each enhancement, exactly which files to modify, and the
+validation steps. The enhancements are:
+
+  1. Reciprocal Rank Fusion (RRF) for recall_episodes() — principled scoring
+     that fuses structured SQLite, keyword, and semantic LanceDB retrieval
+  2. Progressive Disclosure for preflight context — compact summaries first,
+     full content on demand, to reduce token waste
+  3. PreCompact Hook — re-inject critical memory before Claude Code context
+     compaction so the agent doesn't forget mid-session
+  4. Memory Versioning — track how concept understanding evolves over time
+     with supersession chains instead of overwriting in place
+
+IMPORTANT CONVENTIONS:
+  - Shell prefix for ALL commands: cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate &&
+  - No emojis anywhere
+  - No H1 in vault files
+  - Vault metadata at bottom of files
+  - Title Case filenames with spaces in Obsidian vault
+  - Run existing tests after each phase to verify no regressions
+
+================================================================================
+PHASE 1: RECIPROCAL RANK FUSION FOR recall_episodes()
+================================================================================
+
+STATUS: COMPLETE
+
+GOAL: Replace the current naive set-union merge in recall_episodes() with
+principled RRF scoring that fuses three retrieval streams: structured SQLite
+filters, keyword matching, and LanceDB semantic search. This produces
+significantly more relevant episodic recall results.
+
+BACKGROUND: The current recall_episodes() method in knowledge_graph.py (line
+~4080) does structured SQLite filtering + keyword LIKE matching, then merges
+by set union with structured matches first. There is no scoring — items from
+the structured stream always come before keyword-only matches. Meanwhile,
+lance_retriever.py has search_episodic_memory() (line ~3366) for semantic
+search, but it's completely disconnected from recall_episodes(). The two
+systems never talk to each other.
+
+RRF (Reciprocal Rank Fusion) is a principled fusion method:
+  RRF_score(item) = sum over streams: 1 / (k + rank_in_stream)
+where k=60 is standard. Items appearing in multiple streams get boosted.
+Items only in one stream still contribute. No normalization needed.
+
+WHAT TO CHANGE:
+
+--- File: src/knowledge_graph.py ---
+
+Method: recall_episodes() (starts at line ~4080)
+
+Current signature (keep as-is):
+  def recall_episodes(
+      self,
+      query: str = "",
+      topic_name: str | None = None,
+      domain: str | None = None,
+      error_type: str | None = None,
+      answer_correct: int | None = None,
+      skill: str | None = None,
+      days_back: int = 90,
+      max_results: int = 10,
+  ) -> dict:
+
+Replace the BODY of the method with this logic:
+
+1. Keep the existing structured SQLite filter (lines ~4108-4161) exactly as-is.
+   This produces `struct_rows` ordered by session_ts DESC.
+
+2. Keep the existing keyword search (lines ~4131-4149) exactly as-is.
+   This produces `keyword_ids`.
+
+3. ADD a new third stream: semantic search via LanceDB. Import and call
+   search_episodic_memory from lance_retriever. Wrap in try/except because
+   LanceDB might not have any data or the model might not be loaded:
+
+   ```python
+   # Stream 3: Semantic search via LanceDB
+   semantic_rows: list[dict] = []
+   if query and len(query.strip()) >= 5:
+       try:
+           import lance_retriever as lr
+           sem_results = lr.search_episodic_memory(query, max_results=max_results * 2)
+           # Map back to exchange_ids for fusion
+           for sr in sem_results:
+               xid = sr.get("exchange_id", -1)
+               if xid > 0:
+                   semantic_rows.append(sr)
+       except Exception:
+           pass  # LanceDB unavailable or empty — degrade gracefully
+   ```
+
+4. REPLACE the current merge logic (lines ~4164-4189) with RRF fusion:
+
+   ```python
+   # ── RRF Fusion across three streams ──
+   K = 60  # standard RRF constant
+
+   # Build per-stream ranked lists (exchange_id -> rank, 0-indexed)
+   struct_ranking: dict[int, int] = {}
+   for rank, row in enumerate(struct_rows):
+       xid = row["exchange_id"]
+       struct_ranking[xid] = rank
+
+   keyword_ranking: dict[int, int] = {}
+   if keyword_ids:
+       # Keyword results don't have a natural order — rank by recency
+       # Fetch them with ordering
+       kw_ordered_ids = list(keyword_ids)
+       if kw_ordered_ids:
+           placeholders = ",".join("?" for _ in kw_ordered_ids)
+           kw_rows = self.conn.execute(
+               f"SELECT exchange_id FROM learning_exchanges "
+               f"WHERE exchange_id IN ({placeholders}) "
+               f"ORDER BY session_ts DESC, turn_number DESC",
+               kw_ordered_ids,
+           ).fetchall()
+           for rank, row in enumerate(kw_rows):
+               keyword_ranking[row["exchange_id"]] = rank
+
+   semantic_ranking: dict[int, int] = {}
+   for rank, sr in enumerate(semantic_rows):
+       xid = sr.get("exchange_id", -1)
+       if xid > 0:
+           semantic_ranking[xid] = rank
+
+   # Collect all candidate exchange_ids
+   all_candidate_ids = set(struct_ranking) | set(keyword_ranking) | set(semantic_ranking)
+
+   # Compute RRF score for each candidate
+   rrf_scores: dict[int, float] = {}
+   for xid in all_candidate_ids:
+       score = 0.0
+       if xid in struct_ranking:
+           score += 1.0 / (K + struct_ranking[xid])
+       if xid in keyword_ranking:
+           score += 1.0 / (K + keyword_ranking[xid])
+       if xid in semantic_ranking:
+           score += 1.0 / (K + semantic_ranking[xid])
+       rrf_scores[xid] = score
+
+   # Sort by RRF score descending, take top max_results
+   sorted_ids = sorted(rrf_scores.keys(), key=lambda x: -rrf_scores[x])[:max_results]
+
+   # Fetch full rows for the selected IDs
+   # (reuse already-fetched struct_rows where possible to avoid extra DB hits)
+   struct_by_id = {r["exchange_id"]: dict(r) for r in struct_rows}
+   exchanges = []
+   missing_ids = []
+   for xid in sorted_ids:
+       if xid in struct_by_id:
+           exchanges.append(struct_by_id[xid])
+       else:
+           missing_ids.append(xid)
+
+   if missing_ids:
+       placeholders = ",".join("?" for _ in missing_ids)
+       extra = self.conn.execute(
+           f"SELECT le.*, t.display_name AS topic_display "
+           f"FROM learning_exchanges le "
+           f"LEFT JOIN topics t ON le.topic_id = t.topic_id "
+           f"WHERE le.exchange_id IN ({placeholders})",
+           missing_ids,
+       ).fetchall()
+       extra_by_id = {r["exchange_id"]: dict(r) for r in extra}
+       for xid in missing_ids:
+           if xid in extra_by_id:
+               exchanges.append(extra_by_id[xid])
+
+   # Re-sort exchanges by RRF score order
+   id_order = {xid: i for i, xid in enumerate(sorted_ids)}
+   exchanges.sort(key=lambda e: id_order.get(e["exchange_id"], 999))
+   ```
+
+5. Keep the existing episode_summaries retrieval (lines ~4192-4201) as-is.
+
+6. Keep the existing pattern extraction logic (lines ~4203-4243) as-is.
+
+--- File: src/lance_retriever.py ---
+
+No changes needed. The existing search_episodic_memory() function (line ~3366)
+already returns exchange_id in its results, which is what we need for fusion.
+
+VALIDATION:
+
+1. Syntax check:
+   python3 -c "import knowledge_graph; print('OK')"
+
+2. Functional test with existing data:
+   python3 src/knowledge_graph.py recall "anterior choroidal artery" --max 5
+   # Should return results with RRF scoring (items appearing in multiple
+   # streams should rank higher)
+
+3. Verify structured-only still works (when no query is provided):
+   python3 src/knowledge_graph.py recall "" --topic "vascular" --max 5
+   # Should fall back to structured-only (no keyword or semantic streams)
+
+4. Verify graceful degradation when LanceDB episodic table is empty:
+   # Should still return structured + keyword results without errors
+
+UPDATE THIS STATUS TO COMPLETE WHEN DONE.
+
+
+================================================================================
+PHASE 2: PROGRESSIVE DISCLOSURE FOR PREFLIGHT CONTEXT
+================================================================================
+
+STATUS: COMPLETE
+
+GOAL: Reduce token waste in preflight JSON by providing compact exchange
+summaries by default, with full content available on demand. Currently,
+preflight dumps full question/answer/correction text for every exchange into
+learner_context.json and episodic_memory.json, which can consume significant
+context window tokens that the agent may never need.
+
+WHAT TO CHANGE:
+
+--- File: src/knowledge_graph.py ---
+
+1. Add a new method `recall_episodes_compact()` that returns summary-level
+   info instead of full text. Insert this right after recall_episodes():
+
+   ```python
+   def recall_episodes_compact(
+       self,
+       query: str = "",
+       topic_name: str | None = None,
+       domain: str | None = None,
+       error_type: str | None = None,
+       answer_correct: int | None = None,
+       skill: str | None = None,
+       days_back: int = 90,
+       max_results: int = 10,
+   ) -> dict:
+       """Compact version of recall_episodes() for preflight token savings.
+
+       Returns the same structure but with truncated text fields and a
+       one-line summary per exchange instead of full verbatim content.
+       Includes exchange_ids so full content can be fetched on demand
+       via exchange_history().
+       """
+       full = self.recall_episodes(
+           query=query, topic_name=topic_name, domain=domain,
+           error_type=error_type, answer_correct=answer_correct,
+           skill=skill, days_back=days_back, max_results=max_results,
+       )
+
+       compact_exchanges = []
+       for ex in full.get("exchanges", []):
+           correct_label = {0: "INCORRECT", 1: "PARTIAL", 2: "CORRECT"}.get(
+               ex.get("answer_correct", -1), "UNKNOWN"
+           )
+           # Build a one-line summary
+           concept = ex.get("concept_text", "")[:40]
+           misconception = ex.get("misconception", "")
+           one_liner = f"{concept} ({correct_label})"
+           if misconception:
+               one_liner += f" — {misconception[:50]}"
+
+           compact_exchanges.append({
+               "exchange_id": ex.get("exchange_id"),
+               "concept": concept,
+               "correct": ex.get("answer_correct"),
+               "error_type": ex.get("error_type") or None,
+               "one_liner": one_liner,
+               "teaching_approach": ex.get("teaching_approach") or None,
+               "teaching_worked": ex.get("teaching_worked"),
+               "date": (ex.get("session_ts") or "")[:10],
+               "skill": ex.get("skill"),
+           })
+
+       compact_summaries = []
+       for s in full.get("episode_summaries", []):
+           compact_summaries.append({
+               "summary_id": s.get("summary_id"),
+               "session_ts": (s.get("session_ts") or "")[:10],
+               "exchange_count": s.get("exchange_count", 0),
+               "correct_count": s.get("correct_count", 0),
+               "incorrect_count": s.get("incorrect_count", 0),
+               # Truncate memory_text to first 150 chars
+               "memory_preview": (s.get("memory_text") or "")[:150],
+           })
+
+       return {
+           "exchanges": compact_exchanges,
+           "episode_summaries": compact_summaries,
+           "patterns": full.get("patterns", {}),
+           "full_ids_available": [e["exchange_id"] for e in compact_exchanges],
+       }
+   ```
+
+2. Add a CLI subcommand for compact recall. In the CLI argument parser section
+   (search for the `recall` subparser, around line ~6860+), add an argument:
+
+   Find the existing `recall` subparser and add:
+   ```python
+   p_recall.add_argument("--compact", action="store_true",
+                          help="Return compact summaries instead of full text")
+   ```
+
+   In the recall handler (search for `elif args.command == "recall":`), modify
+   to route to compact when --compact is passed:
+
+   ```python
+   elif args.command == "recall":
+       ac = None
+       if args.correct is not None:
+           ac = args.correct
+       elif args.errors_only:
+           ac = 0
+
+       if args.compact:
+           data = kg.recall_episodes_compact(
+               query=args.query or "",
+               topic_name=args.topic, domain=args.domain,
+               error_type=args.error_type, answer_correct=ac,
+               skill=args.skill, days_back=args.days, max_results=args.max,
+           )
+       else:
+           data = kg.recall_episodes(
+               query=args.query or "",
+               topic_name=args.topic, domain=args.domain,
+               error_type=args.error_type, answer_correct=ac,
+               skill=args.skill, days_back=args.days, max_results=args.max,
+           )
+
+       output_str = json.dumps(data, indent=2, default=str)
+       print(output_str)
+       if args.output:
+           Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+           Path(args.output).write_text(output_str, encoding="utf-8")
+   ```
+
+--- File: src/preflight.sh ---
+
+3. Change step 8 to use --compact mode for the preflight output. This is the
+   token-saving change — the preflight JSON becomes much smaller.
+
+   Find the existing step 8 block (search for "[8/8] Recalling episodic memory")
+   and change the python3 command:
+
+   OLD:
+   ```bash
+   python3 src/knowledge_graph.py recall "$QUERY" --max 5 \
+     --output "$SESSIONS/episodic_memory.json" 2>/dev/null \
+   ```
+
+   NEW:
+   ```bash
+   python3 src/knowledge_graph.py recall "$QUERY" --max 5 --compact \
+     --output "$SESSIONS/episodic_memory.json" 2>/dev/null \
+   ```
+
+--- File: src/knowledge_graph.py (learner_context enrichment) ---
+
+4. Modify the past_exchanges enrichment in learner_context() (line ~2487-2528)
+   to use compact format. The full exchange content is still in the DB and
+   retrievable — we just don't dump it all into the preflight JSON.
+
+   Find the block starting with `# -- Recent episodic exchanges for this topic --`
+   (around line ~2487).
+
+   Change the tc["past_exchanges"] construction to use compact format:
+
+   OLD (line ~2501-2515):
+   ```python
+   tc["past_exchanges"] = [
+       {
+           "question": x["question_text"][:120],
+           "answer": x["answer_text"][:100],
+           "correction": x["correction_text"][:120] if x["correction_text"] else "",
+           "correct": x["answer_correct"],
+           ...
+       }
+       for x in recent_xchg
+   ]
+   ```
+
+   NEW:
+   ```python
+   tc["past_exchanges_compact"] = [
+       {
+           "exchange_id": x["exchange_id"] if "exchange_id" in x.keys() else None,
+           "concept": x["concept_text"][:40],
+           "correct": x["answer_correct"],
+           "error_type": x["error_type"] or None,
+           "misconception": (x["misconception"] or "")[:50] or None,
+           "teaching_approach": x["teaching_approach"] or None,
+           "date": x["session_ts"][:10],
+       }
+       for x in recent_xchg
+   ]
+   ```
+
+   Note: The learner_context query at line ~2489 does not currently SELECT
+   exchange_id. Add it to the SELECT clause:
+
+   OLD:
+   ```sql
+   SELECT le.question_text, le.answer_text, le.correction_text, ...
+   ```
+
+   NEW:
+   ```sql
+   SELECT le.exchange_id, le.question_text, le.answer_text, le.correction_text, ...
+   ```
+
+5. Keep the guidance generation block (lines ~2517-2526) that generates the
+   text "Last time on '{raw}', Gabriel answered..." as-is. This is already
+   compact natural language that goes into guidance_lines, not raw exchange
+   dumps. It stays.
+
+--- File: CLAUDE.md ---
+
+6. Update section 13 (Command Reference) to document the --compact flag:
+
+   Find the `recall` line in the command reference and add --compact:
+   ```
+   recall "query" [--topic "T"] ... [--compact] [--output path]
+   ```
+
+--- File: GEMINI.md ---
+
+7. Mirror the same change in section 10 command reference.
+
+VALIDATION:
+
+1. python3 -c "import knowledge_graph; print('OK')"
+2. python3 src/knowledge_graph.py recall "vascular anatomy" --max 3 --compact
+   # Should return compact one-liner summaries with exchange_ids
+3. python3 src/knowledge_graph.py recall "vascular anatomy" --max 3
+   # Should still return full content (non-compact mode unchanged)
+4. ./src/preflight.sh "circle of willis" --skill "study-session"
+   # Check data/Sessions/episodic_memory.json — should be compact format
+5. Estimate token savings: compare byte size of compact vs full output
+
+UPDATE THIS STATUS TO COMPLETE WHEN DONE.
+
+
+================================================================================
+PHASE 3: PRECOMPACT HOOK — RE-INJECT MEMORY BEFORE CONTEXT COMPACTION
+================================================================================
+
+STATUS: COMPLETE
+
+GOAL: When Claude Code compresses the conversation context (compaction),
+critical learning state is lost. We need a hook that fires before compaction
+and re-injects the most important memory into the compressed context. This
+ensures the agent remembers what happened earlier in long sessions.
+
+BACKGROUND: Claude Code supports hooks — shell commands that execute in
+response to lifecycle events. The relevant event is `PreCompact`, which fires
+before context window compaction. The hook receives the conversation state on
+stdin and can output text that gets injected into the compacted context.
+
+IMPORTANT: Claude Code hooks are configured in the user's settings file at
+~/.claude/settings.json (or the project-level .claude/settings.json). They
+are NOT Python scripts in src/ — they are shell commands configured in JSON.
+
+WHAT TO CREATE:
+
+--- File: src/precompact_memory_inject.py (NEW FILE) ---
+
+Create a new Python script that:
+1. Reads the current session state (what skill is active, what topics)
+2. Queries the knowledge graph for the current session's exchanges so far
+3. Queries for the most relevant episodic memories for those topics
+4. Outputs a compact memory block to stdout that Claude Code will inject
+
+```python
+#!/usr/bin/env python3
+"""PreCompact memory injection — called by Claude Code hook before context compaction.
+
+Reads stdin for the hook payload, queries the knowledge graph for current
+session state and relevant episodic memories, outputs a compact memory
+block that gets injected into the compacted context.
+
+Usage (as Claude Code hook):
+  python3 src/precompact_memory_inject.py
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(BASE_DIR / "src"))
+
+
+def main() -> int:
+    # Read hook payload from stdin
+    try:
+        payload = json.load(sys.stdin)
+    except (json.JSONDecodeError, Exception):
+        payload = {}
+
+    # Import KG
+    try:
+        from knowledge_graph import KnowledgeGraph
+        kg = KnowledgeGraph()
+    except Exception:
+        return 0  # silent failure — don't block compaction
+
+    try:
+        now = datetime.now(timezone.utc)
+        two_hours_ago = (now - timedelta(hours=2)).isoformat()
+
+        # Find exchanges from the current session (last 2 hours)
+        recent = kg.conn.execute(
+            """SELECT le.concept_text, le.answer_correct, le.error_type,
+                      le.misconception, le.teaching_approach, le.question_text,
+                      le.correction_text, t.display_name AS topic_display
+               FROM learning_exchanges le
+               LEFT JOIN topics t ON le.topic_id = t.topic_id
+               WHERE le.session_ts >= ?
+               ORDER BY le.session_ts DESC, le.turn_number DESC
+               LIMIT 15""",
+            (two_hours_ago,),
+        ).fetchall()
+
+        if not recent:
+            kg.close()
+            return 0  # nothing to inject
+
+        # Build compact memory block
+        lines = ["## Active Session Memory (auto-injected before compaction)"]
+        lines.append("")
+
+        # Current session summary
+        topics = sorted(set(
+            r["topic_display"] or r["concept_text"] for r in recent
+        ))
+        correct = sum(1 for r in recent if r["answer_correct"] == 2)
+        incorrect = sum(1 for r in recent if r["answer_correct"] == 0)
+        partial = sum(1 for r in recent if r["answer_correct"] == 1)
+        lines.append(f"Topics this session: {', '.join(topics[:5])}")
+        lines.append(f"Exchanges: {len(recent)} total, {correct} correct, "
+                      f"{partial} partial, {incorrect} incorrect")
+        lines.append("")
+
+        # Key errors to remember (most important for continuity)
+        errors = [r for r in recent if r["answer_correct"] == 0]
+        if errors:
+            lines.append("Errors to re-test:")
+            for e in errors[:5]:
+                concept = e["concept_text"][:50]
+                misconception = e["misconception"][:60] if e["misconception"] else ""
+                q = e["question_text"][:60]
+                correction = e["correction_text"][:60] if e["correction_text"] else ""
+                line = f"  - {concept}"
+                if misconception:
+                    line += f" (misconception: {misconception})"
+                if correction:
+                    line += f" [correct: {correction}]"
+                lines.append(line)
+            lines.append("")
+
+        # Teaching approach notes
+        approaches_used = set()
+        for r in recent:
+            ta = r["teaching_approach"]
+            if ta:
+                approaches_used.add(ta)
+        if approaches_used:
+            lines.append(f"Teaching approaches used: {', '.join(sorted(approaches_used))}")
+
+        # Relevant prior episodic memory (from before this session)
+        if topics:
+            topic_query = " ".join(topics[:3])
+            try:
+                prior = kg.recall_episodes_compact(
+                    query=topic_query, max_results=3, days_back=30,
+                )
+                prior_exchanges = prior.get("exchanges", [])
+                # Filter out current session exchanges
+                prior_exchanges = [
+                    e for e in prior_exchanges
+                    if e.get("date", "") < two_hours_ago[:10]
+                ]
+                if prior_exchanges:
+                    lines.append("")
+                    lines.append("Relevant prior session memory:")
+                    for pe in prior_exchanges[:3]:
+                        lines.append(f"  - {pe.get('one_liner', 'unknown')}")
+            except Exception:
+                pass  # non-fatal
+
+        lines.append("")
+        lines.append("(End of injected session memory)")
+
+        # Output to stdout — Claude Code will inject this
+        output = "\n".join(lines)
+        print(output)
+
+        kg.close()
+    except Exception:
+        try:
+            kg.close()
+        except Exception:
+            pass
+        return 0  # never block compaction
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+```
+
+--- File: .claude/settings.json (CREATE or MODIFY) ---
+
+Check if .claude/settings.json exists. If it does, add the hook config to
+the existing file. If it doesn't exist, check if ~/.claude/settings.json
+exists and add it there instead.
+
+The hook configuration to add:
+
+```json
+{
+  "hooks": {
+    "PreCompact": [
+      {
+        "type": "command",
+        "command": "cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && python3 src/precompact_memory_inject.py"
+      }
+    ]
+  }
+}
+```
+
+IMPORTANT: If settings.json already exists with other hooks, MERGE this into
+the existing hooks object. Do NOT overwrite existing hooks. Read the file
+first, understand its structure, and add the PreCompact hook alongside any
+existing hooks.
+
+ALSO IMPORTANT: Check the Claude Code hooks documentation format. The hook
+config structure may use different field names depending on the Claude Code
+version. The agent should verify the correct format by checking:
+  - Any existing hooks in the settings files
+  - The Claude Code documentation (if accessible)
+  - The CLAUDE.md file for any hook references
+
+If the exact hook format is unclear, create the precompact_memory_inject.py
+script and note in this plan that the hook wiring needs user confirmation
+of the correct settings format.
+
+--- File: CLAUDE.md ---
+
+Add a note about the PreCompact hook in section 2 (Shell & Subagents) or
+create a new section 2a:
+
+```
+### PreCompact Memory Injection
+
+A Claude Code hook fires before context compaction and re-injects:
+- Current session exchange summary (topics, scores, errors)
+- Key errors to re-test (concept + misconception + correction)
+- Teaching approaches used this session
+- Relevant prior episodic memory (compact, last 30 days)
+
+Script: `src/precompact_memory_inject.py`. Configured in `.claude/settings.json`.
+```
+
+VALIDATION:
+
+1. python3 -c "import sys; sys.path.insert(0, 'src'); exec(open('src/precompact_memory_inject.py').read().replace('raise SystemExit(main())', ''))"
+   # Should import without errors
+
+2. Manual test with mock stdin:
+   echo '{}' | cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && python3 src/precompact_memory_inject.py
+   # Should output memory block if exchanges exist, or nothing if DB is empty
+
+3. Verify the script does not crash on empty DB:
+   echo '{}' | python3 src/precompact_memory_inject.py
+   # Should exit 0 with no output
+
+4. Test with a live session: run a study-session, trigger compaction
+   (or simulate with /compact), and verify the memory block appears in
+   the compacted context.
+
+UPDATE THIS STATUS TO COMPLETE WHEN DONE.
+
+
+================================================================================
+PHASE 4: MEMORY VERSIONING WITH SUPERSESSION CHAINS
+================================================================================
+
+STATUS: COMPLETE
+
+GOAL: Track how the learner's understanding of concepts evolves over time.
+Currently, concept_mastery rows are updated in place — when a concept
+transitions from unknown to known, the old misconception is overwritten.
+We lose the history of what the learner used to believe and how they
+corrected it. Memory versioning creates an audit trail.
+
+This is inspired by agentmemory's supersession chains (parentId +
+supersedes[] on Memory objects) but adapted for our pedagogical context:
+we care about CONCEPT UNDERSTANDING EVOLUTION, not generic memory updates.
+
+WHAT TO CHANGE:
+
+--- File: src/knowledge_graph.py ---
+
+1. Add a new table to _SCHEMA_SQL (after the episode_summaries table,
+   before the closing `"""`). This table tracks concept state changes:
+
+   ```sql
+   -- Concept evolution history — tracks how understanding changes over time.
+   -- One row per state change on a concept_mastery row. Forms a temporal chain
+   -- so the agent can see: "Gabriel first thought X, then corrected to Y,
+   -- then regressed to Z, then finally stabilized on W."
+   CREATE TABLE IF NOT EXISTS concept_evolution (
+       evolution_id   INTEGER PRIMARY KEY AUTOINCREMENT,
+       concept_id     INTEGER NOT NULL,
+       topic_id       INTEGER NOT NULL,
+       timestamp      TEXT NOT NULL,
+
+       -- Snapshot of state AT THIS POINT
+       status         TEXT NOT NULL,          -- 'known' | 'unknown'
+       error_type     TEXT DEFAULT '',
+       misconception  TEXT DEFAULT '',
+       remediation    TEXT DEFAULT '',
+       times_confirmed INTEGER DEFAULT 0,
+       times_missed   INTEGER DEFAULT 0,
+
+       -- What caused this change
+       trigger_type   TEXT NOT NULL,          -- 'correct_recall' | 'incorrect_recall' | 'partial_recall' | 'teaching' | 'decay'
+       trigger_exchange_id INTEGER,           -- FK to learning_exchanges (if change was triggered by an exchange)
+       trigger_signal_id   INTEGER,           -- FK to signal_events (if triggered by a signal)
+
+       -- Evolution chain
+       previous_status TEXT DEFAULT '',       -- what status was BEFORE this change
+       previous_misconception TEXT DEFAULT '', -- what misconception was BEFORE
+
+       -- Natural language note
+       evolution_note TEXT DEFAULT '',        -- e.g., "Corrected AChA -> PCA confusion via anatomical tracing"
+
+       FOREIGN KEY (concept_id) REFERENCES concept_mastery(concept_id),
+       FOREIGN KEY (topic_id) REFERENCES topics(topic_id),
+       FOREIGN KEY (trigger_exchange_id) REFERENCES learning_exchanges(exchange_id),
+       FOREIGN KEY (trigger_signal_id) REFERENCES signal_events(event_id)
+   );
+   CREATE INDEX IF NOT EXISTS idx_evo_concept ON concept_evolution(concept_id);
+   CREATE INDEX IF NOT EXISTS idx_evo_topic ON concept_evolution(topic_id);
+   CREATE INDEX IF NOT EXISTS idx_evo_ts ON concept_evolution(timestamp);
+   ```
+
+2. Add a method to log concept evolution. Insert after the mark_teaching_worked()
+   method (line ~4078):
+
+   ```python
+   def log_concept_evolution(
+       self,
+       concept_id: int,
+       topic_id: int,
+       new_status: str,
+       trigger_type: str,
+       previous_status: str = "",
+       previous_misconception: str = "",
+       error_type: str = "",
+       misconception: str = "",
+       remediation: str = "",
+       times_confirmed: int = 0,
+       times_missed: int = 0,
+       trigger_exchange_id: int | None = None,
+       trigger_signal_id: int | None = None,
+       evolution_note: str = "",
+   ) -> int:
+       """Record a concept state change in the evolution history.
+
+       Called automatically when concept_mastery is updated via
+       log_study_session() or _update_concept_mastery().
+
+       Returns evolution_id or -1 on error.
+       """
+       try:
+           now = datetime.now(timezone.utc).isoformat()
+           with self.conn:
+               cur = self.conn.execute(
+                   """INSERT INTO concept_evolution
+                      (concept_id, topic_id, timestamp, status,
+                       error_type, misconception, remediation,
+                       times_confirmed, times_missed,
+                       trigger_type, trigger_exchange_id, trigger_signal_id,
+                       previous_status, previous_misconception, evolution_note)
+                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   (concept_id, topic_id, now, new_status,
+                    error_type, misconception, remediation,
+                    times_confirmed, times_missed,
+                    trigger_type, trigger_exchange_id, trigger_signal_id,
+                    previous_status, previous_misconception, evolution_note),
+               )
+               return cur.lastrowid or -1
+       except Exception as exc:
+           print(f"[knowledge_graph] log_concept_evolution error: {exc}", file=sys.stderr)
+           return -1
+   ```
+
+3. Add a method to query concept evolution history:
+
+   ```python
+   def concept_evolution_history(
+       self,
+       concept_text: str | None = None,
+       topic_name: str | None = None,
+       days_back: int = 180,
+       limit: int = 50,
+   ) -> list[dict]:
+       """Query the evolution history for a concept or topic.
+
+       Returns a list of state-change records ordered by timestamp DESC.
+       """
+       try:
+           cutoff = (datetime.now(timezone.utc) - timedelta(days=days_back)).isoformat()
+           clauses = ["ce.timestamp >= ?"]
+           params: list = [cutoff]
+
+           if concept_text:
+               clauses.append("cm.concept_text LIKE ?")
+               params.append(f"%{concept_text.strip().lower()}%")
+           if topic_name:
+               clauses.append("t.display_name LIKE ?")
+               params.append(f"%{topic_name}%")
+
+           where = " AND ".join(clauses)
+           params.append(limit)
+
+           rows = self.conn.execute(
+               f"""SELECT ce.*, cm.concept_text, t.display_name AS topic_display
+                   FROM concept_evolution ce
+                   JOIN concept_mastery cm ON ce.concept_id = cm.concept_id
+                   LEFT JOIN topics t ON ce.topic_id = t.topic_id
+                   WHERE {where}
+                   ORDER BY ce.timestamp DESC
+                   LIMIT ?""",
+               params,
+           ).fetchall()
+           return [dict(r) for r in rows]
+       except Exception as exc:
+           print(f"[knowledge_graph] concept_evolution_history error: {exc}", file=sys.stderr)
+           return []
+   ```
+
+4. Wire evolution logging into log_study_session(). This is the critical
+   integration point. Find the log_study_session() method (search for
+   `def log_study_session`). Inside, find where concept_mastery rows are
+   updated — specifically the INSERT OR REPLACE / UPDATE blocks for
+   understood concepts and gap concepts.
+
+   The key pattern is: BEFORE updating concept_mastery, read the current
+   state. AFTER updating, if the state changed, call log_concept_evolution().
+
+   Find the section that handles "understood" concepts (where status is set
+   to 'known'). It will look something like:
+   ```python
+   self.conn.execute(
+       """INSERT INTO concept_mastery (...) VALUES (...)
+          ON CONFLICT(topic_id, concept_text) DO UPDATE SET
+          status = 'known', times_confirmed = times_confirmed + 1, ...""",
+       ...
+   )
+   ```
+
+   BEFORE that INSERT, add:
+   ```python
+   # Snapshot previous state for evolution tracking
+   prev_row = self.conn.execute(
+       "SELECT concept_id, status, misconception, times_confirmed, times_missed "
+       "FROM concept_mastery WHERE topic_id = ? AND concept_text = ?",
+       (topic_id, concept_clean),
+   ).fetchone()
+   was_unknown = prev_row and prev_row["status"] == "unknown"
+   prev_status = prev_row["status"] if prev_row else ""
+   prev_misconception = prev_row["misconception"] if prev_row else ""
+   prev_concept_id = prev_row["concept_id"] if prev_row else None
+   ```
+
+   AFTER the INSERT, add:
+   ```python
+   # Log evolution if state changed
+   if was_unknown:
+       # Re-fetch to get the concept_id (needed for new inserts)
+       cid = prev_concept_id
+       if cid is None:
+           cid_row = self.conn.execute(
+               "SELECT concept_id FROM concept_mastery WHERE topic_id = ? AND concept_text = ?",
+               (topic_id, concept_clean),
+           ).fetchone()
+           cid = cid_row["concept_id"] if cid_row else None
+       if cid:
+           self.log_concept_evolution(
+               concept_id=cid, topic_id=topic_id,
+               new_status="known", trigger_type="correct_recall",
+               previous_status=prev_status,
+               previous_misconception=prev_misconception,
+               times_confirmed=(prev_row["times_confirmed"] + 1) if prev_row else 1,
+               times_missed=prev_row["times_missed"] if prev_row else 0,
+               evolution_note=f"Concept transitioned unknown -> known after correct recall",
+           )
+   ```
+
+   Similarly, find where "gap" concepts are logged (status = 'unknown') and add
+   the inverse tracking:
+   ```python
+   # Log evolution for newly missed or regression
+   if prev_row and prev_row["status"] == "known":
+       cid = prev_row["concept_id"]
+       self.log_concept_evolution(
+           concept_id=cid, topic_id=topic_id,
+           new_status="unknown", trigger_type="incorrect_recall",
+           previous_status="known",
+           error_type=gap.get("error_type", ""),
+           misconception=gap.get("misconception", ""),
+           evolution_note=f"Regression: known -> unknown. {gap.get('misconception', '')}",
+       )
+   ```
+
+5. Add CLI subcommand for concept_evolution. In the argument parser section:
+
+   ```python
+   p_evo = subparsers.add_parser("concept_evolution",
+                                  help="Show concept understanding evolution history")
+   p_evo.add_argument("--concept", default=None, help="Filter by concept text")
+   p_evo.add_argument("--topic", default=None, help="Filter by topic name")
+   p_evo.add_argument("--days", type=int, default=180, help="Lookback days")
+   p_evo.add_argument("--limit", type=int, default=30, help="Max results")
+   ```
+
+   In the dispatch section:
+   ```python
+   elif args.command == "concept_evolution":
+       data = kg.concept_evolution_history(
+           concept_text=args.concept,
+           topic_name=args.topic,
+           days_back=args.days,
+           limit=args.limit,
+       )
+       print(json.dumps({"evolution": data, "count": len(data)}, indent=2, default=str))
+   ```
+
+--- File: CLAUDE.md ---
+
+6. Add concept_evolution to section 13 (Command Reference):
+   ```
+   concept_evolution [--concept "C"] [--topic "T"] [--days N] [--limit N]
+   ```
+
+7. Add to section 12 (Data Locations) or section 11:
+   Mention that concept_mastery changes are now tracked in concept_evolution
+   table with trigger linkage to exchanges and signals.
+
+--- File: GEMINI.md ---
+
+8. Mirror the command reference addition in section 10.
+
+VALIDATION:
+
+1. python3 -c "import knowledge_graph; print('OK')"
+
+2. Verify table creation:
+   python3 src/knowledge_graph.py status
+   # Should show the new table (or at minimum not error)
+
+3. Manual test: log a study session with a gap, then log it as understood:
+   # First, log a gap
+   python3 src/knowledge_graph.py log_study --topics "test evolution topic" --understood "" --gaps "test concept" --gap-details '[{"concept":"test concept","error_type":"conceptual_confusion","error_process":"mechanism_gap","misconception":"thought X was Y","root_cause":"unfamiliar","remediation":"review basics"}]' --depth 2
+   # Then log it as understood
+   python3 src/knowledge_graph.py log_study --topics "test evolution topic" --understood "test concept" --gaps "" --depth 2
+   # Check evolution
+   python3 src/knowledge_graph.py concept_evolution --concept "test concept"
+   # Should show 1-2 evolution records: initial unknown, then transition to known
+
+4. Verify no regression on existing log_study_session behavior:
+   python3 src/knowledge_graph.py status
+   # Should still work, all counts reasonable
+
+UPDATE THIS STATUS TO COMPLETE WHEN DONE.
+
+
+================================================================================
+PHASE 5: INTEGRATION AND DOCUMENTATION UPDATES
+================================================================================
+
+STATUS: COMPLETE
+
+GOAL: Update all system documentation, skill command files, and the Agentic
+Improvements.txt file to reflect the new memory architecture. Ensure both
+Claude Code and Gemini CLI agents are aware of all new capabilities.
+
+WHAT TO CHANGE:
+
+--- File: CLAUDE.md ---
+
+1. Section 7e (Universal Learning Signal Protocol): Add a note that
+   concept_evolution is tracked automatically — agents don't need to
+   call it manually. It fires inside log_study_session().
+
+2. Section 8 (Universal Post-Session Hook): Add concept_evolution to
+   the "what it does" list if any post-session aggregation is needed.
+   NOTE: concept_evolution logging happens inline in log_study_session(),
+   not in the post-session hook, so this may not need changes. But verify
+   the hook doesn't need to do any evolution-based analysis (e.g., for
+   the Dashboard or ACGME Readiness).
+
+3. Section 11 (Knowledge Graph Contracts): Add a subsection:
+   ```
+   ### Concept Evolution (Automatic)
+   When concept_mastery status changes (known <-> unknown), the change is
+   automatically logged in `concept_evolution` with:
+   - Previous and new state snapshots
+   - Trigger type (correct_recall, incorrect_recall, decay)
+   - Link to triggering exchange_id or signal_event_id
+   - Natural language evolution note
+
+   Query via: `python3 src/knowledge_graph.py concept_evolution --concept "X"`
+   ```
+
+4. Section 12 (Data Locations): Add row:
+   | Concept understanding evolution | `knowledge_graph.db` (`concept_evolution` table) |
+
+5. Section 13 (Command Reference): Ensure all new commands are listed:
+   - recall --compact
+   - concept_evolution
+   - teaching_effectiveness (already added in prior work, verify present)
+
+--- File: GEMINI.md ---
+
+6. Mirror all CLAUDE.md documentation changes in the corresponding
+   GEMINI.md sections (sections 6, 7, 10).
+
+--- File: Agentic Improvements.txt ---
+
+7. Add a new section describing the memory architecture redesign:
+
+   In section 1a (Architecture Diagram), update if needed to show the
+   three-tier episodic memory.
+
+   Add a new subsection (e.g., "7. LONG-TERM AGENTIC MEMORY SYSTEM") that
+   describes:
+   - Three-tier episodic memory (Hot: SQLite, Warm: LanceDB, Cold: Obsidian)
+   - RRF fusion for recall_episodes()
+   - Progressive disclosure for preflight
+   - PreCompact hook for mid-session continuity
+   - Concept evolution versioning
+   - Teaching effectiveness analytics
+
+   This should be written FOR AI models, explaining what exists and how
+   to use it, following the existing style of that document.
+
+--- Verify all skill command files reference the new capabilities ---
+
+8. Check that the following files don't need updates (they should already
+   reference log_exchange from Phase 2 of the original plan):
+   - .claude/commands/study-session.md
+   - .claude/commands/rag-workflow.md
+   - .claude/commands/intern-bootcamp.md
+   - .gemini/commands/study-session.md
+   - .gemini/commands/rag-workflow.md
+   - .gemini/commands/intern-bootcamp.md
+
+   These files should NOT need changes for Phase 5 — the new features
+   (RRF, progressive disclosure, PreCompact, evolution) are all
+   infrastructure improvements that are transparent to the skill commands.
+   But read each file to verify no references are broken.
+
+VALIDATION:
+
+1. Read CLAUDE.md end-to-end and verify all new features are documented
+2. Read GEMINI.md end-to-end and verify parity with CLAUDE.md
+3. Run a full preflight to verify everything works together:
+   ./src/preflight.sh "circle of willis anatomy" --skill "study-session"
+4. Run the post-session hook to verify no regressions:
+   python3 src/universal_post_session_hook.py --skill "test" --topics "test" --vault-writes "" --report-out /tmp/test_hook.json
+   cat /tmp/test_hook.json | python3 -c "import json,sys; d=json.load(sys.stdin); print('OK' if d['ok'] else 'FAILED')"
+
+UPDATE THIS STATUS TO COMPLETE WHEN DONE.
+
+
+================================================================================
+PHASE 6: END-TO-END VALIDATION
+================================================================================
+
+STATUS: COMPLETE
+
+GOAL: Run a comprehensive integration test that exercises every new feature
+through the full pipeline.
+
+TEST PLAN:
+
+1. Start fresh — verify DB health:
+   python3 src/knowledge_graph.py status
+
+2. Log a test exchange:
+   SESSION_TS=$(date -u +%Y-%m-%dT%H:%M:%S+00:00)
+   python3 src/knowledge_graph.py log_exchange \
+     --session-ts "$SESSION_TS" --turn 1 --skill "test-validation" \
+     --topic "anterior choroidal artery territory" \
+     --concept "AChA vascular supply" \
+     --question "What does the anterior choroidal artery supply?" \
+     --answer "The hippocampus" --correct 0 \
+     --correction "AChA supplies anterior hippocampus, optic tract, posterior limb IC" \
+     --error-type "cross_contamination" \
+     --misconception "confused AChA with PCA territory" \
+     --teaching-approach "anatomical-tracing" --depth 2 --domain "vascular"
+
+3. Test RRF recall:
+   python3 src/knowledge_graph.py recall "choroidal artery anatomy" --max 5
+   # Should find the exchange via keyword and/or semantic search
+   # Verify the output includes the test exchange
+
+4. Test compact recall:
+   python3 src/knowledge_graph.py recall "choroidal artery" --max 5 --compact
+   # Should return one-liner summaries with exchange_ids
+
+5. Test concept evolution:
+   # Log a gap
+   python3 src/knowledge_graph.py log_study \
+     --topics "anterior choroidal artery territory" \
+     --understood "" \
+     --gaps "AChA vascular supply" \
+     --gap-details '[{"concept":"AChA vascular supply","error_type":"cross_contamination","error_process":"anatomical_ambiguity","misconception":"confused AChA with PCA territory","root_cause":"similar hippocampal proximity","remediation":"anatomical tracing from origin"}]' \
+     --depth 2
+   # Now log understanding
+   python3 src/knowledge_graph.py log_study \
+     --topics "anterior choroidal artery territory" \
+     --understood "AChA vascular supply" \
+     --gaps "" \
+     --depth 2
+   # Check evolution
+   python3 src/knowledge_graph.py concept_evolution --concept "AChA"
+   # Should show state transitions
+
+6. Test teaching effectiveness:
+   python3 src/knowledge_graph.py teaching_effectiveness --domain "vascular"
+   # Should show anatomical-tracing approach stats
+
+7. Test preflight end-to-end:
+   ./src/preflight.sh "anterior choroidal artery" --skill "study-session"
+   # Verify all 8 steps complete
+   # Check data/Sessions/episodic_memory.json is compact format
+   # Check data/Sessions/learner_context.json includes past_exchanges_compact
+
+8. Test PreCompact hook (manual):
+   echo '{}' | cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && python3 src/precompact_memory_inject.py
+   # Should output memory block with recent exchange data
+
+9. Test post-session hook:
+   python3 src/universal_post_session_hook.py \
+     --skill "test-validation" --topics "anterior choroidal artery territory" \
+     --vault-writes "" --report-out /tmp/test_validation_hook.json
+   # Verify all steps pass (especially episodic consolidation)
+
+10. Clean up test data (optional):
+    # The test data can remain — it's useful for future validation.
+    # Delete /tmp/test_validation_hook.json
+
+EXPECTED FINAL STATE:
+- recall_episodes() uses RRF fusion across 3 streams
+- Preflight uses compact episodic memory (smaller JSON, less token waste)
+- PreCompact hook re-injects session memory before context compaction
+- concept_evolution table tracks all concept state changes
+- All documentation (CLAUDE.md, GEMINI.md, Agentic Improvements.txt) updated
+- No regressions in existing functionality
+
+UPDATE THIS STATUS TO COMPLETE WHEN DONE.
+
+
+================================================================================
+IMPLEMENTATION NOTES FOR THE EXECUTING AGENT
+================================================================================
+
+PRIORITY ORDER: Phases 1 > 3 > 2 > 4 > 5 > 6
+
+Phase 1 (RRF) delivers the highest immediate impact — better retrieval
+means the agent actually remembers the right things. Phase 3 (PreCompact)
+prevents mid-session amnesia. Phase 2 (Progressive Disclosure) saves tokens.
+Phase 4 (Versioning) adds long-term value. Phases 5-6 are documentation
+and validation.
+
+CRITICAL CAVEATS:
+- Always read a file before editing it. The line numbers in this plan are
+  approximate — they refer to the state of the code as of 2026-04-12.
+  Methods may have shifted if other changes were made between sessions.
+- Use grep/search to find exact locations rather than relying on line numbers.
+- The knowledge_graph.py file is ~7000+ lines. Be careful with edits.
+- After each phase, run the validation steps BEFORE moving to the next phase.
+- If a validation fails, diagnose and fix before continuing.
+- Update the STATUS field of each phase from PENDING to COMPLETE when done.
+
+SHELL PREFIX (required for all commands):
+  cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate &&
+
+FILE SIZE REFERENCE (as of 2026-04-12):
+  src/knowledge_graph.py     ~7000 lines
+  src/lance_retriever.py     ~3450 lines
+  src/universal_post_session_hook.py  ~743 lines
+  src/preflight.sh           ~153 lines
+  CLAUDE.md                  ~305 lines
+  GEMINI.md                  ~305 lines
+
+KEY METHOD LOCATIONS (approximate, use grep to verify):
+  recall_episodes()          knowledge_graph.py:4080
+  mark_teaching_worked()     knowledge_graph.py:4040
+  teaching_effectiveness()   knowledge_graph.py:4248
+  learner_context()          knowledge_graph.py:2300
+  log_study_session()        knowledge_graph.py:~850
+  _SCHEMA_SQL                knowledge_graph.py:5807
+  CLI parser                 knowledge_graph.py:~6200+
+  CLI dispatch               knowledge_graph.py:~6500+
+  embed_episodes()           lance_retriever.py:3281
+  search_episodic_memory()   lance_retriever.py:3366
+  _get_episodic_table()      lance_retriever.py:3238
+  consolidate_episodic_memory  universal_post_session_hook.py:572
+
+================================================================================
+END OF PLAN
+================================================================================

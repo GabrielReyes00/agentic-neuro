@@ -29,7 +29,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from vault_kg_sync import stub_filename, load_curriculum_index, safe_write_vault_file
+from vault_kg_sync import stub_filename, safe_write_vault_file
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -86,15 +86,6 @@ def _mastery_color(confidence: float, encounters: int, depth: int) -> str:
     if confidence >= 0.2:
         return "3"
     return "2"
-
-
-def _bucket_label(color: str) -> str:
-    return {
-        "1": "not studied",
-        "2": "surface",
-        "3": "mechanistic",
-        "4": "mastered",
-    }.get(color, "unknown")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -227,18 +218,6 @@ def build_concept_to_curriculum_candidates(
         scored.sort(key=lambda x: -x[0])
         out[concept.lower()] = [cid for _, cid in scored[:top_k]]
     return out
-
-
-def build_concept_to_curriculum_map(
-    conn: sqlite3.Connection,
-    relationship_concepts: list[str],
-    min_overlap: int = 1,
-) -> dict[str, int]:
-    """Backwards-compatible single-best wrapper around the candidate matcher."""
-    candidates = build_concept_to_curriculum_candidates(
-        conn, relationship_concepts, min_overlap=min_overlap, top_k=1
-    )
-    return {k: v[0] for k, v in candidates.items() if v}
 
 
 # ═══════════════════════════════════════════════════════════════════════════

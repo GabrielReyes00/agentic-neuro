@@ -36,6 +36,16 @@ cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate &&
 
 **Context compression**: At 12+ turns in bootcamp/Socratic sessions, notify user and offer digest before continuing. Never compress silently.
 
+### PreCompact Memory Injection
+
+A Claude Code hook fires before context compaction and re-injects:
+- Current session exchange summary (topics, scores, errors)
+- Key errors to re-test (concept + misconception + correction)
+- Teaching approaches used this session
+- Relevant prior episodic memory (compact, last 30 days)
+
+Script: `src/precompact_memory_inject.py`. Configured in `.claude/settings.json`.
+
 ## §3 User & Environment
 
 Gabriel Reyes | PGY-1 Neurosurgery | Baylor College of Medicine
@@ -70,11 +80,11 @@ Email: Exchange via macOS Mail (AppleScript) | Calendar: GCal MCP | Reminders: m
 - **intraoperative-guide**: `Operative Guides/<Title>.md` + INDEX. Same cross-ref.
 - **study-material**: `Study Material/<Title>.md` + INDEX. Title Case from source doc name.
 - **Standalone learning sessions** (intern-bootcamp, study-session, rag-workflow):
-  1. `log_event` + `log_study` after every significant response. Fine-grained topic names (level 2-3).
+  1. `memory_orchestrator.py record-answer` after every active answer; `log_study` only for passive teaching without a user answer.
   2. `heartbeat.sh --session-mode` checkpoint every ~3 turns.
   3. Session-end: heartbeat `--status "complete"` → Write tool for final vault file → Post-Session Hook (§8).
 - **Doc-anchored sessions**: UPSERT `Review Sessions/<Title> Review.md` (never create new file). Heartbeat every 3 turns. Final heartbeat + upsert at session end.
-- **Case Log Proactive Sync**: At start of any learning skill, scan `Case Log/` vs `data/Sessions/case_log_sync.txt`. Log new cases via `log_event --source "case_log"`. Add gap topics. Notify user.
+- **Case Log Proactive Sync**: At start of any learning skill, scan `Case Log/` vs `data/Sessions/case_log_sync.txt`. Log new cases via `log_event --topic "<case topic>" --source "case_log" --signal-type "case_seen" --depth N --category "<domain>"`. Add gap topics. Notify user.
 
 ## §6 Naming Conventions
 
@@ -131,6 +141,67 @@ Trigger: gap logged with `error_type` of `cross_contamination`, `conceptual_conf
 
 All learning skills MUST run this when logging identifiable error types.
 
+### §7e Universal Learning Signal Protocol
+
+**Applies to ALL learning interactions** — skill-invoked, doc-anchored, and ad-hoc (Tier 3 clinical questions, Socratic exchanges, "quiz me on X", informal review).
+
+**When you ask a question and the user answers, use the atomic active-answer logger (silent):**
+
+```bash
+cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
+python3 src/memory_orchestrator.py record-answer \
+  --session-ts "$SESSION_TS" --turn <N> --skill "<skill or 'ad-hoc'>" \
+  --topic "<topic>" --concept "<specific concept tested>" \
+  --question "<your question, verbatim>" \
+  --answer "<user's answer, verbatim or close paraphrase>" \
+  --correct <0|1|2> \
+  [--correction "<your correction/explanation if incorrect>"] \
+  [--error-type "<type>"] [--misconception "<specific wrong belief>"] \
+  [--root-cause "<why>"] [--remediation "<what should fix it>"] \
+  [--teaching-approach "<approach used>"] [--depth <N>] [--domain "<domain>"] \
+  [--response-confidence "high|low"]
+```
+
+Correctness routing: correct with no hints = `--correct 2` | right direction but missing details = `--correct 1` | wrong or misconception = `--correct 0`. `SESSION_TS` is set once per session: `SESSION_TS=$(date -u +%Y-%m-%dT%H:%M:%S+00:00)`. For breakthroughs, add `--breakthrough --insight "<what clicked>"`.
+
+**When a learning interaction begins on a topic, check prior context (silent):**
+
+```bash
+cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
+python3 src/knowledge_graph.py last_session_narrative --skill "<skill or 'ad-hoc'>" --topic "<topic>"
+```
+
+If non-null: shape questions around `next_session_strategy`, re-test `key_confusions_json`, avoid `teaching_failures`.
+
+`record-answer` writes the behavioral signal, verbatim exchange, concept mastery update, concept evolution provenance, and calibration metadata together. Use `log_event`/`log_exchange` only for repair or backfill work.
+
+**Scope rules:**
+- Passive teaching (explaining without testing) → `log_study` only, no signal_type, no exchange
+- Active testing (you asked, user answered) → `record-answer`
+- 3+ question exchanges on a single topic → also run heartbeat checkpoint
+- 5+ exchanges or natural session end → finalize heartbeat `--status "complete"`, write `Review Sessions/` file, run post-session hook (§8)
+
+**concept_evolution is automatic**: When `log_study` changes a concept's status (gap → understood or understood → gap), `log_concept_evolution()` fires inside `log_study_session()` automatically. Do not call it manually — use `log_study` as normal.
+
+Skill-specific logging instructions (in command files) take precedence when a skill is active. This protocol is the fallback for everything else.
+
+### §7f Mid-Session Mini-Preflight (Topic Switch Protocol)
+
+When the active topic changes mid-session (user pivots, new concept is introduced, or Component 3/4 begins), run a silent mini-preflight covering only steps 5 and 8 of the full preflight:
+
+```bash
+# Step 5 equivalent — check prior errors on the new topic
+cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
+python3 src/knowledge_graph.py last_session_narrative --skill "<skill>" --topic "<new topic>"
+
+# Step 8 equivalent — pull learner context for new topic
+python3 src/knowledge_graph.py context "<new topic query>" --output data/Sessions/learner_context.json
+```
+
+Read `learner_context.json`. If `next_session_strategy` or `key_confusions_json` found for the new topic, apply them immediately before asking the first question on that topic.
+
+**When to trigger**: Any time the primary topic shifts during an active skill session. Cost is low (two SQLite queries, no LanceDB). Skip only if switching back to a topic already covered this session.
+
 ## §8 Universal Post-Session Hook
 
 Run silently after every learning skill's session-end (Obsidian write + KG logging complete):
@@ -144,9 +215,10 @@ Check `"ok": true` in the report, then delete it. Do not narrate.
 **What it does** (for reference — the script handles all of this):
 - `apply_decay` → `dashboard` → `gaps --top 5` → `review_queue --n 5` → `cognitive_patterns` → `calibration_profile`
 - Regenerate `Dashboard.md` with live Dataview blocks (Concepts Due for Review, Shallow Core Concepts, High-Risk Concepts) + aggregate sections (Curriculum Progress, Recent Activity, Vault Assets, ACGME Canvases link, What Changed)
-- Run `acgme_readiness` → `write_acgme_readiness.py` → write ACGME Readiness.md
+- Run `acgme_readiness` and render `ACGME Readiness.md` in-process
 - `vault_kg_sync.sync_studied_concepts` → rewrite every studied Concept file with Learning State inline fields, KG relationship sections, and Encounter History ledger
 - `vault_canvas_builder.sync_canvases` → regenerate one `.canvas` per ACGME milestone under `ACGME Canvases/` (color-coded by mastery, prerequisite edges from KG) + `ACGME Canvases/INDEX.md`
+- `consolidate_episodic_memory` → link exchanges to narrative, generate episode summary, embed exchanges + summary in LanceDB `episodic_memory` table, back-fill `lance_row_id` on SQLite rows
 - Delete temp files, run `sync_vault.sh`
 - Do NOT overwrite the three protected Concepts notes
 
@@ -190,6 +262,13 @@ Clinical questions, explanations, comparisons, coding: model knowledge. Offer RA
 
 **Triggers**: "let's review [X]", "quiz me on [doc]", "continue our session on [doc]"
 
+**Session continuity** (silent, before step 1):
+```bash
+cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
+python3 src/knowledge_graph.py last_session_narrative --skill "doc-review" --topic "<doc topic>"
+```
+If non-null: prioritize `key_confusions_json` concepts first, apply `next_session_strategy`, avoid `teaching_failures`.
+
 1. Derive slug from filename. Ask if ambiguous.
 2. Check `Study Material/<slug>*.md`. If missing, invoke `study-material` silently.
 3. `doc_status "Study Material/<slug>.md"` → `new` starts TU-01; `returning` opens with recap.
@@ -197,6 +276,7 @@ Clinical questions, explanations, comparisons, coding: model knowledge. Offer RA
 5. At `coverage_pct >= 80%`, shift to cross-application questions.
 6. Socratic correction: guiding question on first miss → reveal on second miss.
 7. Heartbeat every 3 turns (doc-anchored mode). Final heartbeat + upsert `Review Sessions/<Title> Review.md` at session end.
+8. **Per-answer signal logging** (silent, after each user answer): follow §7e Universal Learning Signal Protocol with `--source "doc-review"`.
 
 **Review Session format**: `## Concept Map Status` table + `## Session Log` with `### Session N` blocks + `## Progress Over Sessions` table. Metadata at bottom.
 
@@ -229,14 +309,29 @@ Or via heartbeat: `--status "complete" --narrative-summary "..." --next-strategy
 
 `--strategy` must be a complete, actionable sentence for next session.
 
+### Concept Evolution (Automatic)
+
+When concept_mastery status changes (known <-> unknown), the change is automatically logged in `concept_evolution` with:
+- Previous and new state snapshots
+- Trigger type (correct_recall, incorrect_recall, decay)
+- Link to triggering exchange_id or signal_event_id
+- Natural language evolution note
+
+Query via: `python3 src/knowledge_graph.py concept_evolution --concept "X"`
+
 ### Error Types
 `numerical_recall` | `conceptual_confusion` | `cross_contamination` | `application_failure` | `reasoning_gap` | `omission`
 
 ### Logging Patterns (Quick Reference)
 ```bash
-# Activity feed + concept mastery (dual-log after every Gym/Socratic response)
-python3 src/knowledge_graph.py log_event --topic "T" --source "S" --signal-type "correct_recall|incorrect_recall|partial_recall" --depth N --category "domain"
+# Active answer memory (preferred for every Gym/Socratic response)
+python3 src/memory_orchestrator.py record-answer --session-ts "TS" --turn N --skill "S" --topic "T" --concept "C" --question "Q" --answer "A" --correct 0|1|2 [--correction "..."] [--error-type "..."] [--misconception "..."] [--root-cause "..."] [--remediation "..."] [--teaching-approach "..."] [--depth N] [--domain "D"] [--response-confidence "high|low"]
+
+# Passive teaching without active testing
 python3 src/knowledge_graph.py log_study --topics "t" --understood "c" --gaps "c" [--gap-details 'JSON'] --depth N
+
+# Query past exchanges
+python3 src/knowledge_graph.py exchange_history [--topic "T"] [--concept "C"] [--error-type "E"] [--correct 0|1|2] [--skill "S"] [--days N] [--top N] [--breakthrough]
 
 # Bootcamp outcomes
 python3 src/knowledge_graph.py log_bootcamp --topics "t" --weaknesses "w" --module "m" --outcome "pass|partial|fail" [--calibration 'JSON']
@@ -248,15 +343,22 @@ python3 src/knowledge_graph.py log_transfer --concept "X" --topic "Y" --context 
 python3 src/knowledge_graph.py log_pattern --type "T" --description "D" --evidence "E"
 ```
 
+### Active Answer Logging
+
+All active testing interactions MUST use `memory_orchestrator.py record-answer`. Required fields: `session-ts`, `turn`, `skill`, `topic`, `concept`, `question`, `answer`, `correct`. Capture the ACTUAL question asked and ACTUAL answer given — not summaries. Low-level `log_event`, `log_study`, and `log_exchange` are reserved for passive teaching or repair/backfill.
+
 ## §12 Data Locations
 
 | Data | Location |
 |------|----------|
 | Topic confidence, SRS, concept mastery, calibration, sessions, error patterns | `knowledge_graph.db` |
+| Episodic memory (learning exchanges + episode summaries) | `knowledge_graph.db` (`learning_exchanges`, `episode_summaries` tables) |
+| Episodic memory embeddings (semantic retrieval) | LanceDB `episodic_memory` table (BGE-M3 1024-dim) |
 | Textbook chunks + embeddings | `neurosurgery_v4.lance` (46,714 rows, 22 books) |
 | Anki card dedup | `chromadb_store_anki_memory` |
 | Reports, guides, study docs, reviews, concepts, error atlas | Obsidian vault |
 | Clinical cases | `Case Log/` (user-authored) |
+| Concept understanding evolution | `knowledge_graph.db` (`concept_evolution` table) |
 | Ephemeral session data | `data/Sessions/` |
 
 ## §13 Command Reference
@@ -280,10 +382,29 @@ cognitive_patterns | calibration_profile | confusable_pairs [--topic "X"]
 blocking_gaps --topic "X" | concept_chain --concept "X" [--topic "X"]
 add_concept_relationship --a "X" --b "Y" --type prerequisite_of|confusable_with|extends|differentiates_from
 milestone_report | sync_anki | apply_decay | difficulty_target
+study_plan [--hours N] [--rotation "D"] [--focus "T"]
+memory_guidance "query" [--topic "T"] [--skill "S"]
+memory_session --session-ts "TS" --skill "S" [--topic "T"] [--enabled --scope study_session] [--status active|complete|paused]
+add_concept_alias --alias "A" --canonical "C" [--topic "T"] [--source "manual"]
+memory_reindex_fts | memory_rebuild [--apply] | memory_cleanup [--apply --backup]
 doc_status "Study Material/<slug>.md"
 log_doc_progress --doc "..." --doc-type "..." --covered "Q1,Q2" --understood "Q1" --missed '[...]' --coverage-pct N --total-concepts N
 acgme_readiness | export_concept_stubs [--only-studied] | generate_error_atlas
 load_curriculum --file data/curriculum_skeleton.json
+# Episodic memory repair/backfill only
+log_exchange --session-ts "TS" --turn N --skill "S" --topic "T" --concept "C" --question "Q" --answer "A" --correct 0|1|2
+exchange_history [--topic "T"] [--concept "C"] [--error-type "E"] [--correct 0|1|2] [--skill "S"] [--days N] [--top N] [--breakthrough]
+recall "query" [--topic "T"] [--domain "D"] [--error-type "E"] [--correct 0|1|2] [--skill "S"] [--errors-only] [--days N] [--max N] [--compact] [--sqlite-only] [--output path]
+teaching_effectiveness [--domain "D"] [--days N]
+concept_evolution [--concept "C"] [--topic "T"] [--days N] [--limit N]
+derive_session_confusions [--session-ts "TS"] [--skill "S"] [--hours N]
+domain_error_profile --domain "D" [--days N]
+memory_doctor
+
+# Preferred stable orchestrator interface
+python3 src/memory_orchestrator.py record-answer --session-ts "TS" --turn N --skill "S" --topic "T" --concept "C" --question "Q" --answer "A" --correct 0|1|2
+python3 src/memory_orchestrator.py guidance "query" [--topic "T"] [--skill "S"]
+python3 src/memory_orchestrator.py doctor
 
 # Utility scripts
 src/preflight.sh "query" [--doc "Study Material/slug.md"] [--skill "X"]

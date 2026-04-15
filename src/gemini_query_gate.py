@@ -12,11 +12,9 @@ import argparse
 import json
 import re
 import subprocess
-from pathlib import Path
 from typing import Optional
 
-BASE_DIR = Path(__file__).resolve().parent.parent
-SESSIONS_DIR = BASE_DIR / "data" / "Sessions"
+from kg_constants import BASE_DIR, SESSIONS_DIR
 LEARNER_CONTEXT_PATH = SESSIONS_DIR / "learner_context.json"
 
 

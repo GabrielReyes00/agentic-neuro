@@ -145,6 +145,12 @@ ls "/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Review Sessions/<Topic 
 
 ### Drill Engine
 
+**Session timestamp (set once at drill start, reuse for all exchanges):**
+```bash
+SESSION_TS=$(date -u +%Y-%m-%dT%H:%M:%S+00:00)
+```
+Initialize a turn counter at 0. Increment before each `record-answer` call.
+
 **Tone**: Study coach — encouraging, honest, direct. Never punitive.
 **One question at a time. Wait for answer. Never show answer preemptively.**
 
@@ -157,6 +163,23 @@ ls "/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Review Sessions/<Topic 
 | "I don't know" / skip | Respected. Full explanation. Circle back later. |
 
 **Silent confidence tagging**: `high` (declarative, no hedging) vs `low` ("I think", "maybe", hedging).
+
+**Per-answer memory logging (silent, after each drill answer is evaluated):**
+```bash
+cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
+python3 src/memory_orchestrator.py record-answer \
+  --session-ts "$SESSION_TS" --turn <N> --skill "study-material" \
+  --topic "<topic>" --concept "<Q# concept being tested>" \
+  --question "<the question text from the study doc>" \
+  --answer "<user's answer, verbatim or close paraphrase>" \
+  --correct <0|1|2> \
+  [--correction "<your correction/explanation if incorrect>"] \
+  [--error-type "<type>"] [--misconception "<specific wrong belief>"] \
+  [--root-cause "<why>"] [--remediation "<what should fix it>"] \
+  [--teaching-approach "<drill-recall|drill-discrimination|drill-mechanism|drill-integration>"] \
+  [--depth <N>] [--domain "<domain>"] [--response-confidence "high|low"]
+```
+Capture the ACTUAL question and ACTUAL answer. For breakthroughs, add `--breakthrough --insight "<what clicked>"`.
 
 **Ordering**: recall → spatial/discrimination → mechanism/integration. Visual interspersed.
 **Adaptive**: 2+ wrong in same TU → insert 1-2 additional questions from different angle.

@@ -1,14 +1,10 @@
-"""Pydantic schemas for strict stage outputs."""
+"""Pydantic schemas for strict Anki stage outputs."""
 
 from __future__ import annotations
 
-from typing import List, Literal, Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, model_validator
-
-
-class TopicOutput(BaseModel):
-    topic: str = Field(min_length=2, max_length=60)
 
 
 class ClaimModel(BaseModel):
@@ -17,17 +13,6 @@ class ClaimModel(BaseModel):
     verb: str = Field(min_length=1, max_length=120)
     object: str = Field(min_length=1, max_length=260)
     claim_text: str = Field(min_length=8, max_length=420)
-
-
-class ClaimExtractionOutput(BaseModel):
-    claims: List[ClaimModel]
-
-    @model_validator(mode="after")
-    def _ensure_unique_ids(self):
-        ids = [c.claim_id for c in self.claims]
-        if len(ids) != len(set(ids)):
-            raise ValueError("claim_id values must be unique")
-        return self
 
 
 class CardImage(BaseModel):
@@ -63,19 +48,3 @@ class CardDraft(BaseModel):
         if not self.front.strip() or not self.back.strip():
             raise ValueError("qa card requires front/back")
         return self
-
-
-class CardDraftOutput(BaseModel):
-    cards: List[CardDraft]
-
-    @model_validator(mode="after")
-    def _ensure_unique_claim_mapping(self):
-        ids = [c.claim_id for c in self.cards]
-        if len(ids) != len(set(ids)):
-            raise ValueError("exactly one card per claim_id is required")
-        return self
-
-
-class BlindGuessOutput(BaseModel):
-    guess: str = Field(min_length=1, max_length=200)
-    rationale: str = Field(default="", max_length=500)

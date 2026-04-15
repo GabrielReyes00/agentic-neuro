@@ -143,6 +143,15 @@ PY
                 # ---- log_session_narrative (Redesign Phase) ----
                 if [[ -n "$NEXT_STRATEGY" || -n "$NARRATIVE_SUMMARY" ]]; then
                     echo "[session-narrative] Logging session narrative..."
+
+                    # Auto-derive key_confusions if not provided by the agent
+                    if [[ "$KEY_CONFUSIONS" == "[]" ]]; then
+                        DERIVED_CONFUSIONS=$(python3 src/knowledge_graph.py derive_session_confusions \
+                            --skill "$SKILL" --hours 4 2>/dev/null | python3 -c \
+                            "import sys,json; d=json.load(sys.stdin); print(json.dumps(d.get('confusions',[]))) if d.get('count',0)>0 else print('[]')" 2>/dev/null || echo "[]")
+                        [[ "$DERIVED_CONFUSIONS" != "[]" ]] && KEY_CONFUSIONS="$DERIVED_CONFUSIONS"
+                    fi
+
                     NARRATIVE_ARGS=(python3 src/knowledge_graph.py log_session_narrative --skill "$SKILL" --topics "$TOPICS")
                     [[ -n "$NARRATIVE_SUMMARY" ]] && NARRATIVE_ARGS+=(--summary "$NARRATIVE_SUMMARY")
                     [[ -n "$NEXT_STRATEGY" ]] && NARRATIVE_ARGS+=(--strategy "$NEXT_STRATEGY")
@@ -179,10 +188,33 @@ FINAL_EOF
 **Status**: IN-PROGRESS
 CHECKPOINT_EOF
                 echo "Checkpoint appended: $SESSION_FILE (Turn $TURN_NUM)"
+
+                # Partial session narrative at checkpoint (for crash-safe continuity)
+                # Fires only when --narrative-summary is provided — establishes
+                # a forward-looking record so last_session_narrative returns
+                # useful context even if the session is compacted or interrupted.
+                if [[ -n "$NARRATIVE_SUMMARY" ]]; then
+                    PARTIAL_NARRATIVE_ARGS=(python3 src/knowledge_graph.py log_session_narrative
+                        --skill "$SKILL" --topics "$TOPICS"
+                        --summary "$NARRATIVE_SUMMARY"
+                        --turns "$TURN_NUM")
+                    [[ -n "$NEXT_STRATEGY" ]] && PARTIAL_NARRATIVE_ARGS+=(--strategy "$NEXT_STRATEGY")
+                    [[ "$NARRATIVE_FAILURES" != "[]" ]] && PARTIAL_NARRATIVE_ARGS+=(--teaching-failures "$NARRATIVE_FAILURES")
+                    [[ "$KEY_CONFUSIONS" != "[]" ]] && PARTIAL_NARRATIVE_ARGS+=(--key-confusions "$KEY_CONFUSIONS")
+                    "${PARTIAL_NARRATIVE_ARGS[@]}" 2>&1 || true  # never fail the checkpoint
+                fi
             fi
         else
             # Create new session file with first checkpoint
             cat > "$SESSION_FILE" << SESSION_CREATE_EOF
+## Checkpoints
+
+### Checkpoint — Turn $TURN_NUM — $TIME
+**Topics active**: $TOPICS
+**Understood so far**: $UNDERSTOOD_DETAIL
+**Active gaps**: $GAPS_DETAIL
+**Status**: IN-PROGRESS
+
 ---
 date: $DATE
 skill: "$SKILL"
@@ -195,16 +227,6 @@ tags:
   - domain/$DOMAIN
   - source/agent
 ---
-
-# $TOPIC_NAME
-
-## Checkpoints
-
-### Checkpoint — Turn $TURN_NUM — $TIME
-**Topics active**: $TOPICS
-**Understood so far**: $UNDERSTOOD_DETAIL
-**Active gaps**: $GAPS_DETAIL
-**Status**: IN-PROGRESS
 SESSION_CREATE_EOF
             echo "Created: $SESSION_FILE"
         fi
@@ -270,24 +292,6 @@ SESSION_EOF
         else
             # --- CREATE: new review session file ---
             cat > "$REVIEW_FILE" << REVIEW_EOF
----
-title: "Review Sessions: $TOPIC_NAME"
-source_document: "$DOC"
-study_material: "$DOC"
-total_topics: $TOTAL
-total_questions: $TOTAL
-last_studied: $DATE
-session_count: $SESSION_NUM
-coverage_pct: $COV_PCT
-tags:
-  - type/session
-  - skill/$SKILL
-  - domain/$DOMAIN
-  - source/agent
----
-
-# Review Sessions: $TOPIC_NAME
-
 ## Concept Map Status
 | Topic | Questions | Cumulative Score | Status |
 |-------|-----------|-----------------|--------|
@@ -303,6 +307,22 @@ tags:
 **Understood**: $UNDERSTOOD_DETAIL
 **Gaps**:
 $(echo "$GAPS_DETAIL" | tr '|' '\n' | sed 's/^/- /')
+
+---
+title: "Review Sessions: $TOPIC_NAME"
+source_document: "$DOC"
+study_material: "$DOC"
+total_topics: $TOTAL
+total_questions: $TOTAL
+last_studied: $DATE
+session_count: $SESSION_NUM
+coverage_pct: $COV_PCT
+tags:
+  - type/session
+  - skill/$SKILL
+  - domain/$DOMAIN
+  - source/agent
+---
 REVIEW_EOF
 
             echo "Created: $REVIEW_FILE"

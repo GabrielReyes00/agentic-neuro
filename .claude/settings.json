@@ -1,0 +1,28 @@
+{
+  "hooks": {
+    "PreCompact": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && python3 src/precompact_memory_inject.py",
+            "timeout": 60
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && python3 src/auto_session_close.py",
+            "timeout": 60
+          }
+        ]
+      }
+    ]
+  }
+}

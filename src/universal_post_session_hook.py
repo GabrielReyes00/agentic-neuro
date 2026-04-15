@@ -10,7 +10,6 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
-import sys
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -33,20 +32,6 @@ PROTECTED_CONCEPTS = {
     "Neurosurgery Consult Workflow.md",
     "Peripheral Nerve Injury Classifications (Seddon & Sunderland).md",
 }
-
-DEPTH_LABEL_MAP = {
-    0: "not_studied",
-    1: "surface",
-    2: "mechanistic",
-    3: "applied",
-}
-
-PRIORITY_LABEL_MAP = {
-    1: "core",
-    2: "important",
-    3: "advanced",
-}
-
 
 @dataclass
 class StepResult:
@@ -76,16 +61,143 @@ def _safe_text(value: str) -> str:
     return (value or "").replace("|", "\\|").strip()
 
 
-def _title_case(text: str) -> str:
-    return " ".join(word.capitalize() for word in (text or "").strip().split())
+def _acgme_depth_label(depth: int) -> str:
+    return {
+        0: "-",
+        1: "Surface",
+        2: "Mechanistic",
+        3: "Applied",
+    }.get(depth, f"Depth-{depth}")
 
 
-def _depth_label(depth: int) -> str:
-    return DEPTH_LABEL_MAP.get(depth, f"depth-{depth}")
+def _acgme_topic_cell(topic: dict[str, Any], max_len: int = 60) -> str:
+    name = topic.get("display_name") or topic.get("slug") or "?"
+    stub_file = topic.get("concept_stub") or ""
+    if not stub_file:
+        return name[:max_len]
+    fname = stub_file.replace("Concepts/", "").replace(".md", "")
+    return f"[[{fname}]]"
 
 
-def _priority_label(priority: int) -> str:
-    return PRIORITY_LABEL_MAP.get(priority, "core")
+def _render_acgme_topic_row(topic: dict[str, Any]) -> str:
+    studied = "Yes" if topic.get("studied") else "No"
+    confidence = f"{topic['confidence']:.3f}" if topic.get("studied") else "-"
+    depth = _acgme_depth_label(int(topic.get("depth") or 0)) if topic.get("studied") else "-"
+    return f"| {_acgme_topic_cell(topic)} | {studied} | {confidence} | {depth} |"
+
+
+def _render_acgme_domain_section(domain: dict[str, Any]) -> str:
+    total = domain["total_topics"]
+    touched = domain["topics_touched"]
+    at_target = domain["topics_at_target"]
+    coverage = domain["coverage_pct"]
+    topics = domain.get("topics", [])
+    studied = [topic for topic in topics if topic.get("studied")]
+    not_studied = [topic for topic in topics if not topic.get("studied")]
+
+    lines = [
+        f"### {domain['domain']} -- {domain.get('acgme_milestone', '')}",
+        f"**{total} topics in scope | {touched} touched ({coverage}%) | {at_target} at target depth**",
+        "",
+        "| Topic | Studied | Confidence | Depth |",
+        "|-------|---------|------------|-------|",
+    ]
+    lines.extend(_render_acgme_topic_row(topic) for topic in studied)
+    lines.extend(_render_acgme_topic_row(topic) for topic in not_studied[:5])
+    if len(not_studied) > 5:
+        lines.append(f"| *[{len(not_studied) - 5} more not yet started...]* | | | |")
+
+    priority_gaps = not_studied[:3]
+    if priority_gaps:
+        gap_links = []
+        for topic in priority_gaps:
+            label = topic.get("display_name") or topic.get("slug") or ""
+            cell = _acgme_topic_cell(topic, max_len=50)
+            if cell.startswith("[[") and label:
+                fname = cell.strip("[]")
+                short = label[:50] + ("..." if len(label) > 50 else "")
+                cell = f"[[{fname}|{short}]]"
+            gap_links.append(cell)
+        lines.extend(["", "**Highest-priority gaps**: " + ", ".join(gap_links)])
+
+    lines.extend(["", "---", ""])
+    return "\n".join(lines)
+
+
+def _render_acgme_never_started(data: dict[str, Any]) -> str:
+    lines = [
+        "## Never Started",
+        f"These PGY-{data['current_pgy']} curriculum topics have zero encounters.",
+        "",
+    ]
+    for domain in data["domains"]:
+        not_studied = [topic for topic in domain.get("topics", []) if not topic.get("studied")]
+        if not not_studied:
+            continue
+        lines.append(f"### {domain['domain']} ({len(not_studied)} not started)")
+        for topic in not_studied:
+            label = topic.get("display_name") or topic.get("slug") or ""
+            cell = _acgme_topic_cell(topic)
+            if cell.startswith("[[") and label:
+                fname = cell.strip("[]")
+                short = label[:60] + ("..." if len(label) > 60 else "")
+                cell = f"[[{fname}|{short}]]"
+            lines.append(f"- {cell}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def _render_acgme_readiness(data: dict[str, Any], today: str) -> str:
+    required = {
+        "current_pgy",
+        "total_in_scope",
+        "topics_at_target",
+        "topics_touched",
+        "topics_never_studied",
+        "coverage_pct",
+        "domains",
+    }
+    missing = sorted(required - set(data))
+    if missing:
+        raise ValueError(f"ACGME readiness payload missing: {', '.join(missing)}")
+    if not isinstance(data.get("domains"), list):
+        raise ValueError("ACGME readiness payload 'domains' must be a list")
+
+    pgy = data["current_pgy"]
+    total = data["total_in_scope"]
+    at_target = data["topics_at_target"]
+    touched = data["topics_touched"]
+    never = data["topics_never_studied"]
+    coverage = data["coverage_pct"]
+
+    metadata = f"""---
+resident_year: PGY-{pgy}
+updated: {today}
+total_in_scope: {total}
+topics_at_target: {at_target}
+topics_touched: {touched}
+topics_never_studied: {never}
+coverage_pct: {coverage}
+tags:
+  - type/reference
+  - source/agent
+---"""
+
+    lines = [
+        f"ACGME Readiness -- PGY-{pgy}",
+        f"*Gabriel Reyes | Baylor College of Medicine | Updated: {today}*",
+        "",
+        f"> **{total} topics** in scope for PGY-{pgy} | **{at_target}/{total}** at target depth | **{touched}/{total}** touched | **{never}/{total}** never studied",
+        "",
+        "*\"At target\" = mechanistic depth (2+) with confidence >= 0.15*",
+        "",
+        "## Domain Coverage",
+        "",
+    ]
+    lines.extend(_render_acgme_domain_section(domain) for domain in data["domains"])
+    lines.append(_render_acgme_never_started(data))
+    lines.append(metadata)
+    return "\n".join(lines)
 
 
 # Concept file composition lives in src/vault_kg_sync.py. This hook invokes
@@ -426,6 +538,12 @@ def _verify_file_written(path: Path, started_at: datetime) -> tuple[bool, str]:
     return True, f"{path} updated at {modified_at.isoformat()}."
 
 
+def _write_and_verify(path: Path, content: str, started_at: datetime) -> tuple[bool, str]:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    return _verify_file_written(path, started_at)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run universal post-session hook with hard verification.")
     parser.add_argument("--skill", required=True, help="Skill name, e.g. generate-report")
@@ -495,9 +613,7 @@ def main() -> int:
             next_priority_override=args.next_priority,
             milestone_map=milestones,
         )
-        DASHBOARD_PATH.parent.mkdir(parents=True, exist_ok=True)
-        DASHBOARD_PATH.write_text(dashboard_text, encoding="utf-8")
-        ok, detail = _verify_file_written(DASHBOARD_PATH, started_at)
+        ok, detail = _write_and_verify(DASHBOARD_PATH, dashboard_text, started_at)
         if ok and f"updated: {_utc_now().date().isoformat()}" not in dashboard_text:
             ok = False
             detail = "Dashboard updated, but updated date was not set to today."
@@ -505,30 +621,16 @@ def main() -> int:
     except Exception as exc:
         steps.append(StepResult("write_dashboard", False, f"Failed writing dashboard: {exc}"))
 
-    acgme_tmp = Path("/tmp/acgme_data.json")
     try:
         acgme_data = kg.acgme_readiness(pgy=args.pgy)
-        acgme_tmp.write_text(json.dumps(acgme_data, indent=2, default=str), encoding="utf-8")
-        result = subprocess.run(
-            [
-                "python3",
-                "scripts/write_acgme_readiness.py",
-                "--json",
-                str(acgme_tmp),
-                "--output",
-                str(ACGME_PATH),
-            ],
-            cwd=PROJECT_ROOT,
-            capture_output=True,
-            text=True,
+        readiness_text = _render_acgme_readiness(
+            acgme_data,
+            today=_utc_now().date().isoformat(),
         )
-        if result.returncode != 0:
-            steps.append(StepResult("write_acgme_readiness", False, f"write_acgme_readiness.py failed: {result.stderr.strip()[:400]}"))
-        else:
-            ok, detail = _verify_file_written(ACGME_PATH, started_at)
-            steps.append(StepResult("write_acgme_readiness", ok, detail))
+        ok, detail = _write_and_verify(ACGME_PATH, readiness_text, started_at)
+        steps.append(StepResult("render_acgme_readiness", ok, detail))
     except Exception as exc:
-        steps.append(StepResult("write_acgme_readiness", False, f"Failed generating ACGME readiness: {exc}"))
+        steps.append(StepResult("render_acgme_readiness", False, f"Failed generating ACGME readiness: {exc}"))
 
     try:
         sync_result = vault_kg_sync.sync_studied_concepts(
@@ -569,12 +671,27 @@ def main() -> int:
     except Exception as exc:
         steps.append(StepResult("sync_acgme_canvases", False, f"sync_canvases failed: {exc}", required=False))
 
+    # ── Episodic memory consolidation ───────────────────────────────────
     try:
-        if acgme_tmp.exists():
-            acgme_tmp.unlink()
-        steps.append(StepResult("cleanup_tmp", True, "Temporary post-session files cleaned."))
+        result = kg.consolidate_episodic_memory(limit=5, fallback_skill=args.skill)
+        metrics["episodic_exchanges_consolidated"] = result["exchanges_consolidated"]
+        metrics["episodic_rows_embedded"] = result["rows_embedded"]
+        steps.append(
+            StepResult(
+                "consolidate_episodic_memory",
+                True,
+                f"Consolidated {result['exchanges_consolidated']} exchange(s) across "
+                f"{result['sessions']} session(s), embedded {result['rows_embedded']} row(s) in LanceDB.",
+                required=False,
+            )
+        )
     except Exception as exc:
-        steps.append(StepResult("cleanup_tmp", False, f"Failed tmp cleanup: {exc}", required=False))
+        steps.append(StepResult(
+            "consolidate_episodic_memory",
+            False,
+            f"Episodic consolidation failed: {exc}",
+            required=False,
+        ))
 
     # Commit and push all vault changes to GitHub
     sync_script = PROJECT_ROOT / "scripts" / "sync_vault.sh"

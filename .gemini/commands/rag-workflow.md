@@ -9,7 +9,7 @@ Use for explicit textbook/database lookup requests. Do not auto-trigger for gene
 
 Pipeline: Assess → Retrieve → Transform → Gap Check → Present → Log → Finalize
 
-All §7 session-end hooks mandatory (preflight, log_turn after every Gym response, heartbeat checkpoints, concept extraction, post-session hook).
+All §7 session-end hooks mandatory (preflight, `record-answer` after every Gym response, heartbeat checkpoints, concept extraction, post-session hook).
 
 ## Step 0: Pre-Flight + Directives (Silent)
 
@@ -18,6 +18,16 @@ cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && ./src/prefl
 ```
 
 Read: `learner_context.json`, `transform_directives.json`, `case_log_sync.txt`. New case logs → sync per GEMINI.md.
+
+**Session continuity** (silent):
+```bash
+python3 src/knowledge_graph.py last_session_narrative --skill "rag-workflow" --topic "<query topic>"
+```
+If the query topic matches a prior session (non-null result):
+- Read `next_session_strategy` — shape Gym questions to follow the recommended approach
+- Read `key_confusions_json` — re-test previously confused concepts before advancing
+- Read `teaching_failures` — avoid repeating failed approaches
+- Surface prior gaps in the Learner Context Adaptation table below
 
 ## Step 1: Complexity Assess
 
@@ -67,15 +77,31 @@ Read only `transform_output.md`. Deliver synthesis. Handle follow-up/Gym directl
 
 ## Gym Follow-Up + Logging
 
-After every significant Gym response:
+**Session timestamp (set once at first Gym question, reuse for all exchanges):**
+```bash
+SESSION_TS=$(date -u +%Y-%m-%dT%H:%M:%S+00:00)
+```
+Initialize a turn counter at 0. Increment before each `record-answer` call.
 
+After every significant Gym response, run the atomic memory logger:
+
+**Atomic per-answer memory log:**
 ```bash
 cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
-./src/log_turn.sh --topic "<topic>" --source "rag" \
-  --signal-type "<correct_recall|partial_recall|incorrect_recall>" --depth <N> --category "<domain>" \
-  --topics "<topic>" --understood "<concept if correct>" \
-  --gap-details '[{"concept":"...","error_type":"...","error_process":"...","misconception":"...","root_cause":"...","remediation":"..."}]'
+python3 src/memory_orchestrator.py record-answer \
+  --session-ts "$SESSION_TS" --turn <N> --skill "rag-workflow" \
+  --topic "<topic>" --concept "<specific concept tested>" \
+  --question "<your question, verbatim>" \
+  --answer "<user's answer, verbatim or close paraphrase>" \
+  --correct <0|1|2> \
+  [--correction "<your correction/explanation if incorrect>"] \
+  [--error-type "<type>"] [--misconception "<specific wrong belief>"] \
+  [--root-cause "<why>"] [--remediation "<what should fix it>"] \
+  [--teaching-approach "<approach used>"] \
+  [--retrieval-sources "<source_book: heading>"] \
+  [--depth <N>] [--domain "<domain>"] [--response-confidence "high|low"]
 ```
+Correctness routing: correct with no hints = `--correct 2` | partial = `--correct 1` | wrong or misconception = `--correct 0`. Capture the ACTUAL question and answer. For breakthroughs, add `--breakthrough --insight "<what clicked>"`.
 
 Then heartbeat:
 
@@ -91,7 +117,7 @@ cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
 
 ## Step 5: Topic-Shift Logging
 
-If user changes topic without Gym response, run `log_study` once. Do not double-log after `log_turn.sh`.
+If user changes topic without Gym response, run `log_study` once. Do not double-log after `record-answer`.
 
 ## Step 5.5: Session File + Finalization
 

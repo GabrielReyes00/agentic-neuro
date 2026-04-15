@@ -3,7 +3,7 @@ description = "Deep textbook-grounded RAG pipeline — retrieve, transform, Socr
 prompt = """
 ACTIVE COMMAND: /rag-workflow — Full textbook retrieval + teaching pipeline (Steps 0-5.5).
 
-Silent/background steps are NOT optional. MANDATORY: preflight, log_turn.sh after EVERY Gym response, heartbeat after every interaction, session-end + Obsidian write, concept extraction, post-session hook.
+Silent/background steps are NOT optional. MANDATORY: preflight, record-answer after EVERY Gym response, heartbeat after every interaction, session-end + Obsidian write, concept extraction, post-session hook.
 
 User's query: {{args}}
 

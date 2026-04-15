@@ -3,7 +3,7 @@ description = "Adaptive 30-minute study session — recall, remediation, new ter
 prompt = """
 ACTIVE COMMAND: /study-session — Adaptive session from KG gaps.
 
-MANDATORY hooks: KG data gathering before plan, log_turn.sh after Components 1-2, heartbeat checkpoints, log_transfer after Component 4, session-end + Obsidian write, post-session hook.
+MANDATORY hooks: KG data gathering before plan, record-answer after each answer in Components 1-2, heartbeat checkpoints, log_transfer after Component 4, session-end + Obsidian write, post-session hook.
 
 User's request: {{args}}
 

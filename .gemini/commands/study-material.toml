@@ -3,7 +3,7 @@ description = "Generate study material from PDF/PPTX and run interactive drill w
 prompt = """
 ACTIVE COMMAND: /study-material — Two-phase: generate + drill.
 
-MANDATORY hooks: preflight, INDEX guard, log_turn.sh after EVERY response, heartbeat every 3 turns, final heartbeat + review upsert, concept extraction, post-session hook.
+MANDATORY hooks: preflight, INDEX guard, record-answer after EVERY response, heartbeat every 3 turns, final heartbeat + review upsert, concept extraction, post-session hook.
 
 User's request: {{args}}
 

@@ -19,6 +19,15 @@ cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && ./src/prefl
 
 Use `learner_context.json` to: target weak concepts, avoid re-drilling mastered basics, incorporate misconception patterns, weave in due concepts, test transfer candidates, add confusable-pair traps, apply calibration probing.
 
+**Session continuity** (silent):
+```bash
+python3 src/knowledge_graph.py last_session_narrative --skill "intern-bootcamp"
+```
+If non-null:
+- Read `next_session_strategy` — shape scenario selection and debrief focus accordingly
+- Read `teaching_failures` — design scenario to re-test those specific gaps with a different approach
+- Reference in debrief: "Last session you struggled with [X] — let's see if that's improved."
+
 ## Phase 1: Firefight (Simulation)
 
 Role: strict, direct Chief Resident.
@@ -32,6 +41,28 @@ Rules:
 6. Enforce communication frameworks: SBAR (escalation), I-PASS with readback (handoff), CUS (challenging unsafe plan)
 7. Silent confidence tagging (`high|low`, correct/incorrect)
 8. After each order: EMR callout with key Epic fields
+9. **Session timestamp (set once at simulation start, reuse for all exchanges):**
+```bash
+SESSION_TS=$(date -u +%Y-%m-%dT%H:%M:%S+00:00)
+```
+Initialize a turn counter at 0. Increment before each `record-answer` call.
+
+10. **Per-decision memory logging (silent)**: After each intern decision/answer, log the outcome:
+```bash
+cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
+python3 src/memory_orchestrator.py record-answer \
+  --session-ts "$SESSION_TS" --turn <N> --skill "intern-bootcamp" \
+  --topic "<topic>" --concept "<specific clinical concept tested>" \
+  --question "<the clinical scenario/decision point presented>" \
+  --answer "<intern's action/order/response, verbatim or close paraphrase>" \
+  --correct <0|1|2> \
+  [--correction "<Chief's correction/teaching point>"] \
+  [--error-type "<type>"] [--misconception "<specific wrong reasoning>"] \
+  [--root-cause "<why>"] [--remediation "<what should fix it>"] \
+  [--teaching-approach "simulation"] \
+  [--depth <N>] [--domain "<domain>"] [--response-confidence "high|low"]
+```
+Correctness routing: correct action/order with no prompting = `--correct 2` | incomplete/imprecise = `--correct 1` | wrong/dangerous/missed critical finding = `--correct 0`.
 
 Crash-safe heartbeat every ~3 decisions:
 

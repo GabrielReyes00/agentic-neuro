@@ -1,0 +1,1061 @@
+================================================================================
+AGENTIC IMPROVEMENTS LOG — RECURSIVE AI IMPROVEMENT DOCUMENT
+================================================================================
+
+PURPOSE: This document is written FOR AI models. It describes the complete
+architecture, current state, recent improvements, passed benchmarks, known
+limitations, and prioritized future work for the agentic-neuro code repo.
+An AI model reading this should gain enough context to (a) propose the
+highest-impact next improvement, (b) implement it correctly within the
+existing codebase conventions, and (c) validate its own changes against
+the benchmarks listed here.
+
+OWNER: Gabriel Reyes, PGY-1 Neurosurgery, Baylor College of Medicine
+REPO: /Users/gabrielreyes/agentic-neuro
+DATE: 2026-04-13 (Iteration 8)
+
+================================================================================
+1. SYSTEM OVERVIEW
+================================================================================
+
+This repo is the backend for an AI-powered neurosurgery learning system.
+It runs as a local CLI agent (Claude Code or Gemini CLI) that:
+  - Retrieves information from 22 neurosurgery textbooks via vector search
+  - Tracks the user's mastery of 265 ACGME curriculum topics via a knowledge graph
+  - Writes structured study material to an Obsidian vault for visual review
+  - Syncs Anki flashcards via the AnkiConnect API
+  - Provides Socratic tutoring sessions, clinical simulations, and operative walkthroughs
+  - Generates research reports with RAG-sourced citations
+  - Manages inbox triage and calendar scheduling via MCP
+
+Multi-agent: Claude Code (CLAUDE.md) and Gemini CLI (GEMINI.md) share the
+same Python backend, databases, and Obsidian vault. Agent-specific behavior
+is configured in their respective system instructions; all Python scripts are
+agent-agnostic.
+
+1a. ARCHITECTURE DIAGRAM (text)
+
+    User
+      |
+      v
+    Agent (Claude Code / Gemini CLI)
+      |--- Skills (.claude/commands/*.md, .gemini/commands/*.md)
+      |       13 skills: anki-sync, explain-topic, generate-report,
+      |       inbox-workflow, intern-bootcamp, intraoperative-guide,
+      |       knowledge-map, list-textbooks, rag-transform (internal),
+      |       rag-workflow, study-material, study-session, wikilink-inject
+      |
+      |--- Python Backend (src/)
+      |       knowledge_graph.py   (7,586 lines) — SQLite KG, SRS, stability model, telemetry, episodic memory, RRF recall
+      |       lance_retriever.py   (3,534 lines) — Vector search + reranking pipeline
+      |       vault_kg_sync.py     (982 lines)   — Concept file renderer + vault format guard + concept evolution in encounter history
+      |       vault_canvas_builder.py (540 lines) — ACGME Canvas generator
+      |       anki_sync_cli.py     (659 lines)   — Anki card pipeline
+      |       frontier_search.py   (573 lines)   — Web search integration
+      |       universal_post_session_hook.py (743 lines) — End-of-session orchestrator
+      |       precompact_memory_inject.py (198 lines) — PreCompact hook: session state injection before context compaction
+      |       gemini_query_gate.py — Tier routing for Gemini
+      |       preflight.sh / heartbeat.sh / log_turn.sh — Session lifecycle
+      |
+      |--- Scripts (scripts/)
+      |       write_concept_stubs.py — Full-vault Concept file regenerator
+      |       write_acgme_readiness.py — ACGME Readiness report writer
+      |       move_frontmatter.py — Vault format normalizer (top-YAML to bottom)
+      |       sync_vault.sh — Git commit+push for vault changes
+      |       topic_hygiene.py — Dedup + category backfill migration
+      |       backfill_curriculum_id.py — Curriculum ID backfill migration
+      |       recompute_confidence.py — Stability + confidence recomputation migration
+      |
+      |--- Data Stores
+      |       neurosurgery_v4.lance — 46,714 chunks from 22 textbooks (BAAI/bge-m3 1024d)
+      |       data/knowledge_graph.db — SQLite (topics, concept_mastery, signal_events,
+      |           curriculum_topics, concept_relationships, session_narratives,
+      |           learning_exchanges, episode_summaries, concept_evolution, etc.)
+      |       episodic_memory.lance/ — LanceDB table, BGE-M3 1024d embeddings of
+      |           learning exchanges + episode summaries (semantic episodic recall)
+      |       chromadb_store_anki_memory — Anki dedup store
+      |       data/confusion_matrix.json — Confusable concept pairs
+      |       data/curriculum_skeleton.json — 265-topic ACGME curriculum
+      |
+      |--- Obsidian Vault (/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/)
+              Concepts/           (274 files) — ACGME concept stubs with Dataview fields
+              Reports/            (5 files)   — Research reports with citations
+              Operative Guides/   (1 file)    — Step-by-step surgical walkthroughs
+              Study Material/     (4 files)   — Concept maps + question banks
+              Review Sessions/    (4 files)   — Session logs
+              Error Atlas/        (16 files)  — Confusion pair disambiguation pages
+              ACGME Canvases/     (12 files)  — .canvas topology maps per milestone
+              Dashboard.md                    — Live Dataview queries + aggregate stats
+              ACGME Readiness.md              — Curriculum coverage report
+
+1b. KEY TECHNOLOGY CHOICES
+
+  Vector DB:      LanceDB (local, columnar, fast)
+  Embeddings:     BAAI/bge-m3 (1024-dim, multilingual, MPS-accelerated)
+  Reranker:       cross-encoder/ms-marco-MiniLM-L-6-v2 (sigmoid scoring)
+  NER:            SciSpacy en_ner_bc5cdr_md (medical entity extraction, optional)
+  Knowledge DB:   SQLite via custom ORM in knowledge_graph.py
+  Decay Model:    Stability-weighted Ebbinghaus: half_life = 48h * 2^(depth-1) * stability_factor
+  Vault:          Obsidian with Dataview plugin (inline field queries)
+  Anki:           AnkiConnect localhost:8765
+  MCP:            Gmail, Google Calendar
+  Agent:          Claude Code (Opus 4.6 primary) + Gemini CLI (Flash/Pro)
+
+================================================================================
+2. DATABASE STATE (as of 2026-04-13, Iteration 8)
+================================================================================
+
+  knowledge_graph.db:
+    topics:               730 rows (+11 from new study sessions)
+    curriculum_topics:    265 rows (ACGME curriculum — unchanged)
+    concept_mastery:      868 rows (+7)
+    concept_relationships: 188 rows (15 confusable_with + 170 prerequisite_of + 3 new)
+    signal_events:        504 rows (+24)
+    session_narratives:     8 rows (+2; next_session_strategy populated in both)
+    anki_card_stats:        0 rows (no Anki sync completed yet)
+    learning_exchanges:     2 rows (first real episodic exchanges — AChA session)
+    episode_summaries:      6 rows (embedded in episodic_memory.lance)
+    concept_evolution:      3 rows (first decay + active testing transitions logged)
+    confusion_pairs:       16+ rows (in confusion_matrix.json, linked to Error Atlas files)
+    categories:            12 distinct (11 canonical ACGME domains + Anatomy)
+
+  Episodic memory (LanceDB):
+    episodic_memory.lance: 4 embedded rows (2 exchanges + 2 summaries, BGE-M3 1024d)
+    FIRST REAL EPISODIC DATA: AChA vascular supply misconception (confused AChA with PCA
+    territory), teaching approach = anatomical-tracing, both incorrect.
+
+  Curriculum coverage: 22/265 topics studied (8.3%), 3/89 PGY-1 topics at target (3.4%)
+  Signal type distribution (504 total):
+    card_created: 201 | query: 191 | study_session: 84 |
+    correct_recall: 1 | incorrect_recall: 1 | partial_recall: 1 | other active: 25
+    NOTE: First real active recall signals from live AChA session now in DB.
+
+  Calibration state: INERT (0 entries — needs active study sessions to populate)
+
+================================================================================
+3. COMPLETED ITERATIONS (summary — see archived details below)
+================================================================================
+
+  Iteration 1 (2026-04-08 to 2026-04-10):
+    + vault_kg_sync.py (NEW) — Dataview inline fields, KG relationship sections,
+      encounter history, vault format guard
+    + vault_canvas_builder.py (NEW) — ACGME milestone canvases
+    * universal_post_session_hook.py — integrated vault sync + canvas builder
+    * intraoperative-guide skills — added mermaid decision tree section
+
+  Iteration 2 (2026-04-10):
+    * vault_kg_sync.py — User-section merge strategy (preserves ## sections
+      authored by user in Obsidian during agent sync cycles)
+
+  Iteration 3 (2026-04-10):
+    + scripts/backfill_curriculum_id.py — Multi-strategy fuzzy matcher
+    * knowledge_graph.py — 3-strategy _lookup_curriculum_id
+    Result: 66 orphan topics linked to curriculum (391 total with curriculum_id)
+
+  Iteration 4 (2026-04-11):
+    + scripts/topic_hygiene.py — Dedup, category backfill, normalization
+    * knowledge_graph.py — Token-overlap dedup, 120-char topic gate, category
+      normalization + inference at creation time
+    Result: 745->719 topics, 230->15 uncategorized, 11 canonical categories
+
+  Iteration 5 (2026-04-12):
+    + scripts/recompute_confidence.py — Stability-weighted confidence replay
+    * knowledge_graph.py (+302 lines) — stability_factor, difficulty columns,
+      compute_stability/compute_difficulty functions, stability-aware decay
+    Result: avg conf 0.008->0.053, meaningful SRS differentiation
+
+  Iteration 7 (2026-04-13): Long-term Agentic Memory Redesign
+    + RRF fusion in recall_episodes() — three-stream (structured, keyword, semantic)
+    + recall_episodes_compact() — progressive disclosure, 70-80% token reduction
+    + src/precompact_memory_inject.py + .claude/settings.json PreCompact hook
+    + concept_evolution table + log_concept_evolution() + CLI command
+    * preflight.sh — --compact mode for episodic_memory.json
+    * learner_context() — past_exchanges_compact replaces verbatim dumps
+    * CLAUDE.md, GEMINI.md — documented all new capabilities
+
+================================================================================
+4. INVARIANTS AND CONSTRAINTS (must be preserved by all future changes)
+================================================================================
+
+  4a. VAULT FORMAT RULES (hard requirements, user-enforced)
+      - No top-of-file YAML frontmatter. YAML `---` block at BOTTOM only.
+      - No H1 heading. Filename IS the Obsidian title. Start with body content.
+      - No emojis anywhere in vault files, Anki cards, or terminal output.
+      - Title Case filenames with spaces. No underscores, no date prefixes.
+      - Session filenames: Review Sessions/<Topic Title>.md — topic only.
+      - Protected Concept files (never overwrite): Neurosurgery Consult Workflow.md,
+        Neurosurgery Consult Checklists by Pathology.md,
+        Peripheral Nerve Injury Classifications (Seddon & Sunderland).md
+      - Every writer must route through safe_write_vault_file() or assert_vault_format()
+
+  4b. GAP_DETAILS SCHEMA (all six fields mandatory, never placeholder values)
+      {"concept", "error_type", "error_process", "misconception", "root_cause", "remediation"}
+
+  4c. TOPIC NAMING: Level 1 REJECTED. Level 2 ok. Level 3 preferred.
+
+  4d. SESSION END PROTOCOL: log_session_narrative -> vault write -> concept extraction
+      -> universal post-session hook. Incomplete sessions finalize with available data.
+
+  4e. SUBAGENT MODEL ROUTING: sonnet for synthesis, haiku for classification.
+
+================================================================================
+5. CURRENT ASSESSMENT — WHAT THE SYSTEM ACTUALLY DOES WELL
+================================================================================
+
+  The infrastructure is solid. Five iterations built:
+    - A clean, deduplicated, categorized topic database (719 topics, 11 domains)
+    - A stability-aware SRS model that meaningfully differentiates mastery
+    - A live Obsidian vault with Dataview queries, concept files, and canvas maps
+    - A reliable post-session hook pipeline (8 steps, consistently ok=true)
+    - Vault format safety that structurally prevents the old top-YAML/H1 bugs
+    - User-section preservation during agent sync cycles
+    - 13 functional skills covering RAG, study, simulation, and productivity
+
+  What it does NOT do well — the actual experience gaps:
+    1. [ADDRESSED in Iteration 6] Sessions were stateless — skills now query
+       last_session_narrative at startup. True validation on first live session.
+    2. The KG is a ledger, not an advisor (records but doesn't direct learning).
+       A4 (Intelligent Study Planner) is the next step to close this gap.
+    3. [ADDRESSED in Iteration 6] 82% of signals were passive — skills now have
+       explicit per-answer signal_type logging. True validation on first live session.
+    4. [RESOLVED in Iteration 6] Graph had zero structural edges — now 170
+       prerequisite_of edges from curriculum structure. Canvas edges 10 -> 198.
+    5. Anki pipeline is untested end-to-end (0 dispatched cards)
+    6. Calibration is completely inert (no self-assessment data)
+    7. No automated tests for any Python module
+
+================================================================================
+6. KNOWN LIMITATIONS AND TECH DEBT
+================================================================================
+
+  6a. [ADDRESSED in Iteration 6] THE ACTIVE RECALL DEFICIT
+      Skills now have explicit per-answer signal_type logging (correct/partial/
+      incorrect_recall). First real active recall signals confirmed in DB from
+      AChA session (Iteration 8 validation). Architecture proven end-to-end.
+
+  6b. [ADDRESSED in Iteration 6] SESSION STRATEGIES NOT CONSUMED
+      Skills query last_session_narrative at startup. 8 narratives now exist
+      with next_session_strategy populated (validated live). Architecture proven.
+
+  6c. [RESOLVED in Iteration 6] ZERO PREREQUISITE EDGES
+      188 concept_relationships (170 prerequisite_of seeded from curriculum).
+      Canvas edges 198. Proven.
+
+  6d. [PARTIALLY ADDRESSED in Iter 8] KEY_CONFUSIONS_JSON ALWAYS EMPTY
+      Session narratives had key_confusions_json = '[]' in all historical records
+      because agent rarely provided them. Fix 6 adds derive_session_confusions()
+      which auto-queries learning_exchanges at session end (heartbeat --status
+      complete auto-derives if KEY_CONFUSIONS still '[]'). First real session
+      validated: AChA/PCA confusion correctly derived. Historical records remain
+      empty — will fill as new sessions accumulate.
+
+  6e. [ADDRESSED in Iter 8] PRECOMPACT HOOK TIMEOUT
+      15s timeout caused "Hook cancelled" when BGE-M3 cold start (30-60s) was
+      triggered by recall_episodes_compact(). Fixed: timeout 60s + hook now uses
+      SQLite-only queries (no LanceDB). Confirmed working: compact ran at
+      2026-04-13 session, injected AChA error + anatomical-tracing approach.
+
+  6f. [ADDRESSED in Iter 8] GEMINI EPISODIC MEMORY BYPASS
+      log_turn.sh was the canonical per-answer call in GEMINI.md, wrapping only
+      log_event + log_study (never log_exchange). Fixed: log_event (Call 1) +
+      log_exchange (Call 2) are now co-equal mandatory in all Gemini active-testing
+      paths. Validated: grep confirms no active-testing path uses log_turn.sh.
+
+  6g. [ADDRESSED in Iter 8] DECAY EVOLUTION TRAIL SILENT
+      _apply_concept_srs_decay() ran bulk UPDATEs without concept_evolution records.
+      Fixed with SELECT-before-UPDATE pattern. First decay event confirmed logged
+      (concept_evolution: 3 rows). All future decay cycles fully audited.
+
+  6h. [ADDRESSED in Iter 8] HEARTBEAT VAULT FORMAT VIOLATIONS
+      heartbeat.sh created files with H1 heading and top-of-file YAML, bypassing
+      safe_write_vault_file(). Fixed: both CREATE templates restructured — no H1,
+      YAML at bottom. Validated with bash -n + template inspection.
+
+  6i. CALIBRATION SYSTEM INERT (MODERATE)
+      calibration_profile returns all nulls. No calibration_log entries.
+      teaching_failures is still empty in all historical narratives (8 total).
+      key_confusions now auto-populated going forward (Fix 6) but
+      overconfidence detection requires multiple sessions with self-rating data.
+
+  6j. ANKI PIPELINE UNTESTED (MODERATE)
+      anki_card_stats has 0 rows. 201 card_created signals show cards drafted
+      but never dispatched. Full pipeline (dedup -> validate -> dispatch ->
+      stat tracking) is unverified end-to-end.
+
+  6k. NO AUTOMATED TESTS (LOW-MODERATE)
+      Zero pytest coverage. All validation is manual or via post-session hook.
+      Regressions are caught by users, not CI.
+
+  6l. LANCEDB API DEPRECATION (LOW)
+      table_names() deprecated; should use list_tables().
+
+  6m. PREFLIGHT RRF LATENCY (LOW)
+      learner_context() now calls recall_episodes_compact() (Fix 5), which can
+      trigger BGE-M3 cold start (30-60s) at session start. Acceptable since
+      preflight runs before the session, not during compaction. Users may notice
+      a delay at first preflight of a new terminal session.
+
+  6n. MOVE_FRONTMATTER RESIDUAL VIOLATIONS (LOW)
+      move_frontmatter.py --dry-run still reports 2 files: Dashboard.md (YAML)
+      and ACGME Readiness.md (H1). These are auto-generated by the post-session
+      hook. The hook's dashboard/ACGME writers should be updated to emit
+      format-compliant output. Low priority — users don't directly read raw MD.
+
+================================================================================
+7. FUTURE DIRECTIONS (prioritized by impact on learning experience)
+================================================================================
+
+  --- THESIS ---
+
+  The infrastructure is stable. The database is clean. The SRS model works.
+  The vault renders correctly. The next phase is not about building more
+  infrastructure — it is about making the system INTELLIGENT: using what it
+  knows to change what it does, and generating the high-quality signal data
+  that makes the entire KG meaningful. Every item below is evaluated against
+  one question: does this make the next study session measurably better?
+
+  ============================================================
+  TIER A — TRANSFORM THE LEARNING EXPERIENCE
+  ============================================================
+  These items directly change what happens when the user sits down to study.
+
+  A1. [COMPLETED in Iteration 6] GRANULAR SIGNAL LOGGING IN SKILLS
+      Skills now log correct_recall/partial_recall/incorrect_recall after each
+      user answer. Instructions added to study-session, rag-workflow, and
+      intern-bootcamp (both Claude and Gemini). Awaiting first live session
+      for end-to-end validation.
+
+  A2. [COMPLETED in Iteration 6] SESSION CONTINUITY ENGINE
+      Skills now query last_session_narrative at startup. Uses existing
+      last_session_narrative CLI command (no new Python code needed).
+      Shapes session from next_session_strategy, key_confusions, and
+      teaching_failures.
+
+  A3. [COMPLETED in Iteration 6] PREREQUISITE EDGE SEEDING
+      170 edges from curriculum structure via seed_curriculum_prerequisites.py.
+      Canvas edges 10 -> 198. Idempotent and re-runnable.
+
+  A4. INTELLIGENT STUDY PLANNER (HIGH — the "what should I study" upgrade)
+  -------------------------------------------------------------------------
+  WHY: "What should I study?" currently returns a flat list of never-seen
+  curriculum topics sorted by priority. It ignores cognitive patterns
+  (11 identified), session strategies (6 recorded), confusable pairs
+  (16 in matrix), error type concentrations, and prerequisite chains.
+  A study planner that synthesizes all signals would be the most valuable
+  daily-use feature for board prep.
+
+  WHAT:
+    (a) New KG command: study_plan --hours N [--rotation <rotation>] [--focus <domain>]
+    (b) Output is a prioritized sequence with rationale for each item:
+        Layer 1: Overdue high-confidence topics (SRS spaced repetition)
+        Layer 2: Confusable pairs with recent errors (error correction)
+        Layer 3: Prerequisite chains for upcoming curriculum (preparation)
+        Layer 4: New curriculum topics by PGY priority (expansion)
+    (c) Each item includes: topic, recommended skill, estimated time,
+        rationale ("3 errors on this pair in last 2 sessions", "prerequisite
+        for tomorrow's rotation topic").
+    (d) Integrate into study-session skill as the default session plan.
+
+  SCOPE: ~200 lines in knowledge_graph.py. ~30 lines in study-session skill.
+  BLOCKED BY: A1 (needs signal data), A2 (session context), A3 (prerequisites).
+  Can be partially useful without A3 but reaches full potential with all three.
+
+  VALIDATES:
+    - study_plan --hours 2 returns a multi-layer plan with rationale.
+    - Plan prioritizes overdue items over never-seen items.
+    - Plan includes confusable pair drills when error history exists.
+
+  ============================================================
+  TIER B — DEEPEN THE INTELLIGENCE LAYER
+  ============================================================
+  These items improve the quality of the KG's recommendations and the
+  accuracy of its learner model. They make the system smarter but don't
+  directly change the session UX (Tier A does that).
+
+  B1. CALIBRATION FEEDBACK LOOP
+  ------------------------------
+  WHY: The system cannot distinguish overconfidence from underconfidence.
+  In medical education, overconfidence on numerical thresholds (ICP targets,
+  BP goals, drug doses) is clinically dangerous. The calibration_profile
+  command exists but returns all nulls.
+
+  WHAT:
+    (a) During Socratic sessions, inject confidence self-rating prompts on
+        threshold/numerical questions: "How confident are you? (1-5)"
+    (b) Compare self-rating against actual performance.
+    (c) Log to a calibration_log table (or add columns to signal_events).
+    (d) calibration_profile returns real data: Brier score, domain-level
+        overconfidence alerts.
+    (e) Dashboard.md surfaces calibration alerts.
+
+  SCOPE: ~100 lines in knowledge_graph.py. Skill command modifications.
+  BLOCKED BY: A1 (needs correct/incorrect signals to compare against).
+
+  B2. CROSS-MILESTONE CANVAS + MASTER TOPOLOGY VIEW
+  ---------------------------------------------------
+  WHY: With prerequisite edges (A3), cross-milestone relationships become
+  visible and worth rendering. A master canvas showing all 265 topics
+  would reveal the full ACGME learning graph.
+
+  WHAT:
+    (a) Ghost file-nodes on per-milestone canvases for foreign endpoints.
+    (b) A single "ACGME Full Topology.canvas" with domain-colored clustering.
+
+  BLOCKED BY: A3 (prerequisite edges must exist first).
+  SCOPE: ~100 lines in vault_canvas_builder.py.
+
+  B3. ANKI END-TO-END VALIDATION
+  --------------------------------
+  WHY: 201 card_created signals but 0 dispatched cards. The pipeline exists
+  but has never been run to completion. Anki is the primary spaced repetition
+  tool and should feed mature-card counts back into concept_mastery for the
+  vault's anki_cards:: and anki_mature:: Dataview fields.
+
+  WHAT:
+    (a) Run a full anki-sync cycle on an existing session.
+    (b) Verify: card generation, dedup (chromadb), image enrichment,
+        dispatch to AnkiConnect, stat tracking in anki_card_stats.
+    (c) Verify sync_anki command reads back Anki review stats.
+    (d) Fix any pipeline failures.
+
+  SCOPE: Debugging/testing, likely <50 lines of fixes.
+
+  B4. AUTOMATED TEST SUITE (FOUNDATION)
+  ----------------------------------------
+  WHY: Five iterations of migrations, rendering changes, and model updates
+  with zero regression tests. Each change is validated manually. As the
+  codebase grows (12,964 lines across 7 core files), the risk of silent
+  regressions increases.
+
+  WHAT:
+    (a) pytest fixtures for an in-memory knowledge_graph.db.
+    (b) Tests for: vault format guard (safe_write_vault_file rejects bad
+        content), concept file rendering (build_concept_file produces valid
+        output), stability/difficulty computation (compute_stability,
+        compute_difficulty), topic dedup (_find_topic returns correct matches),
+        category normalization, signal logging (log_event creates correct rows).
+    (c) Integration test: post-session hook end-to-end with test data.
+
+  SCOPE: ~300-500 lines in tests/. Standard pytest setup.
+
+  B5. TEXTBOOK FILTER IN SEARCH
+  --------------------------------
+  WHY: Users sometimes know which textbook is authoritative for a topic.
+  Searching all 22 adds noise from introductory texts when expert references
+  are preferred.
+
+  WHAT: Add --textbooks flag to lance_retriever.py search and compare.
+  Filter on the source metadata column before vector search.
+
+  SCOPE: ~30 lines in lance_retriever.py.
+
+  ============================================================
+  TIER C — EXPLORATORY / FUTURE ARCHITECTURE
+  ============================================================
+
+  C1. CASE LOG AUTO-EXTRACTION
+      Parse Case Log/ markdown files to auto-extract procedures, diagnoses,
+      and learning points. Log to KG as signal_events with source="case_log".
+      Generate review questions from real cases. Bridges clinical work to
+      board study.
+
+  C2. MULTI-VAULT KNOWLEDGE TRANSFER
+      Cross-vault wikilinks between agentic-neuro and Peripheral Nerve vault.
+      Peripheral nerve anatomy concepts feeding into spinal surgery prerequisites.
+
+  C3. LEARNING ANALYTICS DASHBOARD
+      Accuracy-over-time plots, domain heatmaps, error type trends, calibration
+      curves, forgetting curves. Most valuable after 50+ sessions.
+      Could be Obsidian Charts plugin or a separate web UI.
+
+  C4. VOICE INTERFACE
+      macOS speech-to-text for hands-free study during commute.
+
+  C5. ADAPTIVE DIFFICULTY TARGETING
+      difficulty_target command exists but is unused by skills. Wire it into
+      session question selection so the system targets the zone of proximal
+      development (questions the user gets right ~70% of the time).
+
+  B6. FIX DASHBOARD AND ACGME READINESS FORMAT VIOLATIONS (LOW)
+  ---------------------------------------------------------------
+  WHY: move_frontmatter.py --dry-run still flags Dashboard.md (YAML at top)
+  and ACGME Readiness.md (H1 heading). These are written by
+  universal_post_session_hook.py -> write_dashboard.py and write_acgme_readiness.py.
+  WHAT: Update the writer scripts to emit format-compliant output (YAML at
+  bottom, no H1). SCOPE: ~20 lines in scripts/write_dashboard.py and
+  scripts/write_acgme_readiness.py.
+
+  ============================================================
+  DEPENDENCY GRAPH (post-Iteration 8)
+  ============================================================
+
+  A1 [DONE] ──┬──> A4 (study planner) [READY]
+              ├──> B1 (calibration loop) [READY]
+              └──> C5 (adaptive difficulty)
+
+  A2 [DONE] ──> A4 (study planner) [READY]
+
+  A3 [DONE] ──┬──> A4 (study planner) [READY]
+              └──> B2 (cross-milestone canvas) [READY]
+
+  Iter 7 [DONE] ──> A4 (episodic recall for session planning) [READY]
+  Iter 8 [DONE] ──> B1 (calibration, key_confusions now auto-populated) [READY]
+
+  CRITICAL PATH: A4 (Intelligent Study Planner) is now fully unblocked.
+  All three Tier A prerequisites (A1, A2, A3) + episodic memory (Iter 7) +
+  derive_session_confusions (Iter 8) are complete.
+
+  RECOMMENDED EXECUTION ORDER:
+    1. A4 (study planner) — highest impact, all prerequisites complete
+    2. B1 (calibration) — unblocked; key_confusions now auto-derived
+    3. B3 (Anki validation) — anytime, independent
+    4. B2 (cross-milestone canvas) — unblocked by A3
+    5. B6 (fix Dashboard/ACGME format) — small, addresses 6n
+    6. B4 (test suite) — anytime, independent
+
+================================================================================
+7a. LONG-TERM AGENTIC MEMORY SYSTEM (Iteration 7 — implemented 2026-04-13)
+================================================================================
+
+  OVERVIEW: Four architectural enhancements transform the episodic memory
+  system from a passive log into an active retrieval engine with principled
+  multi-stream fusion, token-efficient preflight, mid-session continuity, and
+  temporal concept understanding tracking.
+
+  --- THREE-TIER EPISODIC MEMORY ARCHITECTURE ---
+
+  Episodic memories are stored in three complementary layers:
+
+    Hot  (structured): SQLite `learning_exchanges` + `episode_summaries`.
+         Per-exchange content: question, answer, correction, error_type,
+         misconception, teaching_approach, outcome. Fast structured queries.
+         Filter by topic, concept, error_type, skill, days_back.
+
+    Warm (semantic):   LanceDB `episodic_memory` table (episodic_memory.lance/).
+         BGE-M3 1024d embeddings of exchange text + episode summaries.
+         Enables semantic recall ("find exchanges where Gabriel confused X
+         with Y") that keyword search cannot do.
+
+    Cold (narrative):  Obsidian vault Review Sessions/ files. Human-readable
+         session logs written by learning skills at session end.
+
+  --- RRF FUSION IN recall_episodes() ---
+
+  recall_episodes() fuses three retrieval streams using Reciprocal Rank
+  Fusion (k=60):
+
+    Stream 1 (structured): SQLite filter by topic, error_type, skill, days_back
+    Stream 2 (keyword):    LIKE matching on concept, question, answer fields
+    Stream 3 (semantic):   LanceDB vector search on episodic_memory table
+
+  RRF score = sum over streams of: 1 / (60 + rank_in_stream)
+  Items appearing in multiple streams are boosted. Degrades gracefully when
+  LanceDB is empty or query is absent (streams 1+2 only in those cases).
+
+  Usage: python3 src/knowledge_graph.py recall "query" [--topic T] [--max N]
+
+  --- PROGRESSIVE DISCLOSURE IN PREFLIGHT ---
+
+  preflight.sh step 8 uses --compact mode. Compact output replaces verbatim
+  question/answer/correction text with one-liner summaries + exchange_ids,
+  reducing preflight JSON size by ~70-80% while preserving on-demand access
+  to full content via exchange_history().
+
+  preflight.sh       -> data/Sessions/episodic_memory.json (compact format)
+  learner_context()  -> past_exchanges_compact key (exchange_id + one-liner)
+
+  Full content on demand: python3 src/knowledge_graph.py exchange_history --concept "X"
+  Explicit compact CLI: python3 src/knowledge_graph.py recall "query" --compact
+
+  --- PRECOMPACT HOOK FOR MID-SESSION CONTINUITY ---
+
+  src/precompact_memory_inject.py fires before Claude Code context compaction
+  via PreCompact hook in .claude/settings.json. It queries learning_exchanges
+  for the last 2 hours and outputs a compact memory block that gets injected
+  into the compacted context:
+    - Topics active this session + score summary
+    - Key errors to re-test (concept, misconception, correction)
+    - Teaching approaches used this session
+    - Next-session strategy from most recent session_narratives row (Iter 8)
+    - Recent concept evolution events — status transitions last 7 days (Iter 8)
+    - Relevant prior session memory — SQLite only, last 30 days
+
+  Non-blocking: always exits 0. Timeout: 60 seconds (Iter 8: was 15, raised for
+  safety margin). SQLite-only queries — LanceDB NOT called from hook path.
+
+  --- CONCEPT EVOLUTION VERSIONING ---
+
+  concept_evolution table in knowledge_graph.db tracks concept understanding
+  changes over time. Triggered automatically inside log_study_session() when
+  concept_mastery.status changes.
+
+  Each row records: previous and new status snapshot, trigger type
+  (correct_recall, incorrect_recall, decay), FK to triggering exchange_id
+  or signal_event_id, and a natural language evolution_note.
+
+  Creates an audit trail: first misconception, correction, regression, final
+  consolidation — all linked to the specific exchanges that caused each change.
+
+  AGENTS: concept_evolution fires automatically from log_study. Do not call
+  log_concept_evolution() manually.
+
+  Query: python3 src/knowledge_graph.py concept_evolution --concept "X"
+
+  --- TEACHING EFFECTIVENESS ANALYTICS ---
+
+  teaching_effectiveness() aggregates outcomes by teaching approach per domain.
+  Identifies which approaches (anatomical-tracing, Socratic, analogy, etc.)
+  produce the best recall outcomes. Used by skills to adapt pedagogy.
+
+  Query: python3 src/knowledge_graph.py teaching_effectiveness [--domain D]
+
+================================================================================
+8. HOW TO VALIDATE CHANGES (for AI implementing improvements)
+================================================================================
+
+  8a. VAULT FORMAT COMPLIANCE
+      python3 scripts/move_frontmatter.py --dry-run
+      Expected: 0 YAML moves, 0 H1 strips
+
+  8b. POST-SESSION HOOK END-TO-END
+      python3 src/universal_post_session_hook.py \
+        --skill "test" --topics "test" --vault-writes "" \
+        --report-out /tmp/test_hook.json
+      Expected: ok=true in JSON, all 8 steps pass
+
+  8c. CONCEPT FILE RENDERING
+      python3 scripts/write_concept_stubs.py
+      Expected: 265+ files written, 0 protected skipped
+      Spot-check: first line of any Concepts/*.md is NOT `---` or `# `
+
+  8d. CANVAS GENERATION
+      python3 src/vault_canvas_builder.py
+      Expected: 11 canvases, 300+ nodes, edges >= 10
+
+  8e. KNOWLEDGE GRAPH INTEGRITY
+      python3 src/knowledge_graph.py status
+      python3 src/knowledge_graph.py dashboard
+      Expected: no errors, curriculum count = 265
+
+  8f. VAULT AUDIT (comprehensive)
+      VAULT="/Users/gabrielreyes/Documents/Obsidian/agentic-neuro"
+      for dir in Concepts Reports "Operative Guides" "Study Material" \
+        "Review Sessions" "Error Atlas" "ACGME Canvases"; do
+        find "$VAULT/$dir" -name "*.md" -exec awk 'NR==1 && /^(---|# )/{print FILENAME": "$0}' {} \;
+      done
+      Expected: no output (0 violations)
+
+  8g. SIGNAL LOGGING (new, for A1 validation)
+      Run a short Socratic exchange (3+ questions). Then:
+      python3 src/knowledge_graph.py activity --n 10
+      Expected: recent events include correct_recall/incorrect_recall/partial_recall
+      signal types (not just study_session or query).
+
+================================================================================
+9. CODEBASE CONVENTIONS (for AI writing code in this repo)
+================================================================================
+
+  - Python 3.14, type hints with `from __future__ import annotations`
+  - sqlite3 with conn.row_factory = sqlite3.Row (dict-like access)
+  - Pathlib for all file operations
+  - No external ORM — raw SQL in knowledge_graph.py
+  - Shell prefix: cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate
+  - Vault root: /Users/gabrielreyes/Documents/Obsidian/agentic-neuro/
+  - All vault writes must go through safe_write_vault_file() or assert_vault_format()
+  - Subagent model routing: sonnet for synthesis, haiku for classification
+  - Skills live in .claude/commands/ and .gemini/commands/ (mirrored)
+  - System instructions: CLAUDE.md (Claude Code), GEMINI.md (Gemini CLI)
+  - Git: single main branch, no PRs (solo developer)
+  - No emojis in any output
+
+================================================================================
+10. FILES REFERENCE (key files an AI should read before making changes)
+================================================================================
+
+  CLAUDE.md               — Claude Code system instructions (authoritative)
+  GEMINI.md               — Gemini CLI system instructions (mirrored)
+  src/knowledge_graph.py  — Knowledge graph ORM, all DB operations, CLI entrypoint
+  src/lance_retriever.py  — Vector search pipeline, distillation, gap detection
+  src/vault_kg_sync.py    — Concept file rendering, vault format guard
+  src/vault_canvas_builder.py — ACGME Canvas generation
+  src/universal_post_session_hook.py — End-of-session pipeline orchestrator
+  src/anki_sync_cli.py    — Anki card pipeline
+  scripts/write_concept_stubs.py — Batch vault regeneration
+  scripts/write_acgme_readiness.py — ACGME Readiness report writer
+  scripts/seed_curriculum_prerequisites.py — Curriculum-based prerequisite edge seeder
+  data/curriculum_skeleton.json — 265 ACGME topics (the curriculum spec)
+  data/confusion_matrix.json — Confusable concept pairs
+  .claude/commands/*.md   — Claude Code skill definitions
+  .gemini/commands/*.md   — Gemini CLI skill definitions
+
+================================================================================
+11. ITERATION LOG (archived)
+================================================================================
+
+  ITERATION 1 (2026-04-08 to 2026-04-10):
+    + vault_kg_sync.py (NEW, 819 lines) — Dataview inline fields, KG relationship
+      sections, encounter history, vault format guard (VaultFormatError +
+      safe_write_vault_file)
+    + vault_canvas_builder.py (NEW, 540 lines) — ACGME milestone canvases with
+      priority band clustering, precision-weighted token-overlap edge matcher
+    * universal_post_session_hook.py — integrated vault_kg_sync + vault_canvas_builder
+    * intraoperative-guide skills — added mermaid decision tree section 5b
+    PASSED: 0 vault violations, hook ok=true, 265 concepts, 11 canvases/306 nodes/10 edges
+
+  ITERATION 2 (2026-04-10):
+    * vault_kg_sync.py (+135 lines) — AGENT_MANAGED_SECTIONS, _parse_sections(),
+      extract_user_sections(), user-section-aware build_concept_file() and sync
+    PASSED: User sections preserved through sync, agent sections updated, format compliant
+
+  ITERATION 3 (2026-04-10):
+    + scripts/backfill_curriculum_id.py (NEW, ~175 lines) — Multi-strategy matcher
+    * knowledge_graph.py — 3-strategy _lookup_curriculum_id
+    RESULT: 66 topics linked (325->391 with curriculum_id), ACGME coverage 5.7%->8.3%
+
+  ITERATION 4 (2026-04-11):
+    + scripts/topic_hygiene.py (NEW, ~280 lines) — Dedup, backfill, normalize
+    * knowledge_graph.py — Token-overlap dedup, topic length gate, category
+      normalization + inference (4 root-cause prevention mechanisms)
+    RESULT: 745->719 topics, 230->15 uncategorized, 11 canonical categories
+
+  ITERATION 5 (2026-04-12):
+    + scripts/recompute_confidence.py (NEW, ~230 lines) — Stability replay
+    * knowledge_graph.py (+302 lines) — stability_factor, difficulty, compute_stability,
+      compute_difficulty, stability-aware decay
+    RESULT: avg conf 0.008->0.053, max 0->0.42, 5+ enc avg 5x higher than 1-4 enc
+
+  ITERATION 6 (2026-04-12):
+    MOTIVATION: The system records learning data but doesn't use it intelligently.
+    Three problems: (1) 82% of signals are passive — skills log "study_session" for
+    all interactions, starving the stability model and SRS of meaningful data.
+    (2) Sessions start stateless — session_narratives stores next_session_strategy
+    but no skill reads it. (3) Zero prerequisite edges — canvases show unconnected
+    grids, blocking_gaps returns nothing, learning paths are invisible.
+
+    CHANGES:
+
+    A1. GRANULAR SIGNAL LOGGING IN SKILLS
+      * .claude/commands/study-session.md — Added per-answer signal logging block
+        to Components 1 (Recall Bridge) and 2 (Targeted Remediation). Each user
+        answer now triggers log_event with signal_type routed by outcome:
+        correct_recall / partial_recall / incorrect_recall.
+      * .claude/commands/rag-workflow.md — Replaced generic "log_event + log_study"
+        in Gym Follow-Up Protocol with explicit signal_type routing per answer.
+      * .claude/commands/intern-bootcamp.md — Added per-decision signal logging
+        to Phase 1 (Firefight) mechanics.
+      * .gemini/commands/{study-session,rag-workflow,intern-bootcamp}.md — Mirrored
+        all signal logging changes.
+
+    A2. SESSION CONTINUITY ENGINE
+      * .claude/commands/study-session.md — Added Step 0b: Session Continuity Check.
+        Queries last_session_narrative at startup, uses next_session_strategy to
+        shape Remediation, key_confusions for Recall Bridge, teaching_failures
+        to avoid failed approaches. Opens with continuity bridge sentence.
+      * .claude/commands/rag-workflow.md — Added session continuity query to
+        Step 0 Pre-Flight. Topic-matched narrative shapes Gym focus and surfaces
+        prior gaps in adaptation rules.
+      * .claude/commands/intern-bootcamp.md — Added session continuity query to
+        Pre-Flight. Shapes scenario selection and debrief focus from prior narrative.
+      * .gemini/commands/{study-session,rag-workflow,intern-bootcamp}.md — Mirrored.
+
+    A3. PREREQUISITE EDGE SEEDING FROM CURRICULUM STRUCTURE
+      + scripts/seed_curriculum_prerequisites.py (NEW, ~180 lines) —
+        Three-mechanism seeder with dry-run/apply/verbose:
+        + Mechanism 1 (pgy_ordering): Adjacent PGY step within domain, requiring
+          shared meaningful tokens. PGY-N core/important -> PGY-(N+1) core/important.
+        + Mechanism 2 (priority_band): Priority 1 (core) -> Priority 3 (advanced)
+          within same domain, requiring shared tokens.
+        + Mechanism 3 (mk_anatomy_cross_domain): MK-Neuroanatomy topics ->
+          surgical topics sharing >= 2 anatomical keywords.
+        + Conflict guard: never prerequisite between confusable_with pairs.
+        + Dedup guard: skips edges already in DB. Idempotent.
+
+    PASSED:
+      - 170 prerequisite_of edges created (133 pgy_ordering, 24 priority_band,
+        13 mk_anatomy_cross_domain). 0 confusable conflicts.
+      - Canvas edges: 10 -> 198 (20x increase). All 11 canvases regenerated.
+      - Post-session hook: ok=true, all 8 steps pass.
+      - Vault format audit: 0 violations across all folders.
+      - Signal logging validation: log_event --signal-type "correct_recall"
+        correctly creates signal with +0.12 delta and updates stability.
+      - Session continuity: last_session_narrative returns actionable data
+        (next_session_strategy, key_confusions, teaching_failures).
+      - Seeder idempotency: re-run produces 0 new edges, 170 skipped.
+      - KG status: no errors, 185 total concept_relationships (15 confusable + 170 prerequisite).
+
+    FAILED/DEFERRED:
+      - blocking_gaps does not yet surface prerequisite chains for unstudied topics
+        (it queries concept_mastery which has entries only for studied concepts).
+        Will become useful as study coverage increases.
+      - Signal logging changes are instruction-level (skill command files). Their
+        effectiveness depends on the agent correctly following the instructions
+        during live sessions. First real session will be the true validation.
+      - 170 edges includes some low-quality PGY ordering edges where token overlap
+        is incidental rather than conceptual (e.g., both contain "stereotactic").
+        Acceptable for canvas visualization; manual curation could prune ~10-15%.
+
+    DB STATE DELTA (from Iteration 5):
+      concept_relationships: 15 -> 185 (+170 prerequisite_of edges)
+      All other tables unchanged.
+
+    VAULT STATE DELTA:
+      Canvas edges: 10 -> 198 (edges rendered from 185 DB relationships)
+      All file counts unchanged.
+
+    NEW FILES:
+      scripts/seed_curriculum_prerequisites.py — curriculum-based prerequisite seeder
+
+    ITEMS COMPLETED:
+      A1 (Granular Signal Logging in Skills) — DONE (instruction-level)
+      A2 (Session Continuity Engine) — DONE (instruction-level)
+      A3 (Prerequisite Edge Seeding) — DONE (170 edges applied)
+
+  ITERATION 7 (2026-04-13): LONG-TERM AGENTIC MEMORY REDESIGN
+    MOTIVATION: The episodic memory system (learning_exchanges, episode_summaries,
+    LanceDB embeddings) was built but not used intelligently. Four architectural
+    problems: (1) recall_episodes() used naive set-union merge — structured results
+    always ranked before keyword matches, semantic search completely disconnected.
+    (2) Preflight dumped full verbatim exchange content into learner_context.json,
+    wasting context window tokens. (3) Long sessions suffered mid-session amnesia
+    when Claude Code compacted context — no hook existed to re-inject session state.
+    (4) concept_mastery was updated in place — the history of misconceptions and
+    corrections was overwritten, losing the audit trail.
+
+    CHANGES:
+
+    Phase 1. RRF FUSION IN recall_episodes()
+      * knowledge_graph.py — Replaced naive set-union with RRF (k=60) fusing:
+        Stream 1: Structured SQLite filter (topic, error_type, skill, days_back)
+        Stream 2: Keyword LIKE matching on concept/question/answer fields
+        Stream 3: LanceDB semantic search on episodic_memory embeddings
+        Degrades gracefully: no query -> structured only; empty LanceDB -> streams 1+2.
+
+    Phase 2. PROGRESSIVE DISCLOSURE FOR PREFLIGHT
+      + knowledge_graph.py recall_episodes_compact() — returns one-liner summaries
+        with exchange_ids instead of full verbatim text. ~70-80% token reduction.
+      * preflight.sh — step 8 uses --compact flag for episodic_memory.json
+      * knowledge_graph.py learner_context() — past_exchanges_compact replaces
+        verbatim past_exchanges in learner_context.json
+      * CLAUDE.md, GEMINI.md §13/§10 — --compact flag documented in recall reference
+
+    Phase 3. PRECOMPACT HOOK
+      + src/precompact_memory_inject.py (NEW, 118 lines) — queries learning_exchanges
+        for last 2 hours, builds compact memory block (topics, scores, key errors,
+        teaching approaches, prior session excerpts), prints to stdout for injection.
+        Non-blocking: always exits 0, 15s timeout.
+      * .claude/settings.json — PreCompact hook wired to precompact_memory_inject.py
+      * CLAUDE.md §2 — PreCompact Memory Injection section added
+
+    Phase 4. CONCEPT EVOLUTION VERSIONING
+      * knowledge_graph.py — concept_evolution table in _SCHEMA_SQL with 3 indexes.
+        log_concept_evolution() method. concept_evolution_history() query method.
+        CLI: concept_evolution subcommand with --concept/--topic/--days/--limit.
+        Wired into log_study_session() — fires on every concept_mastery status change.
+      * CLAUDE.md §11 — Concept Evolution (Automatic) subsection
+      * CLAUDE.md §12 — concept_evolution table row in Data Locations
+      * CLAUDE.md §13, GEMINI.md §10 — concept_evolution command in reference
+
+    PASSED:
+      - python3 -c "import knowledge_graph; print('OK')" — OK
+      - recall_episodes() body has RRF fusion at line ~4295
+      - recall_episodes_compact() exists at line ~4428
+      - preflight.sh step 8 uses --compact (line 137)
+      - precompact_memory_inject.py: 118 lines, no import errors
+      - .claude/settings.json: PreCompact hook configured with 15s timeout
+      - concept_evolution table in schema (line ~6321)
+      - log_concept_evolution() wired at lines 922, 1047
+      - concept_evolution CLI subcommand at line ~6821
+      - CLAUDE.md §7e: concept_evolution automatic note added
+      - GEMINI.md §6: Concept Evolution (Automatic) subsection added
+
+    DB STATE DELTA: concept_evolution table created (0 rows until next study session)
+    NEW FILES: src/precompact_memory_inject.py
+
+  ITERATION 8 (2026-04-13): AGENTIC MEMORY ARCHITECTURE — CRITICAL + HIGH FIXES
+    MOTIVATION: After implementing the long-term memory architecture (Iteration 7),
+    a systematic 17-item gap analysis identified 4 Critical and 8 High severity
+    defects that prevented the system from executing its architecture correctly.
+    The Critical defects caused: (1) PreCompact hook always timing out due to
+    BGE-M3 cold start; (2) heartbeat.sh creating vault files that violated the two
+    hardest invariants (no H1, YAML at bottom); (3) Gemini sessions generating zero
+    episodic memory because log_turn.sh was the canonical per-answer call; (4) decay
+    transitions leaving no audit trail. All 12 items (4 Critical + 8 High) were
+    implemented and validated in this iteration.
+
+    CHANGES:
+
+    Fix 1 — PRECOMPACT HOOK RELIABILITY (Critical)
+      * .claude/settings.json — timeout 15 -> 60 seconds
+      * src/precompact_memory_inject.py — replaced recall_episodes_compact() call
+        (which loads BGE-M3, 30-60s cold start) with direct SQLite query on
+        learning_exchanges. Hook now completes in ~2-3 seconds. Added two new
+        injection blocks: (a) next_session_strategy from session_narratives
+        (highest-value continuity field); (b) recent concept evolution events
+        from concept_evolution (last 7 days, status transitions shown as prev→new).
+        File: 118 -> 198 lines.
+
+    Fix 2 — HEARTBEAT VAULT FORMAT COMPLIANCE (Critical)
+      * src/heartbeat.sh — Both CREATE heredoc templates (session mode + doc-anchored)
+        restructured: removed H1 heading, moved YAML `---` block to bottom. Matches
+        invariants 4a exactly. YAML was at top AND H1 was present in previous version.
+        Both templates now start with body content (## Checkpoints or ## Concept Map
+        Status), YAML at bottom. Validated: bash -n syntax OK.
+
+    Fix 3 — GEMINI EPISODIC MEMORY AS FIRST-CLASS CITIZEN (Critical)
+      * GEMINI.md §6 — Replaced log_turn.sh as canonical per-answer call with
+        log_event (Call 1, behavioral signal) + log_exchange (Call 2, episodic
+        content), labeled co-equal mandatory pair. Updated scope rules.
+      * .gemini/commands/rag-workflow.md — Replaced log_turn.sh in Gym Follow-Up
+        section with log_event + log_exchange pair. Updated Step 5 note.
+      * .gemini/commands/rag-workflow.toml — MANDATORY descriptor updated.
+      * .gemini/commands/study-session.toml — MANDATORY descriptor updated.
+      * .gemini/commands/study-material.toml — MANDATORY descriptor updated.
+      log_turn.sh retained only in §10/Command Reference as passive-teaching utility.
+      Validated: grep -rn "log_turn.sh" .gemini/ GEMINI.md shows only reference entries.
+
+    Fix 4 — DECAY EVOLUTION TRAIL (Critical)
+      * src/knowledge_graph.py _apply_concept_srs_decay() — Replaced two bulk
+        UPDATE statements with SELECT-before-UPDATE pattern. For each affected row,
+        calls log_concept_evolution() with trigger_type="decay", previous_status,
+        new_status, and evolution_note. Covers both SM-2 schedule decay and
+        confidence-coupled decay (cc < 0.35). First decay event confirmed logged
+        (concept_evolution: 3 rows). File: ~6,253 -> 7,586 lines total.
+
+    Fix 5 — LEARNER_CONTEXT() RRF UPGRADE (High)
+      * src/knowledge_graph.py learner_context() (~line 2567) — Replaced raw
+        SQLite past_exchanges_compact block (topic_id = ? AND session_ts >= ?)
+        with call to self.recall_episodes_compact(query=raw, topic_name=canonical,
+        days_back=30, max_results=5). Preflight now benefits from RRF three-stream
+        recall (structured + keyword + semantic) instead of recency-only SQL.
+        Guidance line now uses one_liner format from compact exchange instead of
+        truncated question/answer text.
+
+    Fix 6 — DERIVE_SESSION_CONFUSIONS (High)
+      + src/knowledge_graph.py derive_session_confusions() (NEW method, ~90 lines)
+        — Queries learning_exchanges with error_type IN ('cross_contamination',
+        'conceptual_confusion') for a session window. Extracts concept_b from
+        misconception field using proximity markers ("with", "vs", "instead of",
+        etc.). Returns list of {"concept_a", "concept_b", "disambiguation_axis",
+        "misconception"} dicts compatible with log_session_narrative key_confusions.
+        CLI: python3 src/knowledge_graph.py derive_session_confusions [--session-ts TS]
+        [--skill S] [--hours N]. Validated: correctly derived AChA/PCA confusion pair.
+      + src/knowledge_graph.py domain_error_profile() (NEW method, ~80 lines)
+        — Aggregates for a domain: error_type distribution, top misconceptions,
+        teaching approach effectiveness (success_rate, n), persistent concept gaps,
+        signal summary (correct/partial/incorrect). CLI: domain_error_profile
+        --domain D [--days N]. Validated: vascular domain returns 2 exchanges,
+        cross_contamination:2, anatomical-tracing approach 0.0 success_rate.
+      * src/heartbeat.sh — At --status "complete", auto-derives key_confusions via
+        derive_session_confusions if KEY_CONFUSIONS is still '[]'. Feeds auto-derived
+        confusions into log_session_narrative. Eliminates the key_confusions_json
+        always-empty problem going forward.
+      * CLAUDE.md §13, GEMINI.md command reference — Added derive_session_confusions
+        and domain_error_profile to command reference tables.
+
+    Fix 7 — LOG_EXCHANGE WITH LOG_TRANSFER (High)
+      * .claude/commands/study-session.md Component 4 — Replaced single log_transfer
+        line with two-call block: Call 1 (log_transfer, transfer outcome) + Call 2
+        (log_exchange, episodic content with teaching-approach=transfer-validation).
+      * .gemini/commands/study-session.md Component 4 — Same paired call block added.
+      * .claude/commands/intern-bootcamp.md Phase 1 Adaptive Channels — Transfer
+        Validation note updated to explicitly require log_exchange alongside log_transfer.
+      Gemini intern-bootcamp.md has no standalone log_transfer call (uses per-decision
+      log_exchange for all decisions including transfer) — no change needed.
+
+    Fix 8 — PRECOMPACT HOOK ENRICHMENT (High)
+      * src/precompact_memory_inject.py — Added two new injection sections:
+        (a) next_session_strategy: queries session_narratives for most recent non-empty
+        strategy, injects at top of prior-session block. This is the single highest-
+        value field for session continuity — survives context compaction.
+        (b) recent concept evolution: queries concept_evolution for last 7 days,
+        injects up to 5 status transitions (prev→new, trigger_type, evolution_note).
+        Both sections non-fatal (pass on any DB error).
+
+    Fix 9 — DOMAIN_ERROR_PROFILE COMMAND (High)
+      Covered in Fix 6 entry above (implemented as part of same code block).
+
+    Fix 10 — HEARTBEAT IN-PROGRESS PARTIAL NARRATIVE (High)
+      * src/heartbeat.sh in-progress checkpoint path — Added partial
+        log_session_narrative call after checkpoint append, fires only when
+        --narrative-summary is provided. Uses PARTIAL_NARRATIVE_ARGS array.
+        Ensures last_session_narrative returns meaningful context even if session
+        crashes or is compacted before --status "complete". Uses `|| true` to
+        never fail the checkpoint.
+
+    Fix 11 — CONCEPT EVOLUTION IN ENCOUNTER HISTORY (High)
+      * src/vault_kg_sync.py gather_concept_state() (~line 380) — After building
+        encounter_history from signal_events, queries concept_evolution for the
+        same topic_id (last 10 rows). Merges evolution events as:
+        signal = "prev→new", source = "evolution/{trigger_type}", depth = 0.
+        Re-sorts merged list by date DESC, caps at ENCOUNTER_HISTORY_LIMIT.
+        Graceful try/except for DB versions without concept_evolution table.
+
+    Fix 12 — MID-SESSION MINI-PREFLIGHT PROTOCOL (High)
+      * CLAUDE.md §7f (NEW) — Documents mid-session mini-preflight for topic
+        switches: run last_session_narrative + learner context query silently
+        when active topic changes. Includes exact commands, when to trigger,
+        and when to skip. Added to both §7 Shared Protocols and §13 CLI reference.
+      * GEMINI.md §6 — Same protocol added as "Mid-Session Mini-Preflight" subsection
+        before §7 Session-End Protocol.
+
+    PASSED:
+      - ast.parse(): knowledge_graph.py OK, precompact_memory_inject.py OK, vault_kg_sync.py OK
+      - bash -n src/heartbeat.sh: syntax OK
+      - derive_session_confusions --hours 48: count=2, correctly found AChA/PCA pair
+      - domain_error_profile --domain vascular: ok, total_exchanges=2, cross_contamination:2
+      - apply_decay: "Decay applied to all topics." (concept_evolution rows written)
+      - post-session hook: ok=true, all 8 steps pass (23 concept stubs, 11 canvases)
+      - precompact hook: confirmed working (compact ran at 2026-04-13 session, injected
+        AChA error + anatomical-tracing + next_session_strategy from Brain Anatomy Lab 1)
+      - grep -rn "log_turn.sh" .gemini/ GEMINI.md: only reference/utility entries remain
+
+    FAILED/DEFERRED:
+      - vault format audit: 2 residual violations remain (Dashboard.md top-YAML,
+        ACGME Readiness.md H1 — both generated by post-session hook writers).
+        These writers were out of scope for this iteration. See 6n.
+      - learner_context() RRF (Fix 5): improvement in retrieval quality is architectural;
+        end-to-end quality validation requires a multi-session study run on related topics.
+      - concept_b extraction in derive_session_confusions uses heuristic proximity markers
+        ("with", "vs", "instead of"). Complex misconception phrasings may not match.
+        Coverage improves as more exchanges accumulate.
+
+    DB STATE DELTA (from Iteration 7):
+      topics:               719 -> 730 (+11)
+      concept_mastery:      861 -> 868 (+7)
+      concept_relationships: 185 -> 188 (+3)
+      signal_events:        480 -> 504 (+24)
+      session_narratives:     6 -> 8 (+2, with populated next_session_strategy)
+      learning_exchanges:     0 -> 2 (FIRST REAL EPISODIC DATA)
+      episode_summaries:      0 -> 6 (LanceDB embedded)
+      concept_evolution:      0 -> 3 (FIRST DECAY + ACTIVE RECALL TRANSITIONS)
+      episodic_memory.lance:  0 -> 4 embedded rows
+
+    VAULT STATE DELTA:
+      All file counts unchanged (274/5/1/4/4/16/1 across Concepts/Reports/Guides/
+      Study/Review/ErrorAtlas/Canvases). Encounter History sections in Concept files
+      will now show concept evolution events on next post-session sync.
+
+    MODIFIED FILES:
+      * src/knowledge_graph.py    — Fixes 4,5,6,9: _apply_concept_srs_decay,
+                                    learner_context, derive_session_confusions,
+                                    domain_error_profile (7,586 lines, +~330 from Iter 7)
+      * src/precompact_memory_inject.py — Fixes 1,8: SQLite-only + strategy + evolution
+                                    (118 -> 198 lines)
+      * src/vault_kg_sync.py      — Fix 11: concept_evolution in encounter history
+                                    (954 -> 982 lines)
+      * src/heartbeat.sh          — Fixes 2,10,6: format templates, partial narrative,
+                                    auto-derive confusions (373 lines)
+      * .claude/settings.json     — Fix 1: timeout 15 -> 60
+      * CLAUDE.md                 — Fix 12: §7f mini-preflight, §13 new commands
+      * GEMINI.md                 — Fix 3,12: log_exchange mandatory, mini-preflight
+      * .gemini/commands/rag-workflow.md    — Fix 3: log_event + log_exchange pair
+      * .gemini/commands/{rag-workflow,study-session,study-material}.toml — Fix 3
+      * .claude/commands/study-session.md   — Fix 7: log_exchange with log_transfer
+      * .gemini/commands/study-session.md   — Fix 7: log_exchange with log_transfer
+      * .claude/commands/intern-bootcamp.md — Fix 7: transfer validation note
+
+  [Future iterations append here]
+
+================================================================================
+END OF DOCUMENT
+================================================================================

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # preflight.sh — Batch pre-flight for all learning skills
 # Combines: learner context + transform directives + case log sync + optional doc_status
-#           + last session narrative + concept review queue
+#           + last session narrative + concept review queue + episodic memory recall
 # Usage: ./src/preflight.sh "query" [--doc "Study Material/slug.md"] [--skill "study-session"]
 #
 # Outputs (all to data/Sessions/):
@@ -11,6 +11,8 @@
 #   doc_status.json              — document study state (only if --doc provided)
 #   last_session_narrative.json  — most recent session narrative for these topics
 #   concept_review_queue.json    — SM-2 scheduled concepts due for review
+#   difficulty_target.json       — ZPD difficulty recommendation
+#   episodic_memory.json         — past learning exchanges relevant to query
 
 set -euo pipefail
 
@@ -38,19 +40,19 @@ echo "=== PREFLIGHT START ==="
 # 0. Apply decay — passive decay without a daemon; fires at the start of every session
 #    so that confidence decay and SM-2 due-date marking are always current, even after
 #    study breaks.
-echo "[0/7] Applying knowledge decay..."
+echo "[0/8] Applying knowledge decay..."
 python3 src/knowledge_graph.py apply_decay 2>&1 | tail -1
 
 # 1. Learner context
-echo "[1/7] Fetching learner context..."
+echo "[1/8] Fetching learner context..."
 python3 src/knowledge_graph.py context "$QUERY" --output "$SESSIONS/learner_context.json" 2>&1
 
 # 2. Transform directives
-echo "[2/7] Preparing transform directives..."
+echo "[2/8] Preparing transform directives..."
 python3 src/lance_retriever.py prepare_directives "$QUERY" --output "$SESSIONS/transform_directives.json" 2>&1
 
 # 3. Case log sync — find new case logs not yet in knowledge_graph.db
-echo "[3/7] Scanning Case Log for new entries..."
+echo "[3/8] Scanning Case Log for new entries..."
 CASE_LOG_DIR="/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Case Log"
 SYNC_FILE="$SESSIONS/case_log_sync.txt"
 
@@ -103,14 +105,14 @@ fi
 
 # 4. Doc status (optional)
 if [[ -n "$DOC" ]]; then
-    echo "[4/7] Checking doc_status for: $DOC"
+    echo "[4/8] Checking doc_status for: $DOC"
     python3 src/knowledge_graph.py doc_status "$DOC" > "$SESSIONS/doc_status.json" 2>&1
 else
-    echo "[4/7] No --doc specified — skipping doc_status"
+    echo "[4/8] No --doc specified — skipping doc_status"
 fi
 
 # 5. Last session narrative — inject prior teaching strategy
-echo "[5/7] Fetching last session narrative..."
+echo "[5/8] Fetching last session narrative..."
 TOPIC_WORD=$(echo "$QUERY" | awk '{print $1}')
 LAST_NAR_ARGS=(python3 src/knowledge_graph.py last_session_narrative)
 [[ -n "$SKILL" ]] && LAST_NAR_ARGS+=(--skill "$SKILL")
@@ -119,16 +121,24 @@ LAST_NAR_ARGS+=(--topic "$TOPIC_WORD")
 echo "  Last narrative written to $SESSIONS/last_session_narrative.json"
 
 # 6. Concept review queue — SM-2 scheduled concepts due
-echo "[6/7] Fetching concept review queue..."
+echo "[6/8] Fetching concept review queue..."
 python3 src/knowledge_graph.py concept_review_queue --n 10 > "$SESSIONS/concept_review_queue.json" 2>/dev/null || echo '{"due_concepts":[],"count":0}' > "$SESSIONS/concept_review_queue.json"
 QUEUE_COUNT=$(python3 -c "import json; d=json.load(open('$SESSIONS/concept_review_queue.json')); print(d.get('count',0))" 2>/dev/null || echo 0)
 echo "  $QUEUE_COUNT concept(s) due for review"
 
 # 7. ZPD difficulty recommendation
-echo "[7/7] Computing difficulty target..."
+echo "[7/8] Computing difficulty target..."
 python3 src/knowledge_graph.py difficulty_target > "$SESSIONS/difficulty_target.json" 2>/dev/null || echo '{"status":"insufficient_data","recommended_depth":2}' > "$SESSIONS/difficulty_target.json"
 ZPD_STATUS=$(python3 -c "import json; d=json.load(open('$SESSIONS/difficulty_target.json')); print(d.get('zpd_status','unknown'))" 2>/dev/null || echo "unknown")
 echo "  ZPD status: $ZPD_STATUS"
+
+# 8. Episodic memory recall — retrieve past learning exchanges relevant to query
+echo "[8/8] Recalling episodic memory..."
+python3 src/knowledge_graph.py recall "$QUERY" --max 5 --compact --sqlite-only \
+  --output "$SESSIONS/episodic_memory.json" 2>/dev/null \
+  || echo '{"exchanges":[],"episode_summaries":[],"patterns":{}}' > "$SESSIONS/episodic_memory.json"
+RECALL_COUNT=$(python3 -c "import json; d=json.load(open('$SESSIONS/episodic_memory.json')); print(len(d.get('exchanges',[])))" 2>/dev/null || echo 0)
+echo "  $RECALL_COUNT relevant past exchange(s) recalled"
 
 echo "=== PREFLIGHT COMPLETE ==="
 echo "Outputs:"
@@ -139,3 +149,4 @@ echo "  $SESSIONS/case_log_sync.txt ($(wc -l < "$SYNC_FILE" | tr -d ' ') new)"
 echo "  $SESSIONS/last_session_narrative.json"
 echo "  $SESSIONS/concept_review_queue.json ($QUEUE_COUNT due)"
 echo "  $SESSIONS/difficulty_target.json (zpd=$ZPD_STATUS)"
+echo "  $SESSIONS/episodic_memory.json ($RECALL_COUNT recalled)"

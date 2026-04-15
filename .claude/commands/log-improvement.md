@@ -22,8 +22,7 @@ You are documenting a completed improvement iteration for the recursive AI impro
    for d in Concepts Reports "Operative Guides" "Study Material" "Review Sessions" "Error Atlas" "ACGME Canvases"; do
      echo "$d: $(find "$VAULT/$d" -name "*.md" 2>/dev/null | wc -l | tr -d ' ') files"
    done
-   # Vault format audit
-   python3 scripts/move_frontmatter.py --dry-run
+   # Vault format audit is now covered by the post-session hook format guards.
    # Post-session hook test
    python3 src/universal_post_session_hook.py --skill "audit" --topics "audit" --vault-writes "" --report-out /tmp/audit_hook.json 2>/dev/null
    python3 -c "import json; r=json.load(open('/tmp/audit_hook.json')); print('hook ok:', r.get('ok')); print('metrics:', json.dumps(r.get('metrics',{})))"

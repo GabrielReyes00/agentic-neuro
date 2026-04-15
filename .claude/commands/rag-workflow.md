@@ -19,6 +19,16 @@ cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && ./src/prefl
 
 Produces `data/Sessions/learner_context.json` + `data/Sessions/transform_directives.json`. If `case_log_sync.txt` lists new files, run Case Log Proactive Sync per CLAUDE.md §5.
 
+**Session continuity** (silent):
+```bash
+python3 src/knowledge_graph.py last_session_narrative --skill "rag-workflow" --topic "<query topic>"
+```
+If the query topic matches a prior session (non-null result):
+- Read `next_session_strategy` — shape Gym questions to follow the recommended approach
+- Read `key_confusions_json` — re-test previously confused concepts before advancing
+- Read `teaching_failures` — avoid repeating failed approaches
+- Surface prior gaps in the Adaptation rules below
+
 **Adaptation rules** (from context JSON):
 | Field | Action |
 |---|---|
@@ -105,8 +115,32 @@ Source routing: protocols → UpToDate/AANS/CNS | dosing → UpToDate/MDCalc | d
 - **Partially correct** → acknowledge right parts → narrower re-anchor question
 - **Incorrect** → do NOT give answer → guiding question isolating the gap
 
-**After every Gym response, immediately run:**
-1. `log_event` + `log_study` (dual-log per CLAUDE.md §11)
+**Session timestamp (set once at first Gym question, reuse for all exchanges):**
+```bash
+SESSION_TS=$(date -u +%Y-%m-%dT%H:%M:%S+00:00)
+```
+Initialize a turn counter at 0. Increment before each `record-answer` call.
+
+**After every Gym response, immediately run (silent):**
+
+1. **Atomic per-answer memory log** — route correctness by outcome:
+```bash
+cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
+python3 src/memory_orchestrator.py record-answer \
+  --session-ts "$SESSION_TS" --turn <N> --skill "rag-workflow" \
+  --topic "<topic>" --concept "<specific concept tested>" \
+  --question "<your question, verbatim>" \
+  --answer "<user's answer, verbatim or close paraphrase>" \
+  --correct <0|1|2> \
+  [--correction "<your correction/explanation if incorrect>"] \
+  [--error-type "<type>"] [--misconception "<specific wrong belief>"] \
+  [--root-cause "<why>"] [--remediation "<what should fix it>"] \
+  [--teaching-approach "<approach used>"] \
+  [--retrieval-sources "<source_book: heading>"] \
+  [--depth <N>] [--domain "<domain>"] [--response-confidence "high|low"]
+```
+Correctness routing: correct with no hints = `--correct 2` | right direction but missing key details = `--correct 1` | wrong answer or misconception = `--correct 0`. Capture the ACTUAL question and answer. For breakthroughs, add `--breakthrough --insight "<what clicked>"`.
+
 2. Crash-safe heartbeat (session-mode, `--skill "rag-workflow"`, `--obsidian-write`)
 
 ### Spaced Verification Protocol

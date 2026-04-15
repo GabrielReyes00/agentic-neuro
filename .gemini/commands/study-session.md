@@ -5,11 +5,24 @@ description: Adaptive 30-minute study session generated from KG gaps, concept re
 
 # Agent Skill: Study Session Architect
 
-All §7 session-end hooks mandatory (log_turn after Components 1-2, heartbeat checkpoints, log_transfer, post-session hook).
+All §7 session-end hooks mandatory (`record-answer` after Components 1-2, heartbeat checkpoints, log_transfer, post-session hook).
 
 ## Triggering
 
 Use only on explicit user request for study planning/session execution.
+
+## Step 0b: Session Continuity Check (Silent)
+
+```bash
+cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
+  python3 src/knowledge_graph.py last_session_narrative --skill "study-session"
+```
+
+If non-null result:
+- Read `next_session_strategy` — shape Component 2 (Remediation) topic selection and mode
+- Read `key_confusions_json` — prioritize those concepts in the Recall Bridge
+- Read `teaching_failures` — avoid repeating failed approaches; try alternative modes
+- Open with a 1-sentence continuity bridge: "Last session covered [topics]. Strategy: [strategy]. Picking up from there."
 
 ## Step 1: Data Gathering
 
@@ -59,13 +72,36 @@ High-confidence wrong → explicit recalibration. Low-confidence right → reinf
 
 ## Step 4: Execute
 
+**Session timestamp (set once, reuse for all exchanges):**
+```bash
+SESSION_TS=$(date -u +%Y-%m-%dT%H:%M:%S+00:00)
+```
+Initialize a turn counter at 0. Increment before each `record-answer` call.
+
 ### Component 1: Recall Bridge
 
-Open recall question → wait → evaluate → if wrong: correction + verification follow-up → log with `log_turn.sh`.
+Open recall question → wait → evaluate → if wrong: correction + verification follow-up.
+
+**Per-answer memory logging (silent, after each user answer):**
+```bash
+cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
+python3 src/memory_orchestrator.py record-answer \
+  --session-ts "$SESSION_TS" --turn <N> --skill "study-session" \
+  --topic "<topic>" --concept "<specific concept tested>" \
+  --question "<your question, verbatim>" \
+  --answer "<user's answer, verbatim or close paraphrase>" \
+  --correct <0|1|2> \
+  [--correction "<your correction/explanation if incorrect>"] \
+  [--error-type "<type>"] [--misconception "<specific wrong belief>"] \
+  [--root-cause "<why>"] [--remediation "<what should fix it>"] \
+  [--teaching-approach "<approach used>"] \
+  [--depth <N>] [--domain "<domain>"] [--response-confidence "high|low"]
+```
+Correctness routing: correct with no hints = `--correct 2` | right direction but missing key details = `--correct 1` | wrong answer or misconception = `--correct 0`. Capture the ACTUAL question and answer. For breakthroughs, add `--breakthrough --insight "<what clicked>"`.
 
 ### Component 2: Targeted Remediation
 
-Execute mode-matched remediation. After Components 1-2, heartbeat checkpoint:
+Execute mode-matched remediation. After each user answer to a remediation question, log with `record-answer` as in Component 1. After Components 1-2, heartbeat checkpoint:
 
 ```bash
 cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
@@ -89,10 +125,22 @@ Consolidation question before Transfer: "What is the single most important takea
 
 One scenario testing mastered concept in novel context.
 
+**After the learner answers, run both (silent):**
+
 ```bash
-# success
-python3 src/knowledge_graph.py log_transfer --concept "<concept>" --topic "<topic>" --context "<new context>" --success
-# failure (omit --success)
+# Call 1 — Transfer outcome
+python3 src/knowledge_graph.py log_transfer --concept "<concept>" --topic "<topic>" \
+  --context "<new clinical context>" [--success]
+
+# Call 2 — Active answer memory content
+python3 src/memory_orchestrator.py record-answer \
+  --session-ts "$SESSION_TS" --turn <N> --skill "study-session" \
+  --topic "<topic>" --concept "<concept in new context>" \
+  --question "<transfer scenario presented>" \
+  --answer "<learner's response>" \
+  --correct <0|1|2> \
+  [--correction "<if failed>"] [--error-type "<type>"] \
+  [--teaching-approach "transfer-validation"] [--domain "<domain>"]
 ```
 
 ## Step 5: Session Summary

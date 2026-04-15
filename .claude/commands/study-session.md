@@ -23,6 +23,23 @@ If exists: extract domain coverage percentages, rank by lowest coverage (core do
 
 ---
 
+## Step 0b: Session Continuity Check (Silent)
+
+```bash
+cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
+  python3 src/knowledge_graph.py last_session_narrative --skill "study-session"
+```
+
+If non-null result:
+- Read `next_session_strategy` — use it to shape Component 2 (Remediation) topic selection and mode
+- Read `key_confusions_json` — if any entries exist, prioritize those concepts in the Recall Bridge
+- Read `teaching_failures` — avoid repeating failed teaching approaches; try alternative modes from the Remediation Mode Routing table
+- Open session with a 1-sentence continuity bridge: "Last session covered [topics]. Strategy: [strategy]. Picking up from there."
+
+If null: proceed normally (first session for this skill).
+
+---
+
 ## Step 1: Data Gathering
 
 ```bash
@@ -98,11 +115,34 @@ Approve, modify, or choose a starting component.
 
 ## Step 4: Execute on Approval
 
+**Session timestamp (set once, reuse for all exchanges):**
+```bash
+SESSION_TS=$(date -u +%Y-%m-%dT%H:%M:%S+00:00)
+```
+Initialize a turn counter at 0. Increment before each `record-answer` call.
+
 ### Component 1: Recall Bridge
-Ask open-ended questions, WAIT for answer. Evaluate. If incorrect: correct + 1-sentence why + follow-up verification. Dual-log per CLAUDE.md §11. If both correct instantly → compress. If both wrong → extend + flag intervals.
+Ask open-ended questions, WAIT for answer. Evaluate. If incorrect: correct + 1-sentence why + follow-up verification. If both correct instantly → compress. If both wrong → extend + flag intervals.
+
+**Per-answer memory logging (silent, after each user answer):**
+```bash
+cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
+python3 src/memory_orchestrator.py record-answer \
+  --session-ts "$SESSION_TS" --turn <N> --skill "study-session" \
+  --topic "<topic>" --concept "<specific concept tested>" \
+  --question "<your question, verbatim>" \
+  --answer "<user's answer, verbatim or close paraphrase>" \
+  --correct <0|1|2> \
+  [--correction "<your correction/explanation if incorrect>"] \
+  [--error-type "<type>"] [--misconception "<specific wrong belief>"] \
+  [--root-cause "<why>"] [--remediation "<what should fix it>"] \
+  [--teaching-approach "<approach used>"] \
+  [--depth <N>] [--domain "<domain>"] [--response-confidence "high|low"]
+```
+Correctness routing: correct with no hints = `--correct 2` | right direction but missing key details = `--correct 1` | wrong answer or misconception = `--correct 0`. Capture the ACTUAL question and answer. For breakthroughs, add `--breakthrough --insight "<what clicked>"`.
 
 ### Component 2: Targeted Remediation
-Execute mode-matched teaching per the routing table above. Log outcomes via `log_study`.
+Execute mode-matched teaching per the routing table above. After each user answer to a remediation question, log with `record-answer` as in Component 1.
 
 **Heartbeat after Components 1+2** (silent): `heartbeat.sh --session-mode --skill "study-session" --obsidian-write`
 
@@ -110,7 +150,26 @@ Execute mode-matched teaching per the routing table above. Log outcomes via `log
 Full RAG workflow on gap topic. After delivery, ask: "What is the single most important thing you just learned, and why does it matter clinically?"
 
 ### Component 4: Transfer Challenge
-Bootcamp scenario requiring mastered concept in new domain. Design so original context's surface features are absent — learner must identify relevant concept from clinical picture alone. Log via `log_transfer`.
+Bootcamp scenario requiring mastered concept in new domain. Design so original context's surface features are absent — learner must identify relevant concept from clinical picture alone.
+
+**After the learner answers, run both (silent):**
+
+```bash
+# Call 1 — Transfer outcome
+cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
+python3 src/knowledge_graph.py log_transfer --concept "<concept>" --topic "<topic>" \
+  --context "<new clinical context>" [--success]
+
+# Call 2 — Active answer memory content
+python3 src/memory_orchestrator.py record-answer \
+  --session-ts "$SESSION_TS" --turn <N> --skill "study-session" \
+  --topic "<topic>" --concept "<concept in new context>" \
+  --question "<transfer scenario presented>" \
+  --answer "<learner's response>" \
+  --correct <0|1|2> \
+  [--correction "<if failed>"] [--error-type "<type>"] \
+  [--teaching-approach "transfer-validation"] [--domain "<domain>"]
+```
 
 ---
 

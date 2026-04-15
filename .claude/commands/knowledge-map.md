@@ -129,13 +129,11 @@ Cross-reference discovery (CLAUDE.md §7a) for Vault Assets wikilinks.
 
 ```bash
 cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
-  python3 src/knowledge_graph.py acgme_readiness > /tmp/acgme_data.json && \
-  python3 src/knowledge_graph.py export_concept_stubs --only-studied > /tmp/stubs_studied.json && \
-  python3 scripts/write_acgme_readiness.py --json /tmp/acgme_data.json
+  python3 src/universal_post_session_hook.py --skill "knowledge-map" --topics "<topics>" --vault-writes "Dashboard.md,ACGME Readiness.md" --report-out /tmp/post_session_hook_report.json
 ```
 
-Read `/tmp/stubs_studied.json` → update rich stubs in `Concepts/`. Do NOT overwrite protected notes (CLAUDE.md §4). Delete temp files.
+Check `"ok": true` in `/tmp/post_session_hook_report.json`, then delete it. The hook renders `ACGME Readiness.md`, updates rich studied Concept files via `vault_kg_sync`, and does not overwrite protected notes (CLAUDE.md §4).
 
 ## Initial Batch Setup (one-time)
 
-If `Concepts/INDEX.md` doesn't exist: `python3 scripts/write_concept_stubs.py && python3 scripts/write_acgme_readiness.py`
+If `Concepts/INDEX.md` doesn't exist, run the universal post-session hook command above.

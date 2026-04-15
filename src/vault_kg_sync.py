@@ -13,7 +13,7 @@ Dataview-queryable Concept files. A Concept file is composed of:
     7. ## Encounter History      — ledger of signal_events for this topic
     8. ## Known Confusion Points — Error Atlas disambiguation pages
     9. ## Related Vault Content  — reports/guides/study material cross-refs
-   10. Bottom YAML metadata block (tags, aliases) — unchanged convention
+   10. Bottom YAML metadata block (tags, aliases)
 
 Empty sections are omitted. Relationship sections with no edges show the
 marker line "*No edges recorded yet.*" to make it visible that the ledger
@@ -25,12 +25,10 @@ helper, which writes files. Everything else is pure.
 
 from __future__ import annotations
 
-import json
 import re
 import sqlite3
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 # We avoid importing KnowledgeGraph at module load so this file can be used in
 # lightweight contexts (canvas builder, unit tests). The sync helper takes a
@@ -38,7 +36,7 @@ from typing import Any, Iterable
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Label maps (kept in sync with knowledge_graph.py and write_concept_stubs.py)
+# Label maps (kept in sync with KG dashboard/export depth labels)
 # ═══════════════════════════════════════════════════════════════════════════
 
 DEPTH_LABEL_MAP = {
@@ -101,11 +99,7 @@ AGENT_MANAGED_SECTIONS: set[str] = {
 
 
 def stub_filename(display_name: str) -> str:
-    """Sanitize a curriculum display_name into an Obsidian-safe filename.
-
-    Mirrors KnowledgeGraph._stub_filename so vault_kg_sync can run without a
-    KG instance (e.g., canvas builder).
-    """
+    """Sanitize a curriculum display_name into an Obsidian-safe filename."""
     name = display_name or ""
     name = re.sub(r":", " -", name)
     name = re.sub(r"[/\\]", " or ", name)
@@ -203,8 +197,7 @@ def collect_concept_state(
     Accepts a plain dict (from curriculum_topics JOIN topics) rather than
     a KG instance so it can be called from multiple writers.
     """
-    # Resolve curriculum_id. Callers that know it pass an int; callers that
-    # only have slug/title (export_concept_stubs) pass a placeholder — look it up.
+    # Resolve curriculum_id from slug/title when the caller did not provide one.
     raw_cid = curriculum_row.get("curriculum_id")
     curriculum_id: int | None
     if isinstance(raw_cid, int):
@@ -374,7 +367,7 @@ def collect_concept_state(
         ).fetchone()
         blocking_gaps_count = int(bg_row["cnt"] if bg_row else 0)
 
-    # ── Encounter history (signal_events ledger) ───────────────────────────
+    # ── Encounter history (signal_events + concept_evolution ledger) ─────────
     encounter_history: list[dict[str, Any]] = []
     if topic_id is not None:
         ev_rows = conn.execute(
@@ -393,6 +386,34 @@ def collect_concept_state(
                 "source": ev["source"] or "",
                 "depth": int(ev["depth_at_event"] or 0),
             })
+
+        # Merge concept evolution events (status transitions) into history
+        try:
+            evo_rows = conn.execute(
+                """SELECT ce.timestamp, ce.trigger_type, ce.previous_status, ce.status
+                   FROM concept_evolution ce
+                   WHERE ce.topic_id = ?
+                   ORDER BY ce.timestamp DESC
+                   LIMIT 10""",
+                (topic_id,),
+            ).fetchall()
+            for evo in evo_rows:
+                ts = str(evo["timestamp"] or "")
+                prev = evo["previous_status"] or "?"
+                new = evo["status"] or "?"
+                ttype = evo["trigger_type"] or "decay"
+                encounter_history.append({
+                    "date": ts[:10],
+                    "signal": f"{prev} → {new}",
+                    "source": f"evolution/{ttype}",
+                    "depth": 0,
+                })
+        except Exception:
+            pass  # concept_evolution table may not exist in all DB versions
+
+        # Re-sort merged history by date descending, keep limit
+        encounter_history.sort(key=lambda x: x["date"], reverse=True)
+        encounter_history = encounter_history[:ENCOUNTER_HISTORY_LIMIT]
 
     # ── Confusion matrix Atlas entries (from JSON file, matched by slug) ───
     atlas_entries: list[str] = curriculum_row.get("confusable_atlas_entries", []) or []
@@ -618,8 +639,7 @@ def build_concept_file(
         parts.append("")
         parts.append(history_block)
 
-    # Related Vault Content placeholder — skills fill this during their own
-    # write phase. Kept as a stable anchor so cross-ref injection stays idempotent.
+    # Stable anchor for later cross-reference injection.
     parts.append("")
     parts.append("## Related Vault Content")
     parts.append("")
@@ -637,12 +657,12 @@ def build_concept_file(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Minimal stub builder (for not-yet-studied curriculum topics)
+# Base concept stub builder for topics with zero encounters.
 # ═══════════════════════════════════════════════════════════════════════════
 
 
 def build_stub_minimal(curriculum_row: dict[str, Any]) -> str:
-    """Unchanged minimal stub for curriculum topics with zero encounters."""
+    """Build the base Concept stub for a topic with zero encounters."""
     domain_tag = curriculum_row.get("domain_tag") or "general"
     pgy = int(curriculum_row.get("pgy_target") or 1)
     priority = _priority_label(int(curriculum_row.get("priority") or 1))
@@ -895,7 +915,8 @@ def sync_all_concepts(
 ) -> dict[str, int]:
     """Full-vault regeneration: minimal stub for unstudied + rich KG-sync for studied.
 
-    Used by scripts/write_concept_stubs.py.
+    Kept as an admin API for rare full-vault rebuilds; the normal post-session
+    path uses ``sync_studied_concepts``.
 
     **Merge strategy**: for studied concepts, reads existing files and preserves
     user-authored sections (see ``extract_user_sections``). Unstudied stubs are
