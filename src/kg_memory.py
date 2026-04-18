@@ -409,6 +409,132 @@ class KnowledgeGraphMemoryMixin:
         except Exception:
             return False
 
+    def resolve_memory_session(
+        self,
+        session_ts: str,
+        skill: str,
+        topic_text: str = "",
+        prefer_active: bool = True,
+    ) -> dict[str, object]:
+        """Resolve agent-supplied timestamps to the active memory session.
+
+        CLI agents occasionally create a fresh timestamp for every memory
+        write.  When there is exactly one plausible active, memory-enabled
+        session for the same skill/topic, route the write there and return a
+        warning so callers can surface or log the correction.
+        """
+        supplied_ts = (session_ts or "").strip()
+        skill_clean = (skill or "").strip()
+        topic_clean = (topic_text or "").strip()
+        try:
+            exact = self.conn.execute(
+                """SELECT * FROM memory_sessions
+                   WHERE session_ts = ? AND skill = ?
+                   LIMIT 1""",
+                (supplied_ts, skill_clean),
+            ).fetchone()
+            if exact:
+                return {
+                    "ok": True,
+                    "session_ts": supplied_ts,
+                    "supplied_session_ts": supplied_ts,
+                    "changed": False,
+                    "memory_enabled": bool(exact["memory_enabled"]),
+                    "status": exact["status"] or "",
+                    "warning": "" if exact["memory_enabled"] else "session exists but memory is disabled",
+                }
+            if not prefer_active or not skill_clean:
+                return {
+                    "ok": True,
+                    "session_ts": supplied_ts,
+                    "supplied_session_ts": supplied_ts,
+                    "changed": False,
+                    "memory_enabled": False,
+                    "status": "",
+                    "warning": "no matching enabled memory_session found",
+                }
+
+            active_rows = [
+                dict(row) for row in self.conn.execute(
+                    """SELECT * FROM memory_sessions
+                       WHERE skill = ?
+                         AND memory_enabled = 1
+                         AND status = 'active'
+                       ORDER BY started_ts DESC
+                       LIMIT 8""",
+                    (skill_clean,),
+                ).fetchall()
+            ]
+            if not active_rows:
+                return {
+                    "ok": True,
+                    "session_ts": supplied_ts,
+                    "supplied_session_ts": supplied_ts,
+                    "changed": False,
+                    "memory_enabled": False,
+                    "status": "",
+                    "warning": "no active enabled memory_session found",
+                }
+
+            topic_norm = self._normalize_topic(topic_clean) if topic_clean else ""
+            topic_matches = []
+            for row in active_rows:
+                row_topic = row.get("topic_text") or ""
+                row_norm = self._normalize_topic(row_topic) if row_topic else ""
+                if topic_norm and (
+                    topic_norm == row_norm
+                    or topic_norm in row_norm
+                    or row_norm in topic_norm
+                ):
+                    topic_matches.append(row)
+            candidates = topic_matches or (active_rows if len(active_rows) == 1 else [])
+            if not candidates:
+                return {
+                    "ok": True,
+                    "session_ts": supplied_ts,
+                    "supplied_session_ts": supplied_ts,
+                    "changed": False,
+                    "memory_enabled": False,
+                    "status": "",
+                    "warning": "multiple active memory sessions; supplied timestamp left unchanged",
+                    "active_session_candidates": [
+                        {
+                            "session_ts": row["session_ts"],
+                            "skill": row["skill"],
+                            "topic_text": row["topic_text"],
+                            "started_ts": row["started_ts"],
+                        }
+                        for row in active_rows
+                    ],
+                }
+
+            chosen = candidates[0]
+            resolved_ts = chosen["session_ts"]
+            changed = bool(supplied_ts and supplied_ts != resolved_ts)
+            return {
+                "ok": True,
+                "session_ts": resolved_ts,
+                "supplied_session_ts": supplied_ts,
+                "changed": changed,
+                "memory_enabled": True,
+                "status": chosen["status"] or "",
+                "topic_text": chosen["topic_text"] or "",
+                "warning": (
+                    f"session timestamp auto-routed to active memory_session {resolved_ts}"
+                    if changed else ""
+                ),
+            }
+        except Exception as exc:
+            print(f"[knowledge_graph] resolve_memory_session error: {exc}", file=sys.stderr)
+            return {
+                "ok": False,
+                "session_ts": supplied_ts,
+                "supplied_session_ts": supplied_ts,
+                "changed": False,
+                "memory_enabled": False,
+                "error": str(exc),
+            }
+
     def _infer_response_confidence(self, answer_text: str) -> str:
         """Infer high/low confidence from user phrasing when not passed explicitly."""
         text = f" {answer_text.lower()} "
@@ -438,6 +564,7 @@ class KnowledgeGraphMemoryMixin:
         answer_correct: int,
         correction_text: str = "",
         error_type: str = "",
+        error_process: str = "",
         misconception: str = "",
         root_cause: str = "",
         teaching_approach: str = "",
@@ -563,6 +690,7 @@ class KnowledgeGraphMemoryMixin:
         answer_correct: int,
         correction_text: str = "",
         error_type: str = "",
+        error_process: str = "",
         misconception: str = "",
         root_cause: str = "",
         remediation: str = "",
@@ -588,6 +716,31 @@ class KnowledgeGraphMemoryMixin:
             if topic_id < 0:
                 topic_id = None
             concept_clean = self._resolve_concept_text(concept_text, topic_id)
+            if not teaching_approach and hasattr(self, "_infer_teaching_approach_v2"):
+                teaching_approach = self._infer_teaching_approach_v2(
+                    question_text=question_text,
+                    answer_text=answer_text,
+                    correction_text=correction_text,
+                    skill=skill,
+                    topic_name=topic_name,
+                    concept_text=concept_clean,
+                    answer_correct=answer_correct,
+                    depth=depth,
+                )
+            if int(answer_correct or 0) < 2 and hasattr(self, "_infer_missing_error_metadata_v2"):
+                inferred = self._infer_missing_error_metadata_v2(
+                    answer_correct=answer_correct,
+                    answer_text=answer_text,
+                    correction_text=correction_text,
+                    error_type=error_type,
+                    root_cause=root_cause,
+                    misconception=misconception,
+                    concept_text=concept_clean,
+                    question_text=question_text,
+                )
+                error_type = inferred.get("error_type", error_type)
+                root_cause = inferred.get("root_cause", root_cause)
+                misconception = inferred.get("misconception", misconception)
             content_text = f"Q: {question_text}\nA: {answer_text}"
             if correction_text:
                 content_text += f"\nCorrection: {correction_text}"
@@ -597,6 +750,7 @@ class KnowledgeGraphMemoryMixin:
                 "answer_correct": answer_correct,
                 "correction": correction_text,
                 "error_type": error_type,
+                "error_process": error_process,
                 "misconception": misconception,
                 "root_cause": root_cause,
                 "remediation": remediation,
@@ -647,6 +801,37 @@ class KnowledgeGraphMemoryMixin:
                             "UPDATE learning_exchanges SET memory_event_id = ? WHERE exchange_id = ?",
                             (memory_event_id, existing["exchange_id"]),
                         )
+                v2_result = {}
+                if hasattr(self, "record_active_answer_v2"):
+                    try:
+                        v2_result = self.record_active_answer_v2(
+                            session_ts=session_ts,
+                            turn_number=turn_number,
+                            skill=skill,
+                            topic_name=topic_name,
+                            concept_text=concept_clean,
+                            question_text=question_text,
+                            answer_text=answer_text,
+                            answer_correct=answer_correct,
+                            correction_text=correction_text,
+                            error_type=error_type,
+                            error_process=error_process,
+                            misconception=misconception,
+                            root_cause=root_cause,
+                            remediation=remediation,
+                            teaching_approach=teaching_approach,
+                            retrieval_sources=retrieval_sources,
+                            breakthrough=breakthrough,
+                            insight_text=insight_text,
+                            domain=domain,
+                            depth=depth,
+                            response_confidence=confidence,
+                            memory_event_id=memory_event_id if memory_event_id > 0 else existing["memory_event_id"],
+                            exchange_id=existing["exchange_id"],
+                            signal_event_id=existing["signal_event_id"],
+                        )
+                    except Exception as exc:
+                        print(f"[knowledge_graph] record_active_answer_v2 dedupe error: {exc}", file=sys.stderr)
                 return {
                     "ok": True,
                     "signal_event_id": existing["signal_event_id"],
@@ -655,6 +840,7 @@ class KnowledgeGraphMemoryMixin:
                     "signal_type": signal_type,
                     "concept": concept_clean,
                     "deduped": True,
+                    "memory_v2": v2_result,
                 }
             signal_meta = {
                 "concept": concept_clean,
@@ -712,7 +898,7 @@ class KnowledgeGraphMemoryMixin:
                     "error_type": error_type or ("partial_recall" if answer_correct == 1 else "unknown"),
                     "misconception": misconception,
                     "root_cause": root_cause,
-                    "error_process": "",
+                    "error_process": error_process,
                     "remediation": remediation or correction_text or teaching_approach,
                 }]
 
@@ -728,6 +914,38 @@ class KnowledgeGraphMemoryMixin:
                 trigger_memory_event_id=memory_event_id if memory_event_id > 0 else None,
             )
 
+            v2_result = {}
+            if hasattr(self, "record_active_answer_v2"):
+                try:
+                    v2_result = self.record_active_answer_v2(
+                        session_ts=session_ts,
+                        turn_number=turn_number,
+                        skill=skill,
+                        topic_name=topic_name,
+                        concept_text=concept_clean,
+                        question_text=question_text,
+                        answer_text=answer_text,
+                        answer_correct=answer_correct,
+                        correction_text=correction_text,
+                        error_type=error_type,
+                        error_process=error_process,
+                        misconception=misconception,
+                        root_cause=root_cause,
+                        remediation=remediation,
+                        teaching_approach=teaching_approach,
+                        retrieval_sources=retrieval_sources,
+                        breakthrough=breakthrough,
+                        insight_text=insight_text,
+                        domain=domain,
+                        depth=depth,
+                        response_confidence=confidence,
+                        memory_event_id=memory_event_id if memory_event_id > 0 else None,
+                        exchange_id=exchange_id if exchange_id > 0 else None,
+                        signal_event_id=signal_event_id if signal_event_id > 0 else None,
+                    )
+                except Exception as exc:
+                    print(f"[knowledge_graph] record_active_answer_v2 error: {exc}", file=sys.stderr)
+
             return {
                 "ok": exchange_id > 0 and signal_event_id > 0,
                 "signal_event_id": signal_event_id,
@@ -735,6 +953,7 @@ class KnowledgeGraphMemoryMixin:
                 "memory_event_id": memory_event_id,
                 "signal_type": signal_type,
                 "concept": concept_clean,
+                "memory_v2": v2_result,
             }
         except Exception as exc:
             print(f"[knowledge_graph] log_answer error: {exc}", file=sys.stderr)
@@ -2029,6 +2248,7 @@ class KnowledgeGraphMemoryMixin:
                 "calibration": calibration,
                 "fts": fts_status,
                 "lancedb": lance_status,
+                "v2": self.memory_v2_doctor() if hasattr(self, "memory_v2_doctor") else {},
             }
         except Exception as exc:
             print(f"[knowledge_graph] memory_doctor error: {exc}", file=sys.stderr)
@@ -2304,11 +2524,25 @@ class KnowledgeGraphMemoryMixin:
                     "reason": "No relevant prior memory found.",
                     "instruction": "Start with a short active recall probe, then log the answer.",
                 })
+            context_pack = {}
+            if hasattr(self, "context_pack"):
+                try:
+                    context_pack = self.context_pack(
+                        query,
+                        topic_name=topic_name,
+                        skill=skill,
+                        intent="teach",
+                        max_tokens=900,
+                        log_retrieval=False,
+                    )
+                except Exception as exc:
+                    context_pack = {"ok": False, "error": str(exc)}
             return {
                 "query": query,
                 "topic": topic_name or "",
                 "actions": actions[:8],
                 "recall": recall,
+                "context_pack": context_pack,
                 "hybrid": {
                     "semantic_augmented": semantic_augmented,
                     "fast_exchange_count": fast_n,

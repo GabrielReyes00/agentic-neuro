@@ -33,6 +33,27 @@ def _load_hook_payload() -> dict[str, object]:
         return {}
 
 
+def _prompt_from_payload(payload: Mapping[str, object]) -> str:
+    """Best-effort extraction of the submitted user prompt from hook payloads."""
+    candidate_keys = (
+        "prompt", "user_prompt", "userPrompt", "message", "input",
+        "text", "query",
+    )
+    for key in candidate_keys:
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    messages = payload.get("messages")
+    if isinstance(messages, list):
+        for msg in reversed(messages):
+            if not isinstance(msg, dict):
+                continue
+            content = msg.get("content")
+            if isinstance(content, str) and content.strip():
+                return content.strip()
+    return ""
+
+
 # Claude Code sends PascalCase event names; Gemini sends lowercase/snake_case.
 _CLAUDE_HOOK_EVENTS = frozenset({
     "PreCompact", "UserPromptSubmit", "PreToolUse", "PostToolUse",
@@ -352,8 +373,24 @@ def _append_prior_memory(
         pass
 
 
-def _build_memory_block(kg) -> str:
+def _build_memory_block(kg, hook_payload: Mapping[str, object] | None = None) -> str:
     """Build compact active-session memory text, or return empty string."""
+    hook_payload = hook_payload or {}
+    prompt = _prompt_from_payload(hook_payload)
+    if prompt and hasattr(kg, "context_pack"):
+        try:
+            pack = kg.context_pack(
+                prompt,
+                intent="teach",
+                max_tokens=900,
+                log_retrieval=False,
+            )
+            text = pack.get("text", "")
+            if text:
+                return f"{text}\n\n(End of injected memory context pack)"
+        except Exception:
+            pass
+
     now = datetime.now(timezone.utc)
     two_hours_ago = (now - timedelta(hours=2)).isoformat()
 
@@ -401,7 +438,7 @@ def main() -> int:
         return 0  # silent failure — don't block the agent
 
     try:
-        output = _build_memory_block(kg)
+        output = _build_memory_block(kg, hook_payload)
         if gemini_hook:
             _gemini_output(output)
         elif claude_hook:

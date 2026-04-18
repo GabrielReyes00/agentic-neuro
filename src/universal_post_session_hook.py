@@ -342,11 +342,6 @@ def _render_dashboard(
     next_priority = next_priority_override or gap_topic
 
     assets = _collect_vault_assets()
-    reports_asset = assets["Reports"]
-    guides_asset = assets["Operative Guides"]
-    study_asset = assets["Study Material"]
-    concepts_asset = assets["Concepts"]
-
     lines: list[str] = []
     lines.append("---")
     lines.append(f"updated: {_utc_now().date().isoformat()}")
@@ -488,22 +483,16 @@ def _render_dashboard(
     lines.append("## Vault Assets")
     lines.append("")
     lines.append("> [!example] Notes in this vault")
-    lines.append(
-        f"> **Reports** ({reports_asset['count']}): "
-        + (", ".join(reports_asset["links"]) if reports_asset["links"] else "None yet")
-    )
-    lines.append(
-        f"> **Operative Guides** ({guides_asset['count']}): "
-        + (", ".join(guides_asset["links"]) if guides_asset["links"] else "None yet — use `/intraoperative-guide` to generate one")
-    )
-    lines.append(
-        f"> **Study Material** ({study_asset['count']}): "
-        + (", ".join(study_asset["links"]) if study_asset["links"] else "None yet")
-    )
-    lines.append(
-        f"> **Concepts** ({concepts_asset['count']}): "
-        + (", ".join(concepts_asset["links"]) if concepts_asset["links"] else "None yet")
-    )
+    empty_text = {
+        "Reports": "None yet",
+        "Operative Guides": "None yet — use `/intraoperative-guide` to generate one",
+        "Study Material": "None yet",
+        "Concepts": "None yet",
+    }
+    for label in ("Reports", "Operative Guides", "Study Material", "Concepts"):
+        asset = assets[label]
+        rendered = ", ".join(asset["links"]) if asset["links"] else empty_text[label]
+        lines.append(f"> **{label}** ({asset['count']}): {rendered}")
 
     lines.append("")
     lines.append("---")

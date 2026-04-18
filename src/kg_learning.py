@@ -37,6 +37,17 @@ class KnowledgeGraphLearningMixin:
         "diagnosis", "clinical", "surgical", "approach", "technique", "presentation",
     }
 
+    def _learner_profile_config(self) -> dict:
+        """Return optional learner-stage preferences from data/pgy_config.json."""
+        try:
+            path = DATA_DIR / "pgy_config.json"
+            if not path.exists():
+                return {}
+            data = json.loads(path.read_text())
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+
     def _fuzzy_find_topics_in_query(self, query: str) -> list[str]:
         """Find stored topics whose canonical names significantly overlap with the query.
 
@@ -86,8 +97,8 @@ class KnowledgeGraphLearningMixin:
                 seen.add(norm)
         return raw_topics
 
-    @staticmethod
     def _depth_adaptive_guidance(
+        self,
         topic: str,
         depth: int,
         confidence: float,
@@ -96,7 +107,7 @@ class KnowledgeGraphLearningMixin:
         if depth == 0:
             return [
                 f"'{topic}' exists in the graph but has never been studied — "
-                f"treat as new, start from foundations."
+                f"start with a diagnostic probe before deciding how much foundation is needed."
             ], 1
         if depth == 1:
             return [
@@ -424,6 +435,7 @@ class KnowledgeGraphLearningMixin:
         """
         try:
             raw_topics = self._query_topics_with_fuzzy_fallback(query)
+            learner_profile = self._learner_profile_config()
             now = datetime.now(timezone.utc)
             thirty_days_ago = (now - timedelta(days=30)).isoformat()
 
@@ -458,8 +470,9 @@ class KnowledgeGraphLearningMixin:
                         "curriculum_priority": self._get_curriculum_priority(canonical),
                     })
                     guidance_lines.append(
-                        f"'{raw}' is brand new — start from foundational principles, "
-                        f"build the conceptual scaffold before advancing to mechanisms."
+                        f"'{raw}' is new to the memory graph, not necessarily new to Gabriel — "
+                        f"use a compact anchor, then test mechanism, clinical discrimination, "
+                        f"and management transfer."
                     )
                     continue
 
@@ -690,6 +703,18 @@ class KnowledgeGraphLearningMixin:
                 "adaptive_guidance": key_guidance,
                 "cross_capability_patterns": patterns,
             }
+            if learner_profile:
+                result["learner_profile"] = {
+                    "training_stage": learner_profile.get("training_stage", ""),
+                    "teaching_depth_policy": learner_profile.get("teaching_depth_policy", ""),
+                    "target_depth_when_ready": learner_profile.get("target_depth_when_ready", ""),
+                    "starting_probe": learner_profile.get("starting_probe", ""),
+                    "default_question_style": learner_profile.get("default_question_style", ""),
+                    "tone": learner_profile.get("tone", ""),
+                    "learning_goal": learner_profile.get("learning_goal", ""),
+                    "avoid_by_default": learner_profile.get("avoid_by_default", [])[:12],
+                    "prefer_by_default": learner_profile.get("prefer_by_default", [])[:12],
+                }
             if learning_style:
                 result["learning_patterns"] = learning_style
             if same_topic_due:
@@ -1481,6 +1506,13 @@ class KnowledgeGraphLearningMixin:
                     "concepts_understood": [],
                     "concepts_missed": [],
                     "session_notes": "",
+                    "source_kind": "",
+                    "preferred_study_mode": "",
+                    "last_study_mode": "",
+                    "pacing_goal": "",
+                    "mode_confidence": 0.0,
+                    "mode_reason": "",
+                    "mode_updated_ts": None,
                 }
             d = dict(row)
             d["concepts_covered"] = json.loads(d.get("concepts_covered") or "[]")
@@ -1491,6 +1523,257 @@ class KnowledgeGraphLearningMixin:
         except Exception as exc:
             print(f"[knowledge_graph] get_doc_status error: {exc}", file=sys.stderr)
             return {"doc_path": doc_path, "status": "error", "error": str(exc)}
+
+    def _infer_document_study_profile(
+        self,
+        doc_path: str,
+        doc_type: str = "study-material",
+        content_sample: str = "",
+    ) -> dict:
+        """Infer default study posture from document identity and sample text."""
+        path = (doc_path or "").strip()
+        haystack = f"{path}\n{doc_type}\n{content_sample}".lower()
+        source_kind = "unknown"
+        study_mode = "ask"
+        pacing_goal = "user_selected"
+        confidence = 0.35
+        reasons: list[str] = []
+
+        review_markers = [
+            "study material/",
+            "review",
+            "slides",
+            "lab",
+            "exam",
+            "quiz",
+            "question bank",
+            "## questions",
+            "total questions",
+            "<summary>answer</summary>",
+            "[recall]",
+            "[spatial]",
+            "[discrimination]",
+        ]
+        report_markers = [
+            "reports/",
+            "generated report",
+            "generation mode",
+            "tl;dr",
+            "synthesis",
+            "confidence assessment",
+            "clinical utility",
+        ]
+        oral_markers = [
+            "oral boards",
+            "case seed",
+            "case log",
+            "board-mode",
+            "examiner",
+        ]
+
+        review_score = sum(1 for marker in review_markers if marker in haystack)
+        report_score = sum(1 for marker in report_markers if marker in haystack)
+        oral_score = sum(1 for marker in oral_markers if marker in haystack)
+        q_count = len(re.findall(r"(?:^|\n)\s*(?:\*\*)?\[?q\d+\]?|(?:^|\n)\s*(?:\*\*)?q\d+[\):.]", content_sample.lower()))
+        if q_count >= 5:
+            review_score += 3
+            reasons.append(f"detected {q_count} question markers")
+
+        if oral_score >= max(review_score, report_score, 1):
+            source_kind = "oral_board_case_seed"
+            study_mode = "oral_boards"
+            pacing_goal = "exam_simulation"
+            confidence = 0.75
+            reasons.append("oral-board/case markers found")
+        elif report_score > review_score and report_score >= 2:
+            source_kind = "generated_report"
+            study_mode = "deep_understanding"
+            pacing_goal = "mastery"
+            confidence = 0.7
+            reasons.append("report/synthesis markers found")
+        elif review_score >= 2:
+            source_kind = "review_material"
+            study_mode = "rapid_review"
+            pacing_goal = "throughput"
+            confidence = 0.7 if q_count < 5 else 0.85
+            reasons.append("review/question-deck markers found")
+        elif "study material/" in haystack:
+            source_kind = "study_material"
+            study_mode = "ask"
+            pacing_goal = "user_selected"
+            confidence = 0.45
+            reasons.append("study-material file without clear pacing markers")
+
+        return {
+            "doc_path": path,
+            "doc_type": doc_type or "study-material",
+            "source_kind": source_kind,
+            "preferred_study_mode": study_mode,
+            "pacing_goal": pacing_goal,
+            "mode_confidence": confidence,
+            "mode_reason": "; ".join(reasons) if reasons else "insufficient document evidence; ask the user",
+            "should_ask": study_mode == "ask" or confidence < 0.75,
+        }
+
+    def document_profile(
+        self,
+        doc_path: str,
+        doc_type: str = "study-material",
+        content_sample: str = "",
+        source_kind: str = "",
+        preferred_study_mode: str = "",
+        pacing_goal: str = "",
+        mode_reason: str = "",
+        mode_confidence: float | None = None,
+        apply: bool = False,
+    ) -> dict:
+        """Get or update a document's preferred study mode and pacing purpose."""
+        now = datetime.now(timezone.utc).isoformat()
+        doc_path = (doc_path or "").strip()
+        if not doc_path:
+            return {"ok": False, "error": "doc_path is required"}
+
+        inferred = self._infer_document_study_profile(
+            doc_path=doc_path,
+            doc_type=doc_type,
+            content_sample=content_sample,
+        )
+        row = self.conn.execute(
+            "SELECT * FROM document_sessions WHERE doc_path = ?", (doc_path,)
+        ).fetchone()
+        existing = dict(row) if row else {}
+
+        explicit_mode = (preferred_study_mode or "").strip()
+        explicit_kind = (source_kind or "").strip()
+        final = {
+            **inferred,
+            "status": "returning" if existing else "new",
+            "session_count": int(existing.get("session_count") or 0) if existing else 0,
+            "coverage_pct": float(existing.get("coverage_pct") or 0.0) if existing else 0.0,
+            "last_studied": existing.get("last_studied") if existing else None,
+        }
+        if existing:
+            for key in (
+                "source_kind",
+                "preferred_study_mode",
+                "last_study_mode",
+                "pacing_goal",
+                "mode_confidence",
+                "mode_reason",
+                "mode_updated_ts",
+            ):
+                if existing.get(key) not in (None, ""):
+                    final[key] = existing.get(key)
+
+        if explicit_mode:
+            final["preferred_study_mode"] = explicit_mode
+            final["last_study_mode"] = explicit_mode
+        if explicit_kind:
+            final["source_kind"] = explicit_kind
+        if pacing_goal:
+            final["pacing_goal"] = pacing_goal
+        elif explicit_mode == "rapid_review":
+            final["pacing_goal"] = "throughput"
+        elif explicit_mode == "deep_understanding":
+            final["pacing_goal"] = "mastery"
+        elif explicit_mode == "oral_boards":
+            final["pacing_goal"] = "exam_simulation"
+        if mode_reason:
+            final["mode_reason"] = mode_reason
+        if mode_confidence is not None:
+            final["mode_confidence"] = max(0.0, min(1.0, float(mode_confidence)))
+
+        mode = final.get("preferred_study_mode") or "ask"
+        final["should_ask"] = mode in ("", "ask") or float(final.get("mode_confidence") or 0.0) < 0.75
+        if mode == "rapid_review":
+            final["agent_directive"] = (
+                "Run this document as rapid review: ask source questions one at a time, grade briefly, "
+                "advance after correct answers, and deep-dive only for partial/wrong/overconfident/safety-critical misses."
+            )
+        elif mode == "deep_understanding":
+            final["agent_directive"] = (
+                "Run this document as deep understanding: preserve cognitive friction and progressive reveal, "
+                "then build mechanism, discriminator, and transfer schema."
+            )
+        elif mode == "oral_boards":
+            final["agent_directive"] = (
+                "Use the document as case seed material for staged oral-board style questioning."
+            )
+        else:
+            final["agent_directive"] = (
+                "Ask the user to choose Rapid Review or Deep Understanding before drilling this document."
+            )
+
+        if apply:
+            with self.conn:
+                if existing:
+                    self.conn.execute(
+                        """UPDATE document_sessions
+                           SET doc_type = COALESCE(NULLIF(?, ''), doc_type),
+                               source_kind = ?,
+                               preferred_study_mode = ?,
+                               last_study_mode = COALESCE(NULLIF(?, ''), last_study_mode),
+                               pacing_goal = ?,
+                               mode_confidence = ?,
+                               mode_reason = ?,
+                               mode_updated_ts = ?
+                           WHERE doc_path = ?""",
+                        (
+                            doc_type or final.get("doc_type", "study-material"),
+                            final.get("source_kind", ""),
+                            final.get("preferred_study_mode", ""),
+                            explicit_mode,
+                            final.get("pacing_goal", ""),
+                            float(final.get("mode_confidence") or 0.0),
+                            final.get("mode_reason", ""),
+                            now,
+                            doc_path,
+                        ),
+                    )
+                    doc_id = int(existing["doc_id"])
+                else:
+                    cur = self.conn.execute(
+                        """INSERT INTO document_sessions
+                           (doc_path, doc_type, source_kind, preferred_study_mode,
+                            last_study_mode, pacing_goal, mode_confidence,
+                            mode_reason, mode_updated_ts, session_count)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)""",
+                        (
+                            doc_path,
+                            doc_type or "study-material",
+                            final.get("source_kind", ""),
+                            final.get("preferred_study_mode", ""),
+                            explicit_mode or "",
+                            final.get("pacing_goal", ""),
+                            float(final.get("mode_confidence") or 0.0),
+                            final.get("mode_reason", ""),
+                            now,
+                        ),
+                    )
+                    doc_id = int(cur.lastrowid or -1)
+            final["doc_id"] = doc_id
+            final["mode_updated_ts"] = now
+            if hasattr(self, "_upsert_memory_item_v2"):
+                summary = (
+                    f"Document study profile for {doc_path}: "
+                    f"source_kind={final.get('source_kind') or 'unknown'}, "
+                    f"preferred_study_mode={final.get('preferred_study_mode') or 'ask'}, "
+                    f"pacing_goal={final.get('pacing_goal') or 'user_selected'}."
+                )
+                item_id = self._upsert_memory_item_v2(
+                    item_type="document_profile",
+                    summary=summary,
+                    details=final,
+                    importance=0.8,
+                    confidence=float(final.get("mode_confidence") or 0.5),
+                    source_table="document_sessions",
+                    source_id=doc_id if doc_id > 0 else None,
+                    valid_from=now,
+                    dedupe_key=self._memory_hash("document_profile", doc_path),
+                )
+                final["memory_item_id"] = item_id
+
+        return {"ok": True, **final}
 
     def log_doc_progress(
         self,
@@ -2402,7 +2685,7 @@ class KnowledgeGraphLearningMixin:
                     "session_count": 0,
                     "recommended_depth": 2,
                     "direction": "maintain",
-                    "hint": "Not enough session data — run 2+ sessions with success rate logging.",
+                    "hint": "Not enough session data — start with a diagnostic calibration probe before choosing depth.",
                 }
 
             rates = [float(r["session_success_rate"]) for r in rows]
@@ -2781,48 +3064,3 @@ class KnowledgeGraphLearningMixin:
         except Exception as exc:
             print(f"[knowledge_graph] misconception_clusters error: {exc}", file=sys.stderr)
             return []
-
-    # ------------------------------------------------------------------
-    # Iteration 4: Retroactive topic specificity backfill utility
-    # ------------------------------------------------------------------
-
-    def backfill_topic_specificity(self) -> dict:
-        """Backfill specificity_level and clinical_context for existing topics.
-
-        For the 671 existing topics with specificity_level=1, run
-        validate_topic_specificity() and update in-place. Does not rename topics
-        or orphan signal_events — only updates metadata columns.
-
-        Returns {"updated": N, "already_specific": M}
-        """
-        updated = 0
-        already_specific = 0
-        try:
-            rows = self.conn.execute(
-                "SELECT topic_id, canonical_name FROM topics WHERE specificity_level = 1"
-            ).fetchall()
-            for row in rows:
-                result = self.validate_topic_specificity(row["canonical_name"])
-                level = result["specificity_level"]
-                if level > 1:
-                    # Extract clinical context: text after the first "in ", "for ", "post-", etc.
-                    lower = row["canonical_name"].lower()
-                    context = ""
-                    for marker in [" in ", " for ", " after ", " post-", " following ",
-                                   " during ", " with ", " vs ", " versus "]:
-                        idx = lower.find(marker)
-                        if idx >= 0:
-                            context = row["canonical_name"][idx + len(marker):].strip()
-                            break
-                    with self.conn:
-                        self.conn.execute(
-                            "UPDATE topics SET specificity_level = ?, clinical_context = ? WHERE topic_id = ?",
-                            (level, context, row["topic_id"]),
-                        )
-                    updated += 1
-                else:
-                    already_specific += 1  # still level 1 by assessment
-            self.conn.commit()
-        except Exception as exc:
-            print(f"[knowledge_graph] backfill_topic_specificity error: {exc}", file=sys.stderr)
-        return {"updated": updated, "already_specific": already_specific}

@@ -128,18 +128,7 @@ if [[ "$OBSIDIAN_WRITE" == true ]]; then
         if [[ -f "$SESSION_FILE" ]]; then
             if [[ "$STATUS" == "complete" ]]; then
                 # Replace last IN-PROGRESS status with COMPLETE
-                python3 - "$SESSION_FILE" <<'PY'
-import sys
-from pathlib import Path
-
-path = Path(sys.argv[1])
-content = path.read_text(encoding="utf-8")
-# Replace the last 'Status: IN-PROGRESS' with 'Status: COMPLETE'
-idx = content.rfind("Status: IN-PROGRESS")
-if idx >= 0:
-    content = content[:idx] + "Status: COMPLETE" + content[idx + len("Status: IN-PROGRESS"):]
-path.write_text(content, encoding="utf-8")
-PY
+                python3 src/heartbeat_utils.py mark-complete "$SESSION_FILE"
                 # ---- log_session_narrative (Redesign Phase) ----
                 if [[ -n "$NEXT_STRATEGY" || -n "$NARRATIVE_SUMMARY" ]]; then
                     echo "[session-narrative] Logging session narrative..."
@@ -245,23 +234,7 @@ INDEX_EOF
         else
             if grep -q "${SLUG}.md" "$INDEX_FILE"; then
                 # Update existing row
-                python3 - "$INDEX_FILE" "$SLUG" "$TOPIC_NAME" "$DATE" "$SKILL" "$STATUS" <<'PY'
-import re
-import sys
-from pathlib import Path
-
-path = Path(sys.argv[1])
-slug = re.escape(sys.argv[2])
-topic_name = sys.argv[3]
-date = sys.argv[4]
-skill = sys.argv[5]
-status = sys.argv[6]
-
-new_row = f"| [{topic_name}]({sys.argv[2]}.md) | {date} | {skill} | {status} |"
-content = path.read_text(encoding="utf-8")
-content = re.sub(rf"\|[^\n]*{slug}\.md[^\n]*", new_row, content)
-path.write_text(content, encoding="utf-8")
-PY
+                python3 src/heartbeat_utils.py update-session-index "$INDEX_FILE" "$SLUG" "$TOPIC_NAME" "$DATE" "$SKILL" "$STATUS"
             else
                 echo "| [$TOPIC_NAME](${SLUG}.md) | $DATE | $SKILL | $STATUS |" >> "$INDEX_FILE"
             fi
@@ -274,9 +247,7 @@ PY
 
         if [[ -f "$REVIEW_FILE" ]]; then
             # --- UPSERT: append new session block ---
-            sed -i '' "s/^last_studied:.*/last_studied: $DATE/" "$REVIEW_FILE"
-            sed -i '' "s/^session_count:.*/session_count: $SESSION_NUM/" "$REVIEW_FILE"
-            sed -i '' "s/^coverage_pct:.*/coverage_pct: $COV_PCT/" "$REVIEW_FILE"
+            python3 src/heartbeat_utils.py update-review-metadata "$REVIEW_FILE" "$DATE" "$SESSION_NUM" "$COV_PCT"
 
             cat >> "$REVIEW_FILE" << SESSION_EOF
 
@@ -342,24 +313,7 @@ INDEX_EOF
         else
             if grep -q "${SLUG}_review.md" "$INDEX_FILE"; then
                 # Update existing row
-                python3 - "$INDEX_FILE" "$SLUG" "$TOPIC_NAME" "$DATE" "$SESSION_NUM" "$COV_PCT" <<'PY'
-import re
-import sys
-from pathlib import Path
-
-path = Path(sys.argv[1])
-slug_raw = sys.argv[2]
-slug = re.escape(slug_raw)
-topic_name = sys.argv[3]
-date = sys.argv[4]
-session_num = sys.argv[5]
-coverage = sys.argv[6]
-
-new_row = f"| [{topic_name}]({slug_raw}_review.md) | {date} | {session_num} | {coverage}% |"
-content = path.read_text(encoding="utf-8")
-content = re.sub(rf"\|[^\n]*{slug}_review\.md[^\n]*", new_row, content)
-path.write_text(content, encoding="utf-8")
-PY
+                python3 src/heartbeat_utils.py update-docanchor-index "$INDEX_FILE" "$SLUG" "$TOPIC_NAME" "$DATE" "$SESSION_NUM" "$COV_PCT"
             else
                 echo "| [$TOPIC_NAME](${SLUG}_review.md) | $DATE | $SESSION_NUM | ${COV_PCT}% |" >> "$INDEX_FILE"
             fi

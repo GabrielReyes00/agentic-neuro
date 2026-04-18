@@ -482,32 +482,6 @@ def _dispatch_command(args: argparse.Namespace, kg: KnowledgeGraph) -> None:
         data = kg.study_plan(hours=args.hours, rotation=args.rotation, focus=args.focus)
         _print_json(data)
 
-    elif args.command == "memory_guidance":
-        data = kg.memory_guidance(
-            query=args.query,
-            topic_name=args.topic,
-            skill=args.skill,
-            max_results=args.max_results,
-            hybrid_semantic=(
-                getattr(args, "hybrid_semantic", False)
-                and not getattr(args, "no_hybrid_semantic", False)
-            ),
-            semantic_fallback_threshold=max(0, getattr(args, "semantic_threshold", 3)),
-        )
-        _print_json(data)
-
-    elif args.command == "memory_session":
-        data = kg.set_memory_session(
-            session_ts=args.session_ts,
-            skill=args.skill,
-            topic_text=args.topic,
-            memory_enabled=args.enabled,
-            consent_scope=args.consent_scope,
-            status=args.status,
-            notes=args.notes,
-        )
-        _print_json(data)
-
     elif args.command == "add_concept_alias":
         data = kg.add_concept_alias(
             alias=args.alias,
@@ -546,10 +520,6 @@ def _dispatch_command(args: argparse.Namespace, kg: KnowledgeGraph) -> None:
 
     elif args.command == "seed_topic_adjacency":
         result = kg.auto_seed_topic_adjacency()
-        _print_json(result)
-
-    elif args.command == "backfill_specificity":
-        result = kg.backfill_topic_specificity()
         _print_json(result)
 
     elif args.command == "backfill_topic_fingerprints":
@@ -691,22 +661,6 @@ def _dispatch_command(args: argparse.Namespace, kg: KnowledgeGraph) -> None:
 
     elif args.command == "domain_error_profile":
         data = kg.domain_error_profile(domain=args.domain, days_back=args.days)
-        _print_json(data)
-
-    elif args.command == "memory_doctor":
-        data = kg.memory_doctor()
-        _print_json(data)
-
-    elif args.command == "memory_reindex_fts":
-        data = kg.reindex_memory_fts()
-        _print_json(data)
-
-    elif args.command == "memory_rebuild":
-        data = kg.memory_rebuild(apply=args.apply)
-        _print_json(data)
-
-    elif args.command == "memory_cleanup":
-        data = kg.memory_cleanup_plan(apply=args.apply, backup=args.backup)
         _print_json(data)
 
 
@@ -930,42 +884,6 @@ def _build_parser() -> argparse.ArgumentParser:
     p_sp.add_argument("--focus", default=None,
         help="Optional topic/domain focus override")
 
-    p_mg = subparsers.add_parser("memory_guidance",
-        help="Policy-level teaching guidance from prior learner memory (JSON output)")
-    p_mg.add_argument("query", help="Current teaching query or topic")
-    p_mg.add_argument("--topic", default=None, help="Optional topic filter")
-    p_mg.add_argument("--skill", default=None, help="Optional skill filter")
-    p_mg.add_argument("--max", type=int, default=5, dest="max_results", help="Max recalled exchanges")
-    p_mg.add_argument(
-        "--semantic",
-        action="store_true",
-        dest="hybrid_semantic",
-        help="Allow Lance semantic fallback when SQLite/FTS recall is sparse",
-    )
-    p_mg.add_argument(
-        "--no-hybrid-semantic",
-        action="store_true",
-        dest="no_hybrid_semantic",
-        help="Disable Lance semantic fallback when SQLite/FTS recall is sparse",
-    )
-    p_mg.add_argument(
-        "--semantic-threshold",
-        type=int,
-        default=3,
-        dest="semantic_threshold",
-        help="Run semantic augmentation when fast-path exchange count is below this (default 3)",
-    )
-
-    p_ms = subparsers.add_parser("memory_session",
-        help="Set explicit memory mode for a study session (JSON output)")
-    p_ms.add_argument("--session-ts", required=True, dest="session_ts", help="Session timestamp")
-    p_ms.add_argument("--skill", required=True, help="Skill/workflow name")
-    p_ms.add_argument("--topic", default="", help="Session topic text")
-    p_ms.add_argument("--enabled", action="store_true", help="Enable memory capture for this session")
-    p_ms.add_argument("--scope", default="", dest="consent_scope", help="Consent scope, e.g. study_session")
-    p_ms.add_argument("--status", default="active", choices=["active", "complete", "paused"], help="Session status")
-    p_ms.add_argument("--notes", default="", help="Optional notes")
-
     p_alias = subparsers.add_parser("add_concept_alias",
         help="Add/update a concept alias mapping for stable concept identity (JSON output)")
     p_alias.add_argument("--alias", required=True, help="Alias text")
@@ -994,9 +912,6 @@ def _build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("seed_topic_adjacency",
         help="Seed topic_adjacency table from curriculum milestone groupings (idempotent)")
-
-    subparsers.add_parser("backfill_specificity",
-        help="Backfill specificity_level and clinical_context for all existing topics (JSON output)")
 
     subparsers.add_parser("backfill_topic_fingerprints",
         help="Backfill topic_fingerprint for existing session_narratives (Round 3, idempotent)")
@@ -1147,21 +1062,6 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Aggregate error patterns for a clinical domain (JSON)")
     p_dep.add_argument("--domain", required=True, help="Domain slug (vascular, spine, tumor, etc.)")
     p_dep.add_argument("--days", type=int, default=90, help="Lookback days (default 90)")
-
-    subparsers.add_parser("memory_doctor",
-        help="Audit long-term memory integrity without mutating state (JSON)")
-
-    subparsers.add_parser("memory_reindex_fts",
-        help="Rebuild the SQLite FTS index for raw and derived memory rows (JSON)")
-
-    p_mrb = subparsers.add_parser("memory_rebuild",
-        help="Rebuild missing derived rows from append-only memory_events (dry-run by default)")
-    p_mrb.add_argument("--apply", action="store_true", help="Apply missing-row rebuild")
-
-    p_mcp = subparsers.add_parser("memory_cleanup",
-        help="Plan/apply safe historical cleanup for duplicate SQLite summaries")
-    p_mcp.add_argument("--apply", action="store_true", help="Apply cleanup")
-    p_mcp.add_argument("--backup", action="store_true", help="Required with --apply")
 
     return parser
 

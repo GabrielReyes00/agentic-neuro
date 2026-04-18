@@ -18,6 +18,3 @@ torch>=2.0
 chromadb>=0.6
 Pillow>=10.0
 pydantic>=2.0
-
-# Frontier search
-requests>=2.31

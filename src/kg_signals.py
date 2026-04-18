@@ -372,6 +372,18 @@ class KnowledgeGraphSignalMixin:
         source : str
             Capability that drove the session ("rag", "bootcamp", "intraop").
         """
+        required_gap_fields = {
+            "concept", "error_type", "error_process",
+            "misconception", "root_cause", "remediation",
+        }
+        for idx, gap in enumerate(gap_details or []):
+            missing = required_gap_fields - set(gap)
+            if missing:
+                raise ValueError(
+                    "gap_details entries must include "
+                    f"{sorted(required_gap_fields)}; entry {idx} missing {sorted(missing)}"
+                )
+
         try:
             understood = understood or []
             gaps = gaps or []
@@ -382,7 +394,7 @@ class KnowledgeGraphSignalMixin:
             _gap_concepts_from_details = [gd.get("concept", "") for gd in gap_details if gd.get("concept")]
             all_gap_concepts = list(gaps) + _gap_concepts_from_details
 
-            now = datetime.utcnow().isoformat()
+            now = datetime.now(timezone.utc).isoformat()
             trigger_ids = {
                 "trigger_exchange_id": trigger_exchange_id,
                 "trigger_signal_id": trigger_signal_id,

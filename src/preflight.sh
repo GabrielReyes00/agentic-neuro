@@ -57,45 +57,7 @@ CASE_LOG_DIR="/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Case Log"
 SYNC_FILE="$SESSIONS/case_log_sync.txt"
 
 if [[ -d "$CASE_LOG_DIR" ]]; then
-    # Use a single Python pass to avoid O(N×M) shell loops on larger case logs.
-    NEW_COUNT=$(python3 - <<'PY'
-import json
-import sqlite3
-from pathlib import Path
-
-case_log_dir = Path("/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Case Log")
-sync_file = Path("data/Sessions/case_log_sync.txt")
-db_path = Path("data/knowledge_graph.db")
-
-existing: set[str] = set()
-if db_path.exists():
-    conn = sqlite3.connect(str(db_path))
-    try:
-        rows = conn.execute(
-            "SELECT se.metadata FROM signal_events se WHERE se.source='case_log'"
-        ).fetchall()
-        for (raw_meta,) in rows:
-            if not raw_meta:
-                continue
-            try:
-                meta = json.loads(raw_meta)
-            except Exception:
-                continue
-            source_file = meta.get("source_file")
-            if source_file:
-                existing.add(Path(source_file).name)
-    finally:
-        conn.close()
-
-case_files = sorted(
-    p for p in case_log_dir.glob("*.md")
-    if p.name != "INDEX.md" and not p.name.startswith("_")
-)
-new_files = [str(p) for p in case_files if p.name not in existing]
-sync_file.write_text("\n".join(new_files) + ("\n" if new_files else ""), encoding="utf-8")
-print(len(new_files))
-PY
-)
+    NEW_COUNT=$(python3 src/case_log_sync.py)
 
     echo "  Found ${NEW_COUNT:-0} new case log(s)"
 else

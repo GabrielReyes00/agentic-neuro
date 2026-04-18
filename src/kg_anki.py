@@ -124,19 +124,39 @@ class KnowledgeGraphAnkiMixin:
                         # Log signal only for cards not in the previous snapshot
                         if note_id not in prev_note_ids:
                             if ease_factor >= 2.5 and interval >= 21:
-                                self.log_signal(
+                                signal_id = self.log_signal(
                                     topic_name=card_front,
                                     source="anki",
                                     signal_type="anki_review",
                                     metadata={"confidence_delta": 0.03},
                                 )
+                                if hasattr(self, "record_anki_review_v2"):
+                                    self.record_anki_review_v2(
+                                        topic_name=card_front,
+                                        concept_text=card_front,
+                                        interval_days=interval,
+                                        ease_factor=ease_factor,
+                                        lapses=lapses,
+                                        confidence_delta=0.03,
+                                        signal_event_id=signal_id if signal_id > 0 else None,
+                                    )
                             elif ease_factor < 2.0 or lapses >= 3:
-                                self.log_signal(
+                                signal_id = self.log_signal(
                                     topic_name=card_front,
                                     source="anki",
                                     signal_type="anki_review",
                                     metadata={"confidence_delta": -0.05},
                                 )
+                                if hasattr(self, "record_anki_review_v2"):
+                                    self.record_anki_review_v2(
+                                        topic_name=card_front,
+                                        concept_text=card_front,
+                                        interval_days=interval,
+                                        ease_factor=ease_factor,
+                                        lapses=lapses,
+                                        confidence_delta=-0.05,
+                                        signal_event_id=signal_id if signal_id > 0 else None,
+                                    )
                             # Otherwise: normal retention, no change
                     else:
                         unmatched += 1

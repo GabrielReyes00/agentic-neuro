@@ -4,6 +4,7 @@ prompt = """
 ACTIVE COMMAND: /rag-workflow — Full textbook retrieval + teaching pipeline (Steps 0-5.5).
 
 Silent/background steps are NOT optional. MANDATORY: preflight, record-answer after EVERY Gym response, heartbeat after every interaction, session-end + Obsidian write, concept extraction, post-session hook.
+Invisible bookkeeping: do not print shell commands or raw outputs for these hooks. Use memory_orchestrator.py --quiet for routine memory writes.
 
 User's query: {{args}}
 

@@ -4,6 +4,7 @@ prompt = """
 ACTIVE COMMAND: /intern-bootcamp — PGY-1 simulation with mandatory hooks.
 
 Silent/background steps are NOT optional — execute without narrating. MANDATORY: preflight, heartbeat every ~3 decisions, log_bootcamp after debrief, Obsidian write, concept extraction, post-session hook (final step).
+Invisible bookkeeping: do not print shell commands or raw outputs for these hooks. Use memory_orchestrator.py --quiet for routine memory writes.
 
 User's request: {{args}}
 

@@ -1,0 +1,14 @@
+description = "Neurosurgery oral-board and primary-board practice — staged cases, examiner scoring, PGY-aware feedback"
+
+prompt = """
+ACTIVE COMMAND: /oral-boards — staged neurosurgery board-prep simulation with mandatory hooks.
+
+Silent/background steps are NOT optional. MANDATORY: preflight, one stable SESSION_TS, memory session enablement, record-answer after EVERY learner response, heartbeat every ~3 stages, record-case for completed cases, review-session write, finish-session, and post-session hook.
+Invisible bookkeeping: do not print shell commands or raw outputs for these hooks. Use memory_orchestrator.py --quiet for routine memory writes.
+
+User's request: {{args}}
+
+---
+
+@{.gemini/commands/oral-boards.md}
+"""

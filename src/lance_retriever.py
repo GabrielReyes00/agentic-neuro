@@ -72,7 +72,7 @@ STOPWORDS = {
 }
 
 # Regex for splitting source blocks in scratch_context.md (for --append merge)
-_SOURCE_BLOCK_RE = re.compile(r'^\[([A-Za-z][A-Za-z _]*)\]\s*', re.MULTILINE)
+_SOURCE_BLOCK_RE = re.compile(r'^(?:\[P\d+\]\s*)?\[([A-Za-z][A-Za-z _]*)\]\s*', re.MULTILINE)
 
 
 # ── Lazy-loaded singletons ──────────────────────────────────────────────────
@@ -1879,23 +1879,6 @@ def retrieve(
     total_ms = round((time.perf_counter() - t_total_start) * 1000, 2)
     unique_sources = {h.get("source_key", "") for h in final_hits if h.get("source_key")}
 
-    # ── Pipeline attrition log (retrieve stage) ──
-    _log_pipeline_attrition({
-        "stage": "retrieve",
-        "query": query[:120],
-        "dense_candidates": len(dense_hits),
-        "fts_candidates": len(fts_hits),
-        "after_rrf_fusion": len(fused),
-        "after_similarity_filter": len(fused) - below_threshold,
-        "refs_dropped": refs_dropped,
-        "after_rerank": pre_entity_count,
-        "after_entity_filter": post_entity_count,
-        "entity_filter_dropped": pre_entity_count - post_entity_count,
-        "after_expansion": len(final_hits),
-        "unique_sources": len(unique_sources),
-        "total_ms": total_ms,
-    })
-
     return {
         "query": query,
         "reranker": reranker_key,
@@ -2013,59 +1996,11 @@ def _format_hit_block(hit: dict, passage_id: str = "") -> Optional[str]:
     return block
 
 
-# ── Pipeline attrition logger ──────────────────────────────────────────────
-# Logs passage counts at every stage of the retrieval pipeline to a JSONL file.
-# Enables empirical measurement of where passages are gained/lost.
-
-def _log_pipeline_attrition(entry: dict):
-    """Append a pipeline attrition entry to pipeline_attrition.jsonl. Never raises."""
-    try:
-        log_path = SESSIONS_DIR / "pipeline_attrition.jsonl"
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        entry["timestamp"] = time.strftime("%Y-%m-%dT%H:%M:%S")
-        with open(log_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry) + "\n")
-    except Exception:
-        pass
-
-
-def _write_passage_manifest(query: str, hits: list):
-    """Write passage_manifest.json mapping passage IDs to citations and metadata.
-
-    Enables post-hoc citation auditing: verify that transform_output.md citations
-    reference real passage IDs from scratch_context.md.
-    """
-    try:
-        manifest = {
-            "query": query,
-            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
-            "passages": {},
-        }
-        for hit in hits:
-            pid = hit.get("_passage_id")
-            if pid:
-                manifest["passages"][pid] = {
-                    "citation": hit.get("citation", "uncited"),
-                    "source_key": hit.get("source_key", ""),
-                    "rank_score": round(hit.get("rank_score", 0.0), 4),
-                    "sigmoid_ce": round(hit.get("sigmoid_ce", 0.0), 4),
-                    "primary_axis": hit.get("primary_axis", ""),
-                    "gap_fill": hit.get("gap_fill", False),
-                    "text_preview": (hit.get("text", "") or "")[:150],
-                }
-        manifest_path = SESSIONS_DIR / "passage_manifest.json"
-        manifest_path.parent.mkdir(parents=True, exist_ok=True)
-        manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-    except Exception:
-        pass
-
-
 def build_scratch_context(result: dict, frontier_text: str = "",
                           visual: bool = False) -> str:
     """Format retrieval results into scratch_context.md for the Transform subagent.
 
     Each passage is assigned a unique ID (P1, P2, ...) for citation tracing.
-    A passage manifest is written to passage_manifest.json mapping IDs to citations.
     """
     query = result["query"]
     hits = result["hits"]
@@ -2110,9 +2045,6 @@ def build_scratch_context(result: dict, frontier_text: str = "",
             if block:
                 blocks.append(block)
         source_knowledge = "\n\n".join(blocks).strip() or "No local source knowledge provided."
-
-    # Write passage manifest for citation auditing
-    _write_passage_manifest(query, hits)
 
     if frontier_text:
         frontier_section = frontier_text
@@ -2313,54 +2245,6 @@ def _apply_learner_modifier(hits: list, learner_data: dict) -> list:
     return hits
 
 
-def _log_retrieval_coverage(query: str, hits: list, axes: list = None):
-    """Log retrieval coverage metadata. Silent, never-fail."""
-    try:
-        source_counts = defaultdict(int)
-        source_scores = defaultdict(list)
-        for hit in hits:
-            src = hit.get("source_key", "unknown")
-            source_counts[src] += 1
-            score = hit.get("rank_score", hit.get("similarity", 0.0))
-            source_scores[src].append(score)
-
-        per_source = {}
-        for src, count in source_counts.items():
-            scores = source_scores[src]
-            per_source[src] = {
-                "passages": count,
-                "avg_score": round(sum(scores) / len(scores), 4) if scores else 0.0,
-            }
-
-        coverage = {
-            "query": query,
-            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
-            "total_passages": len(hits),
-            "unique_sources": len(source_counts),
-            "per_source": per_source,
-        }
-
-        if axes:
-            axis_coverage = {}
-            for axis in axes:
-                axis_kw = _extract_keywords(axis)
-                count = sum(
-                    1 for h in hits
-                    if len(_extract_keywords(h.get("text", "")) & axis_kw) >= 2
-                )
-                axis_coverage[axis] = {
-                    "passages_with_overlap": count,
-                    "coverage": "strong" if count >= 3 else "thin" if count >= 1 else "none",
-                }
-            coverage["per_axis"] = axis_coverage
-
-        coverage_path = SESSIONS_DIR / "retrieval_coverage.json"
-        coverage_path.parent.mkdir(parents=True, exist_ok=True)
-        coverage_path.write_text(json.dumps(coverage, indent=2), encoding="utf-8")
-    except Exception:
-        pass
-
-
 # ── Transform directives pre-processor ─────────────────────────────────────
 # Converts raw learner_context.json + confusion_matrix.json into a compact
 # transform_directives.json that the Transform subagent can consume directly,
@@ -2404,6 +2288,18 @@ def prepare_transform_directives(query: str, output_path: str = "") -> dict:
     suggested_depth = learner.get("suggested_depth", 1)
     directives["suggested_depth"] = suggested_depth
     directives["skip_anchor"] = suggested_depth >= 3
+
+    learner_profile = learner.get("learner_profile", {}) or {}
+    if learner_profile:
+        directives["learner_profile"] = learner_profile
+        directives["advanced_ms4_pgy1_profile"] = (
+            learner_profile.get("training_stage") == "advanced_ms4_entering_pgy1_neurosurgery"
+        )
+        directives["teaching_depth_policy"] = learner_profile.get("teaching_depth_policy", "")
+        directives["target_depth_when_ready"] = learner_profile.get("target_depth_when_ready", "")
+        directives["starting_probe"] = learner_profile.get("starting_probe", "")
+        directives["default_question_style"] = learner_profile.get("default_question_style", "")
+        directives["tone"] = learner_profile.get("tone", "")
 
     # adaptive_guidance is in learner_context.json — not duplicated here.
     # Derive skip-foundations directly from suggested_depth (no prose parsing needed).
@@ -2663,9 +2559,8 @@ def _detect_coverage_gaps(hits: list, axes: List[str]) -> List[str]:
 
 
 def compare(query: str, append: bool = False, output_file: str = "",
-            force_refresh: bool = False, visual: bool = False,
-            no_distill: bool = False, use_learner: bool = True,
-            no_frontier: bool = False):
+            visual: bool = False, no_distill: bool = False,
+            use_learner: bool = True, no_frontier: bool = False):
     """Retrieve, build context, write to scratch_context.md.
     This is the primary entrypoint called by the agent workflow.
 
@@ -2764,20 +2659,6 @@ def compare(query: str, append: bool = False, output_file: str = "",
                         print(f"  gap-fill: +{added} passages for axis '{gap_axis[:50]}'",
                               file=sys.stderr)
 
-    # ── Pipeline attrition log (compare stage: distillation + gap-fill) ──
-    _log_pipeline_attrition({
-        "stage": "compare",
-        "query": query[:120],
-        "pre_distill": pre_distill_count,
-        "post_distill": post_distill_count,
-        "distill_dropped": pre_distill_count - post_distill_count,
-        "axes": result.get("axes", []),
-        "num_axes": len(result.get("axes", [])),
-        "gap_fill_added": gap_fill_added,
-        "final_to_transform": len(result["hits"]),
-        "distilled": result.get("distilled", False),
-    })
-
     frontier_text = _finish_frontier_search(
         frontier_thread,
         frontier_started_at,
@@ -2809,10 +2690,6 @@ def compare(query: str, append: bool = False, output_file: str = "",
     _log_to_knowledge_graph(
         query, confidence="medium",
         source_books=result["metadata"]["source_books"],
-    )
-    _log_retrieval_coverage(
-        query, result["hits"],
-        axes=result.get("axes"),
     )
 
 
@@ -2914,14 +2791,6 @@ def list_textbooks():
         print(f"  {count:>5d}  {name}")
     print(f"{'─' * 50}")
     print(f"  {total:>5d}  TOTAL ({len(entries)} books)")
-
-
-def clear_cache():
-    """Clear per-query caches (entity, NER doc, query embedding)."""
-    _ENTITY_CACHE.clear()
-    _NER_DOC_CACHE.clear()
-    _QUERY_EMBED_CACHE.clear()
-    print("OK — per-query caches cleared")
 
 
 def generate_digest(transform_path: str = None, output_path: str = None) -> str:
@@ -3086,164 +2955,12 @@ def generate_digest(transform_path: str = None, output_path: str = None) -> str:
     return digest_text
 
 
-def audit_citations(transform_path: str = None, manifest_path: str = None) -> dict:
-    """Audit transform_output.md citations against passage_manifest.json.
-
-    Checks:
-    1. Which passage IDs from the manifest are cited in the output
-    2. Which citations in the output don't map to any passage ID
-    3. What fraction of claims appear grounded vs. potentially hallucinated
-
-    Returns audit dict and prints a summary report.
-    """
-    sessions_dir = SESSIONS_DIR
-    t_path = Path(transform_path) if transform_path else sessions_dir / "transform_output.md"
-    m_path = Path(manifest_path) if manifest_path else sessions_dir / "passage_manifest.json"
-
-    if not t_path.exists():
-        print("No transform_output.md found — run a RAG query first.")
-        return {}
-    if not m_path.exists():
-        print("No passage_manifest.json found — run a RAG query with passage IDs first.")
-        return {}
-
-    transform_text = t_path.read_text(encoding="utf-8")
-    manifest = json.loads(m_path.read_text(encoding="utf-8"))
-    passage_ids = set(manifest.get("passages", {}).keys())
-
-    # Find passage ID references in transform output
-    pid_pattern = re.compile(r'\[P(\d+)\]')
-    cited_pids = set()
-    for match in pid_pattern.finditer(transform_text):
-        cited_pids.add(f"P{match.group(1)}")
-
-    # Find textbook citations (BookName, p. XX)
-    book_cite_pattern = re.compile(r'\[([^\]]+(?:p\.|pp\.|Ch\.|Chapter)[^\]]*)\]')
-    book_citations = set()
-    for match in book_cite_pattern.finditer(transform_text):
-        book_citations.add(match.group(1).strip())
-
-    # Cross-reference
-    used_pids = cited_pids & passage_ids
-    unused_pids = passage_ids - cited_pids
-    orphan_pids = cited_pids - passage_ids  # PIDs cited but not in manifest
-
-    # Count total factual sentences (rough: sentences with citations)
-    cited_sentences = len(re.findall(r'\[[^\]]*(?:p\.|pp\.|Ch\.|P\d+)[^\]]*\]', transform_text))
-    total_sentences = len(re.findall(r'[.!?]\s', transform_text))
-
-    audit = {
-        "total_passages_retrieved": len(passage_ids),
-        "passages_cited_in_output": len(used_pids),
-        "passages_unused": len(unused_pids),
-        "unused_passage_ids": sorted(unused_pids),
-        "orphan_pid_references": sorted(orphan_pids),
-        "book_citations_found": len(book_citations),
-        "sentences_with_citations": cited_sentences,
-        "total_sentences_approx": total_sentences,
-        "citation_coverage_pct": round(cited_sentences / max(1, total_sentences) * 100, 1),
-        "passage_utilization_pct": round(len(used_pids) / max(1, len(passage_ids)) * 100, 1),
-    }
-
-    # Write audit result
-    audit_path = sessions_dir / "citation_audit.json"
-    audit_path.write_text(json.dumps(audit, indent=2), encoding="utf-8")
-
-    # Print summary
-    print(f"Citation Audit")
-    print(f"{'─' * 45}")
-    print(f"  Passages retrieved:   {audit['total_passages_retrieved']}")
-    print(f"  Passages cited:       {audit['passages_cited_in_output']} "
-          f"({audit['passage_utilization_pct']}%)")
-    print(f"  Passages unused:      {audit['passages_unused']} — {sorted(unused_pids)}")
-    print(f"  Book citations:       {audit['book_citations_found']}")
-    print(f"  Sentences w/ cite:    {audit['sentences_with_citations']}/{audit['total_sentences_approx']} "
-          f"({audit['citation_coverage_pct']}%)")
-    if orphan_pids:
-        print(f"  ⚠ Orphan PIDs:        {sorted(orphan_pids)} (cited but not in manifest)")
-    print(f"{'─' * 45}")
-    print(f"  → {audit_path}")
-
-    return audit
-
-
-def report_attrition(log_path: str = None, last_n: int = 10) -> dict:
-    """Summarize pipeline attrition from the JSONL log.
-
-    Reads pipeline_attrition.jsonl, aggregates the last N entries, and prints
-    a summary showing where passages are gained/lost across the pipeline.
-    """
-    p = Path(log_path) if log_path else SESSIONS_DIR / "pipeline_attrition.jsonl"
-    if not p.exists():
-        print("No pipeline_attrition.jsonl found — run some queries first.")
-        return {}
-
-    entries = []
-    for line in p.read_text(encoding="utf-8").strip().split("\n"):
-        if line.strip():
-            try:
-                entries.append(json.loads(line))
-            except Exception:
-                continue
-
-    retrieve_entries = [e for e in entries if e.get("stage") == "retrieve"][-last_n:]
-    compare_entries = [e for e in entries if e.get("stage") == "compare"][-last_n:]
-
-    if not retrieve_entries:
-        print("No retrieve entries found in log.")
-        return {}
-
-    # Aggregate retrieve stats
-    def _avg(lst, key):
-        vals = [e.get(key, 0) for e in lst]
-        return round(sum(vals) / max(1, len(vals)), 1)
-
-    report = {
-        "entries_analyzed": len(retrieve_entries),
-        "avg_dense_candidates": _avg(retrieve_entries, "dense_candidates"),
-        "avg_fts_candidates": _avg(retrieve_entries, "fts_candidates"),
-        "avg_after_rrf": _avg(retrieve_entries, "after_rrf_fusion"),
-        "avg_after_sim_filter": _avg(retrieve_entries, "after_similarity_filter"),
-        "avg_refs_dropped": _avg(retrieve_entries, "refs_dropped"),
-        "avg_after_rerank": _avg(retrieve_entries, "after_rerank"),
-        "avg_entity_filter_dropped": _avg(retrieve_entries, "entity_filter_dropped"),
-        "avg_after_expansion": _avg(retrieve_entries, "after_expansion"),
-        "avg_total_ms": _avg(retrieve_entries, "total_ms"),
-    }
-
-    if compare_entries:
-        report["avg_pre_distill"] = _avg(compare_entries, "pre_distill")
-        report["avg_post_distill"] = _avg(compare_entries, "post_distill")
-        report["avg_distill_dropped"] = _avg(compare_entries, "distill_dropped")
-        report["avg_gap_fill_added"] = _avg(compare_entries, "gap_fill_added")
-        report["avg_final_to_transform"] = _avg(compare_entries, "final_to_transform")
-
-    # Print
-    print(f"Pipeline Attrition Report (last {len(retrieve_entries)} queries)")
-    print(f"{'─' * 55}")
-    print(f"  Dense candidates:      {report['avg_dense_candidates']}")
-    print(f"  FTS candidates:        {report['avg_fts_candidates']}")
-    print(f"  After RRF fusion:      {report['avg_after_rrf']}")
-    print(f"  After similarity ≥{DEFAULT_MIN_SIMILARITY}: {report['avg_after_sim_filter']}")
-    print(f"  Refs dropped:          {report['avg_refs_dropped']}")
-    print(f"  After rerank:          {report['avg_after_rerank']}")
-    print(f"  Entity filter dropped: {report['avg_entity_filter_dropped']}")
-    print(f"  After expansion:       {report['avg_after_expansion']}")
-    if compare_entries:
-        print(f"  After distillation:    {report['avg_post_distill']} "
-              f"(dropped {report['avg_distill_dropped']})")
-        print(f"  Gap-fill added:        {report['avg_gap_fill_added']}")
-        print(f"  Final to Transform:    {report['avg_final_to_transform']}")
-    print(f"  Avg latency:           {report['avg_total_ms']}ms")
-    print(f"{'─' * 55}")
-
-    return report
-
-
 # ── Episodic Memory (LanceDB tier) ─────────────────────────────────────────
 
 EPISODIC_TABLE_NAME = "episodic_memory"
+MEMORY_ITEMS_TABLE_NAME = "memory_items_v2"
 _EPISODIC_TABLE = None
+_MEMORY_ITEMS_TABLE = None
 
 
 def _get_episodic_table(lance_dir: str = "", create_if_missing: bool = True):
@@ -3489,6 +3206,152 @@ def search_episodic_memory(
         return []
 
 
+# ── Typed Memory V2 (LanceDB tier) ─────────────────────────────────────────
+
+def _get_memory_items_table(lance_dir: str = "", create_if_missing: bool = True):
+    """Open the memory_items_v2 LanceDB table (lazy, cached)."""
+    global _MEMORY_ITEMS_TABLE
+    if _MEMORY_ITEMS_TABLE is not None:
+        return _MEMORY_ITEMS_TABLE
+
+    import lancedb
+    lance_dir = lance_dir or DEFAULT_LANCE_DIR
+    db = lancedb.connect(lance_dir)
+    existing = _list_lancedb_tables(db)
+    if MEMORY_ITEMS_TABLE_NAME in existing:
+        _MEMORY_ITEMS_TABLE = db.open_table(MEMORY_ITEMS_TABLE_NAME)
+        return _MEMORY_ITEMS_TABLE
+    if not create_if_missing:
+        return None
+
+    import pyarrow as pa
+    schema = pa.schema([
+        pa.field("row_id", pa.string()),
+        pa.field("item_id", pa.int64()),
+        pa.field("item_type", pa.string()),
+        pa.field("topic_name", pa.string()),
+        pa.field("concept_text", pa.string()),
+        pa.field("summary", pa.string()),
+        pa.field("importance", pa.float32()),
+        pa.field("confidence", pa.float32()),
+        pa.field("updated_ts", pa.string()),
+        pa.field("dense_vec", pa.list_(pa.float32(), 1024)),
+    ])
+    _MEMORY_ITEMS_TABLE = db.create_table(MEMORY_ITEMS_TABLE_NAME, schema=schema)
+    print("[lance_retriever] Created memory_items_v2 table with 1024-dim vectors")
+    return _MEMORY_ITEMS_TABLE
+
+
+def _existing_memory_item_ids(table, candidate_item_ids: set[int]) -> set[int]:
+    existing: set[int] = set()
+    positive = sorted({int(x) for x in candidate_item_ids if int(x) > 0})
+    if not positive:
+        return existing
+    if len(positive) <= 96:
+        for item_id in positive:
+            try:
+                if table.count_rows(f"item_id = {int(item_id)}") > 0:
+                    existing.add(item_id)
+            except Exception:
+                pass
+        return existing
+    try:
+        import pyarrow as pa
+        import pyarrow.compute as pc
+        arrow = table.to_arrow()
+        want = pa.array(positive, type=pa.int64())
+        mask = pc.is_in(arrow["item_id"], want)
+        filtered = arrow.filter(mask)
+        present = pc.unique(filtered["item_id"]).to_pylist()
+        for value in present:
+            if value is not None and int(value) > 0:
+                existing.add(int(value))
+    except Exception:
+        for item_id in positive:
+            try:
+                if table.count_rows(f"item_id = {int(item_id)}") > 0:
+                    existing.add(item_id)
+            except Exception:
+                pass
+    return existing
+
+
+def embed_memory_items(
+    memory_items: list[dict],
+    lance_dir: str = "",
+) -> dict:
+    """Embed typed V2 memory items into LanceDB."""
+    import uuid
+
+    table = _get_memory_items_table(lance_dir, create_if_missing=True)
+    candidate_ids = {int(item.get("item_id", -1) or -1) for item in memory_items}
+    existing_ids = _existing_memory_item_ids(table, candidate_ids)
+
+    texts_to_embed = []
+    rows_metadata = []
+    for item in memory_items:
+        item_id = int(item.get("item_id", -1) or -1)
+        if item_id <= 0 or item_id in existing_ids:
+            continue
+        summary = item.get("summary", "") or ""
+        if not summary.strip():
+            continue
+        texts_to_embed.append(summary)
+        rows_metadata.append({
+            "row_id": str(uuid.uuid4()),
+            "item_id": item_id,
+            "item_type": item.get("item_type", ""),
+            "topic_name": item.get("topic_display", item.get("topic_name", "")),
+            "concept_text": item.get("concept_text", ""),
+            "summary": summary,
+            "importance": float(item.get("importance", 0.5) or 0.5),
+            "confidence": float(item.get("confidence", 0.5) or 0.5),
+            "updated_ts": item.get("updated_ts", ""),
+        })
+    if not texts_to_embed:
+        return {"ok": True, "rows_inserted": 0, "row_ids": []}
+
+    model = _get_embedding_model()
+    output = model.encode(texts_to_embed, return_dense=True, return_sparse=False,
+                          return_colbert_vecs=False)
+    dense_vecs = output["dense_vecs"]
+    lance_rows = []
+    for meta, vec in zip(rows_metadata, dense_vecs):
+        meta["dense_vec"] = vec.tolist()
+        lance_rows.append(meta)
+    table.add(lance_rows)
+    return {"ok": True, "rows_inserted": len(lance_rows), "row_ids": [r["row_id"] for r in lance_rows]}
+
+
+def search_memory_items(
+    query: str,
+    max_results: int = 10,
+    lance_dir: str = "",
+) -> list[dict]:
+    """Semantic search over typed V2 memory items."""
+    table = _get_memory_items_table(lance_dir, create_if_missing=False)
+    if table is None:
+        return []
+    model = _get_embedding_model()
+    output = model.encode([query], return_dense=True, return_sparse=False,
+                          return_colbert_vecs=False)
+    query_vec = output["dense_vecs"][0].tolist()
+    try:
+        results = (
+            table.search(query_vec, vector_column_name="dense_vec")
+            .limit(max_results)
+            .to_list()
+        )
+        cleaned = []
+        for row in results:
+            row.pop("dense_vec", None)
+            cleaned.append(row)
+        return cleaned
+    except Exception as exc:
+        print(f"[lance_retriever] search_memory_items error: {exc}", file=sys.stderr)
+        return []
+
+
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
@@ -3502,7 +3365,6 @@ if __name__ == "__main__":
     p_compare.add_argument("query", help="Search query")
     p_compare.add_argument("--append", action="store_true", help="Append to existing context")
     p_compare.add_argument("--output", default="", help="Custom output file path")
-    p_compare.add_argument("--force-refresh", action="store_true", help="Bypass cache (no-op)")
     p_compare.add_argument("--visual", action="store_true", help="Extract images from hits")
     p_compare.add_argument("--no-distill", action="store_true",
                            help="Bypass adaptive context distillation")
@@ -3532,9 +3394,6 @@ if __name__ == "__main__":
     # list_textbooks
     subparsers.add_parser("list_textbooks", help="Show database inventory")
 
-    # clear_cache
-    subparsers.add_parser("clear_cache", help="No-op (caching not needed)")
-
     # digest
     p_digest = subparsers.add_parser("digest", help="Compress last synthesis for follow-up context")
     p_digest.add_argument("--input", default=None, help="Custom transform_output.md path")
@@ -3546,24 +3405,11 @@ if __name__ == "__main__":
     p_directives.add_argument("query", help="Query for context matching")
     p_directives.add_argument("--output", default="", help="Custom output path")
 
-    # audit_citations
-    p_audit = subparsers.add_parser("audit_citations",
-                                     help="Audit transform_output.md citations against passage manifest")
-    p_audit.add_argument("--transform", default=None, help="Custom transform_output.md path")
-    p_audit.add_argument("--manifest", default=None, help="Custom passage_manifest.json path")
-
-    # attrition_report
-    p_attrition = subparsers.add_parser("attrition_report",
-                                         help="Summarize pipeline attrition from JSONL log")
-    p_attrition.add_argument("--log", default=None, help="Custom log path")
-    p_attrition.add_argument("--last-n", type=int, default=10, help="Last N queries to analyze")
-
     args = parser.parse_args()
 
     if args.command == "compare":
         compare(args.query, append=args.append, output_file=args.output,
-                force_refresh=args.force_refresh, visual=args.visual,
-                no_distill=args.no_distill,
+                visual=args.visual, no_distill=args.no_distill,
                 use_learner=not args.no_learner,
                 no_frontier=args.no_frontier)
 
@@ -3601,9 +3447,6 @@ if __name__ == "__main__":
     elif args.command == "list_textbooks":
         list_textbooks()
 
-    elif args.command == "clear_cache":
-        clear_cache()
-
     elif args.command == "digest":
         generate_digest(transform_path=args.input, output_path=args.output)
 
@@ -3614,12 +3457,6 @@ if __name__ == "__main__":
         disambig = directives.get("disambiguation_required", False)
         print(f"OK directives — learner={'yes' if has_ctx else 'no'}, "
               f"confusable_pairs={n_pairs}, disambiguation={'yes' if disambig else 'no'}")
-
-    elif args.command == "audit_citations":
-        audit_citations(transform_path=args.transform, manifest_path=args.manifest)
-
-    elif args.command == "attrition_report":
-        report_attrition(log_path=args.log, last_n=args.last_n)
 
     else:
         parser.print_help()

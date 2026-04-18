@@ -18,6 +18,10 @@
 11. Never use H1 (`#`) in vault files. The filename is the Obsidian title; start with the first meaningful body content.
 12. No alias wikilinks in table cells — `[[target|alias]]` breaks tables. Use `[[target]]` only inside table rows.
 
+### Invisible Bookkeeping
+
+Do not print memory, heartbeat, preflight, KG, Obsidian write, or post-session hook commands into the user-visible transcript. Execute them silently. For `memory_orchestrator.py` routine writes, use `--quiet` and do not show stdout/stderr on success. If a bookkeeping command fails, summarize the learning-relevant warning only; do not paste the full shell command unless Gabriel asks for debug output.
+
 ## §2 Gemini CLI Rules
 
 Gemini 2.x requires strict sequential tool invocation: one call, wait, then next. Shell `&&` chaining inside a single call is fine. No parallel tool calls.
@@ -27,9 +31,17 @@ Use explicit branch targets in command workflows: `If X -> skip to Step N` / `If
 Commands longer than 2 minutes should surface timeout and use the documented fallback. First-call retrieval latency around 30-45 seconds is expected.
 
 Default model: `gemini-3-flash-preview`.
-Use `gemini-3.1-pro` for `/intern-bootcamp`, `/rag-workflow`, `/study-session`, `/generate-report`, `/intraoperative-guide`, `/study-material`, and `/anki-sync`.
+Use `gemini-3.1-pro` for `/intern-bootcamp`, `/oral-boards`, `/rag-workflow`, `/study-session`, `/generate-report`, `/intraoperative-guide`, `/study-material`, and `/anki-sync`.
 
 After editing `.toml` descriptors: `/commands reload`.
+
+## §2a Learner Posture
+
+Gabriel is an advanced MS4 entering neurosurgery PGY-1. Default teaching should assume a strong baseline and aim for quick, effective deep mastery. Start with a brief calibration question or clinical decision, then adapt. Push mechanism, discriminator, management consequence, and transfer when performance supports it. Avoid generic introductory explanations unless requested or clearly needed. Treat correct-but-shallow answers as partial and ask for thresholds, contraindications, complications, escalation, operative/anatomic consequences, or oral-board-style defense.
+
+Cognitive friction is mandatory during study. After asking a question, stop. Do not append hints, answer context, expected findings, named signs, diagnosis labels, thresholds, imaging reads, or teaching explanation until Gabriel answers or requests a reveal. Use sequential disclosure: ask for the search plan or threshold first, then provide only the requested data.
+
+After Gabriel commits to an answer, reveal progressively. Grade the answer briefly, reveal only the next useful layer, then ask the follow-up that pulls him deeper. Do not dump the full disease/topic landscape after a first shallow correct answer. Save full maps for stage closure, explicit reveal requests, major misses requiring teaching, or session summaries.
 
 ## §3 Shell Prefix
 
@@ -80,10 +92,10 @@ The durable memory backend is shared across agents:
 
 ### Active Answer Memory
 
-When Gemini asks a question and the user answers, run the atomic active-answer logger silently:
+When Gemini asks a question and the user answers, run the atomic active-answer logger silently. Do not print this command into the transcript:
 
 ```bash
-python3 src/memory_orchestrator.py record-answer \
+python3 src/memory_orchestrator.py --quiet record-answer \
   --session-ts "$SESSION_TS" --turn <N> --skill "<command or ad-hoc>" \
   --topic "<topic>" --concept "<specific concept tested>" \
   --question "<your question, verbatim>" \
@@ -98,35 +110,57 @@ python3 src/memory_orchestrator.py record-answer \
 
 Correctness routing: correct with no hints = `2`; right direction but incomplete = `1`; wrong or misconception = `0`.
 
-Set `SESSION_TS` once per session:
+For `/study-material` document sessions, check and store the document pacing profile silently before drilling:
+
+```bash
+python3 src/memory_orchestrator.py document-profile --doc "Study Material/<file>.md" --doc-type "study-material" --text
+python3 src/memory_orchestrator.py --quiet document-profile --doc "Study Material/<file>.md" --study-mode "rapid_review|deep_understanding" --pacing-goal "throughput|mastery" --confidence 0.9 --apply
+```
+
+Set `SESSION_TS` once per session and reuse it for every memory write until the session is finished:
 
 ```bash
 SESSION_TS=$(date -u +%Y-%m-%dT%H:%M:%S+00:00)
 ```
 
+Do not call `date` again inside the same learning session. The backend can auto-route accidental per-turn timestamps to the active session when unambiguous, but that is only a safety net.
+
 ### Passive Teaching
 
-Passive capture is not globally automatic. If Gemini explains without testing, use `log_study` only when the command workflow or user request requires saving. For explicit passive memory capture, enable the session first:
+Passive capture is not globally automatic. If Gemini explains without testing inside a memory-enabled learning workflow, log it as passive teaching. After every partial or incorrect answer, log the correction/explanation as passive teaching unless the next turn immediately retests the same correction without explanation:
 
 ```bash
-python3 src/memory_orchestrator.py session --session-ts "TS" --skill "S" --topic "T" --enabled --scope study_session
-python3 src/memory_orchestrator.py record-passive --session-ts "TS" --turn N --skill "S" --topic "T" --content "..."
+python3 src/memory_orchestrator.py --quiet record-passive \
+  --session-ts "$SESSION_TS" --turn N --skill "S" --topic "T" \
+  --concept "C" --content "what was taught"
 ```
+
+Passive exposure raises familiarity only; it must not be treated as mastery.
 
 ### Prior Context
 
 At the start of a learning interaction on a topic:
 
 ```bash
-python3 src/memory_orchestrator.py guidance "query" [--topic "T"] [--skill "S"]
+python3 src/memory_orchestrator.py context-pack "query" --topic "T" --skill "S" --intent teach --max-tokens 1200
 python3 src/knowledge_graph.py last_session_narrative --skill "<command or ad-hoc>" --topic "<topic>"
 ```
 
-Apply prior misconceptions, next-session strategy, confusable pairs, and transfer opportunities before asking new questions.
+Apply prior misconceptions, next-session strategy, confusable pairs, and transfer opportunities before asking new questions. If Gabriel requested a specific Obsidian document, keep that document primary; prior misses should appear only when directly related, prerequisite, confusable, safety-critical, or as one brief due bridge.
 
 ### Post-Session Consolidation
 
-At session end, run the universal post-session hook after heartbeat/review writes:
+At session end, close and consolidate the V2 memory session before the universal post-session hook:
+
+```bash
+python3 src/memory_orchestrator.py finish-session \
+  --session-ts "$SESSION_TS" --skill "<command>" --topic "<topics>" \
+  --repair-fragments --mode apply --text
+```
+
+Surface the finish-session text. If it reports fragmented timestamps, missing error metadata, no passive teaching, or no transfer validation, state that as a memory-quality warning.
+
+Then run the universal post-session hook after heartbeat/review writes:
 
 ```bash
 python3 src/universal_post_session_hook.py --skill "<command>" --topics "<topics>" --vault-writes "<files>" --report-out /tmp/post_session_hook_report.json
@@ -168,11 +202,13 @@ Always intercept:
 - Inbox/email -> `/inbox-workflow`
 - Gaps/dashboard/ACGME -> `/knowledge-map`
 - Study plan -> `/study-session`
+- Oral-board, mock oral, primary-board, or board-style case practice -> `/oral-boards`
 - Calendar/scheduling -> GCal MCP
 
 Explicit invocation only:
 - Textbook lookup -> `/rag-workflow`
 - Drill/sim -> `/intern-bootcamp`
+- Oral boards, mock oral boards, case defense, board-style case, or written/primary bridge -> `/oral-boards`
 - Operative walkthrough -> `/intraoperative-guide`
 - Study material from file -> `/study-material`
 - Research report -> `/generate-report`
@@ -208,7 +244,7 @@ python3 src/knowledge_graph.py log_session_narrative \
 python3 src/gemini_query_gate.py "query" --hydrate-context
 
 # Memory
-python3 src/memory_orchestrator.py record-answer --session-ts "TS" --turn N --skill "S" --topic "T" --concept "C" --question "Q" --answer "A" --correct 0|1|2
+python3 src/memory_orchestrator.py --quiet record-answer --session-ts "TS" --turn N --skill "S" --topic "T" --concept "C" --question "Q" --answer "A" --correct 0|1|2
 python3 src/memory_orchestrator.py guidance "query" [--topic "T"] [--skill "S"]
 python3 src/memory_orchestrator.py doctor
 python3 src/memory_orchestrator.py reindex-fts
@@ -226,7 +262,7 @@ python3 src/knowledge_graph.py log_study --topics "..." --understood "..." [--ga
 python3 src/knowledge_graph.py log_session_narrative --skill "..." --topics "..." --summary "..." --strategy "..."
 python3 src/knowledge_graph.py study_plan [--hours N] [--rotation "D"] [--focus "T"]
 python3 src/knowledge_graph.py recall "query" [--topic "T"] [--errors-only] [--days N] [--max N] [--compact] [--sqlite-only] [--output path]
-python3 src/knowledge_graph.py memory_doctor
+python3 src/memory_orchestrator.py doctor
 
 # Anki
 python3 src/anki_sync_cli.py filter_novelty | validate_final_cards | dispatch

@@ -25,6 +25,21 @@ ROUTE_KEYWORDS = [
     ("knowledge-map", ["gaps", "knowledge map", "weaknesses", "dashboard", "milestones", "acgme"]),
     ("study-session", ["what should i study", "study session", "study plan"]),
     (
+        "oral-boards",
+        [
+            "oral boards",
+            "oral board",
+            "mock oral",
+            "case me",
+            "board-style case",
+            "primary boards",
+            "primary exam",
+            "neuroanatomy exam",
+            "written boards",
+            "written-to-oral",
+        ],
+    ),
+    (
         "rag-workflow",
         [
             "search my textbooks for",

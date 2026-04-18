@@ -19,6 +19,8 @@
 12. **Title Case filenames with spaces** — e.g., `Anterior Choroidal Artery Aneurysms.md`. No underscores, no dates in filenames
 13. **Session filenames are topic-only** — `Review Sessions/<Topic Title>.md`. Date in metadata only. No skill prefixes.
 
+**Invisible bookkeeping**: Memory, heartbeat, KG, preflight, Obsidian write, and post-session hook commands are internal. Do not print those commands, JSON payloads, raw stdout, or raw stderr into the learner-facing transcript. Use `python3 src/memory_orchestrator.py --quiet ...` for routine memory writes. Surface only concise warnings on failure.
+
 **NEVER**: `YYYY-MM-DD_study-session.md` | `brain_anatomy_lab_1_review.md` | YAML at top | emojis | `skill: skill/study-session` (use bare `skill: "study-session"`)
 
 ## §2 Shell & Subagents
@@ -48,12 +50,20 @@ Script: `src/precompact_memory_inject.py`. Configured in `.claude/settings.json`
 
 ## §3 User & Environment
 
-Gabriel Reyes | PGY-1 Neurosurgery | Baylor College of Medicine
+Gabriel Reyes | Advanced MS4 entering PGY-1 Neurosurgery | Baylor College of Medicine
 Email: Exchange via macOS Mail (AppleScript) | Calendar: GCal MCP | Reminders: macOS | Anki: AnkiConnect (localhost:8765)
 
 **Obsidian CLI**: `/Applications/Obsidian.app/Contents/MacOS/obsidian` (alias: `OBS`)
 **Vault root**: `/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/`
 **Vaults**: `agentic-neuro` (primary) | `Peripheral Nerve` (read-only) | `Personal Reflections` (read-only, never write without request)
+
+## §3a Learner Posture
+
+Default teaching should assume a strong MS4 baseline with imminent neurosurgery intern responsibilities. Start with a brief calibration question or clinical decision, then adapt. Aim for quick, effective deep mastery: mechanism, discriminator, management consequence, and transfer when performance supports it. Avoid generic introductory explanations unless requested or clearly needed. Treat correct-but-shallow answers as partial and push to thresholds, contraindications, complications, escalation, operative/anatomic consequences, or oral-board-style defense.
+
+Cognitive friction is mandatory during study. After asking a question, stop. Do not append hints, answer context, expected findings, named signs, diagnosis labels, thresholds, imaging reads, or teaching explanation until Gabriel answers or requests a reveal. Use sequential disclosure: ask for the search plan or threshold first, then provide only the requested data.
+
+After Gabriel commits to an answer, reveal progressively. Grade the answer briefly, reveal only the next useful layer, then ask the follow-up that pulls him deeper. Do not dump the full disease/topic landscape after a first shallow correct answer. Save full maps for stage closure, explicit reveal requests, major misses requiring teaching, or session summaries.
 
 ## §4 Vault Structure
 
@@ -72,7 +82,7 @@ Email: Exchange via macOS Mail (AppleScript) | Calendar: GCal MCP | Reminders: m
 
 **Concept File Schema**: Every studied Concept file written by `src/vault_kg_sync.py` contains a `## Learning State` block with **Dataview inline fields** (`mastery::`, `confidence::`, `depth::`, `encounters::`, `last_tested::`, `next_due::`, `status::`, `error_type::`, `acgme_milestone::`, `domain::`, `priority::`, `pgy_target::`, `anki_cards::`, `anki_mature::`, `blocking_gaps::`). These fields power the live Dataview queries on `Dashboard.md` and are the source of truth for all concept-level vault queries. The bottom YAML block is retained only for tags/aliases. Below the Learning State block, the file also carries KG-sourced `## Prerequisites`, `## Confusable With`, `## Extends Into`, `## Differentiates From` sections (empty sections are omitted) and a `## Encounter History` ledger (last 15 signal events). **The Dataview community plugin is required** for the Dashboard queries to render.
 
-**Tags**: `skill/{report,guide,study-material,bootcamp,study-session,rag}` | `domain/{vascular,spine,tumor,trauma,functional,pediatric,peripheral-nerve,general,anatomy}` | `type/{reference,session,case,concept}` | `source/{agent,user}`
+**Tags**: `skill/{report,guide,study-material,bootcamp,study-session,oral-boards,rag}` | `domain/{vascular,spine,tumor,trauma,functional,pediatric,peripheral-nerve,general,anatomy}` | `type/{reference,session,case,concept}` | `source/{agent,user}`
 
 ## §5 Skill → Vault Write Rules
 
@@ -80,7 +90,7 @@ Email: Exchange via macOS Mail (AppleScript) | Calendar: GCal MCP | Reminders: m
 - **intraoperative-guide**: `Operative Guides/<Title>.md` + INDEX. Same cross-ref.
 - **study-material**: `Study Material/<Title>.md` + INDEX. Title Case from source doc name.
 - **Standalone learning sessions** (intern-bootcamp, study-session, rag-workflow):
-  1. `memory_orchestrator.py record-answer` after every active answer; `log_study` only for passive teaching without a user answer.
+  1. `memory_orchestrator.py --quiet record-answer` after every active answer; `log_study` only for passive teaching without a user answer.
   2. `heartbeat.sh --session-mode` checkpoint every ~3 turns.
   3. Session-end: heartbeat `--status "complete"` → Write tool for final vault file → Post-Session Hook (§8).
 - **Doc-anchored sessions**: UPSERT `Review Sessions/<Title> Review.md` (never create new file). Heartbeat every 3 turns. Final heartbeat + upsert at session end.
@@ -129,7 +139,7 @@ tags: [type/concept, domain/<domain>, source/agent]
 ```
 
 Atomic, glossary-level. Only create concepts useful as wikilink targets.
-**Triggers**: generate-report, rag-workflow, intraoperative-guide, study-material, intern-bootcamp.
+**Triggers**: generate-report, rag-workflow, intraoperative-guide, study-material, intern-bootcamp, oral-boards.
 
 ### §7d Confusion Matrix Auto-Population
 
@@ -149,7 +159,7 @@ All learning skills MUST run this when logging identifiable error types.
 
 ```bash
 cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
-python3 src/memory_orchestrator.py record-answer \
+python3 src/memory_orchestrator.py --quiet record-answer \
   --session-ts "$SESSION_TS" --turn <N> --skill "<skill or 'ad-hoc'>" \
   --topic "<topic>" --concept "<specific concept tested>" \
   --question "<your question, verbatim>" \
@@ -174,6 +184,13 @@ python3 src/knowledge_graph.py last_session_narrative --skill "<skill or 'ad-hoc
 If non-null: shape questions around `next_session_strategy`, re-test `key_confusions_json`, avoid `teaching_failures`.
 
 `record-answer` writes the behavioral signal, verbatim exchange, concept mastery update, concept evolution provenance, and calibration metadata together. Use `log_event`/`log_exchange` only for repair or backfill work.
+
+For document-anchored `/study-material` sessions, check and store the document pacing profile before drilling. Use `rapid_review` for review decks/slide-summary question files and `deep_understanding` for reports/synthesis unless the user chooses otherwise:
+
+```bash
+python3 src/memory_orchestrator.py document-profile --doc "Study Material/<file>.md" --doc-type "study-material" --text
+python3 src/memory_orchestrator.py --quiet document-profile --doc "Study Material/<file>.md" --study-mode "rapid_review|deep_understanding" --pacing-goal "throughput|mastery" --confidence 0.9 --apply
+```
 
 **Scope rules:**
 - Passive teaching (explaining without testing) → `log_study` only, no signal_type, no exchange
@@ -222,7 +239,7 @@ Check `"ok": true` in the report, then delete it. Do not narrate.
 - Delete temp files, run `sync_vault.sh`
 - Do NOT overwrite the three protected Concepts notes
 
-**Triggers**: study-session, study-material, rag-workflow, intern-bootcamp, generate-report, intraoperative-guide, anki-sync.
+**Triggers**: study-session, study-material, rag-workflow, intern-bootcamp, oral-boards, generate-report, intraoperative-guide, anki-sync.
 
 ## §9 Capability Router
 
@@ -236,6 +253,7 @@ Check `"ok": true` in the report, then delete it. Do not narrate.
 | "inbox", "triage emails", "check my mail" | `inbox-workflow` |
 | "gaps", "knowledge map", "dashboard", "ACGME" | `knowledge-map` |
 | "what should I study", "study session" | `study-session` |
+| "oral boards", "mock oral", "primary boards", "board-style case" | `oral-boards` |
 | Calendar/scheduling/events | GCal MCP tools |
 
 ### Tier 2 — Explicit Invocation Only
@@ -243,6 +261,7 @@ Check `"ok": true` in the report, then delete it. Do not narrate.
 |---|---|
 | `/rag-workflow`, "search my textbooks for", "RAG this" | `rag-workflow` |
 | `/intern-bootcamp`, "drill me", "run a scenario" | `intern-bootcamp` |
+| `/oral-boards`, "case me", "run a mock oral", "written-to-oral bridge" | `oral-boards` |
 | `/intraoperative-guide`, "walk me through the surgery for" | `intraoperative-guide` |
 | `/study-material`, "make study material from [file]" | `study-material` |
 | `/generate-report`, "generate a report on" | `generate-report` |
@@ -267,12 +286,12 @@ Clinical questions, explanations, comparisons, coding: model knowledge. Offer RA
 cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
 python3 src/knowledge_graph.py last_session_narrative --skill "doc-review" --topic "<doc topic>"
 ```
-If non-null: prioritize `key_confusions_json` concepts first, apply `next_session_strategy`, avoid `teaching_failures`.
+If non-null: use `key_confusions_json` and `next_session_strategy` as context, but do not let them displace the requested document. Prioritize prior concepts only when directly related, prerequisite, confusable, safety-critical, or a single brief due bridge.
 
 1. Derive slug from filename. Ask if ambiguous.
 2. Check `Study Material/<slug>*.md`. If missing, invoke `study-material` silently.
 3. `doc_status "Study Material/<slug>.md"` → `new` starts TU-01; `returning` opens with recap.
-4. Use TU-XX / Q# IDs as curriculum. Revisit `concepts_missed` first, then forward.
+4. Use TU-XX / Q# IDs as curriculum. Revisit missed concepts from this same document first, then forward. Defer unrelated prior misses to future probes unless they meet the requested-document priority rule.
 5. At `coverage_pct >= 80%`, shift to cross-application questions.
 6. Socratic correction: guiding question on first miss → reveal on second miss.
 7. Heartbeat every 3 turns (doc-anchored mode). Final heartbeat + upsert `Review Sessions/<Title> Review.md` at session end.
@@ -325,7 +344,7 @@ Query via: `python3 src/knowledge_graph.py concept_evolution --concept "X"`
 ### Logging Patterns (Quick Reference)
 ```bash
 # Active answer memory (preferred for every Gym/Socratic response)
-python3 src/memory_orchestrator.py record-answer --session-ts "TS" --turn N --skill "S" --topic "T" --concept "C" --question "Q" --answer "A" --correct 0|1|2 [--correction "..."] [--error-type "..."] [--misconception "..."] [--root-cause "..."] [--remediation "..."] [--teaching-approach "..."] [--depth N] [--domain "D"] [--response-confidence "high|low"]
+python3 src/memory_orchestrator.py --quiet record-answer --session-ts "TS" --turn N --skill "S" --topic "T" --concept "C" --question "Q" --answer "A" --correct 0|1|2 [--correction "..."] [--error-type "..."] [--misconception "..."] [--root-cause "..."] [--remediation "..."] [--teaching-approach "..."] [--depth N] [--domain "D"] [--response-confidence "high|low"]
 
 # Passive teaching without active testing
 python3 src/knowledge_graph.py log_study --topics "t" --understood "c" --gaps "c" [--gap-details 'JSON'] --depth N
@@ -345,7 +364,7 @@ python3 src/knowledge_graph.py log_pattern --type "T" --description "D" --eviden
 
 ### Active Answer Logging
 
-All active testing interactions MUST use `memory_orchestrator.py record-answer`. Required fields: `session-ts`, `turn`, `skill`, `topic`, `concept`, `question`, `answer`, `correct`. Capture the ACTUAL question asked and ACTUAL answer given — not summaries. Low-level `log_event`, `log_study`, and `log_exchange` are reserved for passive teaching or repair/backfill.
+All active testing interactions MUST use `memory_orchestrator.py --quiet record-answer`. Required fields: `session-ts`, `turn`, `skill`, `topic`, `concept`, `question`, `answer`, `correct`. Capture the ACTUAL question asked and ACTUAL answer given — not summaries. Low-level `log_event`, `log_study`, and `log_exchange` are reserved for passive teaching or repair/backfill.
 
 ## §12 Data Locations
 
@@ -374,37 +393,61 @@ compare_multi "sq1" "sq2" ["sq3"] | digest | prepare_directives "q" | list_textb
 # knowledge_graph.py — see §11 for logging patterns
 status | dashboard | activity [--n 30]
 gaps [--rotation "X"] [--top N] | fine_grained_gaps [--top N] [--domain "X"]
+unknown_unknowns --topic "query" [--n N]
 topics [--domain "X"] [--only-studied] [--sort confidence] [--limit N]
 topic_detail "t" | topic_specificity_check "t" | add_topic --name "X" --category "Y" [--source "Z"] [--priority N]
 context "q" --output data/Sessions/learner_context.json
 review_queue [--n N] | concept_review_queue [--n N] | transfer_candidates [--n N]
 cognitive_patterns | calibration_profile | confusable_pairs [--topic "X"]
+learning_velocity [--domain "X"] [--n N]
+misconception_clusters
 blocking_gaps --topic "X" | concept_chain --concept "X" [--topic "X"]
 add_concept_relationship --a "X" --b "Y" --type prerequisite_of|confusable_with|extends|differentiates_from
 milestone_report | sync_anki | apply_decay | difficulty_target
 study_plan [--hours N] [--rotation "D"] [--focus "T"]
-memory_guidance "query" [--topic "T"] [--skill "S"]
-memory_session --session-ts "TS" --skill "S" [--topic "T"] [--enabled --scope study_session] [--status active|complete|paused]
 add_concept_alias --alias "A" --canonical "C" [--topic "T"] [--source "manual"]
-memory_reindex_fts | memory_rebuild [--apply] | memory_cleanup [--apply --backup]
+resolve_concept "raw text" [--topic "T"]
 doc_status "Study Material/<slug>.md"
 log_doc_progress --doc "..." --doc-type "..." --covered "Q1,Q2" --understood "Q1" --missed '[...]' --coverage-pct N --total-concepts N
 acgme_readiness | export_concept_stubs [--only-studied] | generate_error_atlas
-load_curriculum --file data/curriculum_skeleton.json
-# Episodic memory repair/backfill only
+load_curriculum --path data/curriculum_skeleton.json
+
+# Learning/session logging (see §11; use record-answer for active testing)
+log_study --topics "T1,T2" [--understood "C1"] [--gaps "C2"] [--gap-details '[...]'] [--depth N] [--source "S"]
+log_bootcamp --topics "T1,T2" [--weaknesses "W1"] [--module "M"] [--outcome pass|partial|fail] [--calibration '[...]']
+log_pattern --type "T" --description "D" [--evidence "E"]
+log_transfer --concept "C" --topic "T" --context "new context" [--success]
+log_session_narrative --skill "S" --topics "T1,T2" [--summary "..."] [--strategy "..."] [--turns N]
+last_session_narrative [--skill "S"] [--topic "T"]
+
+## Internal / Maintenance (run manually, not from skills)
+backfill --telemetry path  # import historical search telemetry into KG signals
+migrate_confusion_matrix  # one-time migration from confusion_matrix.json to concept_relationships
+seed_prerequisites  # derive prerequisite/confusable relationships from gap co-occurrence
+seed_topic_adjacency  # rebuild topic adjacency from curriculum milestone groupings
+backfill_topic_fingerprints  # backfill narrative topic fingerprints for matching
+
+# Episodic memory repair/backfill only (prefer memory_orchestrator record-answer for normal use)
+log_event --topic "T" --source "S" --signal-type "E" [--depth N] [--category "D"]  # low-level signal-event repair/backfill
 log_exchange --session-ts "TS" --turn N --skill "S" --topic "T" --concept "C" --question "Q" --answer "A" --correct 0|1|2
+log_answer --session-ts "TS" --turn N --skill "S" --topic "T" --concept "C" --question "Q" --answer "A" --correct 0|1|2 [--correction "..."] [--error-type "..."] [--misconception "..."] [--root-cause "..."] [--remediation "..."] [--teaching-approach "..."] [--depth N] [--domain "D"] [--response-confidence "high|low"]
 exchange_history [--topic "T"] [--concept "C"] [--error-type "E"] [--correct 0|1|2] [--skill "S"] [--days N] [--top N] [--breakthrough]
 recall "query" [--topic "T"] [--domain "D"] [--error-type "E"] [--correct 0|1|2] [--skill "S"] [--errors-only] [--days N] [--max N] [--compact] [--sqlite-only] [--output path]
 teaching_effectiveness [--domain "D"] [--days N]
 concept_evolution [--concept "C"] [--topic "T"] [--days N] [--limit N]
 derive_session_confusions [--session-ts "TS"] [--skill "S"] [--hours N]
 domain_error_profile --domain "D" [--days N]
-memory_doctor
 
 # Preferred stable orchestrator interface
-python3 src/memory_orchestrator.py record-answer --session-ts "TS" --turn N --skill "S" --topic "T" --concept "C" --question "Q" --answer "A" --correct 0|1|2
+python3 src/memory_orchestrator.py --quiet record-answer --session-ts "TS" --turn N --skill "S" --topic "T" --concept "C" --question "Q" --answer "A" --correct 0|1|2
+python3 src/memory_orchestrator.py --quiet record-passive --session-ts "TS" --turn N --skill "S" --topic "T" --content "..."
+python3 src/memory_orchestrator.py --quiet session --session-ts "TS" --skill "S" [--topic "T"] [--enabled --scope study_session] [--status active|complete|paused]
 python3 src/memory_orchestrator.py guidance "query" [--topic "T"] [--skill "S"]
+python3 src/memory_orchestrator.py study-plan [--hours N] [--rotation "D"] [--focus "T"]
 python3 src/memory_orchestrator.py doctor
+python3 src/memory_orchestrator.py reindex-fts
+python3 src/memory_orchestrator.py rebuild [--apply]
+python3 src/memory_orchestrator.py cleanup [--apply --backup]
 
 # Utility scripts
 src/preflight.sh "query" [--doc "Study Material/slug.md"] [--skill "X"]

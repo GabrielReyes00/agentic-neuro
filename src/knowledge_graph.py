@@ -14,6 +14,7 @@ from pathlib import Path
 
 from kg_constants import ABBREVIATION_MAP, DATA_DIR
 from kg_schema import SCHEMA_SQL
+from kg_memory_v2 import KnowledgeGraphMemoryV2Mixin
 from kg_memory import KnowledgeGraphMemoryMixin
 from kg_learning import KnowledgeGraphLearningMixin
 from kg_signals import KnowledgeGraphSignalMixin
@@ -181,7 +182,7 @@ _TOPIC_STOPWORDS: set[str] = {
 # KnowledgeGraph
 # ---------------------------------------------------------------------------
 
-class KnowledgeGraph(KnowledgeGraphSignalMixin, KnowledgeGraphLearningMixin, KnowledgeGraphMemoryMixin, KnowledgeGraphAnkiMixin, KnowledgeGraphExportMixin):
+class KnowledgeGraph(KnowledgeGraphSignalMixin, KnowledgeGraphLearningMixin, KnowledgeGraphMemoryV2Mixin, KnowledgeGraphMemoryMixin, KnowledgeGraphAnkiMixin, KnowledgeGraphExportMixin):
     """SQLite-backed learner knowledge graph for topic mastery tracking."""
 
     def __init__(self, db_path: str | Path | None = None):
@@ -254,6 +255,16 @@ class KnowledgeGraph(KnowledgeGraphSignalMixin, KnowledgeGraphLearningMixin, Kno
             self._run_migration(
                 "ALTER TABLE session_narratives ADD COLUMN topic_fingerprint TEXT DEFAULT ''"
             )
+
+            self._run_migrations([
+                "ALTER TABLE document_sessions ADD COLUMN source_kind TEXT DEFAULT ''",
+                "ALTER TABLE document_sessions ADD COLUMN preferred_study_mode TEXT DEFAULT ''",
+                "ALTER TABLE document_sessions ADD COLUMN last_study_mode TEXT DEFAULT ''",
+                "ALTER TABLE document_sessions ADD COLUMN pacing_goal TEXT DEFAULT ''",
+                "ALTER TABLE document_sessions ADD COLUMN mode_confidence REAL DEFAULT 0.0",
+                "ALTER TABLE document_sessions ADD COLUMN mode_reason TEXT DEFAULT ''",
+                "ALTER TABLE document_sessions ADD COLUMN mode_updated_ts TEXT",
+            ])
 
             self._run_migrations([
                 "ALTER TABLE learning_exchanges ADD COLUMN consolidated_at TEXT DEFAULT NULL",
@@ -854,15 +865,37 @@ class KnowledgeGraph(KnowledgeGraphSignalMixin, KnowledgeGraphLearningMixin, Kno
                 new_confidence = max(0.0, min(1.0, old_confidence * decay_factor))
 
                 with self.conn:
+                    confidence_delta = new_confidence - old_confidence
                     self.conn.execute(
                         "UPDATE topics SET confidence = ?, last_decay_ts = ? WHERE topic_id = ?",
                         (new_confidence, now.isoformat(), tid),
                     )
+                    if confidence_delta < 0:
+                        self.conn.execute(
+                            """INSERT INTO signal_events
+                               (topic_id, timestamp, source, signal_type,
+                                depth_at_event, confidence_delta, metadata)
+                               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                            (
+                                tid,
+                                now.isoformat(),
+                                "decay",
+                                "decay",
+                                depth,
+                                confidence_delta,
+                                json.dumps({"hours_since": hours_since}),
+                            ),
+                        )
         except Exception as exc:
             print(f"[knowledge_graph] apply_decay error: {exc}", file=sys.stderr)
 
         # Also run concept-level SRS decay
         self._apply_concept_srs_decay()
+        if hasattr(self, "apply_learner_state_decay_v2"):
+            try:
+                self.apply_learner_state_decay_v2()
+            except Exception as exc:
+                print(f"[knowledge_graph] apply_learner_state_decay_v2 error: {exc}", file=sys.stderr)
 
     def _apply_concept_srs_decay(self) -> None:
         """Mark 'known' concepts whose next_review_due has passed as 'due'.
@@ -1411,8 +1444,8 @@ class KnowledgeGraph(KnowledgeGraphSignalMixin, KnowledgeGraphLearningMixin, Kno
             print(f"[knowledge_graph] dashboard error: {exc}", file=sys.stderr)
             return {"error": str(exc)}
 
-    def topics_list(self, domain: str = None, min_confidence: float = None,
-                    max_confidence: float = None, depth: int = None,
+    def topics_list(self, domain: str | None = None, min_confidence: float | None = None,
+                    max_confidence: float | None = None, depth: int | None = None,
                     sort_by: str = "confidence", only_studied: bool = False,
                     limit: int = 50) -> list[dict]:
         """Return a filtered, sorted list of topics for display.

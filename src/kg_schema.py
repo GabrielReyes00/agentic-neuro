@@ -188,6 +188,13 @@ CREATE TABLE IF NOT EXISTS document_sessions (
     doc_id              INTEGER PRIMARY KEY AUTOINCREMENT,
     doc_path            TEXT NOT NULL UNIQUE,
     doc_type            TEXT NOT NULL DEFAULT 'unknown',
+    source_kind         TEXT DEFAULT '',       -- review_material, generated_report, oral_board_case_seed, primary_source, unknown
+    preferred_study_mode TEXT DEFAULT '',      -- rapid_review, deep_understanding, oral_boards, ask
+    last_study_mode     TEXT DEFAULT '',
+    pacing_goal         TEXT DEFAULT '',       -- throughput, mastery, exam_simulation
+    mode_confidence     REAL DEFAULT 0.0,
+    mode_reason         TEXT DEFAULT '',
+    mode_updated_ts     TEXT,
     session_count       INTEGER DEFAULT 0,
     first_studied       TEXT,
     last_studied        TEXT,
@@ -372,4 +379,145 @@ CREATE TABLE IF NOT EXISTS concept_evolution (
 CREATE INDEX IF NOT EXISTS idx_evo_concept ON concept_evolution(concept_id);
 CREATE INDEX IF NOT EXISTS idx_evo_topic ON concept_evolution(topic_id);
 CREATE INDEX IF NOT EXISTS idx_evo_ts ON concept_evolution(timestamp);
+
+-- Memory V2: typed canonical memories over the append-only event log.
+-- memory_events remains the raw source of truth; these rows are rebuildable
+-- projections used for retrieval, temporal reasoning, and context packing.
+CREATE TABLE IF NOT EXISTS memory_items (
+    item_id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_type             TEXT NOT NULL,       -- episode, semantic_fact, learner_state, teaching_policy, reflection, resource_link, core_profile, case_memory
+    topic_id              INTEGER,
+    concept_text          TEXT DEFAULT '',
+    summary               TEXT NOT NULL DEFAULT '',
+    details_json          TEXT DEFAULT '{}',
+    importance            REAL DEFAULT 0.5,
+    confidence            REAL DEFAULT 0.5,
+    evidence_event_ids    TEXT DEFAULT '[]',
+    evidence_exchange_ids TEXT DEFAULT '[]',
+    source_table          TEXT DEFAULT '',
+    source_id             INTEGER,
+    valid_from            TEXT NOT NULL,
+    valid_to              TEXT DEFAULT '',
+    superseded_by         INTEGER,
+    embedding_status      TEXT DEFAULT 'pending',
+    created_ts            TEXT NOT NULL,
+    updated_ts            TEXT NOT NULL,
+    dedupe_key            TEXT DEFAULT '',
+    FOREIGN KEY (topic_id) REFERENCES topics(topic_id),
+    FOREIGN KEY (superseded_by) REFERENCES memory_items(item_id)
+);
+CREATE INDEX IF NOT EXISTS idx_memory_items_type ON memory_items(item_type);
+CREATE INDEX IF NOT EXISTS idx_memory_items_topic ON memory_items(topic_id);
+CREATE INDEX IF NOT EXISTS idx_memory_items_concept ON memory_items(concept_text);
+CREATE INDEX IF NOT EXISTS idx_memory_items_valid ON memory_items(valid_from, valid_to);
+CREATE INDEX IF NOT EXISTS idx_memory_items_embedding ON memory_items(embedding_status);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_items_dedupe ON memory_items(dedupe_key) WHERE dedupe_key != '';
+
+-- Memory V2: temporal graph edges between memory items.
+CREATE TABLE IF NOT EXISTS memory_edges (
+    edge_id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_item_id     INTEGER NOT NULL,
+    target_item_id     INTEGER NOT NULL,
+    edge_type          TEXT NOT NULL,       -- supports, contradicts, supersedes, caused_by, tests, teaches, confusable_with, prerequisite_of
+    confidence         REAL DEFAULT 0.5,
+    valid_from         TEXT NOT NULL,
+    valid_to           TEXT DEFAULT '',
+    evidence_event_ids TEXT DEFAULT '[]',
+    created_ts         TEXT NOT NULL,
+    updated_ts         TEXT NOT NULL,
+    dedupe_key         TEXT DEFAULT '',
+    FOREIGN KEY (source_item_id) REFERENCES memory_items(item_id),
+    FOREIGN KEY (target_item_id) REFERENCES memory_items(item_id)
+);
+CREATE INDEX IF NOT EXISTS idx_memory_edges_source ON memory_edges(source_item_id);
+CREATE INDEX IF NOT EXISTS idx_memory_edges_target ON memory_edges(target_item_id);
+CREATE INDEX IF NOT EXISTS idx_memory_edges_type ON memory_edges(edge_type);
+CREATE INDEX IF NOT EXISTS idx_memory_edges_valid ON memory_edges(valid_from, valid_to);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_edges_dedupe ON memory_edges(dedupe_key) WHERE dedupe_key != '';
+
+-- Memory V2: current inferred learner state. This is a derived, replayable
+-- state table; temporal history remains in memory_items, memory_edges, and
+-- concept_evolution.
+CREATE TABLE IF NOT EXISTS learner_concept_state (
+    state_id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    topic_id                  INTEGER NOT NULL,
+    concept_text              TEXT NOT NULL,
+    mastery_prob              REAL DEFAULT 0.0,
+    familiarity_prob          REAL DEFAULT 0.0,
+    retention_half_life_days  REAL DEFAULT 1.0,
+    difficulty                REAL DEFAULT 0.5,
+    last_active_tested_at     TEXT,
+    last_passive_exposed_at   TEXT,
+    next_review_due           TEXT,
+    dominant_misconception    TEXT DEFAULT '',
+    root_cause                TEXT DEFAULT '',
+    calibration_state         TEXT DEFAULT '',
+    transfer_state            TEXT DEFAULT 'untested',
+    evidence_event_ids        TEXT DEFAULT '[]',
+    evidence_exchange_ids     TEXT DEFAULT '[]',
+    last_updated              TEXT NOT NULL,
+    FOREIGN KEY (topic_id) REFERENCES topics(topic_id),
+    UNIQUE(topic_id, concept_text)
+);
+CREATE INDEX IF NOT EXISTS idx_lcs_topic ON learner_concept_state(topic_id);
+CREATE INDEX IF NOT EXISTS idx_lcs_concept ON learner_concept_state(concept_text);
+CREATE INDEX IF NOT EXISTS idx_lcs_next_due ON learner_concept_state(next_review_due);
+CREATE INDEX IF NOT EXISTS idx_lcs_mastery ON learner_concept_state(mastery_prob);
+
+-- Memory V2: procedural teaching policy memory, conditioned by the learner's
+-- domain/topic/concept/error context.
+CREATE TABLE IF NOT EXISTS teaching_policy_stats (
+    policy_id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    domain                 TEXT DEFAULT '',
+    topic_id               INTEGER,
+    concept_text           TEXT DEFAULT '',
+    error_type             TEXT DEFAULT '',
+    teaching_approach      TEXT NOT NULL,
+    success_count          INTEGER DEFAULT 0,
+    failure_count          INTEGER DEFAULT 0,
+    unknown_count          INTEGER DEFAULT 0,
+    exposure_count         INTEGER DEFAULT 0,
+    confidence             REAL DEFAULT 0.5,
+    last_outcome           TEXT DEFAULT '',
+    evidence_event_ids     TEXT DEFAULT '[]',
+    evidence_exchange_ids  TEXT DEFAULT '[]',
+    created_ts             TEXT NOT NULL,
+    updated_ts             TEXT NOT NULL,
+    dedupe_key             TEXT DEFAULT '',
+    FOREIGN KEY (topic_id) REFERENCES topics(topic_id)
+);
+CREATE INDEX IF NOT EXISTS idx_policy_topic ON teaching_policy_stats(topic_id);
+CREATE INDEX IF NOT EXISTS idx_policy_context ON teaching_policy_stats(domain, concept_text, error_type);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_policy_dedupe ON teaching_policy_stats(dedupe_key) WHERE dedupe_key != '';
+
+-- Memory V2: retrieval traces for context-pack debugging and regression.
+CREATE TABLE IF NOT EXISTS memory_retrieval_logs (
+    retrieval_id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_ts           TEXT NOT NULL,
+    query                TEXT NOT NULL DEFAULT '',
+    topic_text           TEXT DEFAULT '',
+    skill                TEXT DEFAULT '',
+    intent               TEXT DEFAULT '',
+    max_tokens           INTEGER DEFAULT 0,
+    token_estimate       INTEGER DEFAULT 0,
+    result_item_ids      TEXT DEFAULT '[]',
+    result_exchange_ids  TEXT DEFAULT '[]',
+    retrieval_json       TEXT DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_retrieval_logs_ts ON memory_retrieval_logs(created_ts);
+CREATE INDEX IF NOT EXISTS idx_retrieval_logs_intent ON memory_retrieval_logs(intent);
+
+-- Memory V2: local benchmark/regression cases.
+CREATE TABLE IF NOT EXISTS memory_eval_cases (
+    case_id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    suite         TEXT NOT NULL DEFAULT 'local',
+    name          TEXT NOT NULL,
+    query         TEXT NOT NULL DEFAULT '',
+    expected_json TEXT DEFAULT '{}',
+    tags_json     TEXT DEFAULT '[]',
+    created_ts    TEXT NOT NULL,
+    updated_ts    TEXT NOT NULL,
+    UNIQUE(suite, name)
+);
+CREATE INDEX IF NOT EXISTS idx_memory_eval_suite ON memory_eval_cases(suite);
 """
