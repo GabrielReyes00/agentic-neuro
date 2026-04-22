@@ -15,6 +15,55 @@ import sys
 from knowledge_graph import KnowledgeGraph
 
 
+def _try_enqueue_anki(args: argparse.Namespace, result: dict) -> None:
+    """Best-effort real-time Anki queue append. Never raises.
+
+    Writes one candidate per active answer so the queue-based flush can
+    synthesize cloze cards. Suppression (correct + shallow, no signal) is
+    handled inside `enqueue_candidate`.
+    """
+    try:
+        exchange_id = int(result.get("exchange_id") or 0)
+        if exchange_id <= 0:
+            return
+        from anki_realtime import enqueue_candidate
+        enqueue_candidate(
+            session_ts=args.session_ts,
+            exchange_id=exchange_id,
+            skill=args.skill,
+            topic=args.topic,
+            concept=args.concept,
+            question=args.question,
+            answer=args.answer,
+            correction=getattr(args, "correction", "") or "",
+            correct=args.correct,
+            error_type=getattr(args, "error_type", "") or "",
+            misconception=getattr(args, "misconception", "") or "",
+            root_cause=getattr(args, "root_cause", "") or "",
+            teaching_approach=getattr(args, "teaching_approach", "") or "",
+            depth=getattr(args, "depth", 1) or 1,
+            domain=getattr(args, "domain", "") or "",
+            breakthrough=bool(getattr(args, "breakthrough", False)),
+        )
+    except Exception as exc:  # noqa: BLE001
+        # Silent: learning sessions must never break because of Anki.
+        print(f"[memory_orchestrator] anki enqueue skipped: {exc}", file=sys.stderr)
+
+
+def _try_update_learner_model(kg: KnowledgeGraph, result: dict) -> None:
+    """Best-effort adaptive learner model refresh for one exchange."""
+    try:
+        exchange_id = int(result.get("exchange_id") or 0)
+        if exchange_id <= 0:
+            return
+        from learner_model import update_after_exchange
+        lm = update_after_exchange(kg.conn, exchange_id)
+        if lm.get("ok"):
+            result["learner_model"] = lm
+    except Exception as exc:  # noqa: BLE001
+        print(f"[memory_orchestrator] learner model update skipped: {exc}", file=sys.stderr)
+
+
 def _resolve_session_for_write(
     args: argparse.Namespace,
     kg: KnowledgeGraph,
@@ -214,6 +263,36 @@ def _build_parser() -> argparse.ArgumentParser:
     p_sp.add_argument("--rotation", default=None)
     p_sp.add_argument("--focus", default=None)
 
+    p_em = subparsers.add_parser("estimate-mastery", help="Estimate mastery for a topic/concept")
+    p_em.add_argument("--topic", default="")
+    p_em.add_argument("--concept", default="")
+
+    p_ni = subparsers.add_parser("next-item", help="Pick the next adaptive learning item")
+    p_ni.add_argument("--mode", default="zpd", choices=["eig", "zpd", "remediate"])
+    p_ni.add_argument("--topic", default="")
+    p_ni.add_argument("--limit", type=int, default=5)
+
+    p_rec = subparsers.add_parser("recommend-approach", help="Recommend a teaching approach")
+    p_rec.add_argument("--domain", default="")
+    p_rec.add_argument("--topic-id", type=int, default=None, dest="topic_id")
+    p_rec.add_argument("--concept", default="", dest="concept_text")
+    p_rec.add_argument("--error-type", default="", dest="error_type")
+    p_rec.add_argument("--difficulty-band", default="", dest="difficulty_band")
+
+    p_probe = subparsers.add_parser("proactive-probe", help="Surface or pop unknown-unknown probes")
+    p_probe.add_argument("--surface", action="store_true")
+    p_probe.add_argument("--pop", action="store_true")
+    p_probe.add_argument("--limit", type=int, default=5)
+    p_probe.add_argument("--output", default="data/Sessions/proactive_probe.json")
+
+    p_ts = subparsers.add_parser("tutor-strategy", help="Build hidden tutor control strategy")
+    p_ts.add_argument("query")
+    p_ts.add_argument("--topic", default="")
+    p_ts.add_argument("--concept", default="")
+    p_ts.add_argument("--skill", default="")
+    p_ts.add_argument("--probe-json", default="")
+    p_ts.add_argument("--output", default="")
+
     subparsers.add_parser("doctor", help="Audit memory integrity")
     subparsers.add_parser("reindex-fts", help="Rebuild the memory FTS index")
 
@@ -223,6 +302,25 @@ def _build_parser() -> argparse.ArgumentParser:
     p_cl = subparsers.add_parser("cleanup", help="Plan/apply safe duplicate cleanup")
     p_cl.add_argument("--apply", action="store_true")
     p_cl.add_argument("--backup", action="store_true")
+
+    # Real-time Anki integration
+    p_fa = subparsers.add_parser(
+        "flush-anki-queue",
+        help="Synthesize queued Anki candidates into cloze cards and dispatch",
+    )
+    p_fa.add_argument("--dry-run", action="store_true", dest="dry_run")
+    p_fa.add_argument("--skip-anki", action="store_true", dest="skip_anki")
+    p_fa.add_argument("--anki-url", default="http://localhost:8765", dest="anki_url")
+    p_fa.add_argument("--max-batch", type=int, default=8, dest="max_batch")
+    p_fa.add_argument("--min-queue", type=int, default=1, dest="min_queue",
+                      help="Skip flush if queue has fewer than N entries (for throttled flushes)")
+
+    p_ss = subparsers.add_parser(
+        "anki-stats-sync",
+        help="Pull AnkiConnect review stats and fold into concept_mastery",
+    )
+    p_ss.add_argument("--anki-url", default="http://localhost:8765", dest="anki_url")
+
     return parser
 
 
@@ -255,6 +353,9 @@ def _dispatch(args: argparse.Namespace, kg: KnowledgeGraph) -> dict:
         )
         if resolution and (resolution.get("changed") or resolution.get("warning")):
             result["session_resolution"] = resolution
+        # Real-time Anki queue enqueue — best effort, never blocks the caller.
+        _try_enqueue_anki(args, result)
+        _try_update_learner_model(kg, result)
         return result
     if args.command == "record-passive":
         resolution = _resolve_session_for_write(args, kg)
@@ -457,6 +558,43 @@ def _dispatch(args: argparse.Namespace, kg: KnowledgeGraph) -> dict:
         return pack
     if args.command == "study-plan":
         return kg.study_plan(hours=args.hours, rotation=args.rotation, focus=args.focus)
+    if args.command == "estimate-mastery":
+        from learner_model import estimate_mastery
+        return estimate_mastery(kg.conn, topic=args.topic, concept=args.concept)
+    if args.command == "next-item":
+        from learner_model import next_item
+        return next_item(kg.conn, mode=args.mode, topic=args.topic, limit=args.limit)
+    if args.command == "recommend-approach":
+        from teaching_recommender import recommend_approach
+        return recommend_approach(
+            kg.conn,
+            domain=args.domain,
+            topic_id=args.topic_id,
+            concept_text=args.concept_text,
+            error_type=args.error_type,
+            difficulty_band=args.difficulty_band,
+        )
+    if args.command == "proactive-probe":
+        from unknown_unknowns_scout import pop_probe, surface_unknown_unknowns
+        if args.surface:
+            return surface_unknown_unknowns(kg.conn, limit=args.limit)
+        return pop_probe(kg.conn, output_path=args.output if args.pop or not args.surface else None)
+    if args.command == "tutor-strategy":
+        from tutor_strategy import _load_probe, build_tutor_strategy
+        result = build_tutor_strategy(
+            kg.conn,
+            query=args.query,
+            topic=args.topic,
+            concept=args.concept,
+            skill=args.skill,
+            proactive_probe=_load_probe(args.probe_json) if args.probe_json else {},
+        )
+        if args.output:
+            from pathlib import Path
+            out = Path(args.output)
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")
+        return result
     if args.command == "doctor":
         return kg.memory_doctor()
     if args.command == "reindex-fts":
@@ -465,6 +603,26 @@ def _dispatch(args: argparse.Namespace, kg: KnowledgeGraph) -> dict:
         return kg.memory_rebuild(apply=args.apply)
     if args.command == "cleanup":
         return kg.memory_cleanup_plan(apply=args.apply, backup=args.backup)
+    if args.command == "flush-anki-queue":
+        from anki_realtime import QUEUE_PATH, _read_queue, flush_queue
+        pending = _read_queue(QUEUE_PATH)
+        if len(pending) < args.min_queue:
+            return {
+                "ok": True,
+                "skipped": True,
+                "reason": f"queue_size {len(pending)} < min_queue {args.min_queue}",
+                "queue_size": len(pending),
+            }
+        return flush_queue(
+            dry_run=args.dry_run,
+            skip_anki=args.skip_anki,
+            anki_url=args.anki_url,
+            max_batch=args.max_batch,
+        )
+    if args.command == "anki-stats-sync":
+        from anki_stats_sync import sync_stats
+        result = sync_stats(anki_url=args.anki_url)
+        return result.__dict__
     return {"ok": False, "error": f"unknown command: {args.command}"}
 
 

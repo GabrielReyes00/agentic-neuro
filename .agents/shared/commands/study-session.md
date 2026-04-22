@@ -20,7 +20,7 @@ Check continuity:
 python3 src/knowledge_graph.py last_session_narrative --skill "study-session"
 ```
 
-Use prior strategy, confusions, and teaching failures to choose topics and approach.
+Use prior strategy, confusions, teaching failures, `data/Sessions/adaptive_next_item.json`, `data/Sessions/adaptive_teaching.json`, `data/Sessions/proactive_probe.json`, and `data/Sessions/tutor_strategy.json` to choose topics, question jobs, and approach. Treat sparse adaptive recommendations as priors; override them when the user's requested topic, safety, or document priority requires it.
 
 If the user has selected a specific Obsidian document or named source, do not run a general prior-miss backlog before that source. Apply Requested-Document Priority from the shared learning contract.
 
@@ -60,6 +60,21 @@ Remediation routing:
 
 Recurring cognitive pattern: insert a short process intervention. Calibration issue: ask for confidence before answers.
 
+Adaptive routing:
+
+| Signal | Use |
+|---|---|
+| `adaptive_next_item.items[0].difficulty_band = remediate` | Start with prerequisite repair before transfer |
+| `adaptive_next_item.items[0].difficulty_band = zpd` | Use as the main 8-12 minute target |
+| `adaptive_teaching.approach` | Use as the first remediation move if it fits the error type |
+| `proactive_probe.status = popped` | Insert as a single bridge question only if it is prerequisite, confusable, or safety-critical |
+| `tutor_strategy.question_job` | Use as the first question's hidden job |
+| `tutor_strategy.mastery_ladder.next_rung` | Aim the session's next probe at this rung unless the answer reveals a lower prerequisite gap |
+| `tutor_strategy.learning_yield_optimizer.targets` | Prefer as the session target list when the user asks what to study |
+| `tutor_strategy.concept_bottlenecks.targets` | Test one relevant bottleneck before downstream remediation |
+| `tutor_strategy.cross_context_transfer_matrix.next_transfer_gap` | Use for Transfer Challenge |
+| `tutor_strategy.compression_card` | Use at close for one-breath schema, danger rule, discriminator, and rescue move |
+
 ## Step 3: Present Plan
 
 Show components, selected topics, mode rationale, skipped components, and time redistribution. Ask for approval before execution.
@@ -98,4 +113,21 @@ Heartbeat after Components 1-2 and again at finalization.
 
 Summarize component outcomes, resolved and unresolved gaps, one learner-pattern insight, and next-session priority. Offer Anki, another session, or end.
 
-Finalize heartbeat with gap details, run `session-summary --apply`, write `Review Sessions/<Primary Topic Title>.md`, run concept extraction, `promote-core-profile --apply`, `consolidate --mode apply`, and the post-session hook.
+Finalize heartbeat with gap details, run `session-summary --apply`, write a rich final draft to `data/Sessions/study_session_<slug>_artifact.md`, then install and validate it with the Final Artifact Guard:
+
+```bash
+python3 src/learning_artifact_guard.py install \
+  --artifact-type "study-session" \
+  --draft "data/Sessions/study_session_<slug>_artifact.md" \
+  --title "<Primary Topic Title>" \
+  --topic "<topics>" \
+  --domain "<domain>" \
+  --min-words 250
+
+python3 src/learning_artifact_guard.py validate \
+  "/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Review Sessions/<Primary Topic Title>.md" \
+  --artifact-type "study-session" \
+  --min-words 250
+```
+
+The final note must include the required sections from the shared learning contract. A checkpoint-only `Review Sessions` file is not completion. After validation passes, run concept extraction, `promote-core-profile --apply`, `consolidate --mode apply`, and the post-session hook.

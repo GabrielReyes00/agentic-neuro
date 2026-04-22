@@ -38,7 +38,7 @@ When building a new case, read only what is needed:
 python3 src/knowledge_graph.py last_session_narrative --skill "oral-boards" --topic "<topic>"
 ```
 
-4. Read `data/Sessions/learner_context.json`, `difficulty_target.json`, `concept_review_queue.json`, and prior narrative. Apply prior weak concepts, confusable pairs, due reviews, and calibration alerts silently.
+4. Read `data/Sessions/learner_context.json`, `difficulty_target.json`, `concept_review_queue.json`, `adaptive_next_item.json`, `adaptive_teaching.json`, `proactive_probe.json`, `tutor_strategy.json`, and prior narrative. Apply prior weak concepts, confusable pairs, due reviews, calibration alerts, ZPD candidates, the hidden question job, domain playbook, and at most one relevant prerequisite probe silently.
 5. Set one `SESSION_TS` at the first learner-facing question and enable the memory session:
 
 ```bash
@@ -75,6 +75,8 @@ Hidden case state must include:
 
 Use `oral-boards-topic-bank.md` to choose topics. For PGY-1, prefer ward, consult, trauma, ICU, hydrocephalus, cauda equina, spine fracture, ICH, SAH basics, tumor presentation, infection, shunt failure, and perioperative complications. Keep operative details conceptual unless the learner asks to go deeper.
 
+When adaptive data exists, pick cases that place the learner near ZPD: use `adaptive_next_item` and `tutor_strategy.learning_yield_optimizer.targets` for surprise-me topic selection, use `tutor_strategy.domain_playbook` for the hidden case arc, use `tutor_strategy.chief_challenges` to escalate correct answers, use `adaptive_teaching.approach` for coaching after a miss, and use `proactive_probe` only as a hidden prerequisite branch if it fits the case.
+
 ## Staged Examination
 
 Ask one stage at a time. Stop after each stage and wait for the learner's answer.
@@ -103,6 +105,7 @@ After each committed answer or at the end of each stage, use Progressive Landsca
 - If the learner answers vaguely, force specificity: orders, timing, imaging sequence, thresholds, or escalation language.
 - In `board-mode`, give neutral prompts and save most feedback for the end.
 - In coaching mode, give short correction after each stage, then immediately retest the corrected point in a new mini-scenario.
+- Use anti-illusion checks after apparently correct pattern-recognition answers. Correct recall with failed exception handling remains partial.
 
 ## Scoring
 
@@ -161,7 +164,24 @@ python3 src/memory_orchestrator.py finish-session \
   --repair-fragments --mode apply --text
 ```
 
-Write `Review Sessions/<Topic Title>.md` with case stem, staged answers, score, unsafe issues, corrected concepts, next targets, and related vault links. Then run the universal post-session hook.
+Write a rich final draft to `data/Sessions/oral_boards_<slug>_artifact.md`, then install and validate it with the Final Artifact Guard:
+
+```bash
+python3 src/learning_artifact_guard.py install \
+  --artifact-type "oral-boards" \
+  --draft "data/Sessions/oral_boards_<slug>_artifact.md" \
+  --title "<Topic Title>" \
+  --topic "<topics>" \
+  --domain "<domain>" \
+  --min-words 250
+
+python3 src/learning_artifact_guard.py validate \
+  "/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Review Sessions/<Topic Title>.md" \
+  --artifact-type "oral-boards" \
+  --min-words 250
+```
+
+The final note must include opening stem, stage log, score, unsafe issues, corrected concepts, next practice targets, and related vault links. A heartbeat checkpoint is not a completed oral-board artifact. Then run the universal post-session hook.
 
 ## Opening Prompt
 

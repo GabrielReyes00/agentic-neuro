@@ -15,7 +15,7 @@ Run a strict PGY-1 neurosurgery simulation that trains triage, order precision, 
 python3 src/knowledge_graph.py last_session_narrative --skill "intern-bootcamp"
 ```
 
-Use learner context silently: weak topics, due concepts, transfer candidates, confusable pairs, cognitive patterns, and calibration alerts.
+Use learner context silently: weak topics, due concepts, transfer candidates, confusable pairs, cognitive patterns, calibration alerts, adaptive next-item candidates, adaptive teaching recommendation, tutor strategy, and proactive prerequisite probe. Prefer the adaptive recommendation and `tutor_strategy.question_job` for debrief teaching unless the simulated safety issue demands a more direct correction. Use `tutor_strategy.intern_reality` to force orders, monitoring target, who to call, disposition, and chief update.
 
 ## Phase 1: Firefight
 
@@ -35,6 +35,7 @@ Rules:
 10. When a scenario creates a reusable night-float, consult, order, or complication teaching case, log it with `record-case`.
 11. When Gabriel applies a principle in a new simulated context, log `record-transfer` with `--transfer-level applied_under_time_pressure`.
 12. Heartbeat every ~3 decisions.
+13. After correct but shallow decisions, use a Chief Challenge: patient worsens, chief disagrees, radiology disagrees, or the order has a contraindication.
 
 Tone calibration:
 
@@ -61,7 +62,24 @@ python3 src/knowledge_graph.py log_bootcamp \
   --calibration '[{"concept":"...","response_confidence":"high|low","correct":true}]'
 ```
 
-Finalize heartbeat and write `Review Sessions/<Module Topic Title>.md`.
+Finalize heartbeat and write a rich final draft to `data/Sessions/intern_bootcamp_<slug>_artifact.md`, then install and validate it with the Final Artifact Guard:
+
+```bash
+python3 src/learning_artifact_guard.py install \
+  --artifact-type "intern-bootcamp" \
+  --draft "data/Sessions/intern_bootcamp_<slug>_artifact.md" \
+  --title "<Module Topic Title>" \
+  --topic "<topics>" \
+  --domain "<domain>" \
+  --min-words 250
+
+python3 src/learning_artifact_guard.py validate \
+  "/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Review Sessions/<Module Topic Title>.md" \
+  --artifact-type "intern-bootcamp" \
+  --min-words 250
+```
+
+The final note must include scenario, decision log, orders, escalation/communication, chief debrief, weaknesses/error types, and next targets. A checkpoint-only note is not completion.
 
 Also run:
 

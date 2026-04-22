@@ -13,7 +13,7 @@ Pipeline: assess, retrieve, transform, gap check, present, log, finalize.
 python3 src/knowledge_graph.py last_session_narrative --skill "rag-workflow" --topic "<query topic>"
 ```
 
-Read learner context, transform directives, and prior-session strategy. If new case logs are flagged, sync them using the repo instructions.
+Read learner context, transform directives, adaptive next-item candidates, adaptive teaching recommendation, proactive prerequisite probe, tutor strategy, and prior-session strategy. If new case logs are flagged, sync them using the repo instructions.
 
 ## Step 1: Assess
 
@@ -63,7 +63,7 @@ Hard cap: one local follow-up retrieval.
 
 ## Step 5: Present and Drill
 
-Deliver the synthesis. Include a recall bridge only when it naturally connects to due concepts. For Gym follow-up, ask one question at a time and apply the shared memory contract with `--skill "rag-workflow"`. Follow the Cognitive Friction Protocol: the Gym prompt ends at the question, with no appended answer context or hints. After the learner answers, use Progressive Landscape Reveal so retrieved source terrain is gradually elicited rather than dumped. If the learner applies the synthesis to a new clinical/operative context, log `record-transfer`; if the interaction creates a reusable case, log `record-case`.
+Deliver the synthesis. Include a recall bridge only when it naturally connects to due concepts, the adaptive next-item list, `tutor_strategy.question_job`, the learning-yield optimizer, or a relevant proactive prerequisite probe. For Gym follow-up, ask one question at a time and apply the shared memory contract with `--skill "rag-workflow"`. Follow the Cognitive Friction Protocol: the Gym prompt ends at the question, with no appended answer context or hints. After the learner answers, use Progressive Landscape Reveal so retrieved source terrain is gradually elicited rather than dumped. Use anti-illusion checks for correct answers that may be pattern recognition. If the learner applies the synthesis to a new clinical/operative context, log `record-transfer`; if the interaction creates a reusable case, log `record-case`.
 
 Routing:
 
@@ -73,8 +73,25 @@ Routing:
 | Partial | Isolate missing step |
 | Incorrect | Guide to the discriminating feature before revealing |
 
-After clear error typing, offer one remediation: numbers quiz, causal walkthrough, disambiguation table, application scenario, or scaffolded reasoning.
+After clear error typing, offer one remediation: numbers quiz, causal walkthrough, disambiguation table, application scenario, scaffolded reasoning, or a compression card. If `error_recurrence_fingerprints` shows a repeated process error, remediate the process first.
 
 ## Step 6: Finalize
 
-Standalone sessions write `Review Sessions/<topic>.md`. Doc-anchored sessions use the source document review file. Finish heartbeat, run `session-summary --apply`, `promote-core-profile --apply`, `consolidate --mode apply`, concept extraction, post-session hook, and scoped cleanup of workflow-owned `data/Sessions/` files.
+Standalone sessions write a rich final draft to `data/Sessions/rag_workflow_<slug>_artifact.md`, then install and validate it with the Final Artifact Guard:
+
+```bash
+python3 src/learning_artifact_guard.py install \
+  --artifact-type "rag-workflow" \
+  --draft "data/Sessions/rag_workflow_<slug>_artifact.md" \
+  --title "<Topic Title>" \
+  --topic "<topics>" \
+  --domain "<domain>" \
+  --min-words 250
+
+python3 src/learning_artifact_guard.py validate \
+  "/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Review Sessions/<Topic Title>.md" \
+  --artifact-type "rag-workflow" \
+  --min-words 250
+```
+
+The final note must include retrieval summary, source coverage, synthesis, gap check, drill/application log, and next targets. Doc-anchored sessions may use the source document review file, but must still pass the same artifact guard or clearly report that the session was not fully written. Finish heartbeat, run `session-summary --apply`, `promote-core-profile --apply`, `consolidate --mode apply`, concept extraction, post-session hook, and scoped cleanup of workflow-owned `data/Sessions/` files.

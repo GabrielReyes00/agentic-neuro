@@ -124,5 +124,19 @@
     "disambiguation_axis": "",
     "source": "auto_logged",
     "first_added": "2026-04-14T00:55:40.655453"
+  },
+  {
+    "concept_a": "lucid interval with middle meningeal tear",
+    "concept_b": "Confused MMA with MCA",
+    "disambiguation_axis": "",
+    "source": "auto_logged",
+    "first_added": "2026-04-19T03:01:33.012748"
+  },
+  {
+    "concept_a": "lucid interval pathophysiology",
+    "concept_b": "Near-duplicate of a card already synthesized",
+    "disambiguation_axis": "",
+    "source": "auto_logged",
+    "first_added": "2026-04-19T03:02:14.483760"
   }
 ]

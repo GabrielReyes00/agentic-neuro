@@ -45,6 +45,10 @@ The long-term memory system is only written through the stable memory/knowledge 
 - Active answer logging: `python3 src/memory_orchestrator.py --quiet record-answer ...`
 - Explicit passive teaching capture: `python3 src/memory_orchestrator.py --quiet record-passive ...`
 - Retrieval/guidance: `python3 src/memory_orchestrator.py guidance "query" [--topic "T"] [--skill "S"]`
+- Adaptive learner model: `python3 src/memory_orchestrator.py estimate-mastery --topic "T" --concept "C"` and `python3 src/memory_orchestrator.py next-item --mode eig|zpd|remediate`
+- Teaching recommender: `python3 src/memory_orchestrator.py recommend-approach --concept "C" [--error-type "E"] [--difficulty-band "B"]`
+- Proactive probes: `python3 src/memory_orchestrator.py proactive-probe --surface|--pop`
+- Hidden tutor strategy: `python3 src/memory_orchestrator.py tutor-strategy "query" [--topic "T"] [--skill "S"]`
 - Document study-mode profile: `python3 src/memory_orchestrator.py document-profile --doc "Study Material/<file>.md" [--study-mode rapid_review|deep_understanding --apply]`
 - Health check: `python3 src/memory_orchestrator.py doctor`
 - Session close: `python3 src/memory_orchestrator.py finish-session --session-ts "$SESSION_TS" --skill "<skill>" --topic "<topic>" --repair-fragments --mode apply --text`
@@ -90,6 +94,28 @@ Explicit invocation only:
 - Operative walkthrough -> `intraoperative-guide`
 - Study material or quiz from a file -> `study-material`
 - Research report -> `generate-report`
+- Grand rounds, case presentation, or journal club deck -> `grand-rounds`
+
+## Study-Material Generation Guard
+
+For `/study-material` generation, final output must be validated before the agent claims success or begins drilling. The real target is always:
+
+`/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Study Material/<Title>.md`
+
+Never treat repo-local `Documents/Obsidian/...` as the Obsidian vault. If a tool cannot write outside the workspace, draft to `data/Sessions/study_material_<slug>.md`, then install and validate through:
+
+```bash
+python3 src/study_material_guard.py install --draft "data/Sessions/study_material_<slug>.md" --title "<Title>" --min-questions 25
+python3 src/study_material_guard.py validate "/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Study Material/<Title>.md" --min-questions 25
+```
+
+For slide/PDF generation, use the density flags: `--min-questions-per-chunk 2 --min-facts-per-chunk 2 --min-fact-coverage 0.70`. Generated notes must include `## Source Chunk Inventory` and `## Atomic Fact Ledger`; questions must map to `TU-XX` and `AF-###`. One slide -> one topic -> one question is a failed generation, even if every slide has one question.
+
+If validation fails, revise the generated note and rerun the guard. Do not start the drill from a failed or shadow-path file.
+
+## Learning Artifact Guard
+
+For `study-session`, `oral-boards`, `intern-bootcamp`, `rag-workflow`, and `debrief`, heartbeat checkpoint files are not final Obsidian artifacts. Write a rich draft to `data/Sessions/<skill>_<slug>_artifact.md`, install or check it through `src/learning_artifact_guard.py`, then validate the real vault file. Do not claim a learning workflow completed if the guard fails.
 
 ## Session-End Protocol
 

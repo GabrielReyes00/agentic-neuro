@@ -107,6 +107,16 @@ LOG_STUDY_ARGS=(python3 src/knowledge_graph.py log_study --topics "$TOPICS" --de
 
 "${LOG_STUDY_ARGS[@]}" 2>&1
 
+# ---- Step 2b: Real-time Anki queue flush ----
+# Flush at every heartbeat. min-queue throttles no-op flushes when the queue
+# is empty (passive-only turns, suppressed answers). The session-end heartbeat
+# always attempts a flush to drain any remaining candidates.
+ANKI_MIN_QUEUE=3
+if [[ "$STATUS" == "complete" ]]; then
+    ANKI_MIN_QUEUE=1
+fi
+python3 src/memory_orchestrator.py --quiet flush-anki-queue --min-queue "$ANKI_MIN_QUEUE" 2>/dev/null || true
+
 # ---- Step 3: Obsidian write (optional) ----
 if [[ "$OBSIDIAN_WRITE" == true ]]; then
     echo "[3/3] Obsidian review session write..."

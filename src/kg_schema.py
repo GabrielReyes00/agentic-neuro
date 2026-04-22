@@ -278,6 +278,9 @@ CREATE TABLE IF NOT EXISTS learning_exchanges (
     answer_text       TEXT NOT NULL,
     answer_correct    INTEGER NOT NULL DEFAULT 0,   -- 0=incorrect, 1=partial, 2=correct
     correction_text   TEXT DEFAULT '',
+    difficulty_band   TEXT DEFAULT '',
+    mastery_prob_before REAL DEFAULT NULL,
+    mastery_prob_after  REAL DEFAULT NULL,
 
     error_type        TEXT DEFAULT '',
     misconception     TEXT DEFAULT '',
@@ -446,6 +449,11 @@ CREATE TABLE IF NOT EXISTS learner_concept_state (
     familiarity_prob          REAL DEFAULT 0.0,
     retention_half_life_days  REAL DEFAULT 1.0,
     difficulty                REAL DEFAULT 0.5,
+    irt_theta                 REAL DEFAULT 0.0,
+    irt_standard_error        REAL DEFAULT 1.0,
+    irt_observation_count     INTEGER DEFAULT 0,
+    difficulty_band           TEXT DEFAULT 'developing',
+    last_mastery_delta        REAL DEFAULT 0.0,
     last_active_tested_at     TEXT,
     last_passive_exposed_at   TEXT,
     next_review_due           TEXT,
@@ -473,10 +481,15 @@ CREATE TABLE IF NOT EXISTS teaching_policy_stats (
     concept_text           TEXT DEFAULT '',
     error_type             TEXT DEFAULT '',
     teaching_approach      TEXT NOT NULL,
+    difficulty_band        TEXT DEFAULT '',
     success_count          INTEGER DEFAULT 0,
     failure_count          INTEGER DEFAULT 0,
     unknown_count          INTEGER DEFAULT 0,
     exposure_count         INTEGER DEFAULT 0,
+    mastery_delta_sum      REAL DEFAULT 0.0,
+    mastery_delta_count    INTEGER DEFAULT 0,
+    last_mastery_delta     REAL DEFAULT 0.0,
+    sparse                 INTEGER DEFAULT 1,
     confidence             REAL DEFAULT 0.5,
     last_outcome           TEXT DEFAULT '',
     evidence_event_ids     TEXT DEFAULT '[]',
@@ -489,6 +502,38 @@ CREATE TABLE IF NOT EXISTS teaching_policy_stats (
 CREATE INDEX IF NOT EXISTS idx_policy_topic ON teaching_policy_stats(topic_id);
 CREATE INDEX IF NOT EXISTS idx_policy_context ON teaching_policy_stats(domain, concept_text, error_type);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_policy_dedupe ON teaching_policy_stats(dedupe_key) WHERE dedupe_key != '';
+
+CREATE TABLE IF NOT EXISTS teaching_approach_aliases (
+    alias_id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    alias               TEXT NOT NULL UNIQUE,
+    canonical_approach  TEXT NOT NULL,
+    created_ts          TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_teaching_alias_canonical ON teaching_approach_aliases(canonical_approach);
+
+CREATE TABLE IF NOT EXISTS probe_queue (
+    probe_id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_ts        TEXT NOT NULL,
+    due_ts            TEXT,
+    priority          REAL DEFAULT 0.5,
+    status            TEXT DEFAULT 'pending',
+    source            TEXT DEFAULT '',
+    topic_id          INTEGER,
+    topic_text        TEXT DEFAULT '',
+    concept_text      TEXT NOT NULL,
+    prerequisite_text TEXT DEFAULT '',
+    relationship_id   INTEGER,
+    reason            TEXT DEFAULT '',
+    payload_json      TEXT DEFAULT '{}',
+    popped_ts         TEXT,
+    completed_ts      TEXT,
+    evidence_exchange_ids TEXT DEFAULT '[]',
+    dedupe_key        TEXT DEFAULT '',
+    FOREIGN KEY (topic_id) REFERENCES topics(topic_id),
+    FOREIGN KEY (relationship_id) REFERENCES concept_relationships(rel_id)
+);
+CREATE INDEX IF NOT EXISTS idx_probe_queue_status ON probe_queue(status, priority DESC, due_ts);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_probe_queue_dedupe ON probe_queue(dedupe_key) WHERE dedupe_key != '';
 
 -- Memory V2: retrieval traces for context-pack debugging and regression.
 CREATE TABLE IF NOT EXISTS memory_retrieval_logs (

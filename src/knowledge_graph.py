@@ -282,6 +282,69 @@ class KnowledgeGraph(KnowledgeGraphSignalMixin, KnowledgeGraphLearningMixin, Kno
                 "CREATE INDEX IF NOT EXISTS idx_episode_session_skill ON episode_summaries(session_ts, skill)",
             ])
 
+            # Real-time Anki integration: link every exchange to the note it
+            # produced (if any). NULL = no card (suppressed or queue not flushed).
+            self._run_migrations([
+                "ALTER TABLE learning_exchanges ADD COLUMN anki_note_id INTEGER DEFAULT NULL",
+                "ALTER TABLE learning_exchanges ADD COLUMN anki_queued_at TEXT DEFAULT NULL",
+                "CREATE INDEX IF NOT EXISTS idx_xchg_anki_note ON learning_exchanges(anki_note_id)",
+            ])
+
+            # Adaptive teaching / learner model extensions. All are derived
+            # snapshots over the existing memory tables and safe to recompute.
+            self._run_migrations([
+                "ALTER TABLE learner_concept_state ADD COLUMN irt_theta REAL DEFAULT 0.0",
+                "ALTER TABLE learner_concept_state ADD COLUMN irt_standard_error REAL DEFAULT 1.0",
+                "ALTER TABLE learner_concept_state ADD COLUMN irt_observation_count INTEGER DEFAULT 0",
+                "ALTER TABLE learner_concept_state ADD COLUMN difficulty_band TEXT DEFAULT 'developing'",
+                "ALTER TABLE learner_concept_state ADD COLUMN last_mastery_delta REAL DEFAULT 0.0",
+                "ALTER TABLE teaching_policy_stats ADD COLUMN difficulty_band TEXT DEFAULT ''",
+                "ALTER TABLE teaching_policy_stats ADD COLUMN mastery_delta_sum REAL DEFAULT 0.0",
+                "ALTER TABLE teaching_policy_stats ADD COLUMN mastery_delta_count INTEGER DEFAULT 0",
+                "ALTER TABLE teaching_policy_stats ADD COLUMN last_mastery_delta REAL DEFAULT 0.0",
+                "ALTER TABLE teaching_policy_stats ADD COLUMN sparse INTEGER DEFAULT 1",
+                "ALTER TABLE learning_exchanges ADD COLUMN difficulty_band TEXT DEFAULT ''",
+                "ALTER TABLE learning_exchanges ADD COLUMN mastery_prob_before REAL DEFAULT NULL",
+                "ALTER TABLE learning_exchanges ADD COLUMN mastery_prob_after REAL DEFAULT NULL",
+            ])
+
+            self._run_migration_script("""
+                CREATE TABLE IF NOT EXISTS teaching_approach_aliases (
+                    alias_id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    alias               TEXT NOT NULL UNIQUE,
+                    canonical_approach  TEXT NOT NULL,
+                    created_ts          TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_teaching_alias_canonical
+                    ON teaching_approach_aliases(canonical_approach);
+
+                CREATE TABLE IF NOT EXISTS probe_queue (
+                    probe_id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_ts        TEXT NOT NULL,
+                    due_ts            TEXT,
+                    priority          REAL DEFAULT 0.5,
+                    status            TEXT DEFAULT 'pending',
+                    source            TEXT DEFAULT '',
+                    topic_id          INTEGER,
+                    topic_text        TEXT DEFAULT '',
+                    concept_text      TEXT NOT NULL,
+                    prerequisite_text TEXT DEFAULT '',
+                    relationship_id   INTEGER,
+                    reason            TEXT DEFAULT '',
+                    payload_json      TEXT DEFAULT '{}',
+                    popped_ts         TEXT,
+                    completed_ts      TEXT,
+                    evidence_exchange_ids TEXT DEFAULT '[]',
+                    dedupe_key        TEXT DEFAULT '',
+                    FOREIGN KEY (topic_id) REFERENCES topics(topic_id),
+                    FOREIGN KEY (relationship_id) REFERENCES concept_relationships(rel_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_probe_queue_status
+                    ON probe_queue(status, priority DESC, due_ts);
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_probe_queue_dedupe
+                    ON probe_queue(dedupe_key) WHERE dedupe_key != '';
+            """)
+
             self._run_migration_script("""
                 CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
                     entity_type UNINDEXED,

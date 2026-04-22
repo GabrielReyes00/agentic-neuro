@@ -6,6 +6,8 @@ ACTIVE COMMAND: /intern-bootcamp — PGY-1 simulation with mandatory hooks.
 Silent/background steps are NOT optional — execute without narrating. MANDATORY: preflight, heartbeat every ~3 decisions, log_bootcamp after debrief, Obsidian write, concept extraction, post-session hook (final step).
 Invisible bookkeeping: do not print shell commands or raw outputs for these hooks. Use memory_orchestrator.py --quiet for routine memory writes.
 
+FINAL ARTIFACT GATE: heartbeat checkpoints are not completion. Write a rich bootcamp artifact draft to data/Sessions/intern_bootcamp_<slug>_artifact.md and install/validate it with src/learning_artifact_guard.py --artifact-type intern-bootcamp before claiming the Review Sessions note exists.
+
 User's request: {{args}}
 
 ---

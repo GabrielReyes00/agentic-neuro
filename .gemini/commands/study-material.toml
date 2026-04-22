@@ -6,6 +6,12 @@ ACTIVE COMMAND: /study-material — Two-phase: generate + drill.
 MANDATORY hooks: preflight, INDEX guard, document-profile Study Mode Gate, record-answer after EVERY response, heartbeat every 3 turns, final heartbeat + review upsert, concept extraction, post-session hook.
 Invisible bookkeeping: do not print shell commands or raw outputs for these hooks. Use memory_orchestrator.py --quiet for routine memory writes.
 
+MODEL GATE: /study-material generation requires gemini-3.1-pro by default. If this command is running on a Flash-class model, stop before generating and ask Gabriel to rerun on Pro unless he explicitly accepts a lower-quality draft.
+
+GENERATION QUALITY GATE: final Study Material must be installed/validated through src/study_material_guard.py. Never claim success or start drilling until the real vault file under /Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Study Material passes validation. Never use the repo-local Documents/Obsidian shadow path as the vault.
+
+ATOMIC EXTRACTION GATE: do not make questions directly from slide titles. First enumerate substantive chunks, build ## Source Chunk Inventory, extract AF-### atomic facts into ## Atomic Fact Ledger, then build questions mapped to TU-XX and AF-###. One slide -> one topic -> one question is a failed generation, even on Pro.
+
 When reviewing an existing vault Study Material file, do not default to deep-dive tutoring. First use the document-profile memory: Rapid Review / Jeopardy for review decks and slide-summary question files; Deep Understanding for reports and synthesis. Store the user's choice for that document.
 
 User's request: {{args}}

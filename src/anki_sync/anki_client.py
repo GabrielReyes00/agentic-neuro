@@ -62,6 +62,9 @@ class AnkiClient:
         if deck_name not in existing:
             self._invoke("createDeck", deck=deck_name)
 
+    def list_decks(self) -> list[str]:
+        return list(self._invoke("deckNames") or [])
+
     def ensure_models(self) -> None:
         names = set(self._invoke("modelNames") or [])
         missing = []
@@ -76,6 +79,33 @@ class AnkiClient:
             names = self._invoke("modelFieldNames", modelName=model_name) or []
             self._model_fields_cache[model_name] = set(names)
         return self._model_fields_cache[model_name]
+
+    def find_cards(self, query: str) -> list[int]:
+        """Return Anki card IDs matching a search query (e.g. 'deck:Neuro*')."""
+        result = self._invoke("findCards", query=query)
+        if isinstance(result, list):
+            return [int(c) for c in result if c is not None]
+        return []
+
+    def cards_info(self, card_ids: list[int], batch_size: int = 50) -> list[dict]:
+        """Fetch detail objects for the given card IDs in batches."""
+        out: list[dict] = []
+        for i in range(0, len(card_ids), batch_size):
+            batch = card_ids[i : i + batch_size]
+            chunk = self._invoke("cardsInfo", cards=batch)
+            if isinstance(chunk, list):
+                out.extend(item for item in chunk if isinstance(item, dict))
+        return out
+
+    def notes_info(self, note_ids: list[int], batch_size: int = 50) -> list[dict]:
+        """Fetch detail objects for the given note IDs in batches."""
+        out: list[dict] = []
+        for i in range(0, len(note_ids), batch_size):
+            batch = note_ids[i : i + batch_size]
+            chunk = self._invoke("notesInfo", notes=batch)
+            if isinstance(chunk, list):
+                out.extend(item for item in chunk if isinstance(item, dict))
+        return out
 
     def store_media_file(self, filename: str, data_b64: str) -> None:
         """Store an image file in Anki's collection.media folder via AnkiConnect."""
@@ -129,7 +159,13 @@ class AnkiClient:
             extra_field = "Extra" if "Extra" in cloze_fields else "Back Extra" if "Back Extra" in cloze_fields else None
             fields = {"Text": _format_text(card.cloze_text)}
             if extra_field:
-                fields[extra_field] = img_html
+                extra_parts = []
+                answer_text = _format_text(getattr(card, "answer_text", "") or "")
+                if answer_text:
+                    extra_parts.append(answer_text)
+                if img_html:
+                    extra_parts.append(img_html)
+                fields[extra_field] = "<br>".join(extra_parts)
             note["fields"] = fields
         else:
             note["modelName"] = "Basic"

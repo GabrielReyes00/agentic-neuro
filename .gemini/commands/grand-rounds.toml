@@ -1,0 +1,34 @@
+description = "Build a neurosurgery grand rounds, case presentation, or journal club slide deck with RAG-informed outline, PPTX output, vault note, and optional rehearsal"
+
+prompt = """
+ACTIVE COMMAND: /grand-rounds - neurosurgery presentation deck builder.
+
+Purpose: create an educational or informative slide deck for departmental grand rounds, case conference, case presentation, or journal club.
+
+Compatibility requirement:
+- This command must work under Gemini 3 Flash and Claude/Sonnet.
+- Use the shared command spec as the durable workflow.
+- Use src/grand_rounds_writer.py for vault writes and Presentations/INDEX.md upserts.
+- Use available model-specific PPTX tooling for deck creation.
+
+Mandatory hooks:
+- One freeform intake dump; do not force a rigid schema.
+- RAG or local retrieval enrichment before rubric generation when useful.
+- Generate exactly 3 candidate titles and wait for user selection before writing files.
+- Internal rubric only; ask the user only about material gaps.
+- Treat attending angle as a first-class input and shape the deck thesis around it.
+- Scrub PHI from case material before any deck, vault, or manifest output.
+- Create editable PPTX on Desktop: /Users/gabrielreyes/Desktop/<Title>.pptx.
+- Write vault note to Presentations/Cases/ or Presentations/Articles/ through src/grand_rounds_writer.py.
+- Run the final deck quality gate and pass --require-quality-gate to the writer.
+- Preserve the generated data/Sessions/grand_rounds_<slug>_manifest.json for recovery and rehearsal.
+- No H1 in vault files, bottom YAML only, Title Case filename.
+- No image retrieval/generation/fabrication; use explicit placeholders and an image manifest.
+- Offer rehearsal once after artifact creation with Faculty Q&A or Talk Run-Through mode. If rehearsal starts, log active answers with --skill "grand-rounds".
+
+User's input: {{args}}
+
+---
+
+@{.gemini/commands/grand-rounds.md}
+"""

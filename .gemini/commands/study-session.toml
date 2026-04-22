@@ -6,6 +6,8 @@ ACTIVE COMMAND: /study-session — Adaptive session from KG gaps.
 MANDATORY hooks: KG data gathering before plan, record-answer after each answer in Components 1-2, heartbeat checkpoints, log_transfer after Component 4, session-end + Obsidian write, post-session hook.
 Invisible bookkeeping: do not print shell commands or raw outputs for these hooks. Use memory_orchestrator.py --quiet for routine memory writes.
 
+FINAL ARTIFACT GATE: heartbeat checkpoints are not completion. Write a rich draft to data/Sessions/study_session_<slug>_artifact.md and install/validate it with src/learning_artifact_guard.py --artifact-type study-session before claiming the Review Sessions note exists.
+
 User's request: {{args}}
 
 ---

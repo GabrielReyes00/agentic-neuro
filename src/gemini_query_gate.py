@@ -52,6 +52,15 @@ ROUTE_KEYWORDS = [
     ("intraoperative-guide", ["operative walkthrough for", "walk me through the surgery for"]),
     ("study-material", ["make study material from", "quiz me on this file", "prep me for"]),
     ("generate-report", ["generate a report on", "research report on", "comprehensive review of"]),
+    (
+        "grand-rounds",
+        [
+            "build my grand rounds",
+            "grand rounds presentation",
+            "put together a case presentation",
+            "journal club presentation",
+        ],
+    ),
 ]
 
 CALENDAR_HINTS = ("calendar", "schedule", "meeting", "event", "appointment")

@@ -876,12 +876,19 @@ class KnowledgeGraphMemoryV2Mixin:
         concept_text: str = "",
         error_type: str = "",
         teaching_approach: str = "",
+        difficulty_band: str = "",
+        mastery_delta: float | None = None,
         outcome: str = "unknown",
         evidence_event_ids: list[int] | None = None,
         evidence_exchange_ids: list[int] | None = None,
     ) -> int:
         if not teaching_approach:
             return -1
+        try:
+            from teaching_recommender import canonicalize_approach
+            teaching_approach = canonicalize_approach(self.conn, teaching_approach)
+        except Exception:
+            teaching_approach = teaching_approach.strip().lower()
         now = _utc_now()
         concept_clean = self._resolve_concept_text(concept_text, topic_id) if concept_text else ""
         key = self._memory_hash(
@@ -890,6 +897,7 @@ class KnowledgeGraphMemoryV2Mixin:
             topic_id,
             concept_clean,
             error_type,
+            difficulty_band,
             teaching_approach.strip().lower(),
         )
         existing = self.conn.execute(
@@ -908,12 +916,20 @@ class KnowledgeGraphMemoryV2Mixin:
             unknown = int(existing["unknown_count"] or 0) + unknown_inc
             total_resolved = success + failure
             confidence = (success / total_resolved) if total_resolved else 0.5
+            delta = float(mastery_delta or 0.0)
+            delta_count_inc = 1 if mastery_delta is not None else 0
+            sparse = 0 if (success + failure) >= 3 else 1
             with self.conn:
                 self.conn.execute(
                     """UPDATE teaching_policy_stats
                        SET success_count = ?,
                            failure_count = ?,
                            unknown_count = ?,
+                           mastery_delta_sum = COALESCE(mastery_delta_sum, 0.0) + ?,
+                           mastery_delta_count = COALESCE(mastery_delta_count, 0) + ?,
+                           last_mastery_delta = ?,
+                           difficulty_band = COALESCE(NULLIF(difficulty_band, ''), ?),
+                           sparse = ?,
                            confidence = ?,
                            last_outcome = ?,
                            evidence_event_ids = ?,
@@ -924,6 +940,11 @@ class KnowledgeGraphMemoryV2Mixin:
                         success,
                         failure,
                         unknown,
+                        delta,
+                        delta_count_inc,
+                        delta,
+                        difficulty_band,
+                        sparse,
                         confidence,
                         outcome,
                         json.dumps(event_ids),
@@ -939,19 +960,26 @@ class KnowledgeGraphMemoryV2Mixin:
             cur = self.conn.execute(
                 """INSERT INTO teaching_policy_stats
                    (domain, topic_id, concept_text, error_type, teaching_approach,
+                    difficulty_band,
                     success_count, failure_count, unknown_count, exposure_count,
+                    mastery_delta_sum, mastery_delta_count, last_mastery_delta, sparse,
                     confidence, last_outcome, evidence_event_ids,
                     evidence_exchange_ids, created_ts, updated_ts, dedupe_key)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     domain,
                     topic_id,
                     concept_clean,
                     error_type,
                     teaching_approach,
+                    difficulty_band,
                     success_inc,
                     failure_inc,
                     unknown_inc,
+                    float(mastery_delta or 0.0),
+                    1 if mastery_delta is not None else 0,
+                    float(mastery_delta or 0.0),
+                    1,
                     confidence,
                     outcome,
                     json.dumps(_merge_ids([], evidence_event_ids)),
@@ -1016,6 +1044,7 @@ class KnowledgeGraphMemoryV2Mixin:
                WHERE topic_id = ? AND concept_text = ?""",
             (topic_id, concept_clean),
         ).fetchone()
+        prior_mastery = float(prior_state["mastery_prob"] or 0.0) if prior_state else 0.0
         correct_label = {0: "incorrect", 1: "partial", 2: "correct"}.get(
             int(answer_correct), "unknown"
         )
@@ -1097,6 +1126,36 @@ class KnowledgeGraphMemoryV2Mixin:
             transfer_state="fact_recalled" if int(answer_correct) == 2 else "",
             event_ts=now,
         )
+        mastery_after = float(state.get("mastery_prob") or 0.0)
+        mastery_delta = mastery_after - prior_mastery
+        try:
+            from learner_model import difficulty_band as _difficulty_band
+            band = _difficulty_band(mastery_after, state.get("difficulty"))
+        except Exception:
+            if mastery_after < 0.35:
+                band = "remediate"
+            elif mastery_after <= 0.75:
+                band = "zpd"
+            else:
+                band = "consolidate"
+        if exchange_id:
+            with self.conn:
+                self.conn.execute(
+                    """UPDATE learning_exchanges
+                       SET mastery_prob_before = COALESCE(mastery_prob_before, ?),
+                           mastery_prob_after = ?,
+                           difficulty_band = COALESCE(NULLIF(difficulty_band, ''), ?)
+                       WHERE exchange_id = ?""",
+                    (prior_mastery, mastery_after, band, exchange_id),
+                )
+                self.conn.execute(
+                    """UPDATE learner_concept_state
+                       SET difficulty_band = ?, last_mastery_delta = ?
+                       WHERE state_id = ?""",
+                    (band, mastery_delta, state.get("state_id")),
+                )
+            state["difficulty_band"] = band
+            state["last_mastery_delta"] = mastery_delta
         state_summary = (
             f"Current learner state for {concept_clean}: "
             f"mastery={state.get('mastery_prob', 0):.2f}, "
@@ -1191,6 +1250,8 @@ class KnowledgeGraphMemoryV2Mixin:
                 concept_text=concept_clean,
                 error_type=error_type,
                 teaching_approach=teaching_approach,
+                difficulty_band=band,
+                mastery_delta=mastery_delta,
                 outcome=outcome,
                 evidence_event_ids=evidence_events,
                 evidence_exchange_ids=evidence_exchanges,
@@ -3386,7 +3447,16 @@ class KnowledgeGraphMemoryV2Mixin:
                LIMIT 5"""
         ).fetchall()
         policy_lines = []
+        seen_policy_lines: set[tuple[str, str, str]] = set()
         for row in policy_rows:
+            key = (
+                row["teaching_approach"] or "",
+                row["concept_text"] or row["topic_display"] or "general",
+                row["error_type"] or "",
+            )
+            if key in seen_policy_lines:
+                continue
+            seen_policy_lines.add(key)
             policy_lines.append(
                 f"- {row['teaching_approach']} for {row['concept_text'] or row['topic_display'] or 'general'} "
                 f"(success={row['success_count']}, failure={row['failure_count']}, confidence={row['confidence']:.2f})."

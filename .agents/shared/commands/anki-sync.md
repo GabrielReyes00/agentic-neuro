@@ -1,62 +1,109 @@
 # Anki Sync
 
-Use when the user asks to make flashcards, save to Anki, create cards, sync cards, or add material to a deck. The agent reasons and drafts; Python handles DB/API/image processing.
+Manual flush + review for the real-time Anki pipeline.
 
-## Hard Gates
+## What this skill is NOT (anymore)
 
-| Step | Output | Stop condition |
-|---|---|---|
-| Capture | `current_session_verbatim.txt` | source under 200 chars |
-| Deck | `current_topic.json` | deck unresolved |
-| Claims | `current_claims.json` | no claims |
-| Novelty | `novel_claims.json` | no novel facts |
-| Cards | `final_cards.json` | blind validation missing |
-| Validation | `validate_final_cards` | CLI validation fails |
-| Dispatch | AnkiConnect | unavailable |
-| Wrap | KG/vault/post-hook | failures surfaced |
+This is **no longer** the primary card-creation pathway. Cards are built
+automatically as Gabriel studies: every `record-answer` call enqueues a
+candidate, and the queue is drained on a schedule (every ~3 turns via
+heartbeat, and once at session end via the post-session hook). You do
+not need to run this skill at the end of a session to "make cards" —
+that already happened.
 
-## Schema
+Use this skill only when Gabriel explicitly asks to:
 
-Cards use `claim_id`, `card_type` (`cloze` or `qa`), `cloze_text`, `answer_text`, `front`, and `back`. Cloze cards have exactly one `{{c1::...}}`. Invalid aliases such as `type`, `question`, or `answer` are rejected.
+- Manually flush right now (outside the automatic cadence).
+- See what's pending in the queue and what decks will be touched.
+- Pull Anki review stats back into the KG (bidirectional sync) on demand.
+- Resynthesize cards for a specific backlog file (legacy / rare).
 
-`final_cards.json` includes `cards`, per-card `blind_validation`, and `validation_report` with `cards_drafted` and `cards_refined`.
+## Trigger phrases
 
-## Workflow
+- "flush the Anki queue", "push pending cards to Anki", "sync Anki now"
+- "what's pending for Anki", "show the card queue"
+- "pull my Anki review stats", "update the KG from Anki"
+- "rebuild cards from [file]" (legacy bulk path — keep as last resort)
 
-1. Create `data/Sessions/anki_sync_runs`.
-2. Write source text to `data/Sessions/current_session_verbatim.txt`.
-3. Resolve existing deck path or new subdeck under `Agentic Neurosurgery Review`.
-4. Pull confusable pairs for the topic when available:
+## Default workflow (manual flush)
 
-```bash
-python3 src/knowledge_graph.py confusable_pairs --topic "<topic>" > data/Sessions/anki_sync_runs/confusable_pairs.json
-```
+1. **Check pending.** Report queue size and which decks would be touched:
 
-5. Extract atomic standalone claims chunk-by-chunk. Enumerate chunks first, process each in order, verify `Chunks processed: N / N`, then write `current_claims.json`.
-6. Run novelty filter:
+   ```bash
+   cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
+     python3 src/anki_realtime.py status
+   ```
 
-```bash
-python3 src/anki_sync_cli.py filter_novelty
-```
+   If `pending` is `0`, say so and skip to step 4 (offer a stats sync).
 
-7. Draft one card per novel claim. Cloze for single associations; QA for reasoning or multi-part concepts.
-8. Blind-validate every card by hiding the answer and checking whether the prompt uniquely yields the answer.
-9. Run:
+2. **Preview (optional).** On `--dry-run` Gemini 3 Flash synthesizes cards
+   but nothing is dispatched. Useful when Gabriel wants to audit the
+   per-error-type cloze templates before they hit Anki.
 
-```bash
-python3 src/anki_sync_cli.py validate_final_cards
-```
+   ```bash
+   python3 src/memory_orchestrator.py flush-anki-queue --dry-run --skip-anki
+   ```
 
-10. Enrich images where useful: assess image type, search/download candidates, visually validate thumbnails, score relevance/accuracy/clarity/quality, accept average >= 3.5, then write selections.
-11. Process images and dispatch:
+3. **Live flush.** Drain the queue:
 
-```bash
-python3 src/anki_sync_cli.py process_selected_images
-python3 src/anki_sync_cli.py dispatch
-```
+   ```bash
+   python3 src/memory_orchestrator.py flush-anki-queue --min-queue 1
+   ```
 
-If AnkiConnect fails, tell the user to open Anki and confirm the add-on is installed.
+   Report the JSON metrics verbatim: `synthesized`, `deduped`, `created`,
+   `duplicates`, `decks_touched`. Any entry under `errors` is a hard
+   warning — tell Gabriel AnkiConnect may be down.
+
+4. **Bidirectional stats sync.** Pull review stats so the KG sees what
+   Gabriel actually retained between sessions:
+
+   ```bash
+   python3 src/memory_orchestrator.py anki-stats-sync
+   ```
+
+   Cards with ease < 2.0 or lapses >= 3 reopen the underlying concept
+   as a weakness in `concept_mastery`. Report `concepts_updated` and
+   `concepts_reopened`.
+
+## Hard rules
+
+- Never edit `data/Sessions/anki_queue.jsonl` directly. Treat it as
+  opaque — the Python layer owns its format.
+- Never call AnkiConnect directly from inside a skill turn. All writes
+  go through `src/anki_realtime.py` so ChromaDB dedup stays authoritative.
+- Models: the synthesis pass always uses Gemini 3 Flash
+  (`gemini-3-flash-preview`). Do not swap it.
+- Deck naming is fixed at `Neurosurgery::<Domain>::<Topic>`. The nine
+  valid domains mirror the KG taxonomy: Vascular, Trauma, Tumor, Spine,
+  Functional, Pediatric, Peripheral Nerve, Anatomy, General. Do not
+  propose a different scheme on a whim — subsequent dedup and stats
+  sync rely on deck stability.
+- If AnkiConnect is unavailable, the queue stays intact and the flush
+  will retry on the next natural trigger. Do not "repair" by clearing
+  the queue file.
+
+## Legacy bulk flow (only if explicitly requested)
+
+The older blind-validated, image-enriched card authoring flow
+(`data/Sessions/anki_sync_runs/`) is preserved for one-off backlog work,
+e.g. "rebuild cards from this 40-page report". Invoke only on explicit
+request. Steps:
+
+1. Write source text to `data/Sessions/current_session_verbatim.txt`.
+2. Resolve deck → `data/Sessions/anki_sync_runs/current_topic.json`.
+3. Extract atomic claims → `current_claims.json`.
+4. `python3 src/anki_sync_cli.py filter_novelty`.
+5. Draft cards with blind validation → `final_cards.json`.
+6. `python3 src/anki_sync_cli.py validate_final_cards`.
+7. Image enrichment (optional) + `process_selected_images`.
+8. `python3 src/anki_sync_cli.py dispatch`.
+
+Stop and surface any failure. Do not fall back to the legacy path from
+an automatic trigger — only on explicit user instruction.
 
 ## Finish
 
-Report created cards, image count, text-only count, duplicates, failures, and deck. Silently log study topics, sync Anki if possible, write `Review Sessions/<Deck Topic Title>.md`, refresh index, run post-session hook, and remove only `current_session_verbatim.txt` plus `data/Sessions/anki_sync_runs`.
+Concise one-screen summary: queue size, cards created, cards deduped,
+decks touched, stats sync result. One line per number. No running
+commentary. If everything was a no-op (queue empty, nothing to sync),
+say so in one sentence.

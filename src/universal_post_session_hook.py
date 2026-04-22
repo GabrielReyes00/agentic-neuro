@@ -45,6 +45,56 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _anki_connect_alive(timeout: float = 1.5) -> bool:
+    import urllib.request
+    import urllib.error
+    payload = json.dumps({"action": "version", "version": 6}).encode("utf-8")
+    req = urllib.request.Request(
+        "http://localhost:8765",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status == 200
+    except (urllib.error.URLError, OSError, TimeoutError):
+        return False
+
+
+def _ensure_anki_running(steps: list[StepResult]) -> None:
+    """If AnkiConnect isn't reachable, launch Anki.app and wait briefly for it."""
+    import time
+    if _anki_connect_alive():
+        return
+    try:
+        subprocess.run(["open", "-ga", "Anki"], check=False, timeout=5)
+    except Exception as exc:
+        steps.append(StepResult(
+            "ensure_anki_running",
+            False,
+            f"Could not invoke 'open -ga Anki': {exc}",
+            required=False,
+        ))
+        return
+    deadline = time.time() + 20.0
+    while time.time() < deadline:
+        if _anki_connect_alive():
+            steps.append(StepResult(
+                "ensure_anki_running",
+                True,
+                "Launched Anki.app; AnkiConnect responded.",
+                required=False,
+            ))
+            return
+        time.sleep(1.0)
+    steps.append(StepResult(
+        "ensure_anki_running",
+        False,
+        "Launched Anki.app but AnkiConnect did not respond within 20s.",
+        required=False,
+    ))
+
+
 def _safe_date_label(ts: str) -> str:
     for fmt in ("%Y-%m-%dT%H:%M:%S.%f%z", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
         try:
@@ -215,19 +265,20 @@ def _collect_vault_assets() -> dict[str, dict[str, Any]]:
         "Reports": VAULT_ROOT / "Reports",
         "Operative Guides": VAULT_ROOT / "Operative Guides",
         "Study Material": VAULT_ROOT / "Study Material",
+        "Presentations": VAULT_ROOT / "Presentations",
         "Concepts": VAULT_ROOT / "Concepts",
     }
     assets: dict[str, dict[str, Any]] = {}
 
     for label, directory in sections.items():
-        files = sorted(directory.glob("*.md")) if directory.exists() else []
+        files = sorted(directory.rglob("*.md")) if directory.exists() else []
         filtered = [f for f in files if f.name != "INDEX.md"]
         preview = filtered[:5]
 
         links = []
         for path in preview:
             stem = path.stem
-            link_base = directory.name
+            link_base = str(path.parent.relative_to(VAULT_ROOT))
             display = stem.replace("_", " ")
             links.append(f"[[{link_base}/{stem}|{display}]]")
 
@@ -312,6 +363,31 @@ def _compute_priority_gaps(kg: KnowledgeGraph, n: int) -> list[dict[str, Any]]:
     return results[:n]
 
 
+def _compute_mastery_landscape(kg: KnowledgeGraph) -> dict[str, Any]:
+    rows = kg.conn.execute(
+        """SELECT COALESCE(NULLIF(lcs.difficulty_band, ''), 'uncategorized') AS band,
+                  COUNT(*) AS n,
+                  AVG(lcs.mastery_prob) AS mastery,
+                  AVG(lcs.irt_standard_error) AS uncertainty
+           FROM learner_concept_state lcs
+           GROUP BY COALESCE(NULLIF(lcs.difficulty_band, ''), 'uncategorized')
+           ORDER BY n DESC"""
+    ).fetchall()
+    weak = kg.conn.execute(
+        """SELECT lcs.concept_text, lcs.mastery_prob, lcs.difficulty_band,
+                  t.display_name AS topic
+           FROM learner_concept_state lcs
+           LEFT JOIN topics t ON lcs.topic_id = t.topic_id
+           WHERE lcs.mastery_prob < 0.5
+           ORDER BY lcs.mastery_prob ASC, lcs.irt_standard_error DESC
+           LIMIT 8"""
+    ).fetchall()
+    return {
+        "bands": [dict(r) for r in rows],
+        "weak_concepts": [dict(r) for r in weak],
+    }
+
+
 def _render_dashboard(
     *,
     dashboard_data: dict[str, Any],
@@ -325,6 +401,7 @@ def _render_dashboard(
     vault_writes: str,
     next_priority_override: str,
     milestone_map: dict[str, str],
+    mastery_landscape: dict[str, Any],
 ) -> str:
     domains = dashboard_data.get("domains", [])
     sorted_domains = sorted(domains, key=lambda d: float(d.get("coverage_pct", 0.0)), reverse=True)
@@ -435,6 +512,37 @@ def _render_dashboard(
     lines.append("SORT mastery ASC")
     lines.append("LIMIT 15")
     lines.append("```")
+
+    lines.append("")
+    lines.append("---")
+    lines.append("")
+    lines.append("## Mastery Landscape")
+    lines.append("")
+    bands = mastery_landscape.get("bands", [])
+    if bands:
+        lines.append("| Band | Concepts | Mean Mastery | Mean Uncertainty |")
+        lines.append("|------|---------:|-------------:|-----------------:|")
+        for row in bands:
+            lines.append(
+                f"| {_safe_text(row.get('band', 'uncategorized'))} | "
+                f"{int(row.get('n') or 0)} | "
+                f"{float(row.get('mastery') or 0.0):.2f} | "
+                f"{float(row.get('uncertainty') or 0.0):.2f} |"
+            )
+    else:
+        lines.append("No adaptive mastery snapshots yet.")
+    weak = mastery_landscape.get("weak_concepts", [])
+    if weak:
+        lines.append("")
+        lines.append("### Lowest Mastery Concepts")
+        lines.append("")
+        for row in weak:
+            lines.append(
+                f"- {_safe_text(row.get('concept_text', ''))} "
+                f"({_safe_text(row.get('topic', ''))}; "
+                f"mastery {float(row.get('mastery_prob') or 0.0):.2f}; "
+                f"{_safe_text(row.get('difficulty_band', ''))})"
+            )
 
     lines.append("")
     lines.append("---")
@@ -565,6 +673,24 @@ def main() -> int:
     except Exception as exc:
         steps.append(StepResult("apply_decay", False, f"apply_decay failed: {exc}"))
 
+    try:
+        from learner_model import recompute_learner_model
+        lm_result = recompute_learner_model(kg.conn)
+        metrics["learner_model_states_updated"] = lm_result.get("states_updated", 0)
+        steps.append(StepResult(
+            "recompute_learner_model",
+            True,
+            f"Recomputed adaptive learner model for {lm_result.get('states_updated', 0)} concept state(s).",
+            required=False,
+        ))
+    except Exception as exc:
+        steps.append(StepResult(
+            "recompute_learner_model",
+            False,
+            f"Learner model recompute failed: {exc}",
+            required=False,
+        ))
+
     dashboard_data: dict[str, Any] = {}
     recs: list[dict[str, Any]] = []
     review_queue: list[dict[str, Any]] = []
@@ -572,6 +698,7 @@ def main() -> int:
     patterns: list[dict[str, Any]] = []
     calibration: dict[str, Any] = {}
     milestones: dict[str, str] = {}
+    mastery_landscape: dict[str, Any] = {"bands": [], "weak_concepts": []}
 
     try:
         dashboard_data = kg.dashboard()
@@ -581,10 +708,12 @@ def main() -> int:
         patterns = kg.detect_cognitive_patterns()
         calibration = kg.compute_calibration_profile()
         milestones = _domain_milestones(kg)
+        mastery_landscape = _compute_mastery_landscape(kg)
         steps.append(StepResult("collect_dashboard_inputs", True, "Loaded dashboard, gap, review queue, activity, pattern, and calibration data."))
         metrics["gap_count"] = len(recs)
         metrics["review_queue_count"] = len(review_queue)
         metrics["activity_rows"] = len(activity_feed)
+        metrics["mastery_landscape_bands"] = len(mastery_landscape.get("bands", []))
     except Exception as exc:
         steps.append(StepResult("collect_dashboard_inputs", False, f"Failed collecting dashboard inputs: {exc}"))
 
@@ -601,6 +730,7 @@ def main() -> int:
             vault_writes=args.vault_writes,
             next_priority_override=args.next_priority,
             milestone_map=milestones,
+            mastery_landscape=mastery_landscape,
         )
         ok, detail = _write_and_verify(DASHBOARD_PATH, dashboard_text, started_at)
         if ok and f"updated: {_utc_now().date().isoformat()}" not in dashboard_text:
@@ -679,6 +809,92 @@ def main() -> int:
             "consolidate_episodic_memory",
             False,
             f"Episodic consolidation failed: {exc}",
+            required=False,
+        ))
+
+    # ── Adaptive teaching intelligence ─────────────────────────────────
+    try:
+        from teaching_recommender import refresh_teaching_policy
+        policy_result = refresh_teaching_policy(kg.conn)
+        metrics["teaching_policies_seen"] = policy_result.get("policies_seen", 0)
+        steps.append(StepResult(
+            "refresh_teaching_policy",
+            True,
+            f"Refreshed {policy_result.get('policies_seen', 0)} teaching-policy row(s); "
+            f"canonicalized {policy_result.get('canonicalized', 0)}.",
+            required=False,
+        ))
+    except Exception as exc:
+        steps.append(StepResult(
+            "refresh_teaching_policy",
+            False,
+            f"Teaching policy refresh failed: {exc}",
+            required=False,
+        ))
+
+    try:
+        from unknown_unknowns_scout import surface_unknown_unknowns
+        scout_result = surface_unknown_unknowns(kg.conn, limit=5)
+        metrics["unknown_unknown_probes_queued"] = scout_result.get("queued", 0)
+        steps.append(StepResult(
+            "surface_unknown_unknowns",
+            True,
+            f"Queued {scout_result.get('queued', 0)} prerequisite probe(s).",
+            required=False,
+        ))
+    except Exception as exc:
+        steps.append(StepResult(
+            "surface_unknown_unknowns",
+            False,
+            f"Unknown-unknown scout failed: {exc}",
+            required=False,
+        ))
+
+    # ── Real-time Anki: final queue drain + bidirectional stats sync ────
+    _ensure_anki_running(steps)
+    try:
+        from anki_realtime import QUEUE_PATH, _read_queue, flush_queue
+        pending_before = len(_read_queue(QUEUE_PATH))
+        anki_metrics = flush_queue() if pending_before > 0 else {"queue_size": 0, "created": 0, "duplicates": 0}
+        metrics["anki_cards_created"] = anki_metrics.get("created", 0)
+        metrics["anki_cards_duplicates"] = anki_metrics.get("duplicates", 0)
+        metrics["anki_queue_drained"] = pending_before
+        steps.append(
+            StepResult(
+                "flush_anki_queue",
+                True,
+                f"Drained {pending_before} queued candidate(s); created {anki_metrics.get('created', 0)} "
+                f"card(s), dedup {anki_metrics.get('deduped', 0)}, duplicates {anki_metrics.get('duplicates', 0)}.",
+                required=False,
+            )
+        )
+    except Exception as exc:
+        steps.append(StepResult(
+            "flush_anki_queue",
+            False,
+            f"Anki flush failed: {exc}",
+            required=False,
+        ))
+
+    try:
+        from anki_stats_sync import sync_stats
+        stats_result = sync_stats()
+        metrics["anki_concepts_updated"] = stats_result.concepts_updated
+        metrics["anki_concepts_reopened"] = stats_result.concepts_reopened
+        steps.append(
+            StepResult(
+                "anki_stats_sync",
+                True,
+                f"{stats_result.reason}; {stats_result.concepts_updated} concept(s) updated, "
+                f"{stats_result.concepts_reopened} reopened as gaps.",
+                required=False,
+            )
+        )
+    except Exception as exc:
+        steps.append(StepResult(
+            "anki_stats_sync",
+            False,
+            f"Anki stats sync failed: {exc}",
             required=False,
         ))
 

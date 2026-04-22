@@ -22,6 +22,18 @@
 
 Do not print memory, heartbeat, preflight, KG, Obsidian write, or post-session hook commands into the user-visible transcript. Execute them silently. For `memory_orchestrator.py` routine writes, use `--quiet` and do not show stdout/stderr on success. If a bookkeeping command fails, summarize the learning-relevant warning only; do not paste the full shell command unless Gabriel asks for debug output.
 
+### No Inline Python / Heredoc Dumps (HARD RULE)
+
+The Gemini CLI echoes the full body of every shell tool call in the transcript. Multi-line `python3 -c "..."`, `python3 <<EOF`, `bash -c "<long block>"`, and inline heredocs therefore dump 20+ lines of code at Gabriel every time. Do not use them.
+
+Instead:
+1. **Prefer existing tooling.** `src/` has scripts for every recurring operation (memory_orchestrator, knowledge_graph, anki_sync_cli, lance_retriever, heartbeat, etc.). Use them. If AnkiConnect needs a one-off call, use `src/anki_sync/anki_client.py` or add a small CLI subcommand there.
+2. **If ad-hoc Python is truly required**, write the script once with the `write_file` tool to `data/Sessions/tmp_<short_name>.py`, then run it with a single-line `python3 data/Sessions/tmp_<short_name>.py`, then delete it. The file write is visible but the invocation line stays clean.
+3. **Never narrate what you are about to run.** No "I'll fix the syntax…", "Let me retry…", "Running the loop now…". Just call the tool. If the prior attempt failed, one short sentence describing the *outcome* and the corrective direction is enough — never reproduce the command body in prose.
+4. **Do not restate tool output.** If a command succeeded, a one-line summary ("Created 9 subdecks") is the whole report. Never paste stdout back into the transcript.
+
+Violations of this rule are the #1 source of transcript noise in Gemini sessions. Treat it as load-bearing.
+
 ## §2 Gemini CLI Rules
 
 Gemini 2.x requires strict sequential tool invocation: one call, wait, then next. Shell `&&` chaining inside a single call is fine. No parallel tool calls.
@@ -31,7 +43,7 @@ Use explicit branch targets in command workflows: `If X -> skip to Step N` / `If
 Commands longer than 2 minutes should surface timeout and use the documented fallback. First-call retrieval latency around 30-45 seconds is expected.
 
 Default model: `gemini-3-flash-preview`.
-Use `gemini-3.1-pro` for `/intern-bootcamp`, `/oral-boards`, `/rag-workflow`, `/study-session`, `/generate-report`, `/intraoperative-guide`, `/study-material`, and `/anki-sync`.
+Use `gemini-3.1-pro` for `/intern-bootcamp`, `/oral-boards`, `/rag-workflow`, `/study-session`, `/generate-report`, `/intraoperative-guide`, `/study-material`, `/debrief`, and `/anki-sync`. `/study-material` generation is a Pro-only workflow by default: if currently running on a Flash-class model, stop before generation and ask Gabriel to rerun on `gemini-3.1-pro` unless he explicitly accepts a lower-quality draft. `/grand-rounds` may run on Gemini 3 Flash for routine deck-building; escalate to Pro only when dense article critique, difficult statistics, or complex case synthesis warrants it.
 
 After editing `.toml` descriptors: `/commands reload`.
 
@@ -67,11 +79,13 @@ Vault root: `/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/`
 | `Reports/` | `/generate-report` | Research reports |
 | `Operative Guides/` | `/intraoperative-guide` | Surgical walkthroughs |
 | `Study Material/` | `/study-material` | Concept maps + question banks |
+| `Presentations/` | `/grand-rounds` | Grand rounds, case presentation, and journal club artifacts. Cases in `Presentations/Cases/`; articles in `Presentations/Articles/`; generated decks on Desktop |
 | `Review Sessions/` | All learning skills | Session logs |
 | `Concepts/` | Agent | ACGME concept stubs with Dataview inline fields, KG-edge sections, and Encounter History |
 | `Error Atlas/` | Agent | Disambiguation pages for misconception pairs |
 | `Dashboard.md` + `ACGME Readiness.md` | Post-session hook | Regenerated knowledge surfaces |
 | `ACGME Canvases/` | Post-session hook | One `.canvas` per ACGME milestone |
+| `Debriefs/` | `/debrief` | Chief-resident tutoring notes — new encounters auto-append to the closest existing debrief via `src/debrief_writer.py` |
 
 Naming rules:
 - Standalone session: `Review Sessions/<Topic Title>.md` — Title Case, spaces, topic-derived.
@@ -79,7 +93,27 @@ Naming rules:
 - Study Material: `Study Material/<Title>.md` — no date suffix.
 - Never create date-prefixed filenames, underscore filenames, all-lowercase session filenames, or skill-prefixed session filenames.
 
-Before writing to `Reports/`, `Operative Guides/`, `Study Material/`, or `Review Sessions/`: ensure `INDEX.md` exists and scan existing vault files for valid wikilinks.
+Before writing to `Reports/`, `Operative Guides/`, `Study Material/`, `Presentations/`, or `Review Sessions/`: ensure `INDEX.md` exists and scan existing vault files for valid wikilinks.
+
+For `/study-material`, final generation must pass the deterministic guard before claiming success or starting a drill:
+
+```bash
+python3 src/study_material_guard.py install --draft "data/Sessions/study_material_<slug>.md" --title "<Topic Title>" --min-questions 25
+python3 src/study_material_guard.py validate "/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Study Material/<Topic Title>.md" --min-questions 25
+```
+
+Use the stricter density flags for generated slide/PDF study material:
+
+```bash
+python3 src/study_material_guard.py install --draft "data/Sessions/study_material_<slug>.md" --title "<Topic Title>" --min-questions 25 --min-questions-per-chunk 2 --min-facts-per-chunk 2 --min-fact-coverage 0.70
+python3 src/study_material_guard.py validate "/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Study Material/<Topic Title>.md" --min-questions 25 --min-questions-per-chunk 2 --min-facts-per-chunk 2 --min-fact-coverage 0.70
+```
+
+Never write Study Material to `Documents/Obsidian/...` inside the repo. That is a shadow path, not the Obsidian vault. If the write tool cannot write the absolute vault path, draft inside `data/Sessions/` and install with the guard. Generated notes must include `## Source Chunk Inventory` and `## Atomic Fact Ledger`; questions must map to `TU-XX` and `AF-###`. One slide -> one topic -> one question is a failed generation.
+
+For `/grand-rounds`, write through `src/grand_rounds_writer.py` with `--require-quality-gate`; scrub PHI from case mode before writing; preserve `data/Sessions/grand_rounds_<slug>_manifest.json` for recovery and rehearsal.
+
+For `study-session`, `oral-boards`, `intern-bootcamp`, `rag-workflow`, and `debrief`, final vault artifacts must pass `src/learning_artifact_guard.py`. Heartbeat checkpoints are crash recovery, not final Obsidian output. The pattern is: write a rich draft in `data/Sessions/<skill>_<slug>_artifact.md`, install or check it through the guard, validate the real vault file, then run the post-session hook. If the guard fails, revise and rerun; do not claim the file was written.
 
 ## §6 Long-Term Memory Contract
 
@@ -109,6 +143,53 @@ python3 src/memory_orchestrator.py --quiet record-answer \
 ```
 
 Correctness routing: correct with no hints = `2`; right direction but incomplete = `1`; wrong or misconception = `0`.
+
+Adaptive teaching updates are automatic on `record-answer`: mastery-before/after snapshots are written to `learning_exchanges`, IRT/ZPD fields are refreshed on `learner_concept_state`, and teaching-policy stats are canonicalized. For planning, call `memory_orchestrator.py next-item --mode eig|zpd|remediate`, `estimate-mastery`, `recommend-approach`, and `tutor-strategy`; sparse recommendations are priors to combine with the current clinical context. `tutor-strategy` supplies the hidden control state, question job, mastery ladder rung, minimum-explanation rule, sparse style exploration, mastery audit, and domain playbook.
+
+### Real-Time Anki Card Creation (Automatic)
+
+Every `record-answer` call additionally enqueues a CARD CANDIDATE to
+`data/Sessions/anki_queue.jsonl`. The queue is drained automatically:
+
+- **Every heartbeat** (typically every 3 turns) — `flush-anki-queue` is
+  called with `--min-queue 3` so no-op flushes skip fast.
+- **Session end** — the universal post-session hook drains any remainder
+  with `--min-queue 1`, then pulls Anki review stats back into
+  `concept_mastery` (bidirectional sync).
+
+Do not run `flush-anki-queue` or `anki-stats-sync` manually during a
+learning session. They execute silently via the heartbeat and post-session
+hook. The only time to invoke `/anki-sync` is when the user explicitly
+asks to flush now, preview pending candidates, or pull stats on demand.
+
+Cloze synthesis uses **Gemini 3 Flash** (`gemini-3-flash-preview`) via the
+headless CLI. Never call Claude or Haiku in this pipeline. The prompt,
+per-error-type cloze templates, and schema validation live in
+`src/anki_gemini_synth.py` — tune card quality there.
+
+**Suppression**: candidates are filtered before enqueue. A correct answer
+at shallow depth with no error_type is skipped — those rarely yield a
+useful card. Incorrect answers, partials, breakthroughs, and correct
+answers at depth >= 3 always enqueue.
+
+**Deduplication**: every successfully created card persists its claim
+text in `chromadb_store_anki_memory` (collection
+`neurosurgery_memory_v1`, threshold 0.88). Future sessions will not
+re-card semantically equivalent facts.
+
+**Deck layout**: `Neurosurgery::<Domain Title>::<Topic Title>`.
+The domain umbrella matches the `domain` field passed to `record-answer`
+(`vascular`, `spine`, `tumor`, `trauma`, `functional`, `pediatric`,
+`peripheral-nerve`, `general`, `anatomy`). Subdecks are created on first
+use via AnkiConnect `createDeck` — safe to reuse freely.
+
+**KG backlink**: after a successful card dispatch, `anki_note_id` is
+written onto the source `learning_exchanges` row. This enables stats
+sync to later feed review performance back into `concept_mastery`.
+
+If AnkiConnect is unavailable (Anki closed, add-on missing), the queue
+stays intact and retries on the next flush. Never clear the queue file
+manually.
 
 For `/study-material` document sessions, check and store the document pacing profile silently before drilling:
 
@@ -212,6 +293,8 @@ Explicit invocation only:
 - Operative walkthrough -> `/intraoperative-guide`
 - Study material from file -> `/study-material`
 - Research report -> `/generate-report`
+- New patient I just saw / "debrief me on" / quick chief sit-down / tutor me on this consult -> `/debrief`
+- Grand rounds, case presentation, or journal club deck -> `/grand-rounds`
 
 ## §9 Session-End Protocol
 
@@ -264,6 +347,11 @@ python3 src/knowledge_graph.py study_plan [--hours N] [--rotation "D"] [--focus 
 python3 src/knowledge_graph.py recall "query" [--topic "T"] [--errors-only] [--days N] [--max N] [--compact] [--sqlite-only] [--output path]
 python3 src/memory_orchestrator.py doctor
 
-# Anki
+# Anki — real-time (primary path; runs automatically via heartbeat + post-session hook)
+python3 src/memory_orchestrator.py flush-anki-queue [--dry-run] [--skip-anki] [--min-queue N]
+python3 src/memory_orchestrator.py anki-stats-sync     # pull review stats into concept_mastery
+python3 src/anki_realtime.py status                    # inspect pending queue
+
+# Anki — legacy bulk path (only on explicit user request)
 python3 src/anki_sync_cli.py filter_novelty | validate_final_cards | dispatch
 ```
