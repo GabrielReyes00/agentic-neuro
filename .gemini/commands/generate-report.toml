@@ -3,7 +3,7 @@ description = "Multi-agent research report generator — neurosurgical topic rev
 prompt = """
 ACTIVE COMMAND: /generate-report — Multi-phase research report (Phases 0-7).
 
-MANDATORY hooks: preflight before research, INDEX guard before write, concept extraction after write, post-session hook with hard verification. Non-zero exit = read report JSON and list failures. RAG opt-out is not a verification failure.
+MANDATORY hooks: recall before research, INDEX guard before write, concept extraction after write, end-session at completion. RAG opt-out is not a verification failure.
 
 User's topic: {{args}}
 

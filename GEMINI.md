@@ -20,14 +20,14 @@
 
 ### Invisible Bookkeeping
 
-Do not print memory, heartbeat, preflight, KG, Obsidian write, or post-session hook commands into the user-visible transcript. Execute them silently. For `memory_orchestrator.py` routine writes, use `--quiet` and do not show stdout/stderr on success. If a bookkeeping command fails, summarize the learning-relevant warning only; do not paste the full shell command unless Gabriel asks for debug output.
+Do not print memory (`study_memory.py`) or Obsidian write commands into the user-visible transcript. Execute them silently. If a bookkeeping command fails, summarize the learning-relevant warning only; do not paste the full shell command unless Gabriel asks for debug output.
 
 ### No Inline Python / Heredoc Dumps (HARD RULE)
 
 The Gemini CLI echoes the full body of every shell tool call in the transcript. Multi-line `python3 -c "..."`, `python3 <<EOF`, `bash -c "<long block>"`, and inline heredocs therefore dump 20+ lines of code at Gabriel every time. Do not use them.
 
 Instead:
-1. **Prefer existing tooling.** `src/` has scripts for every recurring operation (memory_orchestrator, knowledge_graph, anki_sync_cli, lance_retriever, heartbeat, etc.). Use them. If AnkiConnect needs a one-off call, use `src/anki_sync/anki_client.py` or add a small CLI subcommand there.
+1. **Prefer existing tooling.** `src/` has scripts for recurring operations (study_memory, lance_retriever, anki_sync_cli, etc.). Use them. If AnkiConnect needs a one-off call, use `src/anki_sync/anki_client.py` or add a small CLI subcommand there.
 2. **If ad-hoc Python is truly required**, write the script once with the `write_file` tool to `data/Sessions/tmp_<short_name>.py`, then run it with a single-line `python3 data/Sessions/tmp_<short_name>.py`, then delete it. The file write is visible but the invocation line stays clean.
 3. **Never narrate what you are about to run.** No "I'll fix the syntax…", "Let me retry…", "Running the loop now…". Just call the tool. If the prior attempt failed, one short sentence describing the *outcome* and the corrective direction is enough — never reproduce the command body in prose.
 4. **Do not restate tool output.** If a command succeeded, a one-line summary ("Created 9 subdecks") is the whole report. Never paste stdout back into the transcript.
@@ -68,7 +68,7 @@ eval "$RUN" && <command>
 
 Trigger at about 12 turns, after a long pause + "continue", or significant topic shift. Ask before compressing. On approval, produce a digest and write `data/Sessions/session_digest_YYYYMMDD.md`. Never compress silently.
 
-This repo configures a Gemini `BeforeAgent` hook in `.gemini/settings.json` to run `src/precompact_memory_inject.py` before each turn. The hook injects compact active-session memory as `additionalContext` when recent memory exists. If Gemini prompts to trust project hooks, approve this repo's hook before relying on automatic memory injection.
+At session start, use `study_memory.py recall` (see §6) to load prior context. This replaces the old precompact memory injection hook.
 
 ## §5 Obsidian & Storage
 
@@ -115,167 +115,81 @@ For `/grand-rounds`, write through `src/grand_rounds_writer.py` with `--require-
 
 For `study-session`, `oral-boards`, `intern-bootcamp`, `rag-workflow`, and `debrief`, final vault artifacts must pass `src/learning_artifact_guard.py`. Heartbeat checkpoints are crash recovery, not final Obsidian output. The pattern is: write a rich draft in `data/Sessions/<skill>_<slug>_artifact.md`, install or check it through the guard, validate the real vault file, then run the post-session hook. If the guard fails, revise and rerun; do not claim the file was written.
 
-## §6 Long-Term Memory Contract
+## §6 Memory Layer
 
-The durable memory backend is shared across agents:
-- SQLite: `data/knowledge_graph.db`
-- LanceDB semantic memory: `episodic_memory`
-- SQLite FTS: `memory_fts`
-- Stable CLI: `src/memory_orchestrator.py`
-- Post-session consolidation: `src/universal_post_session_hook.py`
+**DB:** `data/study_memory.db` | **CLI:** `src/study_memory.py`
 
-### Active Answer Memory
+The memory layer tracks what has been covered, learned, mistaken, and what to focus on next across study sessions. It uses a single SQLite database with abbreviation-aware search (EVD, ICP, SAH, etc. expand automatically).
 
-When Gemini asks a question and the user answers, run the atomic active-answer logger silently. Do not print this command into the transcript:
+### Session Start (silent)
+
+When any learning interaction begins on a topic, recall prior context:
 
 ```bash
-python3 src/memory_orchestrator.py --quiet record-answer \
-  --session-ts "$SESSION_TS" --turn <N> --skill "<command or ad-hoc>" \
-  --topic "<topic>" --concept "<specific concept tested>" \
-  --question "<your question, verbatim>" \
-  --answer "<user's answer, verbatim or close paraphrase>" \
+cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
+python3 src/study_memory.py recall --topic "<topic>" [--doc "Study Material/<file>.md"]
+```
+
+Read the output. Shape questions around `Next strategy`, retest `OPEN ERRORS`, skip `KNOWN CONCEPTS`. If output says "No prior data found", this is a new topic -- start fresh.
+
+### After Every Q&A (silent)
+
+```bash
+cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
+python3 src/study_memory.py log-answer \
+  --session "$SESSION_TS" --topic "<topic>" --concept "<concept>" \
+  --question "<your question, verbatim>" --answer "<user's answer, verbatim>" \
   --correct <0|1|2> \
-  [--correction "<your correction/explanation if incorrect>"] \
-  [--error-type "<type>"] [--misconception "<specific wrong belief>"] \
-  [--root-cause "<why>"] [--remediation "<what should fix it>"] \
-  [--teaching-approach "<approach used>"] [--depth <N>] [--domain "<domain>"] \
-  [--response-confidence "high|low"]
+  [--correction "<text>"] [--error-type "<type>"] [--misconception "<text>"] \
+  [--doc "<path>"] [--skill "<skill>"]
 ```
 
-Correctness routing: correct with no hints = `2`; right direction but incomplete = `1`; wrong or misconception = `0`.
+Correctness: `2` = correct with no hints | `1` = right direction, missing details | `0` = wrong or misconception.
 
-Adaptive teaching updates are automatic on `record-answer`: mastery-before/after snapshots are written to `learning_exchanges`, IRT/ZPD fields are refreshed on `learner_concept_state`, and teaching-policy stats are canonicalized. For planning, call `memory_orchestrator.py next-item --mode eig|zpd|remediate`, `estimate-mastery`, `recommend-approach`, and `tutor-strategy`; sparse recommendations are priors to combine with the current clinical context. `tutor-strategy` supplies the hidden control state, question job, mastery ladder rung, minimum-explanation rule, sparse style exploration, mastery audit, and domain playbook.
-
-### Real-Time Anki Card Creation (Automatic)
-
-Every `record-answer` call additionally enqueues a CARD CANDIDATE to
-`data/Sessions/anki_queue.jsonl`. The queue is drained automatically:
-
-- **Every heartbeat** (typically every 3 turns) — `flush-anki-queue` is
-  called with `--min-queue 3` so no-op flushes skip fast.
-- **Session end** — the universal post-session hook drains any remainder
-  with `--min-queue 1`, then pulls Anki review stats back into
-  `concept_mastery` (bidirectional sync).
-
-Do not run `flush-anki-queue` or `anki-stats-sync` manually during a
-learning session. They execute silently via the heartbeat and post-session
-hook. The only time to invoke `/anki-sync` is when the user explicitly
-asks to flush now, preview pending candidates, or pull stats on demand.
-
-Cloze synthesis uses **Gemini 3 Flash** (`gemini-3-flash-preview`) via the
-headless CLI. Never call Claude or Haiku in this pipeline. The prompt,
-per-error-type cloze templates, and schema validation live in
-`src/anki_gemini_synth.py` — tune card quality there.
-
-**Suppression**: candidates are filtered before enqueue. A correct answer
-at shallow depth with no error_type is skipped — those rarely yield a
-useful card. Incorrect answers, partials, breakthroughs, and correct
-answers at depth >= 3 always enqueue.
-
-**Deduplication**: every successfully created card persists its claim
-text in `chromadb_store_anki_memory` (collection
-`neurosurgery_memory_v1`, threshold 0.88). Future sessions will not
-re-card semantically equivalent facts.
-
-**Deck layout**: `Neurosurgery::<Domain Title>::<Topic Title>`.
-The domain umbrella matches the `domain` field passed to `record-answer`
-(`vascular`, `spine`, `tumor`, `trauma`, `functional`, `pediatric`,
-`peripheral-nerve`, `general`, `anatomy`). Subdecks are created on first
-use via AnkiConnect `createDeck` — safe to reuse freely.
-
-**KG backlink**: after a successful card dispatch, `anki_note_id` is
-written onto the source `learning_exchanges` row. This enables stats
-sync to later feed review performance back into `concept_mastery`.
-
-If AnkiConnect is unavailable (Anki closed, add-on missing), the queue
-stays intact and retries on the next flush. Never clear the queue file
-manually.
-
-For `/study-material` document sessions, check and store the document pacing profile silently before drilling:
-
-```bash
-python3 src/memory_orchestrator.py document-profile --doc "Study Material/<file>.md" --doc-type "study-material" --text
-python3 src/memory_orchestrator.py --quiet document-profile --doc "Study Material/<file>.md" --study-mode "rapid_review|deep_understanding" --pacing-goal "throughput|mastery" --confidence 0.9 --apply
-```
-
-Set `SESSION_TS` once per session and reuse it for every memory write until the session is finished:
+Set `SESSION_TS` once per session and reuse for every memory write:
 
 ```bash
 SESSION_TS=$(date -u +%Y-%m-%dT%H:%M:%S+00:00)
 ```
 
-Do not call `date` again inside the same learning session. The backend can auto-route accidental per-turn timestamps to the active session when unambiguous, but that is only a safety net.
-
-### Passive Teaching
-
-Passive capture is not globally automatic. If Gemini explains without testing inside a memory-enabled learning workflow, log it as passive teaching. After every partial or incorrect answer, log the correction/explanation as passive teaching unless the next turn immediately retests the same correction without explanation:
+### Session End (silent)
 
 ```bash
-python3 src/memory_orchestrator.py --quiet record-passive \
-  --session-ts "$SESSION_TS" --turn N --skill "S" --topic "T" \
-  --concept "C" --content "what was taught"
+cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
+python3 src/study_memory.py end-session \
+  --session "$SESSION_TS" \
+  --summary "<1-3 sentence recap>" \
+  --next-strategy "<specific directive for next session>"
 ```
 
-Passive exposure raises familiarity only; it must not be treated as mastery.
+The `--next-strategy` is the most important field. Write actionable:
+GOOD: "Retest hunt-hess vs mfs distinction, then advance to refractory ICP algorithm"
+BAD: "Continue studying", "Review more"
 
-### Prior Context
+### Entry Formatting Contract
 
-At the start of a learning interaction on a topic:
+**TOPIC**: lowercase, 3-8 words, condition + context.
+  GOOD: "evd management in icu", "icp monitoring in tbi", "vasospasm after sah"
+  BAD: "ICP", "EVD Management in the ICU for External Ventricular Drain Patients"
 
-```bash
-python3 src/memory_orchestrator.py context-pack "query" --topic "T" --skill "S" --intent teach --max-tokens 1200
-python3 src/knowledge_graph.py last_session_narrative --skill "<command or ad-hoc>" --topic "<topic>"
-```
+**CONCEPT**: lowercase, the specific testable fact or distinction.
+  GOOD: "cpp target 60-70 mmhg", "lundberg a vs b wave distinction"
+  BAD: "CPP", "waves", "the concept of infection"
 
-Apply prior misconceptions, next-session strategy, confusable pairs, and transfer opportunities before asking new questions. If Gabriel requested a specific Obsidian document, keep that document primary; prior misses should appear only when directly related, prerequisite, confusable, safety-critical, or as one brief due bridge.
+**ERROR_TYPE**: one of: `conceptual_confusion` | `numerical_recall` | `cross_contamination` | `application_failure` | `reasoning_gap` | `omission`
 
-### Post-Session Consolidation
+**MISCONCEPTION**: state the specific wrong belief, never "user was unsure".
+  GOOD: "believed barbiturate coma is first-line for refractory icp"
+  BAD: "incorrect", "unsure", "user was unsure about treatment"
 
-At session end, close and consolidate the V2 memory session before the universal post-session hook:
+### Scope Rules
+- Active testing (you asked, user answered) -> `log-answer`
+- 5+ exchanges or natural session end -> `end-session`, then write `Review Sessions/` file
+- Topic switch mid-session -> `recall` the new topic first
 
-```bash
-python3 src/memory_orchestrator.py finish-session \
-  --session-ts "$SESSION_TS" --skill "<command>" --topic "<topics>" \
-  --repair-fragments --mode apply --text
-```
-
-Surface the finish-session text. If it reports fragmented timestamps, missing error metadata, no passive teaching, or no transfer validation, state that as a memory-quality warning.
-
-Then run the universal post-session hook after heartbeat/review writes:
-
-```bash
-python3 src/universal_post_session_hook.py --skill "<command>" --topics "<topics>" --vault-writes "<files>" --report-out /tmp/post_session_hook_report.json
-```
-
-Check the report JSON. Do not claim completion on failure. The hook applies decay, regenerates dashboard/readiness/canvases, syncs concept files, consolidates episodic memory into summaries, embeds memory rows into LanceDB, and runs vault sync.
-
-## §7 Learning Telemetry
-
-`gap_details` schema:
-
-```json
-[{"concept":"...","error_type":"...","error_process":"...","misconception":"...","root_cause":"...","remediation":"..."}]
-```
-
-`error_process` values: `mechanism_gap` | `context_misapplication` | `prerequisite_absent` | `numerical_anchor` | `classification_mismatch` | `temporal_confusion` | `anatomical_ambiguity`.
-
-Error types: `numerical_recall` | `conceptual_confusion` | `cross_contamination` | `application_failure` | `reasoning_gap` | `omission`.
-
-When logging a clear confusion pair, update `data/confusion_matrix.json`, run `python3 src/knowledge_graph.py generate_error_atlas`, and upsert `Error Atlas/INDEX.md`.
-
-Use context-qualified topic names. Avoid broad labels like `vasospasm` or `ICP management`; prefer `vasospasm prophylaxis after aneurysmal SAH`.
-
-## §8 Capability Router
+## §7 Capability Router
 
 Default: answer directly from model knowledge.
-
-For non-slash queries, run:
-
-```bash
-python3 src/gemini_query_gate.py "query" --hydrate-context
-```
-
-Routes: `direct` | `rag-workflow` | `<command>` | `calendar`. `rag-transform` is internal-only.
 
 Always intercept:
 - Anki/flashcards -> `/anki-sync`
@@ -296,62 +210,28 @@ Explicit invocation only:
 - New patient I just saw / "debrief me on" / quick chief sit-down / tutor me on this consult -> `/debrief`
 - Grand rounds, case presentation, or journal club deck -> `/grand-rounds`
 
-## §9 Session-End Protocol
+## §8 Session-End Protocol
 
-Learning commands complete only after all relevant steps succeed:
-1. Heartbeat completion + session narrative
+Learning commands complete only after:
+1. `study_memory.py end-session` with summary and next-strategy
 2. Review session file write/update
-3. Concept extraction when applicable
-4. Universal post-session hook
+3. Concept extraction when applicable (§7c)
 
 If user exits abruptly, finalize with available data.
 
-Log narrative:
+## §9 Command Reference
 
 ```bash
-python3 src/knowledge_graph.py log_session_narrative \
-  --skill "<command>" --topics "<topics>" \
-  --summary "<1-2 sentence recap>" \
-  --strategy "<actionable forward directive>" \
-  --teaching-failures '[{"concept":"...","attempted":"...","why_failed":"..."}]' \
-  --key-confusions '[{"concept_a":"...","concept_b":"...","disambiguation_axis":"..."}]' \
-  --turns <N>
-```
+# study_memory.py — session memory (see §6 for full usage)
+recall --topic "T" [--doc "Study Material/X.md"]
+log-answer --session "TS" --topic "T" --concept "C" --question "Q" --answer "A" --correct 0|1|2 [--correction "..."] [--error-type "..."] [--misconception "..."] [--doc "..."] [--skill "..."]
+end-session --session "TS" --summary "..." --next-strategy "..."
+status [--topic "T"]
+add-alias --alias "A" --canonical "C"
 
-`--strategy` must be a complete actionable sentence.
+# lance_retriever.py — textbook RAG
+search "q" | compare "q" [--visual] | compare_multi "q1" "q2" | list_textbooks
 
-## §10 Command Reference
-
-```bash
-# Routing
-python3 src/gemini_query_gate.py "query" --hydrate-context
-
-# Memory
-python3 src/memory_orchestrator.py --quiet record-answer --session-ts "TS" --turn N --skill "S" --topic "T" --concept "C" --question "Q" --answer "A" --correct 0|1|2
-python3 src/memory_orchestrator.py guidance "query" [--topic "T"] [--skill "S"]
-python3 src/memory_orchestrator.py doctor
-python3 src/memory_orchestrator.py reindex-fts
-
-# Preflight + Heartbeat
-./src/preflight.sh "query" [--doc "..." --skill "..."]
-./src/heartbeat.sh --session-mode --skill "..." --slug "..." --topics "..." --turn-num N --status "..." [...]
-
-# Retrieval
-python3 src/lance_retriever.py compare "query" [--visual] | compare_multi "q1" "q2" | list_textbooks
-
-# Knowledge Graph
-python3 src/knowledge_graph.py context "query" --output data/Sessions/learner_context.json
-python3 src/knowledge_graph.py log_study --topics "..." --understood "..." [--gaps/--gap-details] --depth N
-python3 src/knowledge_graph.py log_session_narrative --skill "..." --topics "..." --summary "..." --strategy "..."
-python3 src/knowledge_graph.py study_plan [--hours N] [--rotation "D"] [--focus "T"]
-python3 src/knowledge_graph.py recall "query" [--topic "T"] [--errors-only] [--days N] [--max N] [--compact] [--sqlite-only] [--output path]
-python3 src/memory_orchestrator.py doctor
-
-# Anki — real-time (primary path; runs automatically via heartbeat + post-session hook)
-python3 src/memory_orchestrator.py flush-anki-queue [--dry-run] [--skip-anki] [--min-queue N]
-python3 src/memory_orchestrator.py anki-stats-sync     # pull review stats into concept_mastery
-python3 src/anki_realtime.py status                    # inspect pending queue
-
-# Anki — legacy bulk path (only on explicit user request)
+# Anki (only on explicit user request)
 python3 src/anki_sync_cli.py filter_novelty | validate_final_cards | dispatch
 ```

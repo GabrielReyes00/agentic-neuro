@@ -27,7 +27,8 @@ import time
 import re
 from datetime import datetime, timedelta
 
-from kg_constants import SESSIONS_DIR
+from pathlib import Path
+SESSIONS_DIR = Path(__file__).resolve().parent.parent / "data" / "Sessions"
 
 # ── Venv & working directory guard ───────────────────────────────────────────
 if __name__ == "__main__":

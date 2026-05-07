@@ -30,29 +30,14 @@ When building a new case, read only what is needed:
 ## Preflight
 
 1. Parse topic, mode, time limit, PGY level, and whether feedback should be immediate or delayed.
-2. Read `data/pgy_config.json`; default to its `current_pgy` when the user does not specify level.
-3. Run:
+2. Run:
 
 ```bash
-./src/preflight.sh "<topic or oral boards general>" --skill "oral-boards"
-python3 src/knowledge_graph.py last_session_narrative --skill "oral-boards" --topic "<topic>"
+python3 src/study_memory.py recall --topic "<topic or oral boards general>"
 ```
 
-4. Read `data/Sessions/learner_context.json`, `difficulty_target.json`, `concept_review_queue.json`, `adaptive_next_item.json`, `adaptive_teaching.json`, `proactive_probe.json`, `tutor_strategy.json`, and prior narrative. Apply prior weak concepts, confusable pairs, due reviews, calibration alerts, ZPD candidates, the hidden question job, domain playbook, and at most one relevant prerequisite probe silently.
-5. Set one `SESSION_TS` at the first learner-facing question and enable the memory session:
-
-```bash
-python3 src/memory_orchestrator.py session \
-  --session-ts "$SESSION_TS" --skill "oral-boards" --topic "<topic>" \
-  --enabled --scope study_session
-```
-
-6. Request a V2 context pack before the first question:
-
-```bash
-python3 src/memory_orchestrator.py context-pack "<topic>" \
-  --topic "<topic>" --skill "oral-boards" --intent teach --max-tokens 1200
-```
+3. Apply recall output silently: use `Next strategy` as the session opener, retest `OPEN ERRORS` within the case if relevant, skip `KNOWN CONCEPTS` for pure recall (use them for transfer), never repeat `RECENT EXCHANGES`. Pick case topics that target the learner's gaps.
+4. Set one `SESSION_TS` at the first learner-facing question.
 
 ## Case Construction
 
@@ -75,7 +60,7 @@ Hidden case state must include:
 
 Use `oral-boards-topic-bank.md` to choose topics. For PGY-1, prefer ward, consult, trauma, ICU, hydrocephalus, cauda equina, spine fracture, ICH, SAH basics, tumor presentation, infection, shunt failure, and perioperative complications. Keep operative details conceptual unless the learner asks to go deeper.
 
-When adaptive data exists, pick cases that place the learner near ZPD: use `adaptive_next_item` and `tutor_strategy.learning_yield_optimizer.targets` for surprise-me topic selection, use `tutor_strategy.domain_playbook` for the hidden case arc, use `tutor_strategy.chief_challenges` to escalate correct answers, use `adaptive_teaching.approach` for coaching after a miss, and use `proactive_probe` only as a hidden prerequisite branch if it fits the case.
+When recall data exists, pick cases that target the learner's weakest areas and open errors.
 
 ## Staged Examination
 
@@ -105,7 +90,7 @@ After each committed answer or at the end of each stage, use Progressive Landsca
 - If the learner answers vaguely, force specificity: orders, timing, imaging sequence, thresholds, or escalation language.
 - In `board-mode`, give neutral prompts and save most feedback for the end.
 - In coaching mode, give short correction after each stage, then immediately retest the corrected point in a new mini-scenario.
-- Use anti-illusion checks after apparently correct pattern-recognition answers. Correct recall with failed exception handling remains partial.
+- Use anti-illusion checks after apparently correct pattern-recognition answers.
 
 ## Scoring
 
@@ -122,7 +107,7 @@ Use a safety-weighted rubric. Report a stage score and an overall disposition: p
 | Postoperative/follow-up care | 10% | Anticipates ICU, meds, imaging, discharge, surveillance, and counseling. |
 | Communication | 5% | Clear, concise, closed-loop, and appropriately escalated. |
 
-Unsafe answers can fail the case regardless of numeric score. Overconfident wrong answers should be logged with response confidence.
+Unsafe answers can fail the case regardless of numeric score.
 
 ## Primary Bridge Mode
 
@@ -132,56 +117,16 @@ Use when the request is written boards, primary exam, neuroanatomy, or foundatio
 2. Require the learner to justify why each distractor is wrong.
 3. Convert the same concept into a brief oral scenario: "Now this is the ED consult..."
 4. Test clinical application, safety, and decision sequence.
-5. Log both the knowledge item and the applied oral reasoning.
-
-Emphasize neuroanatomy, neuropathology, neurophysiology, neuroradiology signs, critical-care physiology, trauma classifications, spine anatomy, vascular territories, tumor natural history, infection, pediatric basics, and complications.
 
 ## Memory and Telemetry
 
-After every learner answer, log via the shared contract with `--skill "oral-boards"` and a specific concept. Use error types and neurosurgery `error-process` values whenever possible.
+After every learner answer, log via the shared contract with `--skill "oral-boards"` and a specific concept.
 
-Additional required logging:
+At completion, run `end-session` with a specific `--next-strategy` for future oral board practice.
 
-- Heartbeat every 3 stages or after any unsafe answer.
-- `record-case` for every completed case, including the decision point and outcome.
-- `record-transfer` when the learner applies a corrected concept later in the case or in the complication stage.
-- `record-passive` for every correction/explanation after a partial or wrong answer unless the next turn immediately retests without explanation.
-- Update the confusion matrix and error atlas when a clear confusable pair causes an error.
+Write a rich final draft to `data/Sessions/oral_boards_<slug>_artifact.md`, then install and validate with the Final Artifact Guard (see shared contract).
 
-At completion:
-
-```bash
-python3 src/knowledge_graph.py log_session_narrative \
-  --skill "oral-boards" --topics "<topics>" \
-  --summary "<1-2 sentence case outcome>" \
-  --strategy "<complete actionable next-session strategy>" \
-  --teaching-failures '<json array>' \
-  --key-confusions '<json array>' \
-  --turns <N>
-
-python3 src/memory_orchestrator.py finish-session \
-  --session-ts "$SESSION_TS" --skill "oral-boards" --topic "<topics>" \
-  --repair-fragments --mode apply --text
-```
-
-Write a rich final draft to `data/Sessions/oral_boards_<slug>_artifact.md`, then install and validate it with the Final Artifact Guard:
-
-```bash
-python3 src/learning_artifact_guard.py install \
-  --artifact-type "oral-boards" \
-  --draft "data/Sessions/oral_boards_<slug>_artifact.md" \
-  --title "<Topic Title>" \
-  --topic "<topics>" \
-  --domain "<domain>" \
-  --min-words 250
-
-python3 src/learning_artifact_guard.py validate \
-  "/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Review Sessions/<Topic Title>.md" \
-  --artifact-type "oral-boards" \
-  --min-words 250
-```
-
-The final note must include opening stem, stage log, score, unsafe issues, corrected concepts, next practice targets, and related vault links. A heartbeat checkpoint is not a completed oral-board artifact. Then run the universal post-session hook.
+The final note must include opening stem, stage log, score, unsafe issues, corrected concepts, next practice targets, and related vault links.
 
 ## Opening Prompt
 
@@ -200,4 +145,4 @@ Choose:
 Any domain you want: trauma, vascular, spine, tumor, peds, functional, peripheral nerve, or general?
 ```
 
-If the learner chooses "surprise me", pick from memory gaps, due concepts, and ABNS high-yield topics without revealing the diagnosis.
+If the learner chooses "surprise me", use recall gaps, open errors, and weak concepts to pick a case without revealing the diagnosis.

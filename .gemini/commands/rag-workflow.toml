@@ -1,10 +1,10 @@
 description = "Deep textbook-grounded RAG pipeline — retrieve, transform, Socratic teach"
 
 prompt = """
-ACTIVE COMMAND: /rag-workflow — Full textbook retrieval + teaching pipeline (Steps 0-5.5).
+ACTIVE COMMAND: /rag-workflow — Full textbook retrieval + teaching pipeline.
 
-Silent/background steps are NOT optional. MANDATORY: preflight, record-answer after EVERY Gym response, heartbeat after every interaction, session-end + Obsidian write, concept extraction, post-session hook.
-Invisible bookkeeping: do not print shell commands or raw outputs for these hooks. Use memory_orchestrator.py --quiet for routine memory writes.
+Silent/background steps are NOT optional. MANDATORY: recall at start, log-answer after EVERY Gym response, Obsidian write, concept extraction, end-session at completion.
+Invisible bookkeeping: do not print shell commands or raw outputs for these hooks.
 
 FINAL ARTIFACT GATE: transformed synthesis alone is not completion. Write a rich RAG artifact draft to data/Sessions/rag_workflow_<slug>_artifact.md and install/validate it with src/learning_artifact_guard.py --artifact-type rag-workflow before claiming the Review Sessions note exists.
 

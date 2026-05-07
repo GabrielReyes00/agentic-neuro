@@ -17,10 +17,10 @@ Ask one short question if the topic is missing or domain-ambiguous.
 Optionally calibrate emphasis:
 
 ```bash
-python3 src/knowledge_graph.py context "<topic>" --output data/Sessions/learner_context.json
+python3 src/study_memory.py recall --topic "<topic>"
 ```
 
-Continue if unavailable.
+Use recall output to adjust depth — skip basics for known concepts, focus on gaps. Continue if unavailable.
 
 ## Output
 

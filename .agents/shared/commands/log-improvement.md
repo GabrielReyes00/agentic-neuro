@@ -12,22 +12,12 @@ You are documenting a completed improvement iteration for the recursive AI impro
 1. **Gather current state metrics** (run all silently):
    ```bash
    # Database state
-   python3 -c "
-   import sqlite3; conn = sqlite3.connect('data/knowledge_graph.db'); conn.row_factory = sqlite3.Row
-   for t in ['topics','curriculum_topics','concept_mastery','concept_relationships','signal_events','session_narratives','anki_card_stats']:
-       c = conn.execute(f'SELECT COUNT(*) FROM {t}').fetchone()[0]; print(f'{t}: {c}')
-   "
+   python3 src/study_memory.py status
    # Vault file counts
    VAULT="/Users/gabrielreyes/Documents/Obsidian/agentic-neuro"
-   for d in Concepts Reports "Operative Guides" "Study Material" "Review Sessions" "Error Atlas" "ACGME Canvases"; do
+   for d in Concepts Reports "Operative Guides" "Study Material" "Review Sessions" "Error Atlas" Debriefs; do
      echo "$d: $(find "$VAULT/$d" -name "*.md" 2>/dev/null | wc -l | tr -d ' ') files"
    done
-   # Vault format audit is now covered by the post-session hook format guards.
-   # Post-session hook test
-   python3 src/universal_post_session_hook.py --skill "audit" --topics "audit" --vault-writes "" --report-out /tmp/audit_hook.json 2>/dev/null
-   python3 -c "import json; r=json.load(open('/tmp/audit_hook.json')); print('hook ok:', r.get('ok')); print('metrics:', json.dumps(r.get('metrics',{})))"
-   # Canvas stats
-   python3 src/vault_canvas_builder.py 2>/dev/null | python3 -c "import sys,json; print(json.loads(sys.stdin.read()))"
    # Git log for iteration commits
    git log --oneline -20
    ```

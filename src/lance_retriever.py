@@ -31,7 +31,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import numpy as np
-from kg_constants import BASE_DIR, DATA_DIR, SESSIONS_DIR
+BASE_DIR = Path(__file__).resolve().parent.parent
+DATA_DIR = BASE_DIR / "data"
+SESSIONS_DIR = DATA_DIR / "Sessions"
 
 # ── Configuration ────────────────────────────────────────────────────────────
 

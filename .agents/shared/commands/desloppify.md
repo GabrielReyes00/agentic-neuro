@@ -42,12 +42,10 @@ Run ALL of the following scans before writing anything. Collect findings as you 
 Read these files in full:
 
 ```bash
-cd /Users/gabrielreyes/agentic-neuro && wc -l src/heartbeat.sh src/preflight.sh scripts/sync_vault.sh
+cd /Users/gabrielreyes/agentic-neuro && wc -l scripts/sync_vault.sh
 ```
 
 Then read each one:
-- `src/heartbeat.sh`
-- `src/preflight.sh`
 - `scripts/sync_vault.sh`
 
 Flag each of the following as a finding:
@@ -67,20 +65,17 @@ Cap total deduction at -15.
 Find public methods missing return type annotations across the critical API surface:
 
 ```bash
-cd /Users/gabrielreyes/agentic-neuro && grep -n "^    def [a-z]" \
-  src/knowledge_graph.py \
-  src/kg_memory.py src/kg_learning.py src/kg_signals.py \
-  src/kg_exports.py src/kg_anki.py src/kg_schema.py \
-  src/lance_retriever.py src/memory_orchestrator.py \
+cd /Users/gabrielreyes/agentic-neuro && grep -n "^    def [a-z]\|^def [a-z]" \
+  src/study_memory.py \
+  src/lance_retriever.py \
+  src/anki_sync_cli.py \
+  src/debrief_context_assembler.py \
+  src/debrief_writer.py \
+  src/learning_artifact_guard.py \
   | grep -v "^\s*#" | grep -v " -> " | head -60
 ```
 
 Flag each public method (no leading `_`) without a `->` return type as a finding. Focus on methods that are called from skill files or from other modules — internal helpers are lower priority.
-
-Also check parameter annotations:
-```bash
-cd /Users/gabrielreyes/agentic-neuro && grep -n "^    def [a-z]" src/knowledge_graph.py | head -40
-```
 
 For each finding: read the actual method signature to confirm it lacks annotations and is public-facing.
 
@@ -98,17 +93,17 @@ This is the highest-risk category. Undocumented commands cause silent pipeline f
 cd /Users/gabrielreyes/agentic-neuro && grep -A 200 "## §13 Command Reference" CLAUDE.md | grep -E "^\w|^# " | head -60
 ```
 
-List every subcommand that `knowledge_graph.py` is documented to accept (e.g., `status`, `dashboard`, `gaps`, `log_study`, etc.).
+List every subcommand that `study_memory.py` is documented to accept (e.g., `recall`, `log-answer`, `end-session`, `status`, `add-alias`).
 
 **Step 2** — Extract actual implemented subcommands:
 
 ```bash
-cd /Users/gabrielreyes/agentic-neuro && grep -n "add_parser\|\.add_parser" src/knowledge_graph.py | head -80
+cd /Users/gabrielreyes/agentic-neuro && grep -n "add_parser\|\.add_parser" src/study_memory.py | head -80
 ```
 
 **Step 3** — Cross-reference. For each mismatch:
 - Documented in CLAUDE.md but not in argparse → **-5 pts** (dangerous: skill files call a command that doesn't exist)
-- In argparse but not documented in CLAUDE.md §13 → **-3 pts** (undiscoverable by agents)
+- In argparse but not documented in CLAUDE.md §12 → **-3 pts** (undiscoverable by agents)
 
 Cap total deduction at -25.
 
@@ -144,15 +139,15 @@ cd /Users/gabrielreyes/agentic-neuro && grep -rn "^def \|^    def " src/*.py \
 For any function that looks potentially unreferenced, check if it's called anywhere:
 
 ```bash
-cd /Users/gabrielreyes/agentic-neuro && grep -rn "FUNCTION_NAME" src/ .claude/commands/ .gemini/commands/ CLAUDE.md
+cd /Users/gabrielreyes/agentic-neuro && grep -rn "FUNCTION_NAME" src/ .claude/commands/ .gemini/commands/ .agents/ CLAUDE.md
 ```
 
 Also check for unused imports in the most import-heavy files:
 
 ```bash
 cd /Users/gabrielreyes/agentic-neuro && grep -n "^import \|^from " \
-  src/knowledge_graph.py src/lance_retriever.py src/memory_orchestrator.py \
-  src/precompact_memory_inject.py src/universal_post_session_hook.py | head -50
+  src/study_memory.py src/lance_retriever.py src/anki_sync_cli.py \
+  src/debrief_context_assembler.py src/learning_artifact_guard.py | head -50
 ```
 
 Penalty: **-4 pts** per confirmed orphaned function (defined, never called, not part of public API contract). **-1 pt** per confirmed unused import. Cap at -15.
@@ -164,9 +159,9 @@ Penalty: **-4 pts** per confirmed orphaned function (defined, never called, not 
 The mixin classes are the most-called API surface. Check their public methods for docstrings:
 
 ```bash
-cd /Users/gabrielreyes/agentic-neuro && grep -n "    def [a-z]" \
-  src/kg_memory.py src/kg_learning.py src/kg_signals.py \
-  src/kg_exports.py src/kg_anki.py
+cd /Users/gabrielreyes/agentic-neuro && grep -n "    def [a-z]\|^def [a-z]" \
+  src/study_memory.py src/debrief_context_assembler.py \
+  src/debrief_writer.py src/learning_artifact_guard.py
 ```
 
 For each public method found, read 2-3 lines after the `def` line to check if a docstring (`"""`) immediately follows. Methods with no docstring where the logic is non-obvious are findings.
@@ -183,11 +178,11 @@ cd /Users/gabrielreyes/agentic-neuro && \
 ```
 
 The 5 critical paths — each untested costs **-1 pt**:
-1. `memory_orchestrator.py` → `record-answer` argument validation and dispatch
-2. `knowledge_graph.py` → `apply_decay` correctness (SM-2 interval logic)
-3. `knowledge_graph.py` → `log_study` gap_details schema enforcement
+1. `study_memory.py` → `log-answer` argument validation and concept upsert
+2. `study_memory.py` → `recall` topic matching with alias expansion
+3. `study_memory.py` → `end-session` stats computation and strategy persistence
 4. `lance_retriever.py` → `search` fusion and reranking pipeline
-5. `anki_sync/novelty.py` → dedup threshold behavior
+5. `anki_sync_cli.py` → dedup threshold behavior
 
 Cap at -5.
 
@@ -224,7 +219,7 @@ Create `.quality/backlog.md` with this exact structure:
 ## Queue
 
 ### [DES-001] Category A — Short descriptive title
-**File**: src/heartbeat.sh:131
+**File**: scripts/sync_vault.sh:42
 **Category**: A
 **Severity**: high
 **Points**: 4
@@ -285,7 +280,7 @@ Follow the `**Fix**:` instruction precisely. Adhere to CLAUDE.md §1 directives 
 
 **Category-specific guidance:**
 
-- **A (Shell heredoc)**: Extract the Python block to a standalone helper function in an appropriate existing `src/` module or a new `src/heartbeat_utils.py`. Replace the heredoc in the shell script with a `python3 src/heartbeat_utils.py <subcommand> "$ARG1" "$ARG2"` call. The helper must accept the same inputs via `sys.argv` or argparse and produce the same output. Do not rewrite the entire shell script — scope to the single heredoc being resolved.
+- **A (Shell heredoc)**: Extract the Python block to a standalone helper function in an appropriate existing `src/` module. Replace the heredoc in the shell script with a `python3 src/<module>.py <subcommand> "$ARG1" "$ARG2"` call. The helper must accept the same inputs via `sys.argv` or argparse and produce the same output. Do not rewrite the entire shell script — scope to the single heredoc being resolved.
 
 - **A (sed -i on structured data)**: Replace `sed -i ''` lines with a targeted Python one-liner or helper that uses proper string/regex operations with encoding safety. Same scope constraint.
 
@@ -315,7 +310,7 @@ print('Import OK')
 
 For shell script changes:
 ```bash
-bash -n src/heartbeat.sh && echo "Syntax OK"
+bash -n scripts/sync_vault.sh && echo "Syntax OK"
 ```
 
 For skill file changes: confirm the edited behavior is consistent with CLAUDE.md §4–§10.
@@ -384,6 +379,6 @@ After every **5 resolved items**, re-run Phase 1 before the next fix. Some fixes
 2. Never delete items from the backlog — only change their Status.
 3. Never mark resolved without making the actual code change.
 4. Always read the full file before editing — understand context before touching anything.
-5. Fixes must be consistent with CLAUDE.md conventions (§1 universal directives, §4 vault structure, §11 KG contracts, §13 command reference).
+5. Fixes must be consistent with CLAUDE.md conventions (§1 universal directives, §4 vault structure, §11 data locations, §12 command reference).
 6. Shell script fixes are scoped to the specific block — never rewrite an entire script in one pass.
 7. `.quality/backlog.md` is the single source of truth for progress. Do not track state anywhere else.

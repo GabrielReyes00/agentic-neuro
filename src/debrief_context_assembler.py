@@ -27,8 +27,11 @@ from typing import Any
 
 import yaml
 
-from knowledge_graph import KnowledgeGraph
-from kg_constants import DATA_DIR
+DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+try:
+    from knowledge_graph import KnowledgeGraph
+except ImportError:
+    KnowledgeGraph = None
 
 
 DEFAULT_VAULT_ROOT = Path("/Users/gabrielreyes/Documents/Obsidian/agentic-neuro")
@@ -243,25 +246,28 @@ def assemble_context(
     query_text = f"{pathology} {user_context}".strip()
     query_tokens = tokenize(query_text)
 
-    kg_path = Path(db_path) if db_path else (DATA_DIR / "knowledge_graph.db")
-    kg = KnowledgeGraph(kg_path)
-    try:
-        try:
-            kg_context = kg.learner_context(pathology)
-        except Exception as exc:  # noqa: BLE001
-            kg_context = {"error": str(exc), "topics": []}
-        try:
-            blocking_gaps = kg.get_blocking_gaps(pathology)
-        except Exception as exc:  # noqa: BLE001
-            blocking_gaps = []
-            kg_context.setdefault("errors", []).append(f"blocking_gaps: {exc}")
-        try:
-            unknown_unknowns = kg.detect_unknown_unknowns(pathology, n=5)
-        except Exception as exc:  # noqa: BLE001
-            unknown_unknowns = []
-            kg_context.setdefault("errors", []).append(f"unknown_unknowns: {exc}")
-    finally:
-        kg.close()
+    kg_context: dict = {"topics": []}
+    blocking_gaps: list = []
+    unknown_unknowns: list = []
+    if KnowledgeGraph is not None:
+        kg_path = Path(db_path) if db_path else (DATA_DIR / "knowledge_graph.db")
+        if kg_path.exists() and kg_path.stat().st_size > 0:
+            kg = KnowledgeGraph(kg_path)
+            try:
+                try:
+                    kg_context = kg.learner_context(pathology)
+                except Exception as exc:  # noqa: BLE001
+                    kg_context = {"error": str(exc), "topics": []}
+                try:
+                    blocking_gaps = kg.get_blocking_gaps(pathology)
+                except Exception as exc:  # noqa: BLE001
+                    blocking_gaps = []
+                try:
+                    unknown_unknowns = kg.detect_unknown_unknowns(pathology, n=5)
+                except Exception as exc:  # noqa: BLE001
+                    unknown_unknowns = []
+            finally:
+                kg.close()
 
     vault_hits = scan_vault(vault_root, query_tokens, min_similarity=min_hit_similarity)
     merge_target = find_merge_target(vault_root, query_tokens, merge_threshold)

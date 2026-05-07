@@ -1,12 +1,12 @@
 description = "Adaptive 30-minute study session — recall, remediation, new territory, transfer"
 
 prompt = """
-ACTIVE COMMAND: /study-session — Adaptive session from KG gaps.
+ACTIVE COMMAND: /study-session — Adaptive session from memory gaps.
 
-MANDATORY hooks: KG data gathering before plan, record-answer after each answer in Components 1-2, heartbeat checkpoints, log_transfer after Component 4, session-end + Obsidian write, post-session hook.
-Invisible bookkeeping: do not print shell commands or raw outputs for these hooks. Use memory_orchestrator.py --quiet for routine memory writes.
+MANDATORY hooks: recall before plan, log-answer after each answer, Obsidian write, end-session at completion.
+Invisible bookkeeping: do not print shell commands or raw outputs for these hooks.
 
-FINAL ARTIFACT GATE: heartbeat checkpoints are not completion. Write a rich draft to data/Sessions/study_session_<slug>_artifact.md and install/validate it with src/learning_artifact_guard.py --artifact-type study-session before claiming the Review Sessions note exists.
+FINAL ARTIFACT GATE: log-answer calls alone are not completion. Write a rich draft to data/Sessions/study_session_<slug>_artifact.md and install/validate it with src/learning_artifact_guard.py --artifact-type study-session before claiming the Review Sessions note exists.
 
 User's request: {{args}}
 

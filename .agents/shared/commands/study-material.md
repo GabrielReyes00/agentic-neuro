@@ -7,7 +7,7 @@ Follow `.agents/shared/commands/learning-session-contract.md`.
 ## Phase 1: Generate Material
 
 1. Infer a clean Title Case topic from the filename.
-2. Run preflight and read learner context.
+2. Run `study_memory.py recall --topic "<topic>"` to load learner context.
 3. If the source is already marked `Generation Mode: [+RAG]`, skip the RAG opt-in prompt. Otherwise ask whether to enrich with local RAG.
 4. Enumerate all chunks before extraction:
    - PPTX: slides, titles, body, notes, image descriptions.
@@ -133,38 +133,18 @@ Notify with counts only after the guard passes, then offer: start drilling, revi
 Before drilling:
 
 ```bash
-python3 src/knowledge_graph.py doc_status "Study Material/<Topic Title>.md"
-python3 src/memory_orchestrator.py document-profile --doc "Study Material/<Topic Title>.md" --doc-type "study-material" --text
+python3 src/study_memory.py recall --doc "Study Material/<Topic Title>.md" --topic "<topic>"
 ```
 
-The selected document is the curriculum. New documents start at TU-01. Returning documents prioritize previously missed concepts from this same document, then continue forward. Prior misses from other sessions may appear only under the Requested-Document Priority rule: directly related, close confuser, safety-critical, or one brief due bridge.
-
-Also read `data/Sessions/adaptive_teaching.json`, `data/Sessions/adaptive_next_item.json`, `data/Sessions/proactive_probe.json`, and `data/Sessions/tutor_strategy.json` from preflight. Use them only when they support the selected document; they must not override document order or create an unrelated backlog. Bottlenecks, anti-illusion checks, and compression cards are allowed only when directly tied to the selected document's current teaching unit.
+The selected document is the curriculum. New documents start at TU-01. Returning documents prioritize previously missed concepts from this same document, then continue forward. Use recall output to identify known/gap/error concepts for this document. Prior misses from other sessions may appear only under the Requested-Document Priority rule: directly related, close confuser, safety-critical, or one brief due bridge.
 
 ## Study Mode Gate
 
 Study Material files can have different educational purposes. Do not assume every vault document needs the same deep Socratic treatment.
 
-Before drilling a vault markdown file, determine the document's study mode:
-
-1. Run `document-profile` for the vault-relative path.
-2. If the returned profile has a confident stored `preferred_study_mode`, use it and briefly state the mode.
-3. If no confident preference exists, ask Gabriel to choose:
-   - **Rapid Review / Jeopardy**: fast source-question calibration.
-   - **Deep Understanding**: current deep Socratic mechanism-building mode.
-4. Store the choice immediately:
-
-```bash
-python3 src/memory_orchestrator.py --quiet document-profile \
-  --doc "Study Material/<Topic Title>.md" \
-  --doc-type "study-material" \
-  --study-mode "rapid_review|deep_understanding" \
-  --source-kind "review_material|generated_report|study_material" \
-  --pacing-goal "throughput|mastery" \
-  --confidence 0.9 \
-  --mode-reason "User selected this pacing for this document" \
-  --apply
-```
+Before drilling a vault markdown file, determine the document's study mode. Ask Gabriel to choose:
+- **Rapid Review / Jeopardy**: fast source-question calibration.
+- **Deep Understanding**: current deep Socratic mechanism-building mode.
 
 If the file is clearly generated from review slides, premade topic questions, lab review, or test-prep material, default suggestion is Rapid Review. If it is a generated report, long synthesis, new primary-source distillation, or material Gabriel explicitly wants to master deeply, default suggestion is Deep Understanding.
 
@@ -234,4 +214,4 @@ At section boundaries, use the compression card if it fits the source: one-breat
 
 ## Finish
 
-Run a final heartbeat with doc coverage, outcome, specific gap details, and Obsidian write. Then run `finish-session --session-ts "$SESSION_TS" --skill "study-material" --topic "<Topic Title>" --repair-fragments --mode apply --text` before the post-session hook. Update the living review file, progress tables, and Study Material index. Offer Anki only for incorrect/skipped/high-yield cards, then invoke `/anki-sync` if selected.
+Run `study_memory.py end-session` with a specific `--next-strategy` for the next drill on this document. Update the living review file, progress tables, and Study Material index. Offer Anki only for incorrect/skipped/high-yield cards, then invoke `/anki-sync` if selected.

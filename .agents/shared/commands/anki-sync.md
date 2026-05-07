@@ -41,29 +41,18 @@ Use this skill only when Gabriel explicitly asks to:
    per-error-type cloze templates before they hit Anki.
 
    ```bash
-   python3 src/memory_orchestrator.py flush-anki-queue --dry-run --skip-anki
+   python3 src/anki_realtime.py flush --dry-run --skip-anki
    ```
 
 3. **Live flush.** Drain the queue:
 
    ```bash
-   python3 src/memory_orchestrator.py flush-anki-queue --min-queue 1
+   python3 src/anki_realtime.py flush --min-queue 1
    ```
 
    Report the JSON metrics verbatim: `synthesized`, `deduped`, `created`,
    `duplicates`, `decks_touched`. Any entry under `errors` is a hard
    warning — tell Gabriel AnkiConnect may be down.
-
-4. **Bidirectional stats sync.** Pull review stats so the KG sees what
-   Gabriel actually retained between sessions:
-
-   ```bash
-   python3 src/memory_orchestrator.py anki-stats-sync
-   ```
-
-   Cards with ease < 2.0 or lapses >= 3 reopen the underlying concept
-   as a weakness in `concept_mastery`. Report `concepts_updated` and
-   `concepts_reopened`.
 
 ## Hard rules
 

@@ -16,8 +16,11 @@ import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Mapping
+from pathlib import Path
 
-from kg_constants import BASE_DIR, DATA_DIR, SESSIONS_DIR
+BASE_DIR = Path(__file__).resolve().parent.parent
+DATA_DIR = BASE_DIR / "data"
+SESSIONS_DIR = DATA_DIR / "Sessions"
 from src.anki_sync.payloads import (
     ImageAuditRow,
     ImageCandidatePayload,

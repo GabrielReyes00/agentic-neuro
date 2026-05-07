@@ -328,8 +328,6 @@ If the file already exists, ask before overwriting.
 
 Extract 2-5 atomic concepts from the presentation content when they are useful as future wikilink targets and not already in `Concepts/`. Follow the repository's concept extraction rules.
 
-Then run the universal post-session hook after the vault write. Use `--skill "grand-rounds"` and include the presentation note path in `--vault-writes`.
-
 ## Phase 9: Optional Rehearsal
 
 After the deck and note are saved, ask once:
@@ -345,14 +343,13 @@ If yes, ask Gabriel to choose one rehearsal mode:
 - **Talk Run-Through**: slide-by-slide transitions, timing, sequencing, and where the speaker notes are too thin or too long.
 
 Then:
-1. Start one memory session with `SESSION_TS` and `--skill "grand-rounds"`.
+1. Set `SESSION_TS` and run `study_memory.py recall --topic "<topic>"`.
 2. Use anticipated questions as the first question bank.
 3. In Faculty Q&A, probe article critique, decision rationale, teaching points, and skipped nice-to-have terrain.
 4. In Talk Run-Through, move slide by slide: ask Gabriel for the transition and thesis of the next slide, then tighten delivery.
 5. Ask one question at a time and stop after each question.
-6. Log every committed answer via `memory_orchestrator.py --quiet record-answer`.
-7. Log corrections after partial/wrong answers with `record-passive`.
-8. At completion, append `## Rehearsal Notes - <date>` to the vault note:
+6. Log every committed answer via `study_memory.py log-answer --skill "grand-rounds"`.
+7. At completion, append `## Rehearsal Notes - <date>` to the vault note:
 
 ```bash
 python3 src/grand_rounds_writer.py \
@@ -363,9 +360,7 @@ python3 src/grand_rounds_writer.py \
   --quiet
 ```
 
-9. Log a session narrative with `--skill "grand-rounds"` summarizing rehearsal weak spots and the next rehearsal strategy.
-10. Run `finish-session --session-ts "$SESSION_TS" --skill "grand-rounds" --topic "<topic>" --repair-fragments --mode apply --text`.
-11. Run the universal post-session hook again with the updated presentation note.
+8. Run `study_memory.py end-session` with rehearsal weak spots and next rehearsal strategy.
 
 ## Failure Handling
 

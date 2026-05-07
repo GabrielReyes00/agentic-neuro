@@ -17,10 +17,10 @@ Goal: one cited report at `/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/
 ## Phase 0: Preflight
 
 ```bash
-./src/preflight.sh "<query>"
+python3 src/study_memory.py recall --topic "<query topic>"
 ```
 
-Use learner context only for depth calibration.
+Use recall output only for depth calibration — skip basics for known concepts.
 
 ## Phase 1: Plan
 
@@ -78,6 +78,6 @@ Quality: cohesive prose, preserved quantitative data, explicit comparisons, hone
 
 ## Phase 6: Finish
 
-Delete only the temp report directory, update `Reports/INDEX.md`, log study topics at depth 3, extract 3-8 concepts, and run the post-session hook.
+Delete only the temp report directory, update `Reports/INDEX.md`, and extract 3-8 concepts per the concept extraction protocol.
 
 Present only TL;DR, table of contents, source composition, cross-references, verification status, and file path. Do not dump the full report into chat.

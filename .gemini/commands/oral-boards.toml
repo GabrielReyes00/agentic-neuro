@@ -3,10 +3,10 @@ description = "Neurosurgery oral-board and primary-board practice — staged cas
 prompt = """
 ACTIVE COMMAND: /oral-boards — staged neurosurgery board-prep simulation with mandatory hooks.
 
-Silent/background steps are NOT optional. MANDATORY: preflight, one stable SESSION_TS, memory session enablement, record-answer after EVERY learner response, heartbeat every ~3 stages, record-case for completed cases, review-session write, finish-session, and post-session hook.
-Invisible bookkeeping: do not print shell commands or raw outputs for these hooks. Use memory_orchestrator.py --quiet for routine memory writes.
+Silent/background steps are NOT optional. MANDATORY: recall at start, one stable SESSION_TS, log-answer after EVERY learner response, review-session write, end-session at completion.
+Invisible bookkeeping: do not print shell commands or raw outputs for these hooks.
 
-FINAL ARTIFACT GATE: heartbeat checkpoints are not completion. Write a rich oral-board artifact draft to data/Sessions/oral_boards_<slug>_artifact.md and install/validate it with src/learning_artifact_guard.py --artifact-type oral-boards before claiming the Review Sessions note exists.
+FINAL ARTIFACT GATE: log-answer calls alone are not completion. Write a rich oral-board artifact draft to data/Sessions/oral_boards_<slug>_artifact.md and install/validate it with src/learning_artifact_guard.py --artifact-type oral-boards before claiming the Review Sessions note exists.
 
 User's request: {{args}}
 

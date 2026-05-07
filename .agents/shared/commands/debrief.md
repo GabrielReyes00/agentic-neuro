@@ -13,11 +13,11 @@ Follow `.agents/shared/commands/learning-session-contract.md` for all memory boo
 ## Hard rules
 
 1. Freeform input is expected. Do not ask for a template. Parse pathology and user-known context from a single dump.
-2. RAG is the last resort. Use KG, vault, and internal knowledge first. Only call `lance_retriever.py compare` for slots the assembler flagged `rag_needed=true` AND the user has not declined RAG.
+2. RAG is the last resort. Use vault and internal knowledge first. Only call `lance_retriever.py compare` for slots the assembler flagged `rag_needed=true` AND the user has not declined RAG.
 3. Never emit an H1 in the vault file. Filename is the title.
 4. YAML metadata at the bottom, always.
 5. If a similar `Debriefs/*.md` exists above threshold, append a dated encounter section rather than creating a duplicate.
-6. Every committed learner answer goes through `memory_orchestrator.py --quiet record-answer`. Passive teaching goes through `record-passive`.
+6. Every committed learner answer goes through `study_memory.py log-answer`. Passive teaching needs no separate logging.
 7. All shell commands are background bookkeeping — never print them, their stdout, or raw JSON to the learner-facing transcript.
 
 ## CLI calling conventions (read before calling any script)
@@ -57,23 +57,19 @@ python3 src/debrief_context_assembler.py \
   --output data/Sessions/debrief_context.json \
   --quiet 2>/dev/null
 
-python3 src/memory_orchestrator.py --quiet session \
-  --session-ts "$SESSION_TS" --skill "debrief" --topic "<pathology>" \
-  --enabled --scope study_session 2>/dev/null
-
-python3 src/knowledge_graph.py last_session_narrative \
-  --skill "debrief" --topic "<pathology>" \
-  > data/Sessions/debrief_last_narrative.json 2>/dev/null
+python3 src/study_memory.py recall --topic "<pathology>" 2>/dev/null
 ```
 
 Read `data/Sessions/debrief_context.json`. It contains:
-- `kg_context` — learner context for the pathology
+- `kg_context` — learner context for the pathology (may be empty if no KG data)
 - `blocking_gaps` — prerequisite concepts not yet mastered
 - `unknown_unknowns` — adjacent curriculum blind spots (save for Phase 5)
 - `vault_hits` — Reports, Study Material, Operative Guides, Concepts, Review Sessions, Debriefs that match
 - `merge_target` — most similar existing debrief (or null)
 - `scaffold_slots` — per-slot `rag_needed` flag
-- `rag_needed_slots` — sorted list of slots lacking KG/vault coverage
+- `rag_needed_slots` — sorted list of slots lacking vault coverage
+
+Use the recall output to apply the Recall Interpretation Rules from the shared contract: retest open errors if relevant, skip known concepts, never repeat recent exchanges.
 
 If `merge_target` is non-null, tell the user once:
 
@@ -91,10 +87,10 @@ python3 src/lance_retriever.py compare "<slot-scoped query>" \
 ```
 
 Slot query examples:
-- imaging → `"<pathology> preoperative imaging protocol MRI CT"`
-- labs → `"<pathology> preoperative labs coagulation workup"`
-- intraop_concepts → `"<pathology> operative anatomy key steps"`
-- postop_course → `"<pathology> postoperative monitoring expected course"`
+- imaging -> `"<pathology> preoperative imaging protocol MRI CT"`
+- labs -> `"<pathology> preoperative labs coagulation workup"`
+- intraop_concepts -> `"<pathology> operative anatomy key steps"`
+- postop_course -> `"<pathology> postoperative monitoring expected course"`
 
 ## Phase 3: Chief-resident teaching pass
 
@@ -113,55 +109,11 @@ Walk the ten scaffold slots, skipping any the user clearly covered in their inta
 9. **Red flags** — deterioration thresholds that require escalation
 10. **Intern priorities** — the must-know/must-do list for this pathology
 
-### Per-turn memory and Anki logging
-
-**`record-answer` auto-enqueues Anki candidates.** Every call below writes the exchange to the learning memory AND appends a candidate to `data/Sessions/anki_queue.jsonl`. No separate Anki call is needed per turn — the queue is flushed by the heartbeat (every ~3 turns) and finally by the universal post-session hook.
-
-Log each committed answer silently:
-
-```bash
-python3 src/memory_orchestrator.py --quiet record-answer \
-  --session-ts "$SESSION_TS" --turn <N> --skill "debrief" \
-  --topic "<pathology>" --concept "<slot concept>" \
-  --question "<question>" --answer "<answer>" --correct <0|1|2> \
-  [--correction ...] [--error-type ...] [--error-process ...] \
-  [--misconception ...] [--root-cause ...] [--remediation ...] \
-  [--teaching-approach "chief_tutorial_tour"] [--depth 2] [--domain "<domain>"] \
-  2>/dev/null
-```
-
-Log passive teaching silently (no Anki enqueue — passive exposure only):
-
-```bash
-python3 src/memory_orchestrator.py --quiet record-passive \
-  --session-ts "$SESSION_TS" --turn <N> --skill "debrief" \
-  --topic "<pathology>" --concept "<slot concept>" \
-  --content "<what was taught>" 2>/dev/null
-```
-
-### Heartbeat every ~3 turns (triggers Anki flush)
-
-After approximately every 3 learner-facing turns, run a heartbeat checkpoint silently. This flushes the Anki queue (synthesizing queued candidates into cards via Gemini), checkpoints the learning state, and protects against mid-session loss.
-
-```bash
-./src/heartbeat.sh --session-mode \
-  --skill "debrief" \
-  --slug "<pathology-slug>" \
-  --topics "<pathology>" \
-  --depth 2 \
-  --domain "<domain>" \
-  --understood "<comma-separated concepts answered correctly so far>" \
-  --gaps "<comma-separated concepts missed so far>" \
-  --turn-num <N> \
-  --status "in-progress" \
-  2>/dev/null
-```
-
-The heartbeat runs `flush-anki-queue --min-queue 3` internally — no separate flush call needed mid-session.
+Log each committed answer silently with `study_memory.py log-answer --skill "debrief"`.
 
 ## Phase 4: Blocking-gap resolution
 
-If `blocking_gaps` is non-empty, briefly teach and retest each prerequisite that directly blocks the pathology. Keep it under two turns per gap. Log each as `record-answer`.
+If `blocking_gaps` is non-empty, briefly teach and retest each prerequisite that directly blocks the pathology. Keep it under two turns per gap. Log each as `log-answer`.
 
 ## Phase 5: Unknown-unknowns surfacing
 
@@ -169,11 +121,11 @@ At session end, present `unknown_unknowns` as a short list:
 
 > Next time you see this pathology, a chief would also ask about: {topic_1}, {topic_2}, {topic_3}. Want to drill one now or save for next time?
 
-Do not expand these unless requested. If the user drills one, log it with `record-transfer`.
+Do not expand these unless requested.
 
 ## Phase 6: Vault write
 
-Assemble the debrief body from the material taught in Phases 3–5. Sections:
+Assemble the debrief body from the material taught in Phases 3-5. Sections:
 
 ```
 ## Pathology One-Liner
@@ -202,7 +154,7 @@ Assemble the debrief body from the material taught in Phases 3–5. Sections:
 - wikilinks from vault_hits (reports, study material, operative guides, concepts)
 ```
 
-No H1. YAML at bottom. Before writing, save the rendered body to `data/Sessions/debrief_<slug>_artifact.md` and run the Final Artifact Guard draft check. This catches missing scaffold sections before the note is persisted:
+No H1. YAML at bottom. Before writing, save the rendered body to `data/Sessions/debrief_<slug>_artifact.md` and run the Final Artifact Guard draft check:
 
 ```bash
 python3 src/learning_artifact_guard.py check-draft \
@@ -211,7 +163,7 @@ python3 src/learning_artifact_guard.py check-draft \
   --min-words 300
 ```
 
-Use `debrief_writer.py --action create|merge` only after the draft passes. Then validate the final new or merged target:
+Use `debrief_writer.py --action create|merge` only after the draft passes. Then validate the final target:
 
 ```bash
 python3 src/learning_artifact_guard.py validate \
@@ -261,49 +213,13 @@ python3 src/debrief_writer.py \
 
 ## Phase 7: Close the loop
 
-Run all closing hooks silently in this order:
-
-```bash
-# 1. Final heartbeat — flushes remaining Anki queue candidates (min-queue 1 at complete)
-./src/heartbeat.sh --session-mode \
-  --skill "debrief" \
-  --slug "<pathology-slug>" \
-  --topics "<pathology>" \
-  --depth 2 --domain "<domain>" \
-  --understood "<all understood concepts>" \
-  --gaps "<all missed concepts>" \
-  --turn-num <N> \
-  --status "complete" \
-  --narrative-summary "<one-sentence summary of what was taught>" \
-  --next-strategy "<concrete action for next debrief on this pathology>" \
-  2>/dev/null
-
-# 2. Log session narrative
-python3 src/knowledge_graph.py log_session_narrative \
-  --skill "debrief" --topics "<pathology>" \
-  --summary "<what was taught>" \
-  --strategy "<concrete next action for future debriefs>" \
-  --turns <N> 2>/dev/null
-
-# 3. Finish session and capture summary text
-FINISH_TEXT=$(python3 src/memory_orchestrator.py finish-session \
-  --session-ts "$SESSION_TS" --skill "debrief" --topic "<pathology>" \
-  --repair-fragments --mode apply --text 2>/dev/null)
-
-# 4. Universal post-session hook (final Anki queue drain, KG sync, vault rebuild)
-python3 src/universal_post_session_hook.py \
-  --skill "debrief" --topics "<pathology>" \
-  --vault-writes "<path to debrief file>" \
-  --report-out /tmp/post_session_hook_report.json 2>/dev/null
-```
+Run `end-session` with a specific `--next-strategy` for future debriefs on this pathology.
 
 Cleanup silently:
 
 ```bash
 rm -f data/Sessions/debrief_context.json \
-      data/Sessions/debrief_last_narrative.json \
-      /tmp/debrief_rag_*.md \
-      /tmp/post_session_hook_report.json 2>/dev/null
+      /tmp/debrief_rag_*.md 2>/dev/null
 ```
 
 ## Final response to user
@@ -312,7 +228,3 @@ Surface only:
 - One-line summary of what was covered
 - Vault file written (wikilink)
 - Unknown-unknowns list if not already drilled
-- `$FINISH_TEXT` quality summary if non-empty and meaningful
-- Any memory-quality warnings (one line max)
-
-Do not print shell commands, JSON payloads, file paths, or scaffold structure.

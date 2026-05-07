@@ -5,7 +5,7 @@ ACTIVE COMMAND: /explain-topic — Domain-agnostic expert explanation.
 
 Deliver a structured explanation using the format in the instruction file. Parse depth flags (--brief, --standard, --deep) and --save from the user input. If topic is ambiguous across domains, ask one clarifying question first.
 
-Critical pre-step: run the learner-context prepass (`knowledge_graph.py context`) before drafting the explanation.
+Critical pre-step: run `python3 src/study_memory.py recall --topic "<topic>"` before drafting the explanation.
 
 User input: {{args}}
 

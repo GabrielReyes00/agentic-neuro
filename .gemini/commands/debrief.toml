@@ -7,27 +7,21 @@ Purpose: teach 80% of the intern-essential knowledge for a pathology Gabriel jus
 
 Freeform input is expected — parse pathology and user-context from whatever the user dumps. Do NOT ask for a template.
 
-ANKI PIPELINE (per-turn, automatic):
-- Every record-answer call auto-enqueues an Anki candidate to data/Sessions/anki_queue.jsonl — NO separate enqueue step needed.
-- The queue is flushed by heartbeat.sh every ~3 turns (--min-queue 3) and at session end (--status complete, --min-queue 1).
-- The universal post-session hook does a final drain. Cards are synthesized via Gemini Flash and pushed to AnkiConnect.
-- Passive teaching (record-passive) does NOT enqueue Anki candidates — only active answers do.
-- Do NOT skip the heartbeat every ~3 turns: without it, no cards are created until session end.
-
 MANDATORY hooks:
+- recall at start: `python3 src/study_memory.py recall --topic "<pathology>"`
 - Silent context assembly via src/debrief_context_assembler.py (no LLM inside)
   CORRECT: python3 src/debrief_context_assembler.py --pathology "..." --context "..." --output data/Sessions/debrief_context.json --quiet
   WRONG: python3 src/debrief_context_assembler.py "freeform text without --pathology flag"
 - RAG is a last resort; call lance_retriever.py compare ONLY for slots the assembler flagged rag_needed=true
 - Check merge_target before writing; append to existing Debriefs/ file instead of creating duplicates
-- Full memory layer logging per shared learning-session-contract (record-answer for every committed answer, record-passive for explained-without-testing, finish-session at end)
+- log-answer after every committed answer: `python3 src/study_memory.py log-answer --session "$SESSION_TS" --topic "..." --concept "..." --question "..." --answer "..." --correct <0|1|2> [--correction "..."] [--error-type "..."] [--misconception "..."] [--skill "debrief"]`
 - Write via src/debrief_writer.py using --action flag (NOT subcommands):
   CORRECT: python3 src/debrief_writer.py --action create --pathology "..." --body "..." --quiet
   WRONG: python3 src/debrief_writer.py create --pathology "..." (subcommand causes argparse failure)
   WRONG: python3 src/debrief_writer.py --action create --content "..." (use --body, not --content)
 - Final artifact gate: before debrief_writer.py, write the rendered debrief body to data/Sessions/debrief_<slug>_artifact.md and run src/learning_artifact_guard.py check-draft --artifact-type debrief. After create/merge, validate the final Debriefs file with src/learning_artifact_guard.py validate --artifact-type debrief.
 - All shell commands run with 2>/dev/null and --quiet where supported — no raw output to chat
-- Universal Post-Session Hook at end
+- end-session at completion: `python3 src/study_memory.py end-session --session "$SESSION_TS" --summary "..." --next-strategy "..."`
 - No H1 in vault file, YAML at bottom, Title Case filename
 
 User's input: {{args}}

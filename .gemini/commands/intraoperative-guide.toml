@@ -3,7 +3,7 @@ description = "Step-by-step operative walkthrough — danger zones, landmarks, b
 prompt = """
 ACTIVE COMMAND: /intraoperative-guide — Full operative protocol with mandatory hooks.
 
-MANDATORY: preflight, RAG retrieval (--visual), transform sub-task, cross-reference discovery, vault write + INDEX, log_study, concept extraction, post-session hook, cleanup.
+MANDATORY: recall at start, RAG retrieval (--visual), transform sub-task, cross-reference discovery, vault write + INDEX, concept extraction, end-session at completion.
 
 User's request: {{args}}
 

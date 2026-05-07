@@ -13,7 +13,12 @@ data/*.pre_stability_backup*
 # === Anki ChromaDB Dedup Store ===
 data/chromadb_store_anki_memory/
 
-# === Knowledge Graph (SQLite — user data, never wipe) ===
+# === Study Memory (SQLite — user data, never wipe) ===
+data/study_memory.db
+data/study_memory.db-wal
+data/study_memory.db-shm
+
+# === Legacy Knowledge Graph (kept for reference) ===
 knowledge_graph.db
 knowledge_graph.db-wal
 knowledge_graph.db-shm

@@ -3,8 +3,8 @@ description = "Generate study material from PDF/PPTX and run interactive drill w
 prompt = """
 ACTIVE COMMAND: /study-material — Two-phase: generate + drill.
 
-MANDATORY hooks: preflight, INDEX guard, document-profile Study Mode Gate, record-answer after EVERY response, heartbeat every 3 turns, final heartbeat + review upsert, concept extraction, post-session hook.
-Invisible bookkeeping: do not print shell commands or raw outputs for these hooks. Use memory_orchestrator.py --quiet for routine memory writes.
+MANDATORY hooks: recall at start, INDEX guard, document-profile Study Mode Gate, log-answer after EVERY response, concept extraction, end-session at completion.
+Invisible bookkeeping: do not print shell commands or raw outputs for these hooks.
 
 MODEL GATE: /study-material generation requires gemini-3.1-pro by default. If this command is running on a Flash-class model, stop before generating and ask Gabriel to rerun on Pro unless he explicitly accepts a lower-quality draft.
 
