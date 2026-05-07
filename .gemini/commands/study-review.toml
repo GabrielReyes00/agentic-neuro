@@ -1,0 +1,14 @@
+description = "Socratic review from an existing Study Material note with semantic memory planning and hooks"
+
+prompt = """
+ACTIVE COMMAND: /study-review
+
+Use `.agents/shared/commands/study-review.md` as the source of truth. Apply `.gemini/commands/study-review.md` only for Gemini-specific runtime constraints.
+
+User request: {{args}}
+
+---
+
+@{.agents/shared/commands/study-review.md}
+@{.gemini/commands/study-review.md}
+"""
