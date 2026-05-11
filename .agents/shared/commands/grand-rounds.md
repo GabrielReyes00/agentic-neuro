@@ -54,7 +54,7 @@ Ask for one generous dump, not a schema. If the user already provided enough inf
 Case mode prompt:
 
 ```text
-Dump whatever you have for the case: HPI, exam, imaging descriptions or file paths, differential considered, operative plan, intraop findings, postop course, complications, outcome, why the attending picked this case, prior Case Log entry, and any images you plan to show.
+Dump whatever you have for the case: HPI, exam, imaging descriptions or file paths, differential considered, operative plan, intraop findings, postop course, complications, outcome, why the attending picked this case, and any images you plan to show.
 ```
 
 Article mode prompt:
@@ -65,7 +65,7 @@ Send the PDF path or DOI and whatever you already have: why the attending assign
 
 Parse the dump silently. Do not force the user to fill missing fields.
 
-If `--case-log` is supplied, read `/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Case Log/<filename>` as intake. If `--pdf` is supplied, parse the PDF with available local PDF tooling.
+If `--pdf` is supplied, parse the PDF with available local PDF tooling. If the user names a file path as their case source, read that path directly as intake.
 
 Silently extract:
 - `topic`

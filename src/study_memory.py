@@ -627,6 +627,18 @@ def end_session(
     if topics_str:
         out.append(f"Topics: {topics_str}")
     out.append("Next strategy saved.")
+
+    # Auto-regenerate vault interfaces (Dashboard, ACGME Readiness, Canvases, Concepts INDEX).
+    # Silent on success; warn on failure but do not abort the session-end record.
+    try:
+        from vault_writers import regenerate_all  # type: ignore
+        warnings = regenerate_all(conn)
+        if warnings:
+            for w in warnings:
+                print(f"WARN vault-writer: {w}", file=sys.stderr)
+    except Exception as e:  # noqa: BLE001
+        print(f"WARN vault-writer skipped: {e}", file=sys.stderr)
+
     return "\n".join(out)
 
 

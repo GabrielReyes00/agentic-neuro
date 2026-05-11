@@ -200,7 +200,16 @@ The interaction should feel like an excellent senior resident tutor: natural, di
 
 ## Review Artifacts
 
-Session bookkeeping lives entirely in `study_memory.db`. The `Review Sessions/` vault folder is retired — no skill writes session logs there anymore. Post-Session Integrity Verification confirms the database write.
+Session bookkeeping lives entirely in `study_memory.db`. No skill writes session logs to a vault folder. Post-Session Integrity Verification confirms the database write.
+
+**Auto-regenerated vault interfaces.** `study_memory.py end-session` invokes `src/vault_writers.py` at the end of every session, which rewrites four interfaces from `study_memory.db` × `data/acgme_curriculum.json`:
+
+- `Dashboard.md` — live snapshot: coverage, open errors, weak concepts, stale knowledge, recent sessions.
+- `ACGME Readiness.md` — full PGY-1 curriculum view with progress overlay + higher-PGY catalog.
+- `ACGME Canvases/*.canvas` — one canvas per ACGME milestone, every topic colored by mastery.
+- `Concepts/INDEX.md` — domain-grouped glossary index.
+
+These are read-only outputs. The agent never hand-edits them; if a refresh is needed mid-session, run `python3 src/vault_writers.py`.
 
 Skills that produce vault reference content still write their own outputs directly:
 

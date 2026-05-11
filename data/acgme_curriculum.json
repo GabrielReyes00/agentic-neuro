@@ -1,0 +1,1650 @@
+{
+  "milestones": {
+    "ANATOMY": {
+      "name": "Anatomy",
+      "topics": [
+        {
+          "title": "Brain Anatomy Lab 1",
+          "domain": "Anatomy",
+          "pgy_target": 1,
+          "priority": "important"
+        }
+      ]
+    },
+    "MK-1": {
+      "name": "Medical Knowledge \u2014 Neuroanatomy and Neuroimaging",
+      "topics": [
+        {
+          "title": "Basal Ganglia - Anatomy Direct or Indirect Pathways and Clinical Correlates",
+          "domain": "Medical Knowledge \u2014 Neuroanatomy and Neuroimaging",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Brain Embryology - Prosencephalon Mesencephalon Rhombencephalon Derivatives",
+          "domain": "Medical Knowledge \u2014 Neuroanatomy and Neuroimaging",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Brain MRI Sequences - T1 T2 FLAIR DWI SWI T1Gad - Clinical Application",
+          "domain": "Medical Knowledge \u2014 Neuroanatomy and Neuroimaging",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Brainstem Anatomy - Midbrain Pons Medulla - Nuclei Tracts and Cross-Sections",
+          "domain": "Medical Knowledge \u2014 Neuroanatomy and Neuroimaging",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "CSF Pathway - Production (Choroid Plexus) Circulation Absorption (Arachnoid Villi)",
+          "domain": "Medical Knowledge \u2014 Neuroanatomy and Neuroimaging",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "CT Angiography and CT Perfusion - Stroke and Vascular Pathology Interpretation",
+          "domain": "Medical Knowledge \u2014 Neuroanatomy and Neuroimaging",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Cerebellum - Lobes Nuclei Peduncles and Cerebellar Pathways",
+          "domain": "Medical Knowledge \u2014 Neuroanatomy and Neuroimaging",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Cerebral Lobes - Functional Anatomy and Localization",
+          "domain": "Medical Knowledge \u2014 Neuroanatomy and Neuroimaging",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Cerebral Venous Anatomy - Dural Sinuses Bridging Veins Cerebral Veins",
+          "domain": "Medical Knowledge \u2014 Neuroanatomy and Neuroimaging",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Cerebrovascular Anatomy - Internal Carotid Vertebrobasilar Deep Perforators",
+          "domain": "Medical Knowledge \u2014 Neuroanatomy and Neuroimaging",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Cranial Nerves I-XII - Anatomy Nuclei and Clinical Syndromes",
+          "domain": "Medical Knowledge \u2014 Neuroanatomy and Neuroimaging",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Hypothalamus and Limbic System - Anatomy and Clinical Relevance",
+          "domain": "Medical Knowledge \u2014 Neuroanatomy and Neuroimaging",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Meninges - Dura Arachnoid Pia - Spaces (Epidural Subdural Subarachnoid)",
+          "domain": "Medical Knowledge \u2014 Neuroanatomy and Neuroimaging",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Non-Contrast CT Head Interpretation - Hemorrhage Mass Hydrocephalus",
+          "domain": "Medical Knowledge \u2014 Neuroanatomy and Neuroimaging",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Peripheral Nerve Anatomy - Brachial and Lumbosacral Plexus",
+          "domain": "Medical Knowledge \u2014 Neuroanatomy and Neuroimaging",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Plain Radiography of the Spine - Trauma Deformity Hardware Assessment",
+          "domain": "Medical Knowledge \u2014 Neuroanatomy and Neuroimaging",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Sellar and Parasellar Anatomy - Pituitary Cavernous Sinus Optic Chiasm",
+          "domain": "Medical Knowledge \u2014 Neuroanatomy and Neuroimaging",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Spinal Cord Anatomy - Tracts (Dorsal Columns Spinothalamic CST) Laminae",
+          "domain": "Medical Knowledge \u2014 Neuroanatomy and Neuroimaging",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Thalamic Nuclei - VPL or VPM Pulvinar Centromedian Anterior Thalamus - Functions",
+          "domain": "Medical Knowledge \u2014 Neuroanatomy and Neuroimaging",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Advanced MRI - Spectroscopy Perfusion Functional MRI in Neurosurgery",
+          "domain": "Medical Knowledge \u2014 Neuroanatomy and Neuroimaging",
+          "pgy_target": 2,
+          "priority": "important"
+        },
+        {
+          "title": "Cerebral Angiography Interpretation - Normal Anatomy and Pathological Findings",
+          "domain": "Medical Knowledge \u2014 Neuroanatomy and Neuroimaging",
+          "pgy_target": 2,
+          "priority": "core"
+        },
+        {
+          "title": "Nuclear Imaging - SPECT and PET in Neuro-Oncology and Epilepsy",
+          "domain": "Medical Knowledge \u2014 Neuroanatomy and Neuroimaging",
+          "pgy_target": 2,
+          "priority": "important"
+        },
+        {
+          "title": "White Matter Tracts - Corticospinal Corticobulbar Arcuate Fasciculus and MR Tractography",
+          "domain": "Medical Knowledge \u2014 Neuroanatomy and Neuroimaging",
+          "pgy_target": 2,
+          "priority": "core"
+        },
+        {
+          "title": "Intraoperative Ultrasound - Brain and Spine Applications",
+          "domain": "Medical Knowledge \u2014 Neuroanatomy and Neuroimaging",
+          "pgy_target": 3,
+          "priority": "important"
+        }
+      ]
+    },
+    "MK-2": {
+      "name": "Medical Knowledge \u2014 Neurosciences, Neuropathology, and Neurology",
+      "topics": [
+        {
+          "title": "Axonal Transport and Wallerian Degeneration",
+          "domain": "Medical Knowledge \u2014 Neurosciences, Neuropathology, and Neurology",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Blood-Brain Barrier - Structure Function and Pharmacological Implications",
+          "domain": "Medical Knowledge \u2014 Neurosciences, Neuropathology, and Neurology",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "CNS Injury Responses - Vasogenic vs Cytotoxic Edema Excitotoxicity",
+          "domain": "Medical Knowledge \u2014 Neurosciences, Neuropathology, and Neurology",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "CSF Physiology and Intracranial Compliance - Monroe-Kellie Doctrine",
+          "domain": "Medical Knowledge \u2014 Neurosciences, Neuropathology, and Neurology",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Cerebral Autoregulation and Cerebral Blood Flow Regulation",
+          "domain": "Medical Knowledge \u2014 Neurosciences, Neuropathology, and Neurology",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Functional Systems - Motor Sensory Visual Language Vestibular Pathways",
+          "domain": "Medical Knowledge \u2014 Neurosciences, Neuropathology, and Neurology",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Glial Cell Biology - Astrocytes Oligodendrocytes Microglia Ependyma",
+          "domain": "Medical Knowledge \u2014 Neurosciences, Neuropathology, and Neurology",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Headache Differential Diagnosis - Migraine Cluster Thunderclap - Red Flags",
+          "domain": "Medical Knowledge \u2014 Neurosciences, Neuropathology, and Neurology",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Meningitis and Encephalitis - Diagnosis Empiric Treatment and LP Interpretation",
+          "domain": "Medical Knowledge \u2014 Neurosciences, Neuropathology, and Neurology",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Neuro-Ophthalmology - Visual Field Defects Pupillary Reflexes Diplopia Localization",
+          "domain": "Medical Knowledge \u2014 Neurosciences, Neuropathology, and Neurology",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Neuronal Physiology - Action Potentials Synaptic Transmission Receptors",
+          "domain": "Medical Knowledge \u2014 Neurosciences, Neuropathology, and Neurology",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Neuropathology of Brain Tumors - WHO Classification Molecular Markers (IDH EGFR 1p or 19q)",
+          "domain": "Medical Knowledge \u2014 Neurosciences, Neuropathology, and Neurology",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Neuropathology of Infection - Meningitis Encephalitis Abscess Histology",
+          "domain": "Medical Knowledge \u2014 Neurosciences, Neuropathology, and Neurology",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Neuropathology of Trauma - Coup-Contrecoup Herniation DAI Histology",
+          "domain": "Medical Knowledge \u2014 Neurosciences, Neuropathology, and Neurology",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Neuropsychopharmacology - Neurosurgically Relevant Drugs (Sedatives Antiepileptics Steroids)",
+          "domain": "Medical Knowledge \u2014 Neurosciences, Neuropathology, and Neurology",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Dementia Syndromes (Alzheimer FTD LBD) - Neurosurgical Differential",
+          "domain": "Medical Knowledge \u2014 Neurosciences, Neuropathology, and Neurology",
+          "pgy_target": 2,
+          "priority": "important"
+        },
+        {
+          "title": "Multiple Sclerosis and Demyelinating Disease - Neurosurgical Implications",
+          "domain": "Medical Knowledge \u2014 Neurosciences, Neuropathology, and Neurology",
+          "pgy_target": 2,
+          "priority": "important"
+        },
+        {
+          "title": "Neuromuscular Disease - ALS Myasthenia GBS - Neurosurgical Awareness",
+          "domain": "Medical Knowledge \u2014 Neurosciences, Neuropathology, and Neurology",
+          "pgy_target": 2,
+          "priority": "important"
+        },
+        {
+          "title": "Neuropathology of Degenerative Diseases - Alzheimer Parkinson ALS CTE",
+          "domain": "Medical Knowledge \u2014 Neurosciences, Neuropathology, and Neurology",
+          "pgy_target": 2,
+          "priority": "important"
+        },
+        {
+          "title": "Neuropathology of Demyelinating Disease - MS ADEM PML Pathology",
+          "domain": "Medical Knowledge \u2014 Neurosciences, Neuropathology, and Neurology",
+          "pgy_target": 2,
+          "priority": "important"
+        },
+        {
+          "title": "Neuropathology of Developmental and Genetic Disorders (Tuberous Sclerosis NF1 or NF2)",
+          "domain": "Medical Knowledge \u2014 Neurosciences, Neuropathology, and Neurology",
+          "pgy_target": 2,
+          "priority": "important"
+        },
+        {
+          "title": "Neuropathology of Vascular Lesions - Infarction Hemorrhage Aneurysm Wall Histology",
+          "domain": "Medical Knowledge \u2014 Neurosciences, Neuropathology, and Neurology",
+          "pgy_target": 2,
+          "priority": "core"
+        },
+        {
+          "title": "Neurophysiology of Intraoperative Monitoring (SSEP MEP EMG ABR)",
+          "domain": "Medical Knowledge \u2014 Neurosciences, Neuropathology, and Neurology",
+          "pgy_target": 2,
+          "priority": "core"
+        },
+        {
+          "title": "Normal Pressure Hydrocephalus - Triad Tap Test and Shunting",
+          "domain": "Medical Knowledge \u2014 Neurosciences, Neuropathology, and Neurology",
+          "pgy_target": 2,
+          "priority": "core"
+        },
+        {
+          "title": "Tumor Genetics - IDH Mutation TERT EGFR Amplification MGMT Methylation",
+          "domain": "Medical Knowledge \u2014 Neurosciences, Neuropathology, and Neurology",
+          "pgy_target": 2,
+          "priority": "core"
+        },
+        {
+          "title": "Neuropathology of Metabolic and Storage Disorders",
+          "domain": "Medical Knowledge \u2014 Neurosciences, Neuropathology, and Neurology",
+          "pgy_target": 3,
+          "priority": "advanced"
+        }
+      ]
+    },
+    "PC-1": {
+      "name": "Brain Tumor",
+      "topics": [
+        {
+          "title": "Craniotomy - Opening Exposure and Closing Techniques",
+          "domain": "Brain Tumor",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "ICP Elevation in Brain Tumors - Recognition and Management",
+          "domain": "Brain Tumor",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Peritumoral Edema - Dexamethasone and Medical Management",
+          "domain": "Brain Tumor",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "WHO Brain Tumor Classification (2021)",
+          "domain": "Brain Tumor",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Brain Metastases",
+          "domain": "Brain Tumor",
+          "pgy_target": 2,
+          "priority": "core"
+        },
+        {
+          "title": "Cerebellopontine Angle Tumor Differential Diagnosis",
+          "domain": "Brain Tumor",
+          "pgy_target": 2,
+          "priority": "core"
+        },
+        {
+          "title": "Convexity Meningioma",
+          "domain": "Brain Tumor",
+          "pgy_target": 2,
+          "priority": "core"
+        },
+        {
+          "title": "Extent of Resection - GTR vs STR vs Biopsy - Outcomes Evidence",
+          "domain": "Brain Tumor",
+          "pgy_target": 2,
+          "priority": "core"
+        },
+        {
+          "title": "Glioblastoma Multiforme (GBM)",
+          "domain": "Brain Tumor",
+          "pgy_target": 2,
+          "priority": "core"
+        },
+        {
+          "title": "Lower-Grade Glioma (WHO Grade II-III)",
+          "domain": "Brain Tumor",
+          "pgy_target": 2,
+          "priority": "core"
+        },
+        {
+          "title": "Neuro-Oncology - Radiation and Chemotherapy Principles (Temozolomide MGMT IDH)",
+          "domain": "Brain Tumor",
+          "pgy_target": 2,
+          "priority": "core"
+        },
+        {
+          "title": "Primary CNS Lymphoma",
+          "domain": "Brain Tumor",
+          "pgy_target": 2,
+          "priority": "important"
+        },
+        {
+          "title": "Stereotactic Brain Biopsy",
+          "domain": "Brain Tumor",
+          "pgy_target": 2,
+          "priority": "core"
+        },
+        {
+          "title": "Stereotactic Radiosurgery for Brain Tumors (Gamma Knife CyberKnife)",
+          "domain": "Brain Tumor",
+          "pgy_target": 2,
+          "priority": "core"
+        },
+        {
+          "title": "Tumor-Related Epilepsy - AED Selection and Perioperative Management",
+          "domain": "Brain Tumor",
+          "pgy_target": 2,
+          "priority": "core"
+        },
+        {
+          "title": "Endoscopic Transsphenoidal Surgery for Pituitary Tumors",
+          "domain": "Brain Tumor",
+          "pgy_target": 3,
+          "priority": "core"
+        },
+        {
+          "title": "Fourth Ventricular Ependymoma",
+          "domain": "Brain Tumor",
+          "pgy_target": 3,
+          "priority": "important"
+        },
+        {
+          "title": "Hemangioblastoma",
+          "domain": "Brain Tumor",
+          "pgy_target": 3,
+          "priority": "important"
+        },
+        {
+          "title": "Intracranial Epidermoid and Dermoid Cysts",
+          "domain": "Brain Tumor",
+          "pgy_target": 3,
+          "priority": "important"
+        },
+        {
+          "title": "Intraoperative Neuromonitoring (SSEP MEP EEG) for Tumor Surgery",
+          "domain": "Brain Tumor",
+          "pgy_target": 3,
+          "priority": "important"
+        },
+        {
+          "title": "Medulloblastoma",
+          "domain": "Brain Tumor",
+          "pgy_target": 3,
+          "priority": "important"
+        },
+        {
+          "title": "Neuronavigation and Fluorescence-Guided Resection (5-ALA)",
+          "domain": "Brain Tumor",
+          "pgy_target": 3,
+          "priority": "important"
+        },
+        {
+          "title": "Parasagittal and Falcine Meningioma",
+          "domain": "Brain Tumor",
+          "pgy_target": 3,
+          "priority": "core"
+        },
+        {
+          "title": "Pituitary Adenoma (Micro and Macro)",
+          "domain": "Brain Tumor",
+          "pgy_target": 3,
+          "priority": "core"
+        },
+        {
+          "title": "Brainstem Glioma or DIPG and Biopsy",
+          "domain": "Brain Tumor",
+          "pgy_target": 4,
+          "priority": "important"
+        },
+        {
+          "title": "Choroid Plexus Tumors (Papilloma Carcinoma)",
+          "domain": "Brain Tumor",
+          "pgy_target": 4,
+          "priority": "advanced"
+        },
+        {
+          "title": "Colloid Cyst of the Third Ventricle",
+          "domain": "Brain Tumor",
+          "pgy_target": 4,
+          "priority": "important"
+        },
+        {
+          "title": "Craniopharyngioma",
+          "domain": "Brain Tumor",
+          "pgy_target": 4,
+          "priority": "important"
+        },
+        {
+          "title": "Eloquent Cortex Glioma Resection (Awake Craniotomy)",
+          "domain": "Brain Tumor",
+          "pgy_target": 4,
+          "priority": "important"
+        },
+        {
+          "title": "Pineal Region Tumors (Germinoma Pineocytoma Pineoblastoma)",
+          "domain": "Brain Tumor",
+          "pgy_target": 4,
+          "priority": "important"
+        },
+        {
+          "title": "Skull Base Meningioma (Petroclival Sphenoid Wing Olfactory Groove)",
+          "domain": "Brain Tumor",
+          "pgy_target": 4,
+          "priority": "important"
+        },
+        {
+          "title": "Vestibular Schwannoma (Acoustic Neuroma)",
+          "domain": "Brain Tumor",
+          "pgy_target": 4,
+          "priority": "core"
+        }
+      ]
+    },
+    "PC-2": {
+      "name": "Surgical Treatment of Epilepsy and Movement Disorders",
+      "topics": [
+        {
+          "title": "Antiepileptic Drug Pharmacology - Mechanisms and Interactions",
+          "domain": "Surgical Treatment of Epilepsy and Movement Disorders",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Seizure Classification and Pathophysiology (ILAE 2017)",
+          "domain": "Surgical Treatment of Epilepsy and Movement Disorders",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Status Epilepticus - Recognition and Treatment Protocol",
+          "domain": "Surgical Treatment of Epilepsy and Movement Disorders",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Basal Ganglia Circuitry and Surgical Target Anatomy (STN GPi VIM)",
+          "domain": "Surgical Treatment of Epilepsy and Movement Disorders",
+          "pgy_target": 2,
+          "priority": "core"
+        },
+        {
+          "title": "Parkinson Disease - Medical Management and Surgical Candidacy",
+          "domain": "Surgical Treatment of Epilepsy and Movement Disorders",
+          "pgy_target": 2,
+          "priority": "core"
+        },
+        {
+          "title": "Presurgical Epilepsy Evaluation (Video-EEG Wada Test fMRI)",
+          "domain": "Surgical Treatment of Epilepsy and Movement Disorders",
+          "pgy_target": 2,
+          "priority": "core"
+        },
+        {
+          "title": "Vagus Nerve Stimulator (VNS) Implantation",
+          "domain": "Surgical Treatment of Epilepsy and Movement Disorders",
+          "pgy_target": 2,
+          "priority": "core"
+        },
+        {
+          "title": "DBS Electrode Placement - Stereotactic Frame and Lead Technique",
+          "domain": "Surgical Treatment of Epilepsy and Movement Disorders",
+          "pgy_target": 3,
+          "priority": "important"
+        },
+        {
+          "title": "Epilepsy Lesionectomy (Cortical Dysplasia Cavernoma Tumor)",
+          "domain": "Surgical Treatment of Epilepsy and Movement Disorders",
+          "pgy_target": 3,
+          "priority": "important"
+        },
+        {
+          "title": "Invasive EEG - Subdural Grid and Strip Electrode Placement",
+          "domain": "Surgical Treatment of Epilepsy and Movement Disorders",
+          "pgy_target": 3,
+          "priority": "important"
+        },
+        {
+          "title": "Stereo-EEG (sEEG) - Indication and Technique",
+          "domain": "Surgical Treatment of Epilepsy and Movement Disorders",
+          "pgy_target": 3,
+          "priority": "important"
+        },
+        {
+          "title": "Corpus Callosotomy for Epilepsy",
+          "domain": "Surgical Treatment of Epilepsy and Movement Disorders",
+          "pgy_target": 4,
+          "priority": "important"
+        },
+        {
+          "title": "DBS Electrode Revision and Complication Management",
+          "domain": "Surgical Treatment of Epilepsy and Movement Disorders",
+          "pgy_target": 4,
+          "priority": "important"
+        },
+        {
+          "title": "DBS for Tourette Syndrome and OCD",
+          "domain": "Surgical Treatment of Epilepsy and Movement Disorders",
+          "pgy_target": 4,
+          "priority": "advanced"
+        },
+        {
+          "title": "Deep Brain Stimulation for Dystonia",
+          "domain": "Surgical Treatment of Epilepsy and Movement Disorders",
+          "pgy_target": 4,
+          "priority": "important"
+        },
+        {
+          "title": "Deep Brain Stimulation for Essential Tremor (VIM Target)",
+          "domain": "Surgical Treatment of Epilepsy and Movement Disorders",
+          "pgy_target": 4,
+          "priority": "important"
+        },
+        {
+          "title": "Deep Brain Stimulation for Parkinson Disease (STN GPi Targets)",
+          "domain": "Surgical Treatment of Epilepsy and Movement Disorders",
+          "pgy_target": 4,
+          "priority": "core"
+        },
+        {
+          "title": "Focused Ultrasound Thalamotomy (MRgFUS) for Tremor",
+          "domain": "Surgical Treatment of Epilepsy and Movement Disorders",
+          "pgy_target": 4,
+          "priority": "advanced"
+        },
+        {
+          "title": "Intraoperative Cortical Mapping (Motor Language) for Epilepsy or Tumor",
+          "domain": "Surgical Treatment of Epilepsy and Movement Disorders",
+          "pgy_target": 4,
+          "priority": "important"
+        },
+        {
+          "title": "Microelectrode Recording Interpretation During DBS Placement",
+          "domain": "Surgical Treatment of Epilepsy and Movement Disorders",
+          "pgy_target": 4,
+          "priority": "important"
+        },
+        {
+          "title": "Multi-Lobar Resection and Hemispherectomy for Epilepsy",
+          "domain": "Surgical Treatment of Epilepsy and Movement Disorders",
+          "pgy_target": 4,
+          "priority": "advanced"
+        },
+        {
+          "title": "Responsive Neurostimulation (RNS) System",
+          "domain": "Surgical Treatment of Epilepsy and Movement Disorders",
+          "pgy_target": 4,
+          "priority": "important"
+        },
+        {
+          "title": "Selective Amygdalohippocampectomy",
+          "domain": "Surgical Treatment of Epilepsy and Movement Disorders",
+          "pgy_target": 4,
+          "priority": "important"
+        },
+        {
+          "title": "Surgical Management of Spasticity (ITB Selective Dorsal Rhizotomy)",
+          "domain": "Surgical Treatment of Epilepsy and Movement Disorders",
+          "pgy_target": 4,
+          "priority": "important"
+        },
+        {
+          "title": "Temporal Lobe Epilepsy - Surgical Evaluation and Lobectomy",
+          "domain": "Surgical Treatment of Epilepsy and Movement Disorders",
+          "pgy_target": 4,
+          "priority": "core"
+        }
+      ]
+    },
+    "PC-3": {
+      "name": "Pain and Peripheral Nerve Disorders",
+      "topics": [
+        {
+          "title": "Neuropathic Pain Pharmacology (Gabapentinoids TCAs SNRIs)",
+          "domain": "Pain and Peripheral Nerve Disorders",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Pain Pathways - Spinothalamic Tract and Gate Control Theory",
+          "domain": "Pain and Peripheral Nerve Disorders",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Peripheral Nerve Injury - Sunderland or Seddon Classification",
+          "domain": "Pain and Peripheral Nerve Disorders",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Cancer Pain - Interventional Options and WHO Ladder",
+          "domain": "Pain and Peripheral Nerve Disorders",
+          "pgy_target": 2,
+          "priority": "important"
+        },
+        {
+          "title": "Carpal Tunnel Syndrome - Diagnosis and Surgical Release",
+          "domain": "Pain and Peripheral Nerve Disorders",
+          "pgy_target": 2,
+          "priority": "core"
+        },
+        {
+          "title": "Complex Regional Pain Syndrome (CRPS) - Diagnosis and Management",
+          "domain": "Pain and Peripheral Nerve Disorders",
+          "pgy_target": 2,
+          "priority": "important"
+        },
+        {
+          "title": "Cubital Tunnel Syndrome - Ulnar Nerve Decompression and Transposition",
+          "domain": "Pain and Peripheral Nerve Disorders",
+          "pgy_target": 2,
+          "priority": "core"
+        },
+        {
+          "title": "EMG and Nerve Conduction Studies - Interpretation",
+          "domain": "Pain and Peripheral Nerve Disorders",
+          "pgy_target": 2,
+          "priority": "core"
+        },
+        {
+          "title": "Intrathecal Drug Delivery - Catheter and Pump Implantation",
+          "domain": "Pain and Peripheral Nerve Disorders",
+          "pgy_target": 2,
+          "priority": "core"
+        },
+        {
+          "title": "Spinal Cord Stimulation (SCS) - Lead Placement and Programming",
+          "domain": "Pain and Peripheral Nerve Disorders",
+          "pgy_target": 2,
+          "priority": "core"
+        },
+        {
+          "title": "Brachial Plexus Injury - Anatomy Evaluation and Surgical Exploration",
+          "domain": "Pain and Peripheral Nerve Disorders",
+          "pgy_target": 3,
+          "priority": "important"
+        },
+        {
+          "title": "Hemifacial Spasm - Microvascular Decompression",
+          "domain": "Pain and Peripheral Nerve Disorders",
+          "pgy_target": 3,
+          "priority": "important"
+        },
+        {
+          "title": "Lower Extremity Nerve Entrapment (Peroneal Tibial Tarsal Tunnel)",
+          "domain": "Pain and Peripheral Nerve Disorders",
+          "pgy_target": 3,
+          "priority": "important"
+        },
+        {
+          "title": "Percutaneous Trigeminal Procedures (Rhizolysis Balloon Compression Glycerol)",
+          "domain": "Pain and Peripheral Nerve Disorders",
+          "pgy_target": 3,
+          "priority": "important"
+        },
+        {
+          "title": "Peripheral Nerve Repair and Grafting Principles",
+          "domain": "Pain and Peripheral Nerve Disorders",
+          "pgy_target": 3,
+          "priority": "important"
+        },
+        {
+          "title": "Peripheral Nerve Tumors (Schwannoma Neurofibroma) Resection",
+          "domain": "Pain and Peripheral Nerve Disorders",
+          "pgy_target": 3,
+          "priority": "important"
+        },
+        {
+          "title": "Radiosurgery for Trigeminal Neuralgia",
+          "domain": "Pain and Peripheral Nerve Disorders",
+          "pgy_target": 3,
+          "priority": "important"
+        },
+        {
+          "title": "SCS Lead Selection - Paddle vs Percutaneous Leads",
+          "domain": "Pain and Peripheral Nerve Disorders",
+          "pgy_target": 3,
+          "priority": "important"
+        },
+        {
+          "title": "Thoracic Outlet Syndrome - Neurogenic and Vascular Types",
+          "domain": "Pain and Peripheral Nerve Disorders",
+          "pgy_target": 3,
+          "priority": "important"
+        },
+        {
+          "title": "Trigeminal Neuralgia - Diagnosis and Microvascular Decompression",
+          "domain": "Pain and Peripheral Nerve Disorders",
+          "pgy_target": 3,
+          "priority": "core"
+        },
+        {
+          "title": "Adult and Pediatric Brachial Plexus Reconstruction",
+          "domain": "Pain and Peripheral Nerve Disorders",
+          "pgy_target": 4,
+          "priority": "advanced"
+        },
+        {
+          "title": "Cordotomy for Cancer Pain",
+          "domain": "Pain and Peripheral Nerve Disorders",
+          "pgy_target": 4,
+          "priority": "advanced"
+        },
+        {
+          "title": "Dorsal Root Entry Zone (DREZ) Lesioning for Deafferentation Pain",
+          "domain": "Pain and Peripheral Nerve Disorders",
+          "pgy_target": 4,
+          "priority": "advanced"
+        },
+        {
+          "title": "Nerve Transfer Techniques for Reinnervation",
+          "domain": "Pain and Peripheral Nerve Disorders",
+          "pgy_target": 4,
+          "priority": "advanced"
+        },
+        {
+          "title": "Occipital Neuralgia and Peripheral Nerve Stimulation",
+          "domain": "Pain and Peripheral Nerve Disorders",
+          "pgy_target": 4,
+          "priority": "advanced"
+        }
+      ]
+    },
+    "PC-4": {
+      "name": "Spinal Neurological Surgery",
+      "topics": [
+        {
+          "title": "Acute Spinal Cord Injury - Classification (ASIA) Medical and Surgical Management",
+          "domain": "Spinal Neurological Surgery",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Spinal Epidural Abscess - Diagnosis Emergent Decompression Antibiotics",
+          "domain": "Spinal Neurological Surgery",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Spine MRI and CT Interpretation - Disc Stenosis Fracture Tumor",
+          "domain": "Spinal Neurological Surgery",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Spine Neurological Examination - Localizing Radiculopathy and Myelopathy",
+          "domain": "Spinal Neurological Surgery",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Cervical Disc Disease - ACDF (1-4 Levels)",
+          "domain": "Spinal Neurological Surgery",
+          "pgy_target": 2,
+          "priority": "core"
+        },
+        {
+          "title": "Cervical Myelopathy - Pathophysiology Grading and Surgical Decision-Making",
+          "domain": "Spinal Neurological Surgery",
+          "pgy_target": 2,
+          "priority": "core"
+        },
+        {
+          "title": "Cervical Spine Fractures - Classification and Surgical or Non-Surgical Management",
+          "domain": "Spinal Neurological Surgery",
+          "pgy_target": 2,
+          "priority": "core"
+        },
+        {
+          "title": "Intraoperative Durotomy and CSF Leak - Repair and Management",
+          "domain": "Spinal Neurological Surgery",
+          "pgy_target": 2,
+          "priority": "core"
+        },
+        {
+          "title": "Lumbar Disc Herniation - Pathophysiology and Microdiscectomy",
+          "domain": "Spinal Neurological Surgery",
+          "pgy_target": 2,
+          "priority": "core"
+        },
+        {
+          "title": "Lumbar Spinal Stenosis - Laminectomy and Decompression",
+          "domain": "Spinal Neurological Surgery",
+          "pgy_target": 2,
+          "priority": "core"
+        },
+        {
+          "title": "Lumbar Spondylolisthesis - Meyerding Classification and Surgical Management",
+          "domain": "Spinal Neurological Surgery",
+          "pgy_target": 2,
+          "priority": "core"
+        },
+        {
+          "title": "Pedicle Screw Placement - Technique Trajectory and Complication Avoidance",
+          "domain": "Spinal Neurological Surgery",
+          "pgy_target": 2,
+          "priority": "core"
+        },
+        {
+          "title": "Posterior Cervical Foraminotomy for Radiculopathy",
+          "domain": "Spinal Neurological Surgery",
+          "pgy_target": 2,
+          "priority": "core"
+        },
+        {
+          "title": "Spinal Metastatic Disease - SINS Score and Surgical Decision-Making",
+          "domain": "Spinal Neurological Surgery",
+          "pgy_target": 2,
+          "priority": "core"
+        },
+        {
+          "title": "Thoracolumbar Fractures - AO Classification and Surgical Indications",
+          "domain": "Spinal Neurological Surgery",
+          "pgy_target": 2,
+          "priority": "core"
+        },
+        {
+          "title": "Adjacent Segment Disease After Spinal Fusion",
+          "domain": "Spinal Neurological Surgery",
+          "pgy_target": 3,
+          "priority": "important"
+        },
+        {
+          "title": "Adult Spinal Deformity - Scoliosis and Sagittal Balance",
+          "domain": "Spinal Neurological Surgery",
+          "pgy_target": 3,
+          "priority": "important"
+        },
+        {
+          "title": "Corpectomy and Multi-Level ACDF (3-4 Levels)",
+          "domain": "Spinal Neurological Surgery",
+          "pgy_target": 3,
+          "priority": "important"
+        },
+        {
+          "title": "Minimally Invasive Lumbar Surgery - MIS Discectomy and Fusion",
+          "domain": "Spinal Neurological Surgery",
+          "pgy_target": 3,
+          "priority": "important"
+        },
+        {
+          "title": "Occipitocervical Junction Surgery (C0-C2 Fixation Odontoid Fractures)",
+          "domain": "Spinal Neurological Surgery",
+          "pgy_target": 3,
+          "priority": "important"
+        },
+        {
+          "title": "Ponte Osteotomy for Deformity Correction",
+          "domain": "Spinal Neurological Surgery",
+          "pgy_target": 3,
+          "priority": "important"
+        },
+        {
+          "title": "Posterior Cervical Laminectomy with Lateral Mass Fixation",
+          "domain": "Spinal Neurological Surgery",
+          "pgy_target": 3,
+          "priority": "important"
+        },
+        {
+          "title": "Single-Level Instrumented Lumbar Fusion (TLIF or PLIF or ALIF)",
+          "domain": "Spinal Neurological Surgery",
+          "pgy_target": 3,
+          "priority": "core"
+        },
+        {
+          "title": "Spinal Angiography - Indications and Interpretation",
+          "domain": "Spinal Neurological Surgery",
+          "pgy_target": 3,
+          "priority": "important"
+        },
+        {
+          "title": "Vertebroplasty and Kyphoplasty for Osteoporotic Fractures",
+          "domain": "Spinal Neurological Surgery",
+          "pgy_target": 3,
+          "priority": "important"
+        },
+        {
+          "title": "Intradural Extramedullary Tumors (Meningioma Schwannoma) Resection",
+          "domain": "Spinal Neurological Surgery",
+          "pgy_target": 4,
+          "priority": "important"
+        },
+        {
+          "title": "Intramedullary Spinal Cord Tumors (Ependymoma Astrocytoma Hemangioblastoma)",
+          "domain": "Spinal Neurological Surgery",
+          "pgy_target": 4,
+          "priority": "important"
+        },
+        {
+          "title": "Pedicle Subtraction and Vertebral Column Resection Osteotomy",
+          "domain": "Spinal Neurological Surgery",
+          "pgy_target": 4,
+          "priority": "advanced"
+        },
+        {
+          "title": "Spinal Cord Vascular Malformations (Dural AVF AVM Cavernoma)",
+          "domain": "Spinal Neurological Surgery",
+          "pgy_target": 4,
+          "priority": "important"
+        }
+      ]
+    },
+    "PC-5": {
+      "name": "Vascular Neurological Surgery",
+      "topics": [
+        {
+          "title": "Aneurysmal Subarachnoid Hemorrhage - Grading Medical Management Timing",
+          "domain": "Vascular Neurological Surgery",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Cerebral Vasospasm and Delayed Cerebral Ischemia After SAH",
+          "domain": "Vascular Neurological Surgery",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Circle of Willis Anatomy and Cerebrovascular Territories",
+          "domain": "Vascular Neurological Surgery",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Ischemic Stroke - IV tPA Eligibility Timing Windows and Treatment Algorithm",
+          "domain": "Vascular Neurological Surgery",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "SAH Grading Scales - Hunt-Hess WFNS and Fisher or Modified Fisher",
+          "domain": "Vascular Neurological Surgery",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Vasospasm Treatment - Nimodipine HHH Therapy Endovascular Rescue",
+          "domain": "Vascular Neurological Surgery",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Acute Ischemic Stroke - Endovascular Thrombectomy (ICA M1 BA)",
+          "domain": "Vascular Neurological Surgery",
+          "pgy_target": 2,
+          "priority": "core"
+        },
+        {
+          "title": "Anticoagulation and Antiplatelet Management for Endovascular Procedures",
+          "domain": "Vascular Neurological Surgery",
+          "pgy_target": 2,
+          "priority": "core"
+        },
+        {
+          "title": "Cerebral AVM - Spetzler-Martin Grading and Treatment Decision-Making",
+          "domain": "Vascular Neurological Surgery",
+          "pgy_target": 2,
+          "priority": "core"
+        },
+        {
+          "title": "Cerebral Venous Sinus Thrombosis - Diagnosis and Management",
+          "domain": "Vascular Neurological Surgery",
+          "pgy_target": 2,
+          "priority": "core"
+        },
+        {
+          "title": "Diagnostic Cerebral Arteriography - Technique and Interpretation",
+          "domain": "Vascular Neurological Surgery",
+          "pgy_target": 2,
+          "priority": "core"
+        },
+        {
+          "title": "Endovascular Access - Femoral and Radial Approaches Catheter Systems",
+          "domain": "Vascular Neurological Surgery",
+          "pgy_target": 2,
+          "priority": "important"
+        },
+        {
+          "title": "Spontaneous Intracerebral Hemorrhage - Medical and Surgical Management",
+          "domain": "Vascular Neurological Surgery",
+          "pgy_target": 2,
+          "priority": "core"
+        },
+        {
+          "title": "AVM Microsurgical Resection - Grade I-II and Infratentorial",
+          "domain": "Vascular Neurological Surgery",
+          "pgy_target": 3,
+          "priority": "important"
+        },
+        {
+          "title": "Aneurysm Coil Embolization - Basic and Balloon or Stent-Assisted",
+          "domain": "Vascular Neurological Surgery",
+          "pgy_target": 3,
+          "priority": "core"
+        },
+        {
+          "title": "Anterior Circulation Aneurysm - Microsurgical Clipping",
+          "domain": "Vascular Neurological Surgery",
+          "pgy_target": 3,
+          "priority": "core"
+        },
+        {
+          "title": "Carotid Artery Stenting - Indications and Comparison to CEA",
+          "domain": "Vascular Neurological Surgery",
+          "pgy_target": 3,
+          "priority": "important"
+        },
+        {
+          "title": "Carotid Endarterectomy - Indications and Surgical Technique",
+          "domain": "Vascular Neurological Surgery",
+          "pgy_target": 3,
+          "priority": "core"
+        },
+        {
+          "title": "Cavernous Malformation - Natural History and Surgical Indications",
+          "domain": "Vascular Neurological Surgery",
+          "pgy_target": 3,
+          "priority": "important"
+        },
+        {
+          "title": "Distal Vessel Thrombectomy (M2 P1 Cerebellar) - Complex Endovascular",
+          "domain": "Vascular Neurological Surgery",
+          "pgy_target": 3,
+          "priority": "important"
+        },
+        {
+          "title": "Dural Arteriovenous Fistula - Classification (Cognard or Borden) and Treatment",
+          "domain": "Vascular Neurological Surgery",
+          "pgy_target": 3,
+          "priority": "important"
+        },
+        {
+          "title": "Vertebrobasilar Insufficiency - Diagnosis and Endovascular Treatment",
+          "domain": "Vascular Neurological Surgery",
+          "pgy_target": 3,
+          "priority": "important"
+        },
+        {
+          "title": "AVM Radiosurgery - Staged Treatment for Larger Lesions",
+          "domain": "Vascular Neurological Surgery",
+          "pgy_target": 4,
+          "priority": "important"
+        },
+        {
+          "title": "Brainstem Cavernoma - Surgical Approach and Timing",
+          "domain": "Vascular Neurological Surgery",
+          "pgy_target": 4,
+          "priority": "advanced"
+        },
+        {
+          "title": "Flow-Diverting Stent (Pipeline Embolization Device) - Indications and Technique",
+          "domain": "Vascular Neurological Surgery",
+          "pgy_target": 4,
+          "priority": "important"
+        },
+        {
+          "title": "Moyamoya Disease - Diagnosis Angiographic Staging and Revascularization",
+          "domain": "Vascular Neurological Surgery",
+          "pgy_target": 4,
+          "priority": "important"
+        },
+        {
+          "title": "Posterior Circulation Aneurysm (Basilar PICA VA) - Endovascular and Surgical",
+          "domain": "Vascular Neurological Surgery",
+          "pgy_target": 4,
+          "priority": "important"
+        },
+        {
+          "title": "STA-MCA Bypass - Indications (Moyamoya Complex Aneurysm) and Technique",
+          "domain": "Vascular Neurological Surgery",
+          "pgy_target": 4,
+          "priority": "advanced"
+        }
+      ]
+    },
+    "PC-6": {
+      "name": "Pediatric Neurological Surgery",
+      "topics": [
+        {
+          "title": "Abusive Head Trauma (Shaken Baby Syndrome) - Diagnosis and Legal Considerations",
+          "domain": "Pediatric Neurological Surgery",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Brain Embryology - Neural Tube Defects Cortical Development Malformations",
+          "domain": "Pediatric Neurological Surgery",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "External Ventricular Drain (EVD) Placement and Management",
+          "domain": "Pediatric Neurological Surgery",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Chiari Malformation Type I - Suboccipital Decompression (12 months)",
+          "domain": "Pediatric Neurological Surgery",
+          "pgy_target": 2,
+          "priority": "core"
+        },
+        {
+          "title": "Craniosynostosis - Sagittal Synostectomy (Suturectomy)",
+          "domain": "Pediatric Neurological Surgery",
+          "pgy_target": 2,
+          "priority": "important"
+        },
+        {
+          "title": "Hydrocephalus - Pathophysiology Classification and VP Shunt",
+          "domain": "Pediatric Neurological Surgery",
+          "pgy_target": 2,
+          "priority": "core"
+        },
+        {
+          "title": "Myelomeningocele - Prenatal Detection Postnatal Repair and Associated Anomalies",
+          "domain": "Pediatric Neurological Surgery",
+          "pgy_target": 2,
+          "priority": "core"
+        },
+        {
+          "title": "Pediatric Supratentorial Tumor Resection",
+          "domain": "Pediatric Neurological Surgery",
+          "pgy_target": 2,
+          "priority": "important"
+        },
+        {
+          "title": "VNS Implantation in Pediatric Patients",
+          "domain": "Pediatric Neurological Surgery",
+          "pgy_target": 2,
+          "priority": "important"
+        },
+        {
+          "title": "VP Shunt Failure and Complications - Mechanical Obstruction Infection Over-drainage",
+          "domain": "Pediatric Neurological Surgery",
+          "pgy_target": 2,
+          "priority": "core"
+        },
+        {
+          "title": "Arachnoid Cysts - Fenestration vs Cystoperitoneal Shunt",
+          "domain": "Pediatric Neurological Surgery",
+          "pgy_target": 3,
+          "priority": "important"
+        },
+        {
+          "title": "Chiari Malformation Decompression in Infants (12 months) - High-Risk Considerations",
+          "domain": "Pediatric Neurological Surgery",
+          "pgy_target": 3,
+          "priority": "important"
+        },
+        {
+          "title": "Chiari Malformation Type II III and Syringomyelia",
+          "domain": "Pediatric Neurological Surgery",
+          "pgy_target": 3,
+          "priority": "important"
+        },
+        {
+          "title": "Craniosynostosis - Fronto-Orbital Advancement and Cranial Vault Reconstruction",
+          "domain": "Pediatric Neurological Surgery",
+          "pgy_target": 3,
+          "priority": "important"
+        },
+        {
+          "title": "Dandy-Walker Malformation - Spectrum and Management",
+          "domain": "Pediatric Neurological Surgery",
+          "pgy_target": 3,
+          "priority": "important"
+        },
+        {
+          "title": "Encephalocele - Classification and Surgical Repair",
+          "domain": "Pediatric Neurological Surgery",
+          "pgy_target": 3,
+          "priority": "important"
+        },
+        {
+          "title": "Pediatric Posterior Fossa Tumors (Medulloblastoma Ependymoma Astrocytoma)",
+          "domain": "Pediatric Neurological Surgery",
+          "pgy_target": 3,
+          "priority": "core"
+        },
+        {
+          "title": "Pediatric Spinal Deformity - Scoliosis (Idiopathic Congenital Neuromuscular)",
+          "domain": "Pediatric Neurological Surgery",
+          "pgy_target": 3,
+          "priority": "important"
+        },
+        {
+          "title": "VP Shunt in Neonates (12 Months) - Technical Considerations",
+          "domain": "Pediatric Neurological Surgery",
+          "pgy_target": 3,
+          "priority": "important"
+        },
+        {
+          "title": "Basal Encephalocele - Transnasal and Combined Approach",
+          "domain": "Pediatric Neurological Surgery",
+          "pgy_target": 4,
+          "priority": "advanced"
+        },
+        {
+          "title": "Endoscopic Third Ventriculostomy (ETV) and ETVCPC",
+          "domain": "Pediatric Neurological Surgery",
+          "pgy_target": 4,
+          "priority": "important"
+        },
+        {
+          "title": "Pediatric Craniopharyngioma - Surgical Approach and Endocrinology Management",
+          "domain": "Pediatric Neurological Surgery",
+          "pgy_target": 4,
+          "priority": "important"
+        },
+        {
+          "title": "Pediatric Epilepsy Surgery - Hemispherectomy Multi-Lobar Resection",
+          "domain": "Pediatric Neurological Surgery",
+          "pgy_target": 4,
+          "priority": "important"
+        },
+        {
+          "title": "Pediatric Pineal Region Tumors - ETV and Resection",
+          "domain": "Pediatric Neurological Surgery",
+          "pgy_target": 4,
+          "priority": "important"
+        },
+        {
+          "title": "Tethered Spinal Cord - Filum Terminale Section Lipomyelomeningocele",
+          "domain": "Pediatric Neurological Surgery",
+          "pgy_target": 4,
+          "priority": "important"
+        }
+      ]
+    },
+    "PC-7": {
+      "name": "Traumatic Brain Injury",
+      "topics": [
+        {
+          "title": "Acute Subdural Hematoma - Indications for Emergent Craniotomy",
+          "domain": "Traumatic Brain Injury",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Brain Death - Clinical Determination and Confirmatory Testing",
+          "domain": "Traumatic Brain Injury",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Emergency CT Head Interpretation in TBI (Blood Herniation Midline Shift)",
+          "domain": "Traumatic Brain Injury",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Epidural Hematoma - CT Diagnosis Temporal Artery Bleeding Emergent Craniotomy",
+          "domain": "Traumatic Brain Injury",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "ICP Management After TBI - Tiered Protocol Osmotherapy Cooling",
+          "domain": "Traumatic Brain Injury",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "ICP Monitoring - Parenchymal Monitor Placement and Interpretation",
+          "domain": "Traumatic Brain Injury",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Lumbar Drain Placement - Technique Indications and Complications",
+          "domain": "Traumatic Brain Injury",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Mild TBI and Concussion - Diagnosis Return-to-Play and CTE Considerations",
+          "domain": "Traumatic Brain Injury",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Polytrauma Triage - ATLS Integration with Neurosurgical Decision-Making",
+          "domain": "Traumatic Brain Injury",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Primary vs Secondary Brain Injury - Mechanisms and Prevention",
+          "domain": "Traumatic Brain Injury",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "TBI Classification - Mild Moderate Severe (GCS) and Marshall or Rotterdam CT Score",
+          "domain": "Traumatic Brain Injury",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Transtentorial Uncal and Tonsillar Herniation - Recognition and Management",
+          "domain": "Traumatic Brain Injury",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Traumatic Subarachnoid Hemorrhage and Cortical Contusions",
+          "domain": "Traumatic Brain Injury",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Ventriculostomy (EVD) Placement - Kocher Point Technique and Complications",
+          "domain": "Traumatic Brain Injury",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Chronic Subdural Hematoma - Burr Hole Drainage and Recurrence Management",
+          "domain": "Traumatic Brain Injury",
+          "pgy_target": 2,
+          "priority": "core"
+        },
+        {
+          "title": "Decompressive Craniectomy with Duraplasty - Technique and Indications (DECRA)",
+          "domain": "Traumatic Brain Injury",
+          "pgy_target": 2,
+          "priority": "core"
+        },
+        {
+          "title": "Diffuse Axonal Injury - Pathophysiology MRI Susceptibility Imaging Prognosis",
+          "domain": "Traumatic Brain Injury",
+          "pgy_target": 2,
+          "priority": "core"
+        },
+        {
+          "title": "Prognostication in Severe TBI - IMPACT Model Withdrawal of Care Discussions",
+          "domain": "Traumatic Brain Injury",
+          "pgy_target": 2,
+          "priority": "important"
+        },
+        {
+          "title": "Skull Base Fractures - CSF Rhinorrhea Otorrhea Pneumocephalus",
+          "domain": "Traumatic Brain Injury",
+          "pgy_target": 2,
+          "priority": "core"
+        },
+        {
+          "title": "Skull Fractures - Linear Depressed Open - Management Principles",
+          "domain": "Traumatic Brain Injury",
+          "pgy_target": 2,
+          "priority": "core"
+        },
+        {
+          "title": "Traumatic Carotid and Vertebral Artery Dissection - Screening and Management",
+          "domain": "Traumatic Brain Injury",
+          "pgy_target": 2,
+          "priority": "core"
+        },
+        {
+          "title": "Cranioplasty - Autologous Bone Flap Replacement and Staged Protocol",
+          "domain": "Traumatic Brain Injury",
+          "pgy_target": 3,
+          "priority": "important"
+        },
+        {
+          "title": "Venous Sinus Laceration Repair During Trauma Surgery",
+          "domain": "Traumatic Brain Injury",
+          "pgy_target": 3,
+          "priority": "important"
+        },
+        {
+          "title": "Complex Craniofacial Trauma - Frontal Sinus Orbit Skull Base Reconstruction",
+          "domain": "Traumatic Brain Injury",
+          "pgy_target": 4,
+          "priority": "advanced"
+        },
+        {
+          "title": "Penetrating Brain Injury - Gunshot Wounds - Surgical Management",
+          "domain": "Traumatic Brain Injury",
+          "pgy_target": 4,
+          "priority": "important"
+        }
+      ]
+    },
+    "PC-8": {
+      "name": "Critical Care",
+      "topics": [
+        {
+          "title": "Airway Management - RSI Indications Technique and Failed Airway Protocol",
+          "domain": "Critical Care",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Arterial Line Placement - Radial Femoral Techniques and Blood Pressure Monitoring",
+          "domain": "Critical Care",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Central Venous Catheter Placement - Internal Jugular Subclavian Femoral",
+          "domain": "Critical Care",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Cerebral Perfusion Pressure - CPP MAP - ICP Targets and Optimization",
+          "domain": "Critical Care",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Cervical Traction - Gardner-Wells Tong Application and Fluoroscopic Reduction",
+          "domain": "Critical Care",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Coagulopathy Reversal in Neurosurgery - Warfarin NOAC Antiplatelet Reversal",
+          "domain": "Critical Care",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "DVT or PE Prophylaxis in Neurosurgery - Timing Risk Stratification",
+          "domain": "Critical Care",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Diabetes Insipidus - Post-Pituitary or Skull Base Surgery and TBI",
+          "domain": "Critical Care",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Fluids and Electrolytes in Neurosurgery - Na K Mg Ca Targets",
+          "domain": "Critical Care",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Mechanical Ventilation in Neurocritical Care - Targets Modes Weaning",
+          "domain": "Critical Care",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Neurogenic Shock - Spinal Cord Injury - MAP Goals Vasopressors Fluids",
+          "domain": "Critical Care",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Osmotherapy - Mannitol vs Hypertonic Saline - Mechanisms and Targets",
+          "domain": "Critical Care",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "PICC Line Placement in the Neurocritical Care Unit",
+          "domain": "Critical Care",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Sedation and Analgesia in Neurocritical Care - Propofol Dexmedetomidine Fentanyl",
+          "domain": "Critical Care",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Sepsis and CNS Infection in the ICU - Meningitis Ventriculitis Abscess",
+          "domain": "Critical Care",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Sodium Disorders in Neurocritical Care - SIADH vs CSW - Diagnosis and Treatment",
+          "domain": "Critical Care",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Surgical Site Infection in Neurosurgery - Prevention Diagnosis and Treatment",
+          "domain": "Critical Care",
+          "pgy_target": 1,
+          "priority": "core"
+        },
+        {
+          "title": "Enteral Nutrition and Gastrostomy (PEG) in Long-Term Neurosurgical Patients",
+          "domain": "Critical Care",
+          "pgy_target": 2,
+          "priority": "core"
+        },
+        {
+          "title": "Halo Vest Fixation - Application Pin Care Complications",
+          "domain": "Critical Care",
+          "pgy_target": 2,
+          "priority": "core"
+        },
+        {
+          "title": "Neurogenic Cardiac Complications (Takotsubo Arrhythmias in SAH and TBI)",
+          "domain": "Critical Care",
+          "pgy_target": 2,
+          "priority": "core"
+        },
+        {
+          "title": "Thoracentesis and Chest Tube Insertion in the Neurosurgical ICU",
+          "domain": "Critical Care",
+          "pgy_target": 2,
+          "priority": "important"
+        },
+        {
+          "title": "Tracheostomy - Percutaneous Dilatational and Open Surgical Technique",
+          "domain": "Critical Care",
+          "pgy_target": 2,
+          "priority": "core"
+        },
+        {
+          "title": "Cerebral Metabolism Monitoring - Jugular Bulb O2 Brain PO2 (Licox) Microdialysis",
+          "domain": "Critical Care",
+          "pgy_target": 3,
+          "priority": "important"
+        },
+        {
+          "title": "Bronchoscopy for Pulmonary Toilet and Diagnosis in the ICU",
+          "domain": "Critical Care",
+          "pgy_target": 4,
+          "priority": "advanced"
+        },
+        {
+          "title": "Pericardiocentesis in the Neurosurgical ICU",
+          "domain": "Critical Care",
+          "pgy_target": 4,
+          "priority": "advanced"
+        }
+      ]
+    }
+  },
+  "total_topics": 265
+}

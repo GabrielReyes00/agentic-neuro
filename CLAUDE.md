@@ -64,12 +64,12 @@ After Gabriel commits to an answer, reveal progressively. Grade the answer brief
 | `Presentations/` | `/grand-rounds` | Grand rounds, case presentation, and journal club artifacts. Case notes live in `Presentations/Cases/`; article notes live in `Presentations/Articles/`. Decks are generated to `/Users/gabrielreyes/Desktop/` |
 | `Consults/` | `/consult` | Focused clinical consult pocket cards for ward reference. If a prior consult on the same topic exists, a dated encounter section is appended rather than creating a duplicate |
 | `Reference/` | Agent (on request) | Curated reference notes (e.g., `Oral Boards Topic Bank.md`) used to seed memory-driven sessions |
-| `Concepts/` | Agent | ACGME concept stubs. **Protected** (never overwrite): `Neurosurgery Consult Workflow.md`, `Neurosurgery Consult Checklists by Pathology.md`, `Peripheral Nerve Injury Classifications (Seddon & Sunderland).md` |
-| `Error Atlas/` | Agent | One disambiguation page per misconception pair. `INDEX.md` tracks all |
-| `Dashboard.md` | Agent (ad hoc) | Snapshot from `study_memory.py status` + `recall`, written when the user asks for one |
-| `ACGME Readiness.md` | Agent | Curriculum coverage, regenerated after every session |
-| `ACGME Canvases/` | Agent | One `.canvas` per ACGME milestone. `INDEX.md` lists them |
-| `Case Log/` | User only | Agent reads, never writes |
+| `Concepts/` | Agent | Glossary of atomic concepts extracted by skills per §7c. `INDEX.md` is auto-regenerated. **Protected** (never overwrite): `Neurosurgery Consult Workflow.md`, `Neurosurgery Consult Checklists by Pathology.md`, `Peripheral Nerve Injury Classifications (Seddon & Sunderland).md` |
+| `Dashboard.md` | `vault_writers.py` (auto) | Live snapshot of memory state: coverage, open errors, weak concepts, stale knowledge, recent sessions. Regenerated on every `study_memory.py end-session`. **Do not hand-edit.** |
+| `ACGME Readiness.md` | `vault_writers.py` (auto) | Full PGY-1 curriculum coverage view (every topic, with progress overlay for touched ones) + full higher-PGY catalog. Regenerated on every `end-session`. Driven by `data/acgme_curriculum.json` × `study_memory.db`. **Do not hand-edit.** |
+| `ACGME Canvases/` | `vault_writers.py` (auto) | One `.canvas` per ACGME milestone showing every curriculum topic colored by mastery (red=not studied, orange=surface, yellow=developing, green=mastered). `INDEX.md` lists them. Regenerated on every `end-session`. **Do not hand-edit.** |
+
+**Curriculum spec**: `data/acgme_curriculum.json` is the source of truth for the 265-topic ACGME catalog (milestone, domain, PGY target, priority). Consumed by `vault_writers.py`. Edit the JSON if curriculum scope changes.
 
 **Concept File Schema**: Concept files in `Concepts/` follow the extraction protocol in §7c. The bottom YAML block is retained only for tags/aliases.
 
@@ -211,7 +211,7 @@ python3 src/study_memory.py recall --topic "<new topic>"
 |---|---|
 | "inbox", "triage emails", "check my mail" | `inbox-workflow` |
 | "what should I study", "what should I review", "drill my weak spots", "go after my open errors", "build me a custom session", "board-style case" | `study-review` (memory-driven mode) |
-| "gaps", "dashboard", "ACGME readiness" | inline `study_memory.py status` + `recall`; offer to write `Dashboard.md` |
+| "gaps", "dashboard", "ACGME readiness" | Point the user at the live `Dashboard.md` and `ACGME Readiness.md` (auto-regenerated each session-end). For ad-hoc refresh between sessions: `python3 src/vault_writers.py`. |
 | "what books", "list textbooks", "what's loaded" | recipe: `python3 src/lance_retriever.py list_textbooks` |
 | Calendar/scheduling/events | GCal MCP tools |
 
@@ -224,14 +224,6 @@ python3 src/study_memory.py recall --topic "<new topic>"
 | `/generate-report`, "generate a report on" | `generate-report` |
 | `/consult`, "consult on", "quick question about", "how do I manage", "what should I know about" | `consult` |
 | `/grand-rounds`, "build my grand rounds", "put together a case presentation", "journal club presentation" | `grand-rounds` |
-
-### Case Log Bridge
-| Trigger | Route |
-|---|---|
-| "review the [X] case" | `consult` — read Case Log, teach from it |
-| "make cards from [X] case log" | `consult` — generate Anki inline from Key Takeaways |
-| "extract gaps from [X] case" | inline `study_memory.py log-answer` per gap |
-| "anatomical review for [X] case" | `consult` — read Procedure/Approach, RAG on anatomy |
 
 ### Anki
 
@@ -259,8 +251,9 @@ Follow `.agents/shared/commands/study-review.md` for the full workflow and `.age
 | Textbook chunks + embeddings | `neurosurgery_v4.lance` (46,714 rows, 22 books) |
 | Anki card dedup + embeddings | `data/chromadb_store_anki_memory` |
 | Anki card queue (per-session) | `data/Sessions/anki_queue.jsonl` |
-| Reports, guides, study docs, reviews, concepts | Obsidian vault |
-| Clinical cases | `Case Log/` (user-authored) |
+| Reports, guides, study docs, concepts, consults | Obsidian vault |
+| ACGME curriculum catalog (265 topics) | `data/acgme_curriculum.json` |
+| Auto-regenerated vault interfaces | `Dashboard.md`, `ACGME Readiness.md`, `ACGME Canvases/`, `Concepts/INDEX.md` (writer: `src/vault_writers.py`, fires on `end-session`) |
 
 ## §12 Command Reference
 
@@ -268,9 +261,12 @@ Follow `.agents/shared/commands/study-review.md` for the full workflow and `.age
 # study_memory.py — session memory (see §7d for full usage)
 recall --topic "T" [--doc "<folder>/X.md"]
 log-answer --session "TS" --topic "T" --concept "C" --question "Q" --answer "A" --correct 0|1|2 [--correction "..."] [--error-type "..."] [--misconception "..."] [--doc "..."] [--skill "..."]
-end-session --session "TS" --summary "..." --next-strategy "..."
+end-session --session "TS" --summary "..." --next-strategy "..."   # also auto-regenerates vault interfaces
 status [--topic "T"]
 add-alias --alias "A" --canonical "C"
+
+# vault_writers.py — regenerate Dashboard, ACGME Readiness, Canvases, Concepts INDEX
+python3 src/vault_writers.py                                       # ad-hoc refresh (auto-fires on end-session)
 
 # anki_queue.py — per-session card queue (see shared contract for full workflow)
 enqueue --session "TS" --exchange-id N --deck "D" --card-type cloze|qa --topic "T" --concept "C" [--cloze/--answer or --front/--back] [--tags "t1,t2"]
