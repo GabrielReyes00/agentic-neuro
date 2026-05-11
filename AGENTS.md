@@ -58,7 +58,7 @@ python3 src/study_memory.py end-session \
   --session "$SESSION_TS" --summary "..." --next-strategy "..."
 ```
 
-Memory writes are allowed only when the user explicitly asks to save/capture memory or when they intentionally start a memory-enabled learning workflow such as `/study-session`, `/study-material`, `/intern-bootcamp`, `/oral-boards`, or `/consult`. Outside those workflows, answer directly unless the user asks to save.
+Memory writes are allowed only when the user explicitly asks to save/capture memory or when they intentionally start a memory-enabled learning workflow such as `/study-review`, `/study-material`, or `/consult`. Outside those workflows, answer directly unless the user asks to save.
 
 For active-answer memory, preserve the actual educational exchange:
 - Set `SESSION_TS` once per session (`date -u +%Y-%m-%dT%H:%M:%S+00:00`). Reuse that exact timestamp; do not regenerate it per turn.
@@ -72,22 +72,23 @@ For active-answer memory, preserve the actual educational exchange:
 Default: answer clinical questions directly from model knowledge. Use tools/skills when a tool is required or the user explicitly requests the deeper workflow.
 
 Always intercept:
-- Anki/flashcards -> `anki-sync`
-- Textbook inventory -> `list-textbooks`
 - Inbox/email -> `inbox-workflow`
-- Gaps/dashboard/ACGME/knowledge map -> `knowledge-map`
-- Study plan or study session -> `study-session`
-- Oral-board, mock oral, primary-board, or board-style case practice -> `oral-boards`
+- "What should I study/review", "drill my weak spots", "go after my open errors", "build me a custom session", "board-style case" -> `study-review` (memory-driven mode)
+- Gaps/dashboard/ACGME readiness -> inline `study_memory.py status` + `recall`; offer to write `Dashboard.md`
+- Textbook inventory -> recipe: `python3 src/lance_retriever.py list_textbooks`
 - Calendar/scheduling/events -> GCal MCP
 
 Explicit invocation only:
-- Drill, bootcamp, night-float, cross-cover simulation -> `intern-bootcamp`
-- Oral boards, mock oral boards, case defense, board-style case, or written/primary bridge -> `oral-boards`
+- `/study-review`, "let's review [X]", "quiz me on [doc]", "continue our session on [doc]" -> `study-review` (doc-anchored mode)
 - Operative walkthrough -> `intraoperative-guide`
 - Study material or quiz from a file -> `study-material`
 - Research report, comprehensive review, deep-dive on a topic -> `generate-report` (produces an encyclopedic, citation-dense reference document; not learner-tailored)
 - Focused clinical question, ward knowledge gap, curbside consult -> `consult` (brief expert lecture + verification questions + pocket-card vault note; not encyclopedic)
 - Grand rounds, case presentation, or journal club deck -> `grand-rounds`
+
+Anki: card creation is inline in every learning skill via `anki_queue.py enqueue/check/flush`. There is no separate Anki skill.
+
+Persona-shaped sessions (intern-style firefight, oral-board staged cases, ward consult drills) run inside `study-review`'s memory-driven mode -- the agent adjusts question shape and tone based on what the learner asks for. The reference topic bank at `Reference/Oral Boards Topic Bank.md` in the vault is a curated pool for board-style case selection.
 
 ## Study-Material Generation Guard
 
@@ -106,15 +107,12 @@ For slide/PDF generation, use the density flags: `--min-questions-per-chunk 2 --
 
 If validation fails, revise the generated note and rerun the guard. Do not start the drill from a failed or shadow-path file.
 
-## Learning Artifact Guard
-
-For `study-session`, `oral-boards`, `intern-bootcamp`, and `consult`, write a rich draft to `data/Sessions/<skill>_<slug>_artifact.md`, install or check it through `src/learning_artifact_guard.py`, then validate the real vault file. Do not claim a learning workflow completed if the guard fails.
-
 ## Session-End Protocol
 
 Learning commands are complete only after required workflow steps finish:
-1. Review session or vault artifact write/update when applicable.
+1. Vault artifact write/update when applicable (`Study Material/`, `Consults/`, `Reports/`, `Operative Guides/`, `Presentations/`). `study-review` writes no vault artifact in either invocation mode.
 2. Concept extraction when applicable.
 3. `study_memory.py end-session` with a specific, actionable `--next-strategy`.
+4. `anki_queue.py review` + `check` + `flush` for the session's queued cards.
 
 If the user exits abruptly, finalize with available data and do not claim full completion.

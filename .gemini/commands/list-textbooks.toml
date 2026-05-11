@@ -1,9 +1,0 @@
-description = "List all textbooks and sources loaded in the RAG vector database"
-
-prompt = """
-ACTIVE COMMAND: /list-textbooks — Query and display the RAG textbook inventory.
-
-Run the list_textbooks query against the LanceDB database and present the results in a formatted table.
-
-@{.gemini/commands/list-textbooks.md}
-"""

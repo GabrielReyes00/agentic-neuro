@@ -28,7 +28,7 @@ python3 src/study_memory.py recall --topic "<topic>" [--doc "Study Material/<fil
 
 After running recall, read the full output and verify it makes sense:
 
-1. **Returning session check**: If a `Review Sessions/` file already exists for this document or topic, recall MUST return prior data. If it returns "No prior data found", your topic string is likely wrong. Run `python3 src/study_memory.py status --topic "<topic>"` to find the stored form, or check the Review Session file's metadata for the exact topic. Fix and re-run recall — do not silently accept empty context for a known topic.
+1. **Returning session check**: If `study_memory.py status --topic "<topic>"` shows prior sessions for this topic, `recall` MUST return prior data. If it returns "No prior data found", your topic string is likely wrong — run status with variants to find the canonical stored form, fix it, and re-run recall. Do not silently accept empty context for a known topic.
 2. **Coherence check**: If recall returns data, verify the content relates to the topic. Session date, concepts, and next-strategy should all make sense. Watch for fuzzy-match pollution: if KNOWN CONCEPTS or GAPS contain single-token entries, opaque labels (e.g., `q1`, `q2`), or concepts unrelated to the topic, the topic string matched too broadly. Run `python3 src/study_memory.py status --topic "<topic>"` to find the canonical stored form and re-run recall with it.
 3. **New topic**: If no Review Session file exists and status confirms no matches, this is genuinely new. Proceed with calibration.
 
@@ -200,37 +200,19 @@ The interaction should feel like an excellent senior resident tutor: natural, di
 
 ## Review Artifacts
 
-Doc-anchored sessions (study-review, study-material drills) do not write vault artifacts — the memory layer is the durable record. Standalone sessions (study-session, intern-bootcamp, oral-boards) write `Review Sessions/<Topic>.md` with outcomes, specific gaps, corrections, next focus, and related vault links. No H1 when the filename is the title.
+Session bookkeeping lives entirely in `study_memory.db`. The `Review Sessions/` vault folder is retired — no skill writes session logs there anymore. Post-Session Integrity Verification confirms the database write.
 
-## Final Artifact Guard
+Skills that produce vault reference content still write their own outputs directly:
 
-Skills that write vault artifacts (standalone sessions, consults, reports, guides) should validate through `src/learning_artifact_guard.py`. Doc-anchored sessions skip this step — their durable record is the memory layer, verified by Post-Session Integrity Verification.
+| Skill | Vault destination | Purpose |
+|---|---|---|
+| `study-material` | `Study Material/<Title>.md` | Q&A document |
+| `consult` | `Consults/<Topic Title>.md` | Pocket card |
+| `generate-report` | `Reports/<Title>.md` | Encyclopedic reference |
+| `intraoperative-guide` | `Operative Guides/<Title>.md` | Operative walkthrough |
+| `grand-rounds` | `Presentations/Cases\|Articles/<Title>.md` | Presentation note |
 
-```bash
-python3 src/learning_artifact_guard.py install \
-  --artifact-type "<study-session|oral-boards|intern-bootcamp|consult>" \
-  --draft "data/Sessions/<skill>_<slug>_artifact.md" \
-  --title "<Title Case Title>" \
-  --topic "<topic>" \
-  --domain "<domain>" \
-  --min-words 250
-
-python3 src/learning_artifact_guard.py validate \
-  "/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/<folder>/<Title>.md" \
-  --artifact-type "<skill>" \
-  --min-words 250
-```
-
-Required final sections by skill:
-
-| Skill | Required sections |
-|---|---|
-| `study-session` | Session Plan, Question And Answer Log, Component Outcomes, Gaps And Error Metadata, Next Session Priority |
-| `oral-boards` | Opening Stem, Stage Log, Score, Unsafe Issues, Corrected Concepts, Next Practice Targets |
-| `intern-bootcamp` | Scenario, Decision Log, Orders, Escalation And Communication, Chief Debrief, Weaknesses And Error Types, Next Targets |
-| `consult` | One-Liner, Key Management Points, Critical Thresholds, Red Flags, Discriminators, Related In This Vault |
-
-A checkpoint-only note is not completion.
+`study-review` writes no vault artifact in either invocation mode — the memory layer is the durable record. No H1 in any vault file (filename is the title). YAML metadata at bottom.
 
 ## Cleanup
 

@@ -1,12 +1,82 @@
 # Study Review
 
-Doc-anchored Socratic session from an existing vault document — either a `Reports/<file>.md` (narrative with reasoning and citations) or a `Study Material/<file>.md` (structured question bank with atomic facts).
+Adaptive Socratic study session. Two invocation modes:
+
+- **Doc-anchored**: review an existing vault document — either a `Reports/<file>.md` (narrative with reasoning and citations) or a `Study Material/<file>.md` (structured question bank).
+- **Memory-driven custom review**: no document supplied — agent composes the session from the learner's memory state (open errors, weak concepts, stale knowledge, cross-topic gaps, learner-requested focus).
 
 Follow `.agents/shared/commands/learning-session-contract.md` for all shared pedagogy and memory operations.
 
 ---
 
+## Invocation Modes
+
+Pick the mode at the start of the session and stay in it. Switching modes mid-session is allowed only at a natural pause and only on explicit learner request.
+
+### Doc-anchored mode (default when a document is named or inferable)
+
+Trigger phrases: "review the EVD Management report", "quiz me on the aSAH study material", "continue our session on [doc]", "drill me on [topic]" *when a matching vault doc exists*.
+
+Use the **Pre-Session Setup** block below as written. The vault document is the curriculum boundary.
+
+### Memory-driven custom review
+
+Trigger phrases: "what should I review", "build me a custom session", "drill my weak spots", "go after my open errors", "review my recent gaps", "session based on what I've been getting wrong", "board-style cases on my weakest domain", "intern-style firefight on my open errors". Also: any invocation with no document named and no obvious topic the learner wants to anchor on.
+
+Use the **Memory-Driven Setup** block below instead of the doc-anchored Pre-Session Setup. Persona-shaped sessions (intern-style ICU firefight, oral-board staged cases, ward consult drills) are achievable inside this mode — the agent adjusts question shape, tone, and reveal cadence based on what the learner asks for. There is no separate skill for these personas; this is the one place that runs them.
+
+The reference topic bank at `Reference/Oral Boards Topic Bank.md` in the vault is a curated pool for board-style case selection when memory state alone doesn't pin a topic.
+
+---
+
+## Memory-Driven Setup
+
+When invoked without a document, compose the session from memory state.
+
+### Step 0: Status scan
+
+```bash
+cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
+python3 src/study_memory.py status
+```
+
+Read the global picture: overall coverage, top weak concepts with error types and misconceptions, recent sessions with summaries.
+
+### Step 1: Per-candidate recall
+
+For each candidate topic the status output surfaces (top weak concepts, recent open errors, stale-but-PGY-relevant areas, anything the learner named):
+
+```bash
+python3 src/study_memory.py recall --topic "<candidate topic>"
+```
+
+Read each recall output per the **Agent as Memory Intelligence Layer** section of the shared contract. Note next-strategy, open errors, gaps, and recent exchanges per topic.
+
+### Step 2: Compose the review queue
+
+Order the queue by clinical/educational priority, drawing from:
+
+- **Open errors**: concepts with `correct=0` in recent sessions that have not been retested. Highest priority — these are unfixed misconceptions.
+- **Weak concepts**: concepts missed multiple times across sessions with low mastery indicators. If a prior teaching approach failed on the same concept, change strategies.
+- **Stale knowledge**: previously-confirmed concepts not touched in many sessions, especially PGY-relevant or safety-critical ones — schedule a delayed retention check.
+- **Cross-topic gaps**: concepts surfaced by scouting in one session but never followed up under their own topic.
+- **Learner-requested focus**: if the user names a domain, scenario, persona, or filter ("vascular weak spots", "ICU management", "intern-style firefight on neurotrauma"), filter and shape the queue accordingly.
+
+### Step 3: Present and confirm
+
+Show the proposed composition to the learner in 5–10 lines: what concepts will be retested, what gaps will be probed, why each was selected (open error / stale / requested focus), persona/style if any, and approximate scope. Confirm before executing.
+
+### Step 4: Execute
+
+Run the session under the shared learning contract — Cognitive Friction Protocol, log-answer after each evaluated answer (omit `--doc`, set `--skill "study-review"`, use the canonical topic for the concept being tested), Anki enqueue inline, end-session with a specific next-strategy. The teaching loop is identical to doc-anchored mode; only the curriculum source differs.
+
+No vault artifact is written. The memory layer is the durable record.
+
+---
+
 ## Pre-Session Setup
+
+Use this block for doc-anchored mode.
 
 ### Step 0: Identify the document
 

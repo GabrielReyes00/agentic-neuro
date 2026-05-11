@@ -156,7 +156,7 @@ The `--next-strategy` should name what's worth studying deeper. Examples:
 GOOD: "Drill vasospasm protocol details and triple-H therapy parameters; verify sodium correction rate safety limits in a clinical vignette."
 BAD: "Continue studying this topic."
 
-4. **Unknown-unknowns** — surface 2-3 adjacent topics the resident should know about but didn't ask about. One line each, no expansion unless requested. These become future `/consult` or `/study-session` candidates.
+4. **Unknown-unknowns** — surface 2-3 adjacent topics the resident should know about but didn't ask about. One line each, no expansion unless requested. These become future `/consult` or `/study-review` candidates.
 
 5. **Surface to user**: one-line summary, vault file path, Anki card count, unknown-unknowns list.
 

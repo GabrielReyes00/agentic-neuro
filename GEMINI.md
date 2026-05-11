@@ -17,11 +17,10 @@
 10. No H1 in vault files — filename IS the title in Obsidian. Start body with first meaningful content.
 11. Vault metadata at bottom — YAML `---` block at END of every vault file, never top.
 12. Title Case filenames with spaces — e.g., `Anterior Choroidal Artery Aneurysms.md`. No underscores, no dates in filenames.
-13. Session filenames are topic-only — `Review Sessions/<Topic Title>.md`. Date in metadata only. No skill prefixes.
 
 **Invisible bookkeeping**: Memory commands (`study_memory.py`) and Obsidian write commands are internal. Do not print those commands, JSON payloads, raw stdout, or raw stderr into the learner-facing transcript. **You must still read and reason about every memory command's output.** "Silent" means invisible to the learner, not invisible to you. Surface only concise warnings on failure.
 
-**NEVER**: `YYYY-MM-DD_study-session.md` | `brain_anatomy_lab_1_review.md` | YAML at top | emojis | `skill: skill/study-session` (use bare `skill: "study-session"`)
+**NEVER**: dated filenames | YAML at top | emojis | H1 titles in vault files
 
 ### No Inline Python / Heredoc Dumps (HARD RULE)
 
@@ -44,7 +43,7 @@ Use explicit branch targets in command workflows: `If X -> skip to Step N` / `If
 Commands longer than 2 minutes should surface timeout and use the documented fallback. First-call retrieval latency around 30-45 seconds is expected.
 
 Default model: `gemini-3-flash-preview`.
-Use `gemini-3.1-pro` for `/intern-bootcamp`, `/oral-boards`, `/study-session`, `/generate-report`, `/intraoperative-guide`, `/study-material`, `/consult`, and `/anki-sync`. `/study-material` generation is a Pro-only workflow by default: if currently running on a Flash-class model, stop before generation and ask Gabriel to rerun on `gemini-3.1-pro` unless he explicitly accepts a lower-quality draft. `/grand-rounds` may run on Gemini 3 Flash for routine deck-building; escalate to Pro only when dense article critique, difficult statistics, or complex case synthesis warrants it.
+Use `gemini-3.1-pro` for `/study-review`, `/generate-report`, `/intraoperative-guide`, `/study-material`, and `/consult`. `/study-material` generation is a Pro-only workflow by default: if currently running on a Flash-class model, stop before generation and ask Gabriel to rerun on `gemini-3.1-pro` unless he explicitly accepts a lower-quality draft. `/grand-rounds` may run on Gemini 3 Flash for routine deck-building; escalate to Pro only when dense article critique, difficult statistics, or complex case synthesis warrants it.
 
 After editing `.toml` descriptors: `/commands reload`.
 
@@ -75,26 +74,24 @@ At 12+ turns in study sessions, notify user and offer digest before continuing. 
 | `Operative Guides/` | `/intraoperative-guide` | Step-by-step surgical walkthroughs |
 | `Study Material/` | `/study-material` | Concept maps + question banks |
 | `Presentations/` | `/grand-rounds` | Grand rounds, case presentation, and journal club artifacts. Cases in `Presentations/Cases/`; articles in `Presentations/Articles/`; generated decks on Desktop |
-| `Review Sessions/` | Standalone learning skills | Session logs for standalone (non-doc-anchored) sessions only |
+| `Consults/` | `/consult` | Focused clinical consult pocket cards for ward reference. If a prior consult on the same topic exists, a dated encounter section is appended rather than creating a duplicate |
+| `Reference/` | Agent (on request) | Curated reference notes (e.g., `Oral Boards Topic Bank.md`) used to seed memory-driven sessions |
 | `Concepts/` | Agent | ACGME concept stubs. **Protected** (never overwrite): `Neurosurgery Consult Workflow.md`, `Neurosurgery Consult Checklists by Pathology.md`, `Peripheral Nerve Injury Classifications (Seddon & Sunderland).md` |
 | `Error Atlas/` | Agent | One disambiguation page per misconception pair. `INDEX.md` tracks all |
-| `Dashboard.md` | `/knowledge-map` | KG surface |
+| `Dashboard.md` | Agent (ad hoc) | Snapshot from `study_memory.py status` + `recall`, written when the user asks for one |
 | `ACGME Readiness.md` | Agent | Curriculum coverage, regenerated after every session |
-| `Consults/` | `/consult` | Focused clinical consult pocket cards for ward reference. If a prior consult on the same topic exists, a dated encounter section is appended rather than creating a duplicate |
+| `Case Log/` | User only | Agent reads, never writes |
 
-**Tags**: `skill/{report,guide,study-material,bootcamp,study-session,oral-boards,rag,consult,grand-rounds}` | `domain/{vascular,spine,tumor,trauma,functional,pediatric,peripheral-nerve,general,anatomy}` | `type/{reference,session,case,article,concept}` | `source/{agent,user}`
+**Tags**: `skill/{report,guide,study-material,study-review,rag,consult,grand-rounds}` | `domain/{vascular,spine,tumor,trauma,functional,pediatric,peripheral-nerve,general,anatomy}` | `type/{reference,session,case,article,concept}` | `source/{agent,user}`
 
 ## §5 Skill -> Vault Write Rules
 
-- **generate-report**: `Reports/<Title>.md` + INDEX. Encyclopedic, citation-dense reference document — textbook-chapter ambition, not learner-tailored. Mandatory content: TL;DR, Key Numbers Table, Differentiator section, operative walkthrough (when procedural), failure modes / pitfalls, evidence-quality labels on recommendations, effect-size magnitudes on trials, mechanism->consequence chains for molecular content, inline wikilink cross-citations, and a final `## Related in This Vault` section. Citations always required at point of claim (PMID/DOI/textbook+page). Self-audit before write is the intelligence layer of the skill — no phase gates, no plan approval. After write, log a `study_memory.py end-session` entry so downstream `/study-review` and `/study-session` can discover the report.
+- **generate-report**: `Reports/<Title>.md` + INDEX. Encyclopedic, citation-dense reference document — textbook-chapter ambition, not learner-tailored. Mandatory content: TL;DR, Key Numbers Table, Differentiator section, operative walkthrough (when procedural), failure modes / pitfalls, evidence-quality labels on recommendations, effect-size magnitudes on trials, mechanism->consequence chains for molecular content, inline wikilink cross-citations, and a final `## Related in This Vault` section. Citations always required at point of claim (PMID/DOI/textbook+page). Self-audit before write is the intelligence layer of the skill — no phase gates, no plan approval. After write, log a `study_memory.py end-session` entry so downstream `/study-review` can discover the report.
 - **intraoperative-guide**: `Operative Guides/<Title>.md` + INDEX. Same cross-ref.
 - **study-material**: `Study Material/<Title>.md` + INDEX. Title Case from source doc name. Must pass `src/study_material_guard.py` before claiming success or starting a drill.
 - **grand-rounds**: `Presentations/Cases/<Title>.md` or `Presentations/Articles/<Title>.md` via `src/grand_rounds_writer.py` with `--require-quality-gate`. Scrub PHI before case writes.
 - **consult**: `Consults/<Topic Title>.md`. Focused pocket-card vault note for ward reference -- brief lecture model, not encyclopedic. Agent writes the pocket card directly. If a prior consult on the same topic exists, append an `## Encounter -- YYYY-MM-DD` section. Dual-source Anki cards: lecture content (thresholds, drugs, doses) + verification question misses. Memory recall informs teaching approach, never content omission. No H1, YAML at bottom.
-- **Standalone learning sessions** (intern-bootcamp, study-session):
-  1. `study_memory.py log-answer` after every active answer.
-  2. Session-end: `study_memory.py end-session` -> write `Review Sessions/` file. Must pass `src/learning_artifact_guard.py`.
-- **Doc-anchored sessions** (study-review, study-material drill): No vault artifact -- the memory layer (`study_memory.py`) is the durable record. `log-answer --doc "<path>"` after each answer. `end-session` at close.
+- **study-review**: No vault artifact in either invocation mode (doc-anchored or memory-driven) -- the memory layer (`study_memory.py`) is the durable record. `log-answer` after each answer (with `--doc` only when reviewing a vault file); `end-session` at close.
 
 Before writing to any vault folder: ensure `INDEX.md` exists and scan existing vault files for valid wikilinks.
 
@@ -198,8 +195,8 @@ python3 src/study_memory.py recall --topic "<new topic>"
 Learning commands complete only after:
 1. `study_memory.py end-session` with summary and next-strategy
 2. `anki_queue.py review`, `check`, and `flush` for the session's queued cards
-3. Standalone sessions (study-session, oral-boards, intern-bootcamp): write `Review Sessions/` file
-4. Doc-anchored sessions (study-review, study-material drill): no vault artifact -- memory layer is the durable record
+3. Vault writes (when applicable): `study-material` -> `Study Material/`, `consult` -> `Consults/`, `generate-report` -> `Reports/`, `intraoperative-guide` -> `Operative Guides/`, `grand-rounds` -> `Presentations/`
+4. `study-review`: no vault artifact in either mode -- memory layer is the durable record
 
 If user exits abruptly, finalize with available data.
 
@@ -210,30 +207,36 @@ Default: answer directly from model knowledge. Skills are opt-in -- never auto-t
 ### Always Intercept
 | Trigger | Route |
 |---|---|
-| "save to Anki", "make cards", "flashcards" | `anki-sync` |
-| "what books", "list textbooks", "what's loaded" | `list-textbooks` |
 | "inbox", "triage emails", "check my mail" | `inbox-workflow` |
-| "gaps", "knowledge map", "dashboard", "ACGME" | `knowledge-map` |
-| "what should I study", "study session" | `study-session` |
-| "oral boards", "mock oral", "primary boards", "board-style case" | `oral-boards` |
+| "what should I study", "what should I review", "drill my weak spots", "go after my open errors", "build me a custom session", "board-style case" | `study-review` (memory-driven mode) |
+| "gaps", "dashboard", "ACGME readiness" | inline `study_memory.py status` + `recall`; offer to write `Dashboard.md` |
+| "what books", "list textbooks", "what's loaded" | recipe: `python3 src/lance_retriever.py list_textbooks` |
 | Calendar/scheduling/events | GCal MCP tools |
 
 ### Explicit Invocation Only
 | Trigger | Route |
 |---|---|
-| `/intern-bootcamp`, "drill me", "run a scenario" | `intern-bootcamp` |
-| `/oral-boards`, "case me", "run a mock oral", "written-to-oral bridge" | `oral-boards` |
+| `/study-review`, "let's review [X]", "quiz me on [doc]", "continue our session on [doc]" | `study-review` (doc-anchored mode) |
 | `/intraoperative-guide`, "walk me through the surgery for" | `intraoperative-guide` |
 | `/study-material`, "make study material from [file]" | `study-material` |
 | `/generate-report`, "generate a report on" | `generate-report` |
 | `/consult`, "consult on", "quick question about", "how do I manage", "what should I know about" | `consult` |
 | `/grand-rounds`, "build my grand rounds", "put together a case presentation", "journal club presentation" | `grand-rounds` |
 
-### Document-Anchored Socratic Sessions
+### Anki
 
-**Triggers**: "let's review [X]", "quiz me on [doc]", "continue our session on [doc]"
+Card creation is inline in every learning skill via `anki_queue.py enqueue/check/flush` per the shared contract. There is no separate Anki skill -- when the user asks to "save to Anki" or "make cards", do it inline from the current session context.
 
-Follow the `study-review` skill (`.agents/shared/commands/study-review.md`) for the full workflow: pre-session recall and related-topic scouting, session execution, memory logging, and session-end memory persistence. The shared learning contract (`.agents/shared/commands/learning-session-contract.md`) provides teaching principles and memory layer operations. The memory layer is the durable record -- no vault artifact is written for doc-anchored sessions.
+### Study Sessions
+
+`/study-review` is the single learning-session skill. Two invocation modes:
+
+- **Doc-anchored**: triggered by "let's review [X]", "quiz me on [doc]", "continue our session on [doc]" with a matching vault file in `Reports/` or `Study Material/`.
+- **Memory-driven custom review**: triggered when no document is specified, or when the learner asks for a session composed from memory state -- open errors, weak concepts, stale knowledge, learner-named domain/persona/style.
+
+Persona-shaped sessions (intern-style firefight, oral-board staged cases, ward consult drills) run inside the memory-driven mode; the agent adjusts question shape and tone based on what the learner asks for. The reference topic bank at `Reference/Oral Boards Topic Bank.md` is a curated pool for board-style case selection.
+
+Follow `.agents/shared/commands/study-review.md` for the full workflow and `.agents/shared/commands/learning-session-contract.md` for shared teaching principles and memory operations. The memory layer is the durable record -- no vault artifact is written.
 
 ### Answer Directly
 Clinical questions, explanations, comparisons, coding: model knowledge. Offer RAG if depth warrants.
