@@ -42,12 +42,18 @@ cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && <command>
 
 The long-term memory system uses `src/study_memory.py` (SQLite-backed, lean):
 
+Context-pulling is mode-conditional. **Topic-anchored** sessions (user named a topic or document) use only the topic-scoped commands; **memory-driven custom review** sessions (no named topic) use `prep`.
+
 ```bash
-# Session start (agent-only -- do not echo to user) -- global prep, then topic recall
-python3 src/study_memory.py prep
+# Topic-anchored session start (agent-only -- do not echo to user)
 python3 src/study_memory.py recall --topic "<topic>" [--doc "<folder>/<file>.md"]
-# Optional: if the topic gets confused with another, pull the patterns
+# Optional, only if the topic has confusion history:
 python3 src/study_memory.py confusions --topic "<topic>"
+# Do NOT run `prep` here -- global state would tempt drift off the chosen topic.
+
+# Memory-driven custom review session start (no named topic, user asked
+# "what should I review" / "drill my weak spots" / similar)
+python3 src/study_memory.py prep
 
 # After every Q&A — log the exchange
 python3 src/study_memory.py log-answer \
@@ -61,7 +67,7 @@ python3 src/study_memory.py end-session \
   --session "$SESSION_TS" --summary "..." --next-strategy "..."
 ```
 
-`prep` surfaces oldest open errors, stale-known concepts, recent cross-contamination patterns, and the prior session's `next_strategy`. Read it silently. Weave items into questioning when they intersect today's topic; do not telegraph or echo the block.
+`prep` is the only command that surfaces unrelated topics; it must only run when the user has explicitly opted into a memory-driven custom session. Read silently; never echo; never narrate as a menu of options.
 
 Memory writes are allowed only when the user explicitly asks to save/capture memory or when they intentionally start a memory-enabled learning workflow such as `/study-review`, `/study-material`, or `/consult`. Outside those workflows, answer directly unless the user asks to save.
 

@@ -104,28 +104,26 @@ The memory layer tracks what has been covered, learned, mistaken, and what to fo
 
 ### Session Start (silent, agent-only -- never echo to user)
 
-Pull two layers of context before teaching:
+Context-pulling is **mode-conditional** to prevent topic drift.
+
+**Topic-anchored sessions** -- user named a topic, document, or clinical question. Run only the topic-scoped commands:
 
 ```bash
 cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
-python3 src/study_memory.py prep
-```
-
-`prep` surfaces oldest open errors, stale-known concepts, recent cross-contamination patterns, and the prior session's `next_strategy`. **Read it silently. Hold it. Weave matching items into questioning when topics naturally intersect -- do not telegraph "you got this wrong last time" or echo the prep block to the user.** If a critical open error directly matches today's topic, retest it inline as part of the natural arc.
-
-Then pull topic-specific context:
-
-```bash
 python3 src/study_memory.py recall --topic "<topic>" [--doc "<folder>/<file>.md"]
-```
-
-If today's topic is one that historically gets confused with another (visible in `prep` output), also run:
-
-```bash
+# Optional, only if the topic has known confusion history:
 python3 src/study_memory.py confusions --topic "<topic>"
 ```
 
-to retrieve the specific misconception + correction pairs for sharper discriminator questions. If `recall` returns "No prior data found", this is a new topic -- start with calibration.
+**Do NOT run `prep` in topic-anchored mode.** A user studying EVD management does not want drift to spine surgery or pediatric tumors because errors are open there. If a relevant open error lives within today's topic, `recall` surfaces it; retest inline. Otherwise it stays invisible -- that is the point.
+
+**Memory-driven custom review only** -- user asked "what should I review", "drill my weak spots", "build me a custom session" with no named topic. Run prep:
+
+```bash
+python3 src/study_memory.py prep
+```
+
+`prep` surfaces oldest open errors, stale-known concepts, recent cross-contamination patterns, and the prior session's `next_strategy`. Agent-only context -- never echoed, never narrated as a menu.
 
 ### After Every Q&A (silent)
 

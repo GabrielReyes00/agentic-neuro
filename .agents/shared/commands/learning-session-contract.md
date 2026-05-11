@@ -18,29 +18,27 @@ Every memory command in this contract must be executed, not simulated. Do not re
 
 ### Session Start
 
-Before teaching or drilling, pull two layers of context — silently. Neither command's output is ever echoed to the learner.
+Context-pulling is **mode-conditional**. The wrong commands at the wrong time cause topic drift — the user studying EVD management does not want questions about pediatric tumors because something is open in that domain.
 
-**1. Global agent prep** (every session, before the first question):
+**Topic-anchored sessions** (the user named a topic, document, or clinical question — e.g., "let's review EVD management", `/consult` on hydrocephalus, `/study-material` from a file):
+
+```bash
+python3 src/study_memory.py recall --topic "<topic>" [--doc "<folder>/<file>.md"]
+# Optional, only if the topic has known confusion history:
+python3 src/study_memory.py confusions --topic "<topic>"
+```
+
+Both commands are inherently topic-scoped. **Do NOT run `prep` in this mode.** Open errors, stale knowledge, or next-strategy hints from unrelated topics must not influence the session. Stay on the user's chosen topic. If a prior open error happens to live within today's topic, `recall` will surface it; retest as part of the natural arc. If it lives outside today's topic, it is invisible to the agent — that is the point.
+
+**Memory-driven custom review only** (the user asked "what should I study", "drill my weak spots", "build me a custom session", "go after my open errors", or a similar memory-first request with no named topic):
 
 ```bash
 python3 src/study_memory.py prep
 ```
 
-This surfaces oldest open errors, stale-but-once-known concepts, recent cross-contamination patterns, and the prior session's `next_strategy`. **This is agent-only context.** Do not paste it into the chat, summarize it to the learner, or treat it as a menu of things to ask permission about. Read it, hold it, and weave the relevant items into questioning **when a topic naturally intersects** with an open error or stale concept — without telegraphing "I know you got this wrong last time." If a critical open error directly matches today's topic, retest it inline as part of the natural teaching arc.
+`prep` surfaces oldest open errors, stale-known concepts, recent cross-contamination patterns, and the prior session's `next_strategy`. **This is agent-only context — never echoed to the learner.** Use it to compose the review queue. This is the one mode where global state is the input.
 
-**2. Topic-specific recall**:
-
-```bash
-python3 src/study_memory.py recall --topic "<topic>" [--doc "Study Material/<file>.md"]
-```
-
-If the topic is one that's historically been confused with another (you'll know from the prep output, or by intuition), also run:
-
-```bash
-python3 src/study_memory.py confusions --topic "<topic>"
-```
-
-to pull the specific misconception + correction pairs. Use these to sharpen discriminator questions.
+In all modes: read command output silently. Do not paste it into the chat, summarize it as a menu, or telegraph "I know you got this wrong before." The data shapes your questioning; it does not shape your narration.
 
 ### Pre-Session Context Verification
 
