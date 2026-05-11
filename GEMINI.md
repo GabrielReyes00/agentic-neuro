@@ -102,16 +102,30 @@ Before writing to any vault folder: ensure `INDEX.md` exists and scan existing v
 
 The memory layer tracks what has been covered, learned, mistaken, and what to focus on next across study sessions. It uses a single SQLite database with abbreviation-aware search (EVD, ICP, SAH, etc. expand automatically).
 
-### Session Start (silent)
+### Session Start (silent, agent-only -- never echo to user)
 
-When any learning interaction begins on a topic, recall prior context:
+Pull two layers of context before teaching:
 
 ```bash
 cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
+python3 src/study_memory.py prep
+```
+
+`prep` surfaces oldest open errors, stale-known concepts, recent cross-contamination patterns, and the prior session's `next_strategy`. **Read it silently. Hold it. Weave matching items into questioning when topics naturally intersect -- do not telegraph "you got this wrong last time" or echo the prep block to the user.** If a critical open error directly matches today's topic, retest it inline as part of the natural arc.
+
+Then pull topic-specific context:
+
+```bash
 python3 src/study_memory.py recall --topic "<topic>" [--doc "<folder>/<file>.md"]
 ```
 
-Read the output and use it to build your teaching plan. The **Agent as Memory Intelligence Layer** section in the shared learning contract describes how to interpret recall output and translate it into question design. If output says "No prior data found", this is a new topic -- start with calibration.
+If today's topic is one that historically gets confused with another (visible in `prep` output), also run:
+
+```bash
+python3 src/study_memory.py confusions --topic "<topic>"
+```
+
+to retrieve the specific misconception + correction pairs for sharper discriminator questions. If `recall` returns "No prior data found", this is a new topic -- start with calibration.
 
 ### After Every Q&A (silent)
 
@@ -241,6 +255,8 @@ Follow `.agents/shared/commands/study-review.md` for the full workflow and `.age
 
 ### Answer Directly
 Clinical questions, explanations, comparisons, coding: model knowledge. Offer RAG if depth warrants.
+
+**Vault-aware answering**: before responding to a clinical question, quickly check whether the topic has been studied -- `ls "$VAULT/Reports/" "$VAULT/Consults/" "$VAULT/Study Material/" "$VAULT/Operative Guides/"` for filename matches. If a relevant note exists, open with "you've already covered this in [[Reports/X]] -- I'll build from there" and pitch the answer at the next layer up rather than re-teaching the basics. If nothing matches, answer fresh.
 
 ## §9 Data Locations
 

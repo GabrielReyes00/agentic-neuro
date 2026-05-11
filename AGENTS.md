@@ -43,8 +43,11 @@ cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && <command>
 The long-term memory system uses `src/study_memory.py` (SQLite-backed, lean):
 
 ```bash
-# Session start — recall prior context
+# Session start (agent-only -- do not echo to user) -- global prep, then topic recall
+python3 src/study_memory.py prep
 python3 src/study_memory.py recall --topic "<topic>" [--doc "<folder>/<file>.md"]
+# Optional: if the topic gets confused with another, pull the patterns
+python3 src/study_memory.py confusions --topic "<topic>"
 
 # After every Q&A — log the exchange
 python3 src/study_memory.py log-answer \
@@ -57,6 +60,8 @@ python3 src/study_memory.py log-answer \
 python3 src/study_memory.py end-session \
   --session "$SESSION_TS" --summary "..." --next-strategy "..."
 ```
+
+`prep` surfaces oldest open errors, stale-known concepts, recent cross-contamination patterns, and the prior session's `next_strategy`. Read it silently. Weave items into questioning when they intersect today's topic; do not telegraph or echo the block.
 
 Memory writes are allowed only when the user explicitly asks to save/capture memory or when they intentionally start a memory-enabled learning workflow such as `/study-review`, `/study-material`, or `/consult`. Outside those workflows, answer directly unless the user asks to save.
 

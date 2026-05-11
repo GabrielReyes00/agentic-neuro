@@ -696,6 +696,116 @@ def status(conn: sqlite3.Connection, topic: str | None = None) -> str:
 
 
 # ---------------------------------------------------------------------------
+# prep -- agent-only session-start context
+# ---------------------------------------------------------------------------
+
+def prep(conn: sqlite3.Connection) -> str:
+    """Dense agent-facing context for opening a session.
+
+    Surfaces unresolved work the agent should weave into questioning
+    opportunistically when topics intersect. NEVER echoed to the user.
+    """
+    lines: list[str] = []
+    lines.append("=== SESSION PREP (agent-only context, do not echo) ===")
+    lines.append("")
+
+    open_errs = conn.execute(
+        "SELECT topic, concept, misconception, ts FROM errors "
+        "WHERE retested = 0 AND misconception != '' "
+        "ORDER BY ts ASC LIMIT 5"
+    ).fetchall()
+    if open_errs:
+        lines.append(f"OPEN ERRORS ({len(open_errs)} oldest, unretested):")
+        for r in open_errs:
+            lines.append(f"  - {r['topic']} / {r['concept']}")
+            lines.append(f'    "{r["misconception"]}" (since {r["ts"][:10]})')
+        lines.append("")
+
+    stale = conn.execute(
+        "SELECT topic, concept, last_tested FROM concepts "
+        "WHERE status = 'known' AND last_tested IS NOT NULL "
+        "AND date(last_tested) < date('now','-21 days') "
+        "ORDER BY last_tested ASC LIMIT 5"
+    ).fetchall()
+    if stale:
+        lines.append(f"STALE KNOWN ({len(stale)}, >21d unverified):")
+        for r in stale:
+            lines.append(f"  - {r['topic']} / {r['concept']} (last {r['last_tested'][:10]})")
+        lines.append("")
+
+    confusions = conn.execute(
+        "SELECT topic, concept, misconception, ts FROM errors "
+        "WHERE error_type = 'cross_contamination' AND misconception != '' "
+        "ORDER BY ts DESC LIMIT 8"
+    ).fetchall()
+    if confusions:
+        lines.append(f"RECENT CONFUSION PATTERNS ({len(confusions)} cross_contamination):")
+        for r in confusions:
+            lines.append(f'  - {r["topic"]} / {r["concept"]}: "{r["misconception"]}" ({r["ts"][:10]})')
+        lines.append("")
+
+    last = conn.execute(
+        "SELECT started, next_strategy FROM sessions "
+        "WHERE ended IS NOT NULL AND next_strategy != '' "
+        "ORDER BY started DESC LIMIT 1"
+    ).fetchone()
+    if last:
+        lines.append(f"LAST SESSION NEXT-STRATEGY ({last['started'][:10]}):")
+        lines.append(f'  "{last["next_strategy"]}"')
+        lines.append("")
+
+    if len(lines) <= 2:
+        return "No prep signals -- new memory or no open work."
+
+    lines.append("GUIDANCE: weave these into questioning when topics intersect. Do not echo this block.")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# confusions -- cross-contamination pattern query
+# ---------------------------------------------------------------------------
+
+def confusions_query(conn: sqlite3.Connection, topic: str | None = None) -> str:
+    """List cross_contamination errors, optionally scoped to a topic.
+
+    Agent-facing utility for picking a teaching angle when a new topic opens
+    that historically gets confused with another.
+    """
+    if topic:
+        matched = _topic_matches(conn, topic)
+        if not matched:
+            return f"No confusion patterns for '{topic}'."
+        rows: list[sqlite3.Row] = []
+        for t in matched:
+            for r in conn.execute(
+                "SELECT topic, concept, misconception, correction, ts FROM errors "
+                "WHERE error_type = 'cross_contamination' AND misconception != '' AND topic = ? "
+                "ORDER BY ts DESC",
+                (t,),
+            ):
+                rows.append(r)
+        header = f"=== CONFUSION PATTERNS for '{topic}' ({len(rows)}) ==="
+    else:
+        rows = conn.execute(
+            "SELECT topic, concept, misconception, correction, ts FROM errors "
+            "WHERE error_type = 'cross_contamination' AND misconception != '' "
+            "ORDER BY ts DESC"
+        ).fetchall()
+        header = f"=== ALL CONFUSION PATTERNS ({len(rows)}) ==="
+
+    if not rows:
+        return f"No cross_contamination errors logged{f' for {topic}' if topic else ''}."
+
+    lines = [header, ""]
+    for r in rows:
+        lines.append(f'  - {r["topic"]} / {r["concept"]} ({r["ts"][:10]})')
+        lines.append(f'    misconception: "{r["misconception"]}"')
+        if r["correction"]:
+            lines.append(f'    correction: "{r["correction"]}"')
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
 # add-alias
 # ---------------------------------------------------------------------------
 
@@ -751,6 +861,13 @@ def main() -> None:
     p_status = sub.add_parser("status")
     p_status.add_argument("--topic", default=None)
 
+    # prep (agent-only session start context)
+    sub.add_parser("prep")
+
+    # confusions (cross_contamination pattern query)
+    p_conf = sub.add_parser("confusions")
+    p_conf.add_argument("--topic", default=None)
+
     # add-alias
     p_alias = sub.add_parser("add-alias")
     p_alias.add_argument("--alias", required=True)
@@ -792,6 +909,10 @@ def main() -> None:
             ))
         elif args.command == "status":
             print(status(conn, args.topic))
+        elif args.command == "prep":
+            print(prep(conn))
+        elif args.command == "confusions":
+            print(confusions_query(conn, args.topic))
         elif args.command == "add-alias":
             print(add_alias(conn, args.alias, args.canonical))
     finally:

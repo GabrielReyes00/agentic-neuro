@@ -18,11 +18,29 @@ Every memory command in this contract must be executed, not simulated. Do not re
 
 ### Session Start
 
-Before teaching or drilling, recall prior context:
+Before teaching or drilling, pull two layers of context — silently. Neither command's output is ever echoed to the learner.
+
+**1. Global agent prep** (every session, before the first question):
+
+```bash
+python3 src/study_memory.py prep
+```
+
+This surfaces oldest open errors, stale-but-once-known concepts, recent cross-contamination patterns, and the prior session's `next_strategy`. **This is agent-only context.** Do not paste it into the chat, summarize it to the learner, or treat it as a menu of things to ask permission about. Read it, hold it, and weave the relevant items into questioning **when a topic naturally intersects** with an open error or stale concept — without telegraphing "I know you got this wrong last time." If a critical open error directly matches today's topic, retest it inline as part of the natural teaching arc.
+
+**2. Topic-specific recall**:
 
 ```bash
 python3 src/study_memory.py recall --topic "<topic>" [--doc "Study Material/<file>.md"]
 ```
+
+If the topic is one that's historically been confused with another (you'll know from the prep output, or by intuition), also run:
+
+```bash
+python3 src/study_memory.py confusions --topic "<topic>"
+```
+
+to pull the specific misconception + correction pairs. Use these to sharpen discriminator questions.
 
 ### Pre-Session Context Verification
 
