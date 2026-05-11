@@ -105,7 +105,7 @@ Use only for thin mechanism or integration units:
 
 ```bash
 cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
-python3 src/lance_retriever.py compare "<teaching unit title>" --stdout --no-learner --no-frontier
+python3 src/lance_retriever.py compare "<teaching unit title>" --stdout --no-frontier
 ```
 
 RAG content is supplemental. Keep source-file content primary and cite textbook title, edition, and page when RAG is used.

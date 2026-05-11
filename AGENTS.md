@@ -1,7 +1,7 @@
 # Neuro-Agent: AI Assistant for a Neurosurgery Resident
 
 **Status**: Active | **Arch**: Codex + LanceDB RAG + MCP + Skills
-**Multi-Agent**: Python memory backend is agent-agnostic. Claude uses `CLAUDE.md`; Gemini CLI uses `GEMINI.md` and `.gemini/commands/`. All agents share LanceDB, SQLite knowledge graph, Obsidian vault sync, and Anki infrastructure.
+**Multi-Agent**: Python memory backend is agent-agnostic. Claude uses `CLAUDE.md`; Gemini CLI uses `GEMINI.md` and `.gemini/commands/`. All agents share LanceDB, SQLite study memory, Obsidian vault sync, and Anki infrastructure.
 
 ## User Profile
 
@@ -28,51 +28,44 @@ When Gabriel asks to study a specific Obsidian document, that document stays pri
 
 ## Invisible Bookkeeping
 
-During learning workflows, memory, heartbeat, KG, preflight, Obsidian write, and post-session hook commands are internal bookkeeping. Do not print those commands, JSON payloads, raw stdout, or raw stderr into the learner-facing transcript. Use `python3 src/memory_orchestrator.py --quiet ...` for routine memory writes. Surface only concise warnings when something fails, and keep verbose diagnostics in `/tmp` or `data/Sessions/` for later audit.
+During learning workflows, memory logging, Obsidian writes, and concept extraction are internal bookkeeping. Do not print those commands, JSON payloads, raw stdout, or raw stderr into the learner-facing transcript. Surface only concise warnings when something fails.
 
 ## Shell Prefix
 
 The CLI may run from `~`, so all repo commands must use:
 
 ```bash
-RUN="cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate"
-eval "$RUN" && <command>
+cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && <command>
 ```
 
 ## Memory Contract
 
-The long-term memory system is only written through the stable memory/knowledge graph CLIs:
-- Active answer logging: `python3 src/memory_orchestrator.py --quiet record-answer ...`
-- Explicit passive teaching capture: `python3 src/memory_orchestrator.py --quiet record-passive ...`
-- Retrieval/guidance: `python3 src/memory_orchestrator.py guidance "query" [--topic "T"] [--skill "S"]`
-- Adaptive learner model: `python3 src/memory_orchestrator.py estimate-mastery --topic "T" --concept "C"` and `python3 src/memory_orchestrator.py next-item --mode eig|zpd|remediate`
-- Teaching recommender: `python3 src/memory_orchestrator.py recommend-approach --concept "C" [--error-type "E"] [--difficulty-band "B"]`
-- Proactive probes: `python3 src/memory_orchestrator.py proactive-probe --surface|--pop`
-- Hidden tutor strategy: `python3 src/memory_orchestrator.py tutor-strategy "query" [--topic "T"] [--skill "S"]`
-- Document study-mode profile: `python3 src/memory_orchestrator.py document-profile --doc "Study Material/<file>.md" [--study-mode rapid_review|deep_understanding --apply]`
-- Health check: `python3 src/memory_orchestrator.py doctor`
-- Session close: `python3 src/memory_orchestrator.py finish-session --session-ts "$SESSION_TS" --skill "<skill>" --topic "<topic>" --repair-fragments --mode apply --text`
-- End-of-session consolidation: `python3 src/universal_post_session_hook.py --skill "<skill>" --topics "<topics>" --vault-writes "<files>" --report-out /tmp/post_session_hook_report.json`
+The long-term memory system uses `src/study_memory.py` (SQLite-backed, lean):
 
-Memory writes are allowed only when the user explicitly asks to save/capture memory or when they intentionally start a memory-enabled learning workflow such as `/study-session`, `/study-material`, `/rag-workflow` Gym follow-up, `/intern-bootcamp`, or `/oral-boards`. Outside those workflows, answer directly unless the user asks to save.
+```bash
+# Session start — recall prior context
+python3 src/study_memory.py recall --topic "<topic>" [--doc "<folder>/<file>.md"]
+
+# After every Q&A — log the exchange
+python3 src/study_memory.py log-answer \
+  --session "$SESSION_TS" --topic "<topic>" --concept "<concept>" \
+  --question "<question>" --answer "<answer>" --correct <0|1|2> \
+  [--correction "..."] [--error-type "..."] [--misconception "..."] \
+  [--doc "..."] [--skill "..."]
+
+# Session end
+python3 src/study_memory.py end-session \
+  --session "$SESSION_TS" --summary "..." --next-strategy "..."
+```
+
+Memory writes are allowed only when the user explicitly asks to save/capture memory or when they intentionally start a memory-enabled learning workflow such as `/study-session`, `/study-material`, `/intern-bootcamp`, `/oral-boards`, or `/consult`. Outside those workflows, answer directly unless the user asks to save.
 
 For active-answer memory, preserve the actual educational exchange:
-- Set `SESSION_TS` once per session.
-- Reuse that exact `SESSION_TS`; do not regenerate it per turn. The backend can auto-route accidental per-turn timestamps to the active session, but agents must not rely on that.
+- Set `SESSION_TS` once per session (`date -u +%Y-%m-%dT%H:%M:%S+00:00`). Reuse that exact timestamp; do not regenerate it per turn.
 - Log every agent question plus the user's answer after evaluation.
 - Use `--correct 2` for correct with no hints, `--correct 1` for partial, and `--correct 0` for wrong/misconception.
-- Include correction, misconception, root cause, remediation, teaching approach, domain, and confidence when available.
-- For every partial/wrong answer, include full error metadata and log the subsequent correction/explanation with `record-passive` unless immediately retesting without explanation.
-- At least one weak or corrected concept should receive transfer validation in a clinical/operative vignette before session close when feasible.
-- Do not double-log the same answer with both `record-answer` and older study logging.
-
-For passive teaching, do not silently capture generic explanations. First enable a memory session, then use `record-passive` for the teaching content that should be retained.
-
-## Context Injection
-
-Claude is configured through `.claude/settings.json`; Gemini is configured through `.gemini/settings.json`. Both run `src/precompact_memory_inject.py` for compact recent memory context injection. Gemini uses `BeforeAgent` and emits JSON with `hookSpecificOutput.additionalContext` when memory exists.
-
-Context compression checkpoints still require notification and user approval. The hook injects recent memory context; it does not silently approve transcript compression or user-facing session digests.
+- For partial/wrong answers, include `--error-type`, `--misconception`, and `--correction`.
+- Write a specific, actionable `--next-strategy` at session end.
 
 ## Capability Router
 
@@ -88,7 +81,6 @@ Always intercept:
 - Calendar/scheduling/events -> GCal MCP
 
 Explicit invocation only:
-- Textbook database lookup -> `rag-workflow`
 - Drill, bootcamp, night-float, cross-cover simulation -> `intern-bootcamp`
 - Oral boards, mock oral boards, case defense, board-style case, or written/primary bridge -> `oral-boards`
 - Operative walkthrough -> `intraoperative-guide`
@@ -116,15 +108,13 @@ If validation fails, revise the generated note and rerun the guard. Do not start
 
 ## Learning Artifact Guard
 
-For `study-session`, `oral-boards`, `intern-bootcamp`, `rag-workflow`, and `consult`, heartbeat checkpoint files are not final Obsidian artifacts. Write a rich draft to `data/Sessions/<skill>_<slug>_artifact.md`, install or check it through `src/learning_artifact_guard.py`, then validate the real vault file. Do not claim a learning workflow completed if the guard fails.
+For `study-session`, `oral-boards`, `intern-bootcamp`, and `consult`, write a rich draft to `data/Sessions/<skill>_<slug>_artifact.md`, install or check it through `src/learning_artifact_guard.py`, then validate the real vault file. Do not claim a learning workflow completed if the guard fails.
 
 ## Session-End Protocol
 
 Learning commands are complete only after required workflow steps finish:
-1. Heartbeat/session narrative when applicable.
-2. Review session or vault artifact write/update when applicable.
-3. Concept extraction/sync when applicable.
-4. `memory_orchestrator.py finish-session --repair-fragments --mode apply` succeeds and its memory-quality warnings are surfaced.
-5. `src/universal_post_session_hook.py` succeeds or its report is inspected and failures are surfaced.
+1. Review session or vault artifact write/update when applicable.
+2. Concept extraction when applicable.
+3. `study_memory.py end-session` with a specific, actionable `--next-strategy`.
 
-If the user exits abruptly, finalize with available data and do not claim full completion if the post-session hook failed.
+If the user exits abruptly, finalize with available data and do not claim full completion.

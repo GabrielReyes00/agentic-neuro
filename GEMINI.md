@@ -44,7 +44,7 @@ Use explicit branch targets in command workflows: `If X -> skip to Step N` / `If
 Commands longer than 2 minutes should surface timeout and use the documented fallback. First-call retrieval latency around 30-45 seconds is expected.
 
 Default model: `gemini-3-flash-preview`.
-Use `gemini-3.1-pro` for `/intern-bootcamp`, `/oral-boards`, `/rag-workflow`, `/study-session`, `/generate-report`, `/intraoperative-guide`, `/study-material`, `/consult`, and `/anki-sync`. `/study-material` generation is a Pro-only workflow by default: if currently running on a Flash-class model, stop before generation and ask Gabriel to rerun on `gemini-3.1-pro` unless he explicitly accepts a lower-quality draft. `/grand-rounds` may run on Gemini 3 Flash for routine deck-building; escalate to Pro only when dense article critique, difficult statistics, or complex case synthesis warrants it.
+Use `gemini-3.1-pro` for `/intern-bootcamp`, `/oral-boards`, `/study-session`, `/generate-report`, `/intraoperative-guide`, `/study-material`, `/consult`, and `/anki-sync`. `/study-material` generation is a Pro-only workflow by default: if currently running on a Flash-class model, stop before generation and ask Gabriel to rerun on `gemini-3.1-pro` unless he explicitly accepts a lower-quality draft. `/grand-rounds` may run on Gemini 3 Flash for routine deck-building; escalate to Pro only when dense article critique, difficult statistics, or complex case synthesis warrants it.
 
 After editing `.toml` descriptors: `/commands reload`.
 
@@ -91,7 +91,7 @@ At 12+ turns in study sessions, notify user and offer digest before continuing. 
 - **study-material**: `Study Material/<Title>.md` + INDEX. Title Case from source doc name. Must pass `src/study_material_guard.py` before claiming success or starting a drill.
 - **grand-rounds**: `Presentations/Cases/<Title>.md` or `Presentations/Articles/<Title>.md` via `src/grand_rounds_writer.py` with `--require-quality-gate`. Scrub PHI before case writes.
 - **consult**: `Consults/<Topic Title>.md`. Focused pocket-card vault note for ward reference -- brief lecture model, not encyclopedic. Agent writes the pocket card directly. If a prior consult on the same topic exists, append an `## Encounter -- YYYY-MM-DD` section. Dual-source Anki cards: lecture content (thresholds, drugs, doses) + verification question misses. Memory recall informs teaching approach, never content omission. No H1, YAML at bottom.
-- **Standalone learning sessions** (intern-bootcamp, study-session, rag-workflow):
+- **Standalone learning sessions** (intern-bootcamp, study-session):
   1. `study_memory.py log-answer` after every active answer.
   2. Session-end: `study_memory.py end-session` -> write `Review Sessions/` file. Must pass `src/learning_artifact_guard.py`.
 - **Doc-anchored sessions** (study-review, study-material drill): No vault artifact -- the memory layer (`study_memory.py`) is the durable record. `log-answer --doc "<path>"` after each answer. `end-session` at close.
@@ -221,7 +221,6 @@ Default: answer directly from model knowledge. Skills are opt-in -- never auto-t
 ### Explicit Invocation Only
 | Trigger | Route |
 |---|---|
-| `/rag-workflow`, "search my textbooks for", "RAG this" | `rag-workflow` |
 | `/intern-bootcamp`, "drill me", "run a scenario" | `intern-bootcamp` |
 | `/oral-boards`, "case me", "run a mock oral", "written-to-oral bridge" | `oral-boards` |
 | `/intraoperative-guide`, "walk me through the surgery for" | `intraoperative-guide` |
@@ -272,6 +271,6 @@ remove --claim-id "ID"           # drop a confirmed duplicate from queue
 
 # lance_retriever.py — textbook RAG
 compare "q" --stdout [--no-frontier]   # retrieve + rerank + distill, print context to stdout (preferred)
-compare "q" [--output path] [--append] [--visual] [--no-distill] [--no-learner] [--no-frontier]  # file-based output
-compare_multi "sq1" "sq2" [--no-frontier] | list_textbooks
+compare "q" [--output path] [--no-frontier]  # file-based output (rare)
+list_textbooks
 ```

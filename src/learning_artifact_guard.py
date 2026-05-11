@@ -72,19 +72,6 @@ ARTIFACT_CONFIG = {
         ],
         "markers": ["Decision", "Order", "Escalation", "SBAR", "I-PASS", "CUS"],
     },
-    "rag-workflow": {
-        "dirname": "Review Sessions",
-        "tag": "skill/rag-workflow",
-        "required_sections": [
-            "Retrieval Summary",
-            "Source Coverage",
-            "Synthesis",
-            "Gap Check",
-            "Drill Or Application Log",
-            "Next Targets",
-        ],
-        "markers": ["Source", "Gap", "Synthesis", "Question", "Application"],
-    },
     "consult": {
         "dirname": "Consults",
         "tag": "skill/consult",

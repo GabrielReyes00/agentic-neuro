@@ -87,7 +87,7 @@ After Gabriel commits to an answer, reveal progressively. Grade the answer brief
 - **study-material**: `Study Material/<Title>.md` + INDEX. Title Case from source doc name.
 - **grand-rounds**: `Presentations/Cases/<Title>.md` or `Presentations/Articles/<Title>.md` via `src/grand_rounds_writer.py`, plus `Presentations/INDEX.md` and `data/Sessions/grand_rounds_<slug>_manifest.json`. Generated `.pptx` lives on Desktop. No H1, bottom YAML. Scrub PHI before case writes. Run the deck quality gate with `--require-quality-gate`. Rehearsal is optional; memory logging begins only if rehearsal starts.
 - **consult**: `Consults/<Topic Title>.md`. Focused pocket-card vault note for ward reference — brief lecture model, not encyclopedic. Agent writes the pocket card directly (no dedicated writer script). If a prior consult on the same topic exists, append an `## Encounter — YYYY-MM-DD` section rather than creating a duplicate. Dual-source Anki cards: lecture content (thresholds, drugs, doses) + verification question misses. Memory recall informs teaching approach, never content omission. No H1, YAML at bottom.
-- **Standalone learning sessions** (intern-bootcamp, study-session, rag-workflow):
+- **Standalone learning sessions** (intern-bootcamp, study-session):
   1. `study_memory.py log-answer` after every active answer (see §7d).
   2. Session-end: `study_memory.py end-session` → Write tool for final vault file.
 - **Doc-anchored sessions** (study-review): No vault artifact — the memory layer (`study_memory.py`) is the durable record. Source doc can be from `Reports/` or `Study Material/`. `log-answer --doc "<path>"` after each answer. `end-session` at close.
@@ -135,7 +135,7 @@ tags: [type/concept, domain/<domain>, source/agent]
 ```
 
 Atomic, glossary-level. Only create concepts useful as wikilink targets.
-**Triggers**: generate-report, rag-workflow, intraoperative-guide, study-material, intern-bootcamp, oral-boards, consult, grand-rounds.
+**Triggers**: generate-report, intraoperative-guide, study-material, intern-bootcamp, oral-boards, consult, grand-rounds.
 
 ### §7d Memory Layer
 
@@ -229,7 +229,6 @@ python3 src/study_memory.py recall --topic "<new topic>"
 ### Tier 2 — Explicit Invocation Only
 | Trigger | Route |
 |---|---|
-| `/rag-workflow`, "search my textbooks for", "RAG this" | `rag-workflow` |
 | `/intern-bootcamp`, "drill me", "run a scenario" | `intern-bootcamp` |
 | `/oral-boards`, "case me", "run a mock oral", "written-to-oral bridge" | `oral-boards` |
 | `/intraoperative-guide`, "walk me through the surgery for" | `intraoperative-guide` |
@@ -241,10 +240,10 @@ python3 src/study_memory.py recall --topic "<new topic>"
 ### Case Log Bridge
 | Trigger | Route |
 |---|---|
-| "review the [X] case" | `rag-workflow` — read Case Log, Socratic context |
+| "review the [X] case" | `consult` or `study-session` — read Case Log, teach from it |
 | "make cards from [X] case log" | `anki-sync` — read Key Takeaways |
 | "extract gaps from [X] case" | `knowledge-map` — read Gaps, log to KG |
-| "anatomical review for [X] case" | `rag-workflow` — read Procedure/Approach, RAG on anatomy |
+| "anatomical review for [X] case" | `consult` — read Procedure/Approach, RAG on anatomy |
 
 ### Tier 3 — Answer Directly
 Clinical questions, explanations, comparisons, coding: model knowledge. Offer RAG if depth warrants.
@@ -285,6 +284,6 @@ remove --claim-id "ID"           # drop a confirmed duplicate from queue
 
 # lance_retriever.py — textbook RAG
 compare "q" --stdout [--no-frontier]   # retrieve + rerank + distill, print context to stdout (preferred)
-compare "q" [--output path] [--append] [--visual] [--no-distill] [--no-learner] [--no-frontier]  # file-based output
-compare_multi "sq1" "sq2" [--no-frontier] | list_textbooks
+compare "q" [--output path] [--no-frontier]  # file-based output (rare)
+list_textbooks
 ```

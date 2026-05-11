@@ -45,33 +45,6 @@ class LanceRetrieverIntegrationTests(unittest.TestCase):
         self.assertNotIn("Reference section", context)
         self.assertIn("No external frontier notes provided", context)
 
-    def test_merge_source_blocks_deduplicates_and_preserves_frontier(self) -> None:
-        existing = (
-            "Query:\naneurysm clipping\n\n"
-            "Source Knowledge:\n"
-            "[P1] [TEXTBOOK THEORY] Youmans\n"
-            "Temporary clipping softens the aneurysm before final clip placement.\n\n"
-            "Frontier Evidence:\nFrontier note"
-        )
-        new = (
-            "Query:\nclip reconstruction\n\n"
-            "Source Knowledge:\n"
-            "[P2] [TEXTBOOK THEORY] Winn\n"
-            "Temporary clipping softens the aneurysm before final clip placement.\n\n"
-            "[P3] [TEXTBOOK THEORY] Rhoton\n"
-            "Fenestrated clips can reconstruct the neck when branch anatomy is complex.\n\n"
-            "Frontier Evidence:\nIgnored new frontier"
-        )
-
-        merged, added, skipped = lr._merge_source_blocks(existing, new)
-
-        self.assertEqual(added, 1)
-        self.assertEqual(skipped, 1)
-        self.assertIn("Sub-query: clip reconstruction", merged)
-        self.assertIn("Fenestrated clips can reconstruct", merged)
-        self.assertIn("Frontier Evidence:\nFrontier note", merged)
-        self.assertNotIn("Ignored new frontier", merged)
-
     def test_search_returns_results(self) -> None:
         if not (ROOT / "neurosurgery_v4.lance").exists():
             self.skipTest("local LanceDB fixture is not present")

@@ -200,7 +200,7 @@ The interaction should feel like an excellent senior resident tutor: natural, di
 
 ## Review Artifacts
 
-Doc-anchored sessions (study-review, study-material drills) do not write vault artifacts — the memory layer is the durable record. Standalone sessions (study-session, intern-bootcamp, oral-boards, rag-workflow) write `Review Sessions/<Topic>.md` with outcomes, specific gaps, corrections, next focus, and related vault links. No H1 when the filename is the title.
+Doc-anchored sessions (study-review, study-material drills) do not write vault artifacts — the memory layer is the durable record. Standalone sessions (study-session, intern-bootcamp, oral-boards) write `Review Sessions/<Topic>.md` with outcomes, specific gaps, corrections, next focus, and related vault links. No H1 when the filename is the title.
 
 ## Final Artifact Guard
 
@@ -208,7 +208,7 @@ Skills that write vault artifacts (standalone sessions, consults, reports, guide
 
 ```bash
 python3 src/learning_artifact_guard.py install \
-  --artifact-type "<study-session|oral-boards|intern-bootcamp|rag-workflow|consult>" \
+  --artifact-type "<study-session|oral-boards|intern-bootcamp|consult>" \
   --draft "data/Sessions/<skill>_<slug>_artifact.md" \
   --title "<Title Case Title>" \
   --topic "<topic>" \
@@ -228,7 +228,6 @@ Required final sections by skill:
 | `study-session` | Session Plan, Question And Answer Log, Component Outcomes, Gaps And Error Metadata, Next Session Priority |
 | `oral-boards` | Opening Stem, Stage Log, Score, Unsafe Issues, Corrected Concepts, Next Practice Targets |
 | `intern-bootcamp` | Scenario, Decision Log, Orders, Escalation And Communication, Chief Debrief, Weaknesses And Error Types, Next Targets |
-| `rag-workflow` | Retrieval Summary, Source Coverage, Synthesis, Gap Check, Drill Or Application Log, Next Targets |
 | `consult` | One-Liner, Key Management Points, Critical Thresholds, Red Flags, Discriminators, Related In This Vault |
 
 A checkpoint-only note is not completion.

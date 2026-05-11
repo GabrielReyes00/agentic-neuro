@@ -101,12 +101,12 @@ class LearningArtifactGuardTests(unittest.TestCase):
     def test_check_draft_cli_does_not_require_vault_path_or_yaml(self):
         with tempfile.TemporaryDirectory() as tmp:
             draft = Path(tmp) / "draft.md"
-            draft.write_text(_body_for("debrief"), encoding="utf-8")
+            draft.write_text(_body_for("consult"), encoding="utf-8")
             with redirect_stdout(StringIO()):
                 rc = guard.main([
                     "check-draft",
                     "--draft", str(draft),
-                    "--artifact-type", "debrief",
+                    "--artifact-type", "consult",
                     "--min-words", "120",
                 ])
         self.assertEqual(0, rc)

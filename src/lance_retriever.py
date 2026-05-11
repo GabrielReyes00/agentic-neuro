@@ -2,15 +2,13 @@
 LanceDB Retrieval Module — Primary retrieval engine for agentic-neuro.
 
 Pipeline: BGE-M3 encode → Dense search + FTS → RRF fusion → MiniLM-L6 rerank
-          → Reference filtering → Parent-child expansion
+          → Entity-aware filtering → Parent-child expansion
           → Adaptive Context Distillation (axis decomposition + budgeting) → Output
 
 CLI:
-    python3 src/lance_retriever.py compare "query" [--append] [--output path] [--no-distill]
-    python3 src/lance_retriever.py compare_multi "sq1" "sq2" "sq3" [--no-distill]
+    python3 src/lance_retriever.py compare "query" --stdout [--no-frontier]
     python3 src/lance_retriever.py list_textbooks
     python3 src/lance_retriever.py search "query" [--json]
-    python3 src/lance_retriever.py digest [--input path] [--output path]
 """
 
 import json
@@ -72,9 +70,6 @@ STOPWORDS = {
     "between", "through", "being", "those", "where", "very", "well", "much",
     "many", "only", "both", "same", "often", "usually", "typically",
 }
-
-# Regex for splitting source blocks in scratch_context.md (for --append merge)
-_SOURCE_BLOCK_RE = re.compile(r'^(?:\[P\d+\]\s*)?\[([A-Za-z][A-Za-z _]*)\]\s*', re.MULTILINE)
 
 
 # ── Lazy-loaded singletons ──────────────────────────────────────────────────
@@ -1804,7 +1799,6 @@ def retrieve(
     reranker_key: str = DEFAULT_RERANKER,
     use_parent_expansion: bool = True,
     visual: bool = False,
-    use_learner: bool = True,
 ) -> dict:
     """Full retrieval pipeline: encode → dense+FTS → RRF → rerank → expand."""
     t_total_start = time.perf_counter()
@@ -1843,14 +1837,6 @@ def retrieve(
     if entities and reranked:
         reranked = _apply_entity_aware_filtering(reranked, query, entities)
     post_entity_count = len(reranked)
-
-    # Learner-aware rerank modifier (tiebreaker only, never filters)
-    learner_applied = False
-    if use_learner and reranked:
-        learner_data = _load_learner_concepts(query)
-        if learner_data:
-            reranked = _apply_learner_modifier(reranked, learner_data)
-            learner_applied = True
 
     t0 = time.perf_counter()
     if use_parent_expansion and reranked:
@@ -1900,7 +1886,6 @@ def retrieve(
             "final_passages": len(final_hits),
             "unique_sources": len(unique_sources),
             "source_books": sorted(unique_sources),
-            "learner_modifier_applied": learner_applied,
         },
     }
 
@@ -2115,375 +2100,6 @@ def build_scratch_context(result: dict, frontier_text: str = "",
     return context
 
 
-def _merge_source_blocks(existing_content: str, new_prompt: str, max_total_passages: int = 20):
-    """Merge new Source Knowledge passages into existing scratch_context.md.
-    Deduplicates by 220-char fingerprint. Returns (merged, added, skipped).
-    """
-    def _fingerprint(text: str) -> str:
-        return text[:220].lower().strip()
-
-    def _split_passages(source_block: str) -> list:
-        if not source_block.strip():
-            return []
-        parts = _SOURCE_BLOCK_RE.split(source_block)
-        passages = []
-        i = 1
-        while i < len(parts) - 1:
-            label = parts[i]
-            body = parts[i + 1]
-            passages.append(f"[{label}]{body}")
-            i += 2
-        if not passages and source_block.strip():
-            passages = [source_block.strip()]
-        return passages
-
-    # Parse existing
-    existing_query = ""
-    existing_source = ""
-    existing_frontier = ""
-
-    if "Source Knowledge:" in existing_content:
-        pre_source, rest = existing_content.split("Source Knowledge:", 1)
-        existing_query = pre_source.replace("Query:", "").strip()
-        if "Frontier Evidence:" in rest:
-            existing_source, existing_frontier = rest.split("Frontier Evidence:", 1)
-            existing_source = existing_source.strip()
-            existing_frontier = existing_frontier.strip()
-        else:
-            existing_source = rest.strip()
-    else:
-        existing_query = existing_content.strip()
-
-    # Parse new
-    new_query = ""
-    new_source = ""
-    if "Source Knowledge:" in new_prompt:
-        pre, rest = new_prompt.split("Source Knowledge:", 1)
-        new_query = pre.replace("Query:", "").strip()
-        if "Frontier Evidence:" in rest:
-            new_source = rest.split("Frontier Evidence:", 1)[0].strip()
-        else:
-            new_source = rest.strip()
-
-    # Deduplicate and merge
-    existing_passages = _split_passages(existing_source)
-    new_passages = _split_passages(new_source)
-
-    seen_fps = set()
-    for p in existing_passages:
-        lines = p.split("\n", 1)
-        body = lines[1] if len(lines) > 1 else lines[0]
-        seen_fps.add(_fingerprint(body))
-
-    added = 0
-    skipped = 0
-    for p in new_passages:
-        if len(existing_passages) >= max_total_passages:
-            break
-        lines = p.split("\n", 1)
-        body = lines[1] if len(lines) > 1 else lines[0]
-        fp = _fingerprint(body)
-        if fp in seen_fps:
-            skipped += 1
-            continue
-        seen_fps.add(fp)
-        existing_passages.append(p)
-        added += 1
-
-    merged_query = existing_query
-    if new_query and new_query not in merged_query:
-        merged_query += f" | Sub-query: {new_query}"
-
-    merged_source = "\n\n".join(existing_passages)
-    frontier_section = existing_frontier if existing_frontier else (
-        "No external frontier notes provided. "
-        "IMPORTANT: Do NOT use [Frontier] tags or fabricate external citations."
-    )
-
-    merged = (
-        f"Query:\n{merged_query}\n\n"
-        f"Source Knowledge:\n{merged_source}\n\n"
-        f"Frontier Evidence:\n{frontier_section}\n"
-    )
-    return merged, added, skipped
-
-
-# ── Learner-aware rerank modifier (KG ↔ Retriever bridge) ─────────────────────
-
-# Learner modifier constants — intentionally tiny (tiebreaker only)
-_LEARNER_GAP_BONUS = 0.05
-_LEARNER_CONFIRMED_PENALTY = 0.03
-_LEARNER_CONTEXT_MAX_AGE_SEC = 1800  # 30 minutes
-
-
-def _load_learner_concepts(query: str) -> Optional[dict]:
-    """Load gap/confirmed concept keywords from pre-flight learner context JSON.
-
-    Reads data/Sessions/learner_context.json (generated by Step 0 pre-flight).
-    Returns None if file is missing, stale (>30 min), or malformed.
-    """
-    ctx_path = SESSIONS_DIR / "learner_context.json"
-    try:
-        if not ctx_path.exists():
-            return None
-        age_sec = time.time() - ctx_path.stat().st_mtime
-        if age_sec > _LEARNER_CONTEXT_MAX_AGE_SEC:
-            return None
-
-        ctx = json.loads(ctx_path.read_text(encoding="utf-8"))
-        topics = ctx.get("topics", [])
-        if not topics:
-            return None
-
-        gap_keywords = set()
-        confirmed_keywords = set()
-
-        for topic in topics:
-            for concept in topic.get("concepts_unknown", []):
-                concept_text = concept.get("concept", "")
-                if concept_text:
-                    gap_keywords |= _extract_keywords(concept_text)
-            for concept in topic.get("concepts_known", []):
-                concept_text = concept.get("concept", "")
-                if concept_text:
-                    confirmed_keywords |= _extract_keywords(concept_text)
-
-        if not gap_keywords and not confirmed_keywords:
-            return None
-
-        return {"gap_keywords": gap_keywords, "confirmed_keywords": confirmed_keywords}
-    except Exception:
-        return None
-
-
-def _apply_learner_modifier(hits: list, learner_data: dict) -> list:
-    """Apply gentle score modifier based on learner's known/gap concepts.
-
-    This is a TIEBREAKER only — modifier capped to [-0.03, +0.05].
-    Confirmed concepts still appear at full weight if they're the best matches.
-    """
-    gap_kw = learner_data.get("gap_keywords", set())
-    confirmed_kw = learner_data.get("confirmed_keywords", set())
-
-    if not gap_kw and not confirmed_kw:
-        return hits
-
-    for hit in hits:
-        hit_kw = _extract_keywords(hit.get("text", ""))
-
-        gap_overlap = len(hit_kw & gap_kw) / max(1, len(gap_kw))
-        confirmed_overlap = len(hit_kw & confirmed_kw) / max(1, len(confirmed_kw))
-
-        modifier = (gap_overlap * _LEARNER_GAP_BONUS) - (confirmed_overlap * _LEARNER_CONFIRMED_PENALTY)
-        modifier = max(-_LEARNER_CONFIRMED_PENALTY, min(_LEARNER_GAP_BONUS, modifier))
-
-        hit["rank_score"] = round(hit.get("rank_score", 0.0) + modifier, 4)
-        hit["learner_modifier"] = round(modifier, 4)
-
-    hits.sort(key=lambda x: (x.get("rank_score", 0.0), x.get("similarity", 0.0)), reverse=True)
-    return hits
-
-
-# ── Transform directives pre-processor ─────────────────────────────────────
-# Converts raw learner_context.json + confusion_matrix.json into a compact
-# transform_directives.json that the Transform subagent can consume directly,
-# saving ~1,000-1,500 tokens per invocation on mechanical JSON parsing.
-
-def prepare_transform_directives(query: str, output_path: str = "") -> dict:
-    """Pre-compute Transform subagent directives from learner context + confusion matrix.
-
-    Reads learner_context.json and confusion_matrix.json, performs all conditional
-    routing logic in Python, and writes a compact directives JSON. The Transform
-    subagent reads this instead of parsing raw learner/confusion data.
-
-    Returns the directives dict (also written to disk).
-    """
-    directives: Dict[str, Any] = {"query": query, "has_learner_context": False}
-    learner_path = SESSIONS_DIR / "learner_context.json"
-    matrix_path = DATA_DIR / "confusion_matrix.json"
-    out_path = Path(output_path) if output_path else (
-        SESSIONS_DIR / "transform_directives.json"
-    )
-
-    # ── Parse learner context ──
-    learner = None
-    try:
-        if learner_path.exists():
-            age_sec = time.time() - learner_path.stat().st_mtime
-            if age_sec < 1800:  # 30-min staleness window
-                learner = json.loads(learner_path.read_text(encoding="utf-8"))
-    except Exception:
-        pass
-
-    if not learner:
-        directives["has_learner_context"] = False
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(json.dumps(directives, indent=2), encoding="utf-8")
-        return directives
-
-    directives["has_learner_context"] = True
-
-    # Suggested depth
-    suggested_depth = learner.get("suggested_depth", 1)
-    directives["suggested_depth"] = suggested_depth
-    directives["skip_anchor"] = suggested_depth >= 3
-
-    learner_profile = learner.get("learner_profile", {}) or {}
-    if learner_profile:
-        directives["learner_profile"] = learner_profile
-        directives["advanced_ms4_pgy1_profile"] = (
-            learner_profile.get("training_stage") == "advanced_ms4_entering_pgy1_neurosurgery"
-        )
-        directives["teaching_depth_policy"] = learner_profile.get("teaching_depth_policy", "")
-        directives["target_depth_when_ready"] = learner_profile.get("target_depth_when_ready", "")
-        directives["starting_probe"] = learner_profile.get("starting_probe", "")
-        directives["default_question_style"] = learner_profile.get("default_question_style", "")
-        directives["tone"] = learner_profile.get("tone", "")
-
-    # adaptive_guidance is in learner_context.json — not duplicated here.
-    # Derive skip-foundations directly from suggested_depth (no prose parsing needed).
-    directives["skip_foundations"] = suggested_depth >= 3
-
-    # Per-topic concept gaps and known concepts
-    concepts_unknown = []
-    concepts_known = []
-    same_topic_review_due = []
-    for topic in learner.get("topics", []):
-        for cu in topic.get("concepts_unknown", []):
-            concepts_unknown.append({
-                "concept": cu.get("concept", ""),
-                "error_type": cu.get("error_type", ""),
-                "misconception": cu.get("misconception", ""),
-            })
-        for ck in topic.get("concepts_known", []):
-            concepts_known.append(ck.get("concept", ""))
-        # Concepts due for spaced review on this topic
-        for rd in topic.get("same_topic_review_due", []):
-            same_topic_review_due.append(rd)
-
-    directives["concepts_unknown"] = concepts_unknown
-    directives["concepts_known"] = concepts_known
-    directives["same_topic_review_due"] = same_topic_review_due
-
-    # Cross-capability patterns
-    patterns = learner.get("cross_capability_patterns", [])
-    directives["cross_contamination_prone"] = any(
-        p.get("type") == "cross_contamination_prone" for p in patterns
-    )
-    directives["cognitive_pattern_alerts"] = [
-        {"type": p.get("type", ""), "description": p.get("description", "")}
-        for p in patterns if p.get("type")
-    ]
-
-    # Remediation directives (top priority)
-    remediation = learner.get("remediation_directives", [])
-    if remediation:
-        top = remediation[0] if isinstance(remediation[0], dict) else {}
-        directives["top_remediation"] = {
-            "concept": top.get("concept", ""),
-            "recommended_mode": top.get("recommended_mode", ""),
-            "framing_hint": top.get("framing_hint", ""),
-        }
-    else:
-        directives["top_remediation"] = None
-
-    # Transfer candidates
-    transfer = learner.get("transfer_candidates", [])
-    directives["transfer_candidates"] = [
-        {
-            "concept": t.get("concept", ""),
-            "original_topic": t.get("topic", ""),
-            "domain": t.get("domain", ""),
-        }
-        for t in transfer[:3]  # Cap at 3 to save tokens
-    ]
-
-    # Calibration profile
-    cal = learner.get("calibration_profile", {})
-    if cal and cal.get("domain_alerts"):
-        directives["calibration_domain_alerts"] = cal["domain_alerts"]
-    else:
-        directives["calibration_domain_alerts"] = []
-
-    # concepts_due_for_review lives in concept_review_queue.json — not duplicated here
-
-    # ── Confusion matrix lookup ──
-    confusable_pairs = []
-    if directives["cross_contamination_prone"] or True:  # Always check — cheap in Python
-        try:
-            if matrix_path.exists():
-                matrix = json.loads(matrix_path.read_text(encoding="utf-8"))
-                query_lower = query.lower()
-                query_kw = _extract_keywords(query)
-                # Expand query keywords with medical abbreviations for matching
-                # e.g., "subarachnoid hemorrhage" → also add "sah"
-                query_expanded = set(query_kw)
-                for full_form, abbrev in _MEDICAL_ABBREVIATIONS.items():
-                    if full_form in query_lower:
-                        query_expanded.add(abbrev)
-                    # Also check if any abbreviation is in the query
-                    if abbrev in query_kw:
-                        query_expanded |= _extract_keywords(full_form)
-
-                for pair in matrix:
-                    a = pair.get("concept_a", "").lower()
-                    b = pair.get("concept_b", "").lower()
-                    a_kw = _extract_keywords(a)
-                    b_kw = _extract_keywords(b)
-                    # Also expand concept keywords with abbreviations
-                    a_expanded = set(a_kw)
-                    b_expanded = set(b_kw)
-                    for full_form, abbrev in _MEDICAL_ABBREVIATIONS.items():
-                        if full_form in a:
-                            a_expanded.add(abbrev)
-                        if abbrev in a_kw:
-                            a_expanded |= _extract_keywords(full_form)
-                        if full_form in b:
-                            b_expanded.add(abbrev)
-                        if abbrev in b_kw:
-                            b_expanded |= _extract_keywords(full_form)
-
-                    # Match if expanded query keywords overlap meaningfully
-                    overlap_a = len(query_expanded & a_expanded)
-                    overlap_b = len(query_expanded & b_expanded)
-                    if overlap_a >= 2 or overlap_b >= 2:
-                        confusable_pairs.append({
-                            "concept_a": pair.get("concept_a", ""),
-                            "concept_b": pair.get("concept_b", ""),
-                            "disambiguation_axis": pair.get("disambiguation_axis", ""),
-                            "relevance": "direct" if (overlap_a >= 3 or overlap_b >= 3) else "adjacent",
-                        })
-        except Exception:
-            pass
-
-    directives["confusable_pairs"] = confusable_pairs
-    directives["disambiguation_required"] = (
-        directives["cross_contamination_prone"] and len(confusable_pairs) > 0
-    )
-
-    # Write output
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(directives, indent=2), encoding="utf-8")
-    return directives
-
-
-# ── Knowledge graph hook (silent, never blocks) ──────────────────────────────
-
-def _log_to_knowledge_graph(query: str, confidence: str = "medium",
-                            source_books: list = None):
-    """Log retrieval metadata to knowledge graph. Never raises."""
-    try:
-        import sys
-        sys.path.insert(0, str(BASE_DIR / "src"))
-        from knowledge_graph import KnowledgeGraph
-        KnowledgeGraph().log_rag_query(
-            query=query, confidence=confidence,
-            hit_counts={}, source_books=source_books or [],
-        )
-    except Exception:
-        pass
-
-
 # ── High-level CLI commands ──────────────────────────────────────────────────
 
 def _run_frontier_search(query: str) -> bool:
@@ -2597,10 +2213,9 @@ def _detect_coverage_gaps(hits: list, axes: List[str]) -> List[str]:
     return gap_axes
 
 
-def compare(query: str, append: bool = False, output_file: str = "",
+def compare(query: str, output_file: str = "",
             visual: bool = False, no_distill: bool = False,
-            use_learner: bool = True, no_frontier: bool = False,
-            stdout: bool = False):
+            no_frontier: bool = False, stdout: bool = False):
     """Retrieve, build context, and deliver to the agent.
 
     This is the primary entrypoint called by the agent workflow.
@@ -2620,7 +2235,7 @@ def compare(query: str, append: bool = False, output_file: str = "",
         disabled=no_frontier,
     )
 
-    result = retrieve(query, visual=visual, use_learner=use_learner)
+    result = retrieve(query, visual=visual)
 
     # Adaptive Context Distillation (between retrieval and context building)
     pre_distill_count = len(result["hits"])
@@ -2660,7 +2275,7 @@ def compare(query: str, append: bool = False, output_file: str = "",
                         entity_suffix = " ".join(missing_entities)
                         gap_query = f"{gap_axis} {entity_suffix}"
 
-                gap_result = retrieve(gap_query, visual=False, use_learner=use_learner)
+                gap_result = retrieve(gap_query, visual=False)
                 if gap_result["hits"]:
                     # Filter gap results: require minimum entity co-occurrence
                     # with original query entities (ratio ≥ 0.5)
@@ -2724,104 +2339,11 @@ def compare(query: str, append: bool = False, output_file: str = "",
         print(prompt_content)
         print(f"OK {n_passages} passages | {n_sources} sources | {ms:.0f}ms",
               file=sys.stderr)
-    elif append and output_file:
-        context_file = Path(output_file)
-        context_file.parent.mkdir(parents=True, exist_ok=True)
-        if context_file.exists():
-            existing = context_file.read_text(encoding="utf-8")
-            merged, added, skipped = _merge_source_blocks(existing, prompt_content)
-            context_file.write_text(merged, encoding="utf-8")
-            print(f"OK appended — {added} new, {skipped} dupes | "
-                  f"{result['metadata']['unique_sources']} src | "
-                  f"{result['latency']['total_ms']:.0f}ms")
-        else:
-            context_file.write_text(prompt_content, encoding="utf-8")
-            print(f"OK {n_passages} passages | {n_sources} sources | {ms:.0f}ms")
     else:
         context_file = Path(output_file) if output_file else SESSIONS_DIR / "scratch_context.md"
         context_file.parent.mkdir(parents=True, exist_ok=True)
         context_file.write_text(prompt_content, encoding="utf-8")
         print(f"OK {n_passages} passages | {n_sources} sources | {ms:.0f}ms")
-
-    _log_to_knowledge_graph(
-        query, confidence="medium",
-        source_books=result["metadata"]["source_books"],
-    )
-
-
-def compare_multi(queries: list, max_passages: int = 20, no_distill: bool = False,
-                  use_learner: bool = True, no_frontier: bool = False):
-    """Run multiple sub-queries, merge results into scratch_context.md."""
-    if not queries:
-        print("No queries provided.")
-        return
-
-    combined_query = " ".join(queries[:2]) if queries else ""
-    frontier_thread, frontier_started_at, frontier_status = _start_frontier_search(
-        combined_query,
-        disabled=no_frontier or not bool(queries),
-    )
-    frontier_text_once = ""
-
-    context_file = SESSIONS_DIR / "scratch_context.md"
-    context_file.parent.mkdir(parents=True, exist_ok=True)
-
-    t_start = time.time()
-    results_content = []
-    statuses = []
-
-    for i, q in enumerate(queries):
-        t0 = time.time()
-        result = retrieve(q, use_learner=use_learner)
-
-        # Adaptive Context Distillation per sub-query
-        if not no_distill and result["hits"]:
-            distill_result = _distill_by_axes(q, result["hits"])
-            result["hits"] = distill_result["hits"]
-            result["axes"] = distill_result["axes"]
-            result["distilled"] = distill_result["distilled"]
-
-        # Wait for frontier before first context build.
-        if frontier_thread is not None:
-            frontier_text_once = _finish_frontier_search(
-                frontier_thread,
-                frontier_started_at,
-                frontier_status,
-            )
-            frontier_thread = None
-        frontier_text = frontier_text_once
-        prompt = build_scratch_context(result, frontier_text)
-        results_content.append(prompt)
-        elapsed = time.time() - t0
-        n_src = result["metadata"]["unique_sources"]
-        statuses.append(f"  sq{i+1}: {elapsed:.1f}s | {n_src} books")
-
-    # Merge all sub-query results
-    if len(results_content) == 1:
-        merged_content = results_content[0]
-    else:
-        merged_content = results_content[0]
-        total_added = 0
-        total_skipped = 0
-        for prompt in results_content[1:]:
-            merged_content, added, skipped = _merge_source_blocks(
-                merged_content, prompt, max_total_passages=max_passages
-            )
-            total_added += added
-            total_skipped += skipped
-
-    context_file.write_text(merged_content, encoding="utf-8")
-
-    # Knowledge graph signals
-    for q in queries:
-        _log_to_knowledge_graph(q)
-
-    t_total = time.time() - t_start
-    print(f"OK compare_multi — {len(queries)} queries in {t_total:.1f}s")
-    for s in statuses:
-        print(s)
-    if len(results_content) > 1:
-        print(f"  merge: {total_added} added, {total_skipped} dupes skipped")
 
 
 def list_textbooks():
@@ -2849,565 +2371,6 @@ def list_textbooks():
     print(f"  {total:>5d}  TOTAL ({len(entries)} books)")
 
 
-def generate_digest(transform_path: str = None, output_path: str = None) -> str:
-    """Generate a compressed digest of the last synthesis for follow-up context.
-
-    Extracts: key facts, dosages/thresholds, source list, and the Gym question.
-    Strips: prose filler, setup language, redundant citations, narrative paragraphs.
-    Target: ~500-800 tokens (vs 3,000-5,000 for full synthesis).
-    """
-    sessions_dir = SESSIONS_DIR
-    src = Path(transform_path) if transform_path else sessions_dir / "transform_output.md"
-    dst = Path(output_path) if output_path else sessions_dir / "synthesis_digest.md"
-
-    if not src.exists():
-        msg = f"No synthesis found at {src} — run a RAG query first."
-        print(msg)
-        return msg
-
-    raw = src.read_text(encoding="utf-8")
-    lines = raw.split("\n")
-
-    # ── Section parser ──
-    sections: Dict[str, List[str]] = {}
-    current_section = "_preamble"
-    sections[current_section] = []
-
-    for line in lines:
-        if line.startswith("## ") or line.startswith("### "):
-            current_section = line.lstrip("#").strip().lower()
-            sections[current_section] = []
-        else:
-            sections.setdefault(current_section, []).append(line)
-
-    digest_parts: List[str] = []
-    digest_parts.append("## Synthesis Digest (compressed from prior turn)\n")
-
-    # 1. YAML frontmatter — verbatim (in _preamble, between --- lines)
-    preamble = sections.get("_preamble", [])
-    in_frontmatter = False
-    fm_lines: List[str] = []
-    for line in preamble:
-        if line.strip() == "---":
-            in_frontmatter = not in_frontmatter
-            fm_lines.append(line)
-            continue
-        if in_frontmatter:
-            fm_lines.append(line)
-    if fm_lines:
-        digest_parts.append("\n".join(fm_lines))
-        digest_parts.append("")
-
-    # 2. Compress section — verbatim (it's already a mental model summary)
-    for key in ("compress", "compress: mental model", "mental model"):
-        if key in sections:
-            digest_parts.append(f"### Compress")
-            digest_parts.append("\n".join(sections[key]))
-            digest_parts.append("")
-            break
-
-    # 3. Lines with clinical numbers/units (doses, thresholds, timing)
-    #    Scan Build section and others for lines with number+unit patterns
-    unit_pattern = re.compile(
-        r'\d+\s*(?:mg|mcg|µg|mL|L|mmHg|cmH2O|mOsm|%|mm|cm|kg|g/dL|mEq|'
-        r'IU|units?|hrs?|hours?|min|days?|weeks?|months?|q\d+h|mg/kg|'
-        r'mcg/kg|mL/hr|mmol|cc)\b',
-        re.IGNORECASE,
-    )
-    classification_pattern = re.compile(
-        r'\b(?:Grade|Stage|Type|Class|Score|Scale|Fisher|Hunt.?Hess|'
-        r'WFNS|Spetzler|GCS|GOS|mRS|Rankin|Nurick|JOA|ASIA)\b',
-        re.IGNORECASE,
-    )
-    # Sections to mine for clinical facts (skip Anchor — redundant, skip Compress — already included)
-    fact_sections = [k for k in sections if k not in (
-        "_preamble", "compress", "compress: mental model", "mental model",
-        "anchor", "anchor: one-liner", "one-liner",
-    )]
-    clinical_facts: List[str] = []
-    seen_facts: set = set()
-    for sec_key in fact_sections:
-        for line in sections.get(sec_key, []):
-            stripped = line.strip()
-            if not stripped or stripped in seen_facts:
-                continue
-            if unit_pattern.search(stripped) or classification_pattern.search(stripped):
-                clinical_facts.append(line)
-                seen_facts.add(stripped)
-
-    if clinical_facts:
-        digest_parts.append("### Key Clinical Facts")
-        digest_parts.append("\n".join(clinical_facts))
-        digest_parts.append("")
-
-    # 4. Evidence Reconciliation — only if it flags a conflict
-    for key in ("evidence reconciliation", "reconciliation"):
-        if key in sections:
-            conflict_lines = [
-                l for l in sections[key]
-                if any(w in l.lower() for w in (
-                    "conflict", "contradict", "disagree", "discrepan",
-                    "however", "but ", "versus", "vs.", "differs",
-                ))
-            ]
-            if conflict_lines:
-                digest_parts.append("### Evidence Conflicts")
-                digest_parts.append("\n".join(conflict_lines))
-                digest_parts.append("")
-            break
-
-    # 5. Gym question — verbatim
-    for key in ("gym", "gym question", "gym: test yourself", "test yourself"):
-        if key in sections:
-            digest_parts.append("### Gym")
-            digest_parts.append("\n".join(sections[key]))
-            digest_parts.append("")
-            break
-
-    # 6. Red flag / metacognitive highlight lines
-    red_flag_pattern = re.compile(
-        r'(?:red flag|⚠|🚨|warning|caution|never|always|critical|danger|'
-        r'do not|avoid|contraindicated|black.?box)',
-        re.IGNORECASE,
-    )
-    red_flags: List[str] = []
-    for sec_key, sec_lines in sections.items():
-        for line in sec_lines:
-            stripped = line.strip()
-            if stripped and red_flag_pattern.search(stripped) and stripped not in seen_facts:
-                red_flags.append(line)
-                seen_facts.add(stripped)
-    if red_flags:
-        digest_parts.append("### Safety / Red Flags")
-        digest_parts.append("\n".join(red_flags))
-        digest_parts.append("")
-
-    # 7. Source citations — deduplicated
-    citation_pattern = re.compile(r'\[([^\]]+(?:Ch\.|Chapter|p\.|pp\.|ed\.)[^\]]*)\]')
-    source_refs: set = set()
-    for line in lines:
-        for match in citation_pattern.finditer(line):
-            source_refs.add(match.group(1).strip())
-    # Also grab lines that look like source attributions
-    source_line_pattern = re.compile(r'^\s*[-*]\s*\*?\*?Source', re.IGNORECASE)
-    for line in lines:
-        if source_line_pattern.match(line):
-            source_refs.add(line.strip().lstrip("-* "))
-
-    if source_refs:
-        digest_parts.append("### Sources")
-        for ref in sorted(source_refs):
-            digest_parts.append(f"- {ref}")
-        digest_parts.append("")
-
-    digest_text = "\n".join(digest_parts)
-
-    # Write output
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    dst.write_text(digest_text, encoding="utf-8")
-
-    token_est = len(digest_text.split()) * 4 // 3  # rough token estimate
-    print(f"OK digest — {token_est} tokens (est) → {dst}")
-    return digest_text
-
-
-# ── Episodic Memory (LanceDB tier) ─────────────────────────────────────────
-
-EPISODIC_TABLE_NAME = "episodic_memory"
-MEMORY_ITEMS_TABLE_NAME = "memory_items_v2"
-_EPISODIC_TABLE = None
-_MEMORY_ITEMS_TABLE = None
-
-
-def _get_episodic_table(lance_dir: str = "", create_if_missing: bool = True):
-    """Open the episodic_memory LanceDB table (lazy, cached).
-
-    If the table does not exist yet and create_if_missing is True,
-    creates it with the correct schema (empty).
-    """
-    global _EPISODIC_TABLE
-    if _EPISODIC_TABLE is not None:
-        return _EPISODIC_TABLE
-
-    import lancedb
-    lance_dir = lance_dir or DEFAULT_LANCE_DIR
-    db = lancedb.connect(lance_dir)
-
-    existing = _list_lancedb_tables(db)
-    if EPISODIC_TABLE_NAME in existing:
-        _EPISODIC_TABLE = db.open_table(EPISODIC_TABLE_NAME)
-        return _EPISODIC_TABLE
-
-    if not create_if_missing:
-        return None
-
-    import pyarrow as pa
-    schema = pa.schema([
-        pa.field("row_id", pa.string()),
-        pa.field("entry_type", pa.string()),      # 'exchange' | 'episode_summary'
-        pa.field("exchange_id", pa.int64()),
-        pa.field("summary_id", pa.int64()),
-        pa.field("session_ts", pa.string()),
-        pa.field("skill", pa.string()),
-        pa.field("topic_name", pa.string()),
-        pa.field("concept_text", pa.string()),
-        pa.field("domain", pa.string()),
-        pa.field("answer_correct", pa.int64()),
-        pa.field("error_type", pa.string()),
-        pa.field("memory_text", pa.string()),
-        pa.field("dense_vec", pa.list_(pa.float32(), 1024)),
-    ])
-    _EPISODIC_TABLE = db.create_table(EPISODIC_TABLE_NAME, schema=schema)
-    print(f"[lance_retriever] Created episodic_memory table with 1024-dim vectors")
-    return _EPISODIC_TABLE
-
-
-def _existing_episodic_embed_ids(
-    table,
-    candidate_exchange_ids: set[int],
-    candidate_summary_id: int,
-    *,
-    per_id_lookup_cap: int = 96,
-) -> tuple[set[int], bool]:
-    """IDs already present in Lance (O(1) per id via filtered count_rows, or one table scan).
-
-    Avoids loading the full episodic table into pandas for dedup on typical batch sizes.
-    """
-    existing_ex: set[int] = set()
-    summary_exists = False
-    if candidate_summary_id > 0:
-        try:
-            filt = (
-                f"summary_id = {int(candidate_summary_id)} "
-                "AND entry_type = 'episode_summary'"
-            )
-            summary_exists = table.count_rows(filt) > 0
-        except Exception:
-            summary_exists = False
-
-    positive = sorted({int(x) for x in candidate_exchange_ids if int(x) > 0})
-    if not positive:
-        return existing_ex, summary_exists
-
-    if len(positive) <= per_id_lookup_cap:
-        for xid in positive:
-            try:
-                if table.count_rows(f"exchange_id = {int(xid)}") > 0:
-                    existing_ex.add(xid)
-            except Exception:
-                pass
-        return existing_ex, summary_exists
-
-    import pyarrow as pa
-    import pyarrow.compute as pc
-
-    try:
-        arrow = table.to_arrow()
-        ex_col = arrow["exchange_id"]
-        want = pa.array(positive, type=pa.int64())
-        mask = pc.is_in(ex_col, want)
-        filtered = arrow.filter(mask)
-        present = pc.unique(filtered["exchange_id"]).to_pylist()
-        for x in present:
-            if x is not None and int(x) > 0:
-                existing_ex.add(int(x))
-    except Exception:
-        for xid in positive:
-            try:
-                if table.count_rows(f"exchange_id = {int(xid)}") > 0:
-                    existing_ex.add(xid)
-            except Exception:
-                pass
-    return existing_ex, summary_exists
-
-
-def embed_episodes(
-    exchanges: list[dict],
-    episode_summary: dict | None = None,
-    lance_dir: str = "",
-) -> dict:
-    """Embed learning exchanges (and optional episode summary) into LanceDB.
-
-    Each exchange is embedded as: "Q: {question} A: {answer} Correction: {correction}"
-    Episode summaries are embedded using their memory_text field.
-
-    Returns {"rows_inserted": N, "row_ids": [...]}
-    """
-    import uuid
-
-    table = _get_episodic_table(lance_dir, create_if_missing=True)
-
-    cand_ex_ids = {
-        int(ex.get("exchange_id", -1) or -1)
-        for ex in exchanges
-    }
-    cand_summary_id = -1
-    if episode_summary:
-        cand_summary_id = int(episode_summary.get("summary_id", -1) or -1)
-
-    existing_exchange_ids, summary_already_embedded = _existing_episodic_embed_ids(
-        table, cand_ex_ids, cand_summary_id
-    )
-
-    texts_to_embed = []
-    rows_metadata = []
-
-    for ex in exchanges:
-        exchange_id = int(ex.get("exchange_id", -1) or -1)
-        if exchange_id > 0 and exchange_id in existing_exchange_ids:
-            continue
-        q = ex.get("question_text", "")
-        a = ex.get("answer_text", "")
-        c = ex.get("correction_text", "")
-        memory_text = f"Q: {q} A: {a}"
-        if c:
-            memory_text += f" Correction: {c}"
-
-        row_id = str(uuid.uuid4())
-        texts_to_embed.append(memory_text)
-        rows_metadata.append({
-            "row_id": row_id,
-            "entry_type": "exchange",
-            "exchange_id": exchange_id,
-            "summary_id": -1,
-            "session_ts": ex.get("session_ts", ""),
-            "skill": ex.get("skill", ""),
-            "topic_name": ex.get("topic_display", ex.get("topic_name", "")),
-            "concept_text": ex.get("concept_text", ""),
-            "domain": ex.get("domain", ""),
-            "answer_correct": ex.get("answer_correct", -1),
-            "error_type": ex.get("error_type", ""),
-            "memory_text": memory_text,
-        })
-
-    if episode_summary:
-        summary_id = int(episode_summary.get("summary_id", -1) or -1)
-        if summary_id > 0 and summary_already_embedded:
-            episode_summary = None
-
-    if episode_summary:
-        memory_text = episode_summary.get("memory_text", "")
-        if memory_text:
-            summary_id = int(episode_summary.get("summary_id", -1) or -1)
-            row_id = str(uuid.uuid4())
-            texts_to_embed.append(memory_text)
-            rows_metadata.append({
-                "row_id": row_id,
-                "entry_type": "episode_summary",
-                "exchange_id": -1,
-                "summary_id": summary_id,
-                "session_ts": episode_summary.get("session_ts", ""),
-                "skill": episode_summary.get("skill", ""),
-                "topic_name": "",
-                "concept_text": "",
-                "domain": "",
-                "answer_correct": -1,
-                "error_type": "",
-                "memory_text": memory_text,
-            })
-
-    if not texts_to_embed:
-        return {"rows_inserted": 0, "row_ids": []}
-
-    # Batch embed with BGE-M3 (dense only — sparse not needed for memory)
-    model = _get_embedding_model()
-    output = model.encode(texts_to_embed, return_dense=True, return_sparse=False,
-                          return_colbert_vecs=False)
-    dense_vecs = output["dense_vecs"]
-
-    # Merge embeddings into row metadata
-    lance_rows = []
-    for meta, vec in zip(rows_metadata, dense_vecs):
-        meta["dense_vec"] = vec.tolist()
-        lance_rows.append(meta)
-
-    table.add(lance_rows)
-    row_ids = [r["row_id"] for r in lance_rows]
-
-    return {"rows_inserted": len(lance_rows), "row_ids": row_ids}
-
-
-def search_episodic_memory(
-    query: str,
-    max_results: int = 10,
-    lance_dir: str = "",
-) -> list[dict]:
-    """Semantic search over episodic_memory table using BGE-M3 dense vectors.
-
-    Returns a list of dicts with memory_text, _distance, and metadata.
-    """
-    table = _get_episodic_table(lance_dir, create_if_missing=False)
-    if table is None:
-        return []
-
-    model = _get_embedding_model()
-    output = model.encode([query], return_dense=True, return_sparse=False,
-                          return_colbert_vecs=False)
-    query_vec = output["dense_vecs"][0].tolist()
-
-    try:
-        results = (
-            table.search(query_vec, vector_column_name="dense_vec")
-            .limit(max_results)
-            .to_list()
-        )
-        # Clean up results for JSON serialization
-        cleaned = []
-        for r in results:
-            r.pop("dense_vec", None)
-            cleaned.append(r)
-        return cleaned
-    except Exception as exc:
-        print(f"[lance_retriever] search_episodic_memory error: {exc}", file=sys.stderr)
-        return []
-
-
-# ── Typed Memory V2 (LanceDB tier) ─────────────────────────────────────────
-
-def _get_memory_items_table(lance_dir: str = "", create_if_missing: bool = True):
-    """Open the memory_items_v2 LanceDB table (lazy, cached)."""
-    global _MEMORY_ITEMS_TABLE
-    if _MEMORY_ITEMS_TABLE is not None:
-        return _MEMORY_ITEMS_TABLE
-
-    import lancedb
-    lance_dir = lance_dir or DEFAULT_LANCE_DIR
-    db = lancedb.connect(lance_dir)
-    existing = _list_lancedb_tables(db)
-    if MEMORY_ITEMS_TABLE_NAME in existing:
-        _MEMORY_ITEMS_TABLE = db.open_table(MEMORY_ITEMS_TABLE_NAME)
-        return _MEMORY_ITEMS_TABLE
-    if not create_if_missing:
-        return None
-
-    import pyarrow as pa
-    schema = pa.schema([
-        pa.field("row_id", pa.string()),
-        pa.field("item_id", pa.int64()),
-        pa.field("item_type", pa.string()),
-        pa.field("topic_name", pa.string()),
-        pa.field("concept_text", pa.string()),
-        pa.field("summary", pa.string()),
-        pa.field("importance", pa.float32()),
-        pa.field("confidence", pa.float32()),
-        pa.field("updated_ts", pa.string()),
-        pa.field("dense_vec", pa.list_(pa.float32(), 1024)),
-    ])
-    _MEMORY_ITEMS_TABLE = db.create_table(MEMORY_ITEMS_TABLE_NAME, schema=schema)
-    print("[lance_retriever] Created memory_items_v2 table with 1024-dim vectors")
-    return _MEMORY_ITEMS_TABLE
-
-
-def _existing_memory_item_ids(table, candidate_item_ids: set[int]) -> set[int]:
-    existing: set[int] = set()
-    positive = sorted({int(x) for x in candidate_item_ids if int(x) > 0})
-    if not positive:
-        return existing
-    if len(positive) <= 96:
-        for item_id in positive:
-            try:
-                if table.count_rows(f"item_id = {int(item_id)}") > 0:
-                    existing.add(item_id)
-            except Exception:
-                pass
-        return existing
-    try:
-        import pyarrow as pa
-        import pyarrow.compute as pc
-        arrow = table.to_arrow()
-        want = pa.array(positive, type=pa.int64())
-        mask = pc.is_in(arrow["item_id"], want)
-        filtered = arrow.filter(mask)
-        present = pc.unique(filtered["item_id"]).to_pylist()
-        for value in present:
-            if value is not None and int(value) > 0:
-                existing.add(int(value))
-    except Exception:
-        for item_id in positive:
-            try:
-                if table.count_rows(f"item_id = {int(item_id)}") > 0:
-                    existing.add(item_id)
-            except Exception:
-                pass
-    return existing
-
-
-def embed_memory_items(
-    memory_items: list[dict],
-    lance_dir: str = "",
-) -> dict:
-    """Embed typed V2 memory items into LanceDB."""
-    import uuid
-
-    table = _get_memory_items_table(lance_dir, create_if_missing=True)
-    candidate_ids = {int(item.get("item_id", -1) or -1) for item in memory_items}
-    existing_ids = _existing_memory_item_ids(table, candidate_ids)
-
-    texts_to_embed = []
-    rows_metadata = []
-    for item in memory_items:
-        item_id = int(item.get("item_id", -1) or -1)
-        if item_id <= 0 or item_id in existing_ids:
-            continue
-        summary = item.get("summary", "") or ""
-        if not summary.strip():
-            continue
-        texts_to_embed.append(summary)
-        rows_metadata.append({
-            "row_id": str(uuid.uuid4()),
-            "item_id": item_id,
-            "item_type": item.get("item_type", ""),
-            "topic_name": item.get("topic_display", item.get("topic_name", "")),
-            "concept_text": item.get("concept_text", ""),
-            "summary": summary,
-            "importance": float(item.get("importance", 0.5) or 0.5),
-            "confidence": float(item.get("confidence", 0.5) or 0.5),
-            "updated_ts": item.get("updated_ts", ""),
-        })
-    if not texts_to_embed:
-        return {"ok": True, "rows_inserted": 0, "row_ids": []}
-
-    model = _get_embedding_model()
-    output = model.encode(texts_to_embed, return_dense=True, return_sparse=False,
-                          return_colbert_vecs=False)
-    dense_vecs = output["dense_vecs"]
-    lance_rows = []
-    for meta, vec in zip(rows_metadata, dense_vecs):
-        meta["dense_vec"] = vec.tolist()
-        lance_rows.append(meta)
-    table.add(lance_rows)
-    return {"ok": True, "rows_inserted": len(lance_rows), "row_ids": [r["row_id"] for r in lance_rows]}
-
-
-def search_memory_items(
-    query: str,
-    max_results: int = 10,
-    lance_dir: str = "",
-) -> list[dict]:
-    """Semantic search over typed V2 memory items."""
-    table = _get_memory_items_table(lance_dir, create_if_missing=False)
-    if table is None:
-        return []
-    model = _get_embedding_model()
-    output = model.encode([query], return_dense=True, return_sparse=False,
-                          return_colbert_vecs=False)
-    query_vec = output["dense_vecs"][0].tolist()
-    try:
-        results = (
-            table.search(query_vec, vector_column_name="dense_vec")
-            .limit(max_results)
-            .to_list()
-        )
-        cleaned = []
-        for row in results:
-            row.pop("dense_vec", None)
-            cleaned.append(row)
-        return cleaned
-    except Exception as exc:
-        print(f"[lance_retriever] search_memory_items error: {exc}", file=sys.stderr)
-        return []
-
-
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
@@ -3422,24 +2385,12 @@ if __name__ == "__main__":
     p_compare.add_argument("query", help="Search query")
     p_compare.add_argument("--stdout", action="store_true",
                            help="Print context to stdout (agent gets it inline, no file)")
-    p_compare.add_argument("--append", action="store_true",
-                           help="Append to existing context file (requires --output)")
     p_compare.add_argument("--output", default="", help="Custom output file path")
     p_compare.add_argument("--visual", action="store_true", help="Extract images from hits")
     p_compare.add_argument("--no-distill", action="store_true",
                            help="Bypass adaptive context distillation")
-    p_compare.add_argument("--no-learner", action="store_true",
-                           help="Disable KG learner modifier on reranking")
     p_compare.add_argument("--no-frontier", action="store_true",
                            help="Skip automatic frontier (PMC) search")
-
-    # compare_multi
-    p_multi = subparsers.add_parser("compare_multi", help="Multi-query merge")
-    p_multi.add_argument("queries", nargs="+", help="Sub-queries to merge")
-    p_multi.add_argument("--no-distill", action="store_true",
-                         help="Bypass adaptive context distillation")
-    p_multi.add_argument("--no-learner", action="store_true",
-                         help="Disable KG learner modifier on reranking")
 
     # search (raw retrieval for debugging)
     p_search = subparsers.add_parser("search", help="Raw retrieval (debug)")
@@ -3448,40 +2399,21 @@ if __name__ == "__main__":
     p_search.add_argument("--reranker", default=DEFAULT_RERANKER,
                           choices=list(RERANKER_MODELS.keys()))
     p_search.add_argument("--n-results", type=int, default=DEFAULT_N_RESULTS)
-    p_search.add_argument("--no-learner", action="store_true",
-                         help="Disable KG learner modifier on reranking")
 
     # list_textbooks
     subparsers.add_parser("list_textbooks", help="Show database inventory")
 
-    # digest
-    p_digest = subparsers.add_parser("digest", help="Compress last synthesis for follow-up context")
-    p_digest.add_argument("--input", default=None, help="Custom transform_output.md path")
-    p_digest.add_argument("--output", default=None, help="Custom output path")
-
-    # prepare_directives
-    p_directives = subparsers.add_parser("prepare_directives",
-                                          help="Pre-compute Transform directives from learner context")
-    p_directives.add_argument("query", help="Query for context matching")
-    p_directives.add_argument("--output", default="", help="Custom output path")
-
     args = parser.parse_args()
 
     if args.command == "compare":
-        compare(args.query, append=args.append, output_file=args.output,
+        compare(args.query, output_file=args.output,
                 visual=args.visual, no_distill=args.no_distill,
-                use_learner=not args.no_learner,
                 no_frontier=args.no_frontier,
                 stdout=args.stdout)
 
-    elif args.command == "compare_multi":
-        compare_multi(args.queries, no_distill=args.no_distill,
-                      use_learner=not args.no_learner)
-
     elif args.command == "search":
         result = retrieve(args.query, reranker_key=args.reranker,
-                          n_results=args.n_results,
-                          use_learner=not args.no_learner)
+                          n_results=args.n_results)
         if args.json:
             output = {
                 "query": result["query"], "reranker": result["reranker"],
@@ -3507,17 +2439,6 @@ if __name__ == "__main__":
 
     elif args.command == "list_textbooks":
         list_textbooks()
-
-    elif args.command == "digest":
-        generate_digest(transform_path=args.input, output_path=args.output)
-
-    elif args.command == "prepare_directives":
-        directives = prepare_transform_directives(args.query, output_path=args.output)
-        has_ctx = directives.get("has_learner_context", False)
-        n_pairs = len(directives.get("confusable_pairs", []))
-        disambig = directives.get("disambiguation_required", False)
-        print(f"OK directives — learner={'yes' if has_ctx else 'no'}, "
-              f"confusable_pairs={n_pairs}, disambiguation={'yes' if disambig else 'no'}")
 
     else:
         parser.print_help()
