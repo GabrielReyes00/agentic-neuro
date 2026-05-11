@@ -104,7 +104,8 @@ MC is mainly for discrimination. Default to retrieval prompts.
 Use only for thin mechanism or integration units:
 
 ```bash
-python3 src/lance_retriever.py compare "<teaching unit title>" --no-learner --no-frontier
+cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
+python3 src/lance_retriever.py compare "<teaching unit title>" --stdout --no-learner --no-frontier
 ```
 
 RAG content is supplemental. Keep source-file content primary and cite textbook title, edition, and page when RAG is used.
@@ -174,7 +175,7 @@ Escalate out of Rapid Review only when earned:
 - Gabriel asks to go deeper
 - schema-level mismatch, not just a missing isolated fact
 
-When escalating, name the reason briefly and keep the repair bounded. Use `tutor_strategy.question_job` and `adaptive_teaching.approach` as the escalation move when they fit the miss; otherwise choose the specific repair needed. Log the answer with `--teaching-approach "rapid_review_jeopardy"` for routine items, or the canonical adaptive/specific approach when escalation occurs. Use `--depth 1` for simple deck checks, `--depth 2` for discriminator/mechanism repair, and `--depth 3` only for clinical decision transfer.
+When escalating, name the reason briefly and keep the repair bounded. Choose the specific repair move needed for the miss type. Memory logging captures the outcome via the shared contract's `log-answer` with `--correct`, `--error-type`, `--misconception`, and `--correction` — these fields are the durable record of what happened and why.
 
 ### Deep Understanding Mode
 
@@ -188,13 +189,13 @@ This preserves the current behavior:
 - Clinical transfer and oral-board defense when appropriate.
 - Deeper follow-up after shallow correct answers.
 
-Log answers with teaching approaches such as `deep_understanding_progressive_reveal`, `mechanism_to_management`, `clinical_transfer`, or the more specific approach actually used.
+Log answers via the shared memory logging contract. The `--correct`, `--error-type`, and `--misconception` fields capture the outcome; the `--correction` field captures what you taught.
 
 Drill one question at a time:
 
 Follow the Cognitive Friction Protocol from the shared learning contract. In interactive drill mode, show only the question stem and the immediate task. Do not print the answer, `<details>` content, explanation, named finding, or source context until after Gabriel answers or explicitly asks to reveal it.
 
-After Gabriel answers, choose the post-answer behavior from the selected study mode. In Deep Understanding mode, follow the Progressive Landscape Reveal Protocol. In Rapid Review mode, reveal only enough to grade the answer and maintain momentum unless an escalation trigger fires. Do not dump all nearby essential material from the Study Material note after a shallow correct answer. Save the broader map for a natural boundary, a miss requiring teaching, an explicit reveal request, or a Deep Understanding session.
+After Gabriel answers, choose the post-answer behavior from the selected study mode. In Deep Understanding mode, follow the teaching principles in the shared contract: reveal progressively, correct with minimum effective explanation, pull deeper with follow-ups. In Rapid Review mode, reveal only enough to grade the answer and maintain momentum unless an escalation trigger fires. Do not dump all nearby essential material from the Study Material note after a shallow correct answer. Save the broader map for a natural boundary, a miss requiring teaching, an explicit reveal request, or a Deep Understanding session.
 
 | Outcome | Response |
 |---|---|
@@ -206,7 +207,7 @@ After Gabriel answers, choose the post-answer behavior from the selected study m
 
 Ordering: recall, spatial/discrimination, mechanism/integration, visual interspersed. If 2+ misses occur in one TU, add 1-2 alternate-angle probes.
 
-Every evaluated answer follows the shared memory logging contract with `--skill "study-material"`. Use the same `SESSION_TS` for the whole drill. For partial or incorrect answers, include full error metadata and log the correction as passive teaching. If a question asks the learner to apply source-file material to a clinical/operative scenario, also log `record-transfer`.
+Every evaluated answer follows the shared memory logging contract with `--skill "study-material"`. Use the same `SESSION_TS` for the whole drill. For partial or incorrect answers, include full error metadata (`--error-type`, `--misconception`, `--correction`).
 
 Checkpoint around every 12 questions with strengths, needs work, and options to continue, focus weak areas, or pause.
 
@@ -214,4 +215,4 @@ At section boundaries, use the compression card if it fits the source: one-breat
 
 ## Finish
 
-Run `study_memory.py end-session` with a specific `--next-strategy` for the next drill on this document. Update the living review file, progress tables, and Study Material index. Offer Anki only for incorrect/skipped/high-yield cards, then invoke `/anki-sync` if selected.
+Run `study_memory.py end-session` with a specific `--next-strategy` for the next drill on this document. Follow the **Post-Session Integrity Verification** protocol from the shared contract. Then follow the **Anki Queue Validation and Flush** protocol — generate cards for incorrect, partial, and high-yield exchanges, then flush. Clean up `data/Sessions/` temps.

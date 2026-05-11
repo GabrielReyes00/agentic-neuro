@@ -22,6 +22,16 @@ DEFAULT_VAULT_ROOT = Path("/Users/gabrielreyes/Documents/Obsidian/agentic-neuro"
 PROJECT_SHADOW_FRAGMENT = "/agentic-neuro/Documents/Obsidian/"
 
 ARTIFACT_CONFIG = {
+    "study-review": {
+        "dirname": "Review Sessions",
+        "tag": "skill/study-review",
+        "required_sections": [
+            "Concept Map Status",
+            "Session Log",
+            "Progress Over Sessions",
+        ],
+        "markers": ["Partial", "Correct", "Not quite", "Next strategy", "repaired", "gap"],
+    },
     "study-session": {
         "dirname": "Review Sessions",
         "tag": "skill/study-session",
@@ -75,24 +85,18 @@ ARTIFACT_CONFIG = {
         ],
         "markers": ["Source", "Gap", "Synthesis", "Question", "Application"],
     },
-    "debrief": {
-        "dirname": "Debriefs",
-        "tag": "skill/debrief",
+    "consult": {
+        "dirname": "Consults",
+        "tag": "skill/consult",
         "required_sections": [
-            "Pathology One-Liner",
-            "Mechanism",
-            "Imaging",
-            "Labs",
-            "Consults",
-            "Preop Course",
-            "Intraop Concepts",
-            "Postop Course",
+            "One-Liner",
+            "Key Management Points",
+            "Critical Thresholds",
             "Red Flags",
-            "Intern Priorities",
-            "Unknown Unknowns",
+            "Discriminators",
             "Related In This Vault",
         ],
-        "markers": ["order", "escalat", "red flag", "imaging", "postop"],
+        "markers": ["threshold", "escalat", "red flag", "manage", "discriminat"],
     },
 }
 

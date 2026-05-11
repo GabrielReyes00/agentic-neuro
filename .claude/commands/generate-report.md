@@ -1,6 +1,6 @@
 ---
 name: generate-report
-description: Comprehensive neurosurgical research report workflow with user-approved scope, citation audit, optional textbook RAG, and vault write.
+description: Encyclopedic, citation-dense neurosurgical reference report — textbook-chapter ambition, agent-driven research and self-audit, vault write.
 ---
 
 # Generate Report

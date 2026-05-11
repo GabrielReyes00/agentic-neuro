@@ -85,7 +85,8 @@ Case mode:
 - Run focused RAG when useful:
 
 ```bash
-python3 src/lance_retriever.py compare "<pathology/subtype management controversy anatomy guideline query>" --output /tmp/grand_rounds_landscape.md
+cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
+python3 src/lance_retriever.py compare "<pathology/subtype management controversy anatomy guideline query>" --stdout --no-frontier
 ```
 
 Article mode:

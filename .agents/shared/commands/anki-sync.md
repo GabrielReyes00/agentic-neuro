@@ -1,98 +1,72 @@
 # Anki Sync
 
-Manual flush + review for the real-time Anki pipeline.
+Manual flush, review, and card creation for the Anki pipeline.
 
-## What this skill is NOT (anymore)
+## What this skill is NOT
 
-This is **no longer** the primary card-creation pathway. Cards are built
-automatically as Gabriel studies: every `record-answer` call enqueues a
-candidate, and the queue is drained on a schedule (every ~3 turns via
-heartbeat, and once at session end via the post-session hook). You do
-not need to run this skill at the end of a session to "make cards" —
-that already happened.
+This is **not** the primary card-creation pathway during study sessions. Cards are enqueued automatically as Gabriel studies: every `log-answer` call is followed by an `anki_queue.py enqueue` call, and the queue is flushed at session end. You do not need to run this skill at the end of a study session -- that already happened.
 
 Use this skill only when Gabriel explicitly asks to:
 
-- Manually flush right now (outside the automatic cadence).
-- See what's pending in the queue and what decks will be touched.
-- Pull Anki review stats back into the KG (bidirectional sync) on demand.
-- Resynthesize cards for a specific backlog file (legacy / rare).
+- Manually flush right now (outside a study session).
+- See what's pending in the queue.
+- Create cards from scratch for a specific topic (not during a study session).
 
 ## Trigger phrases
 
 - "flush the Anki queue", "push pending cards to Anki", "sync Anki now"
 - "what's pending for Anki", "show the card queue"
-- "pull my Anki review stats", "update the KG from Anki"
-- "rebuild cards from [file]" (legacy bulk path — keep as last resort)
+- "make cards for [topic]", "save to Anki"
 
 ## Default workflow (manual flush)
 
-1. **Check pending.** Report queue size and which decks would be touched:
+1. **Check pending.**
 
    ```bash
    cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
-     python3 src/anki_realtime.py status
+   python3 src/anki_queue.py review
    ```
 
-   If `pending` is `0`, say so and skip to step 4 (offer a stats sync).
+   If queue is empty, say so and stop.
 
-2. **Preview (optional).** On `--dry-run` Gemini 3 Flash synthesizes cards
-   but nothing is dispatched. Useful when Gabriel wants to audit the
-   per-error-type cloze templates before they hit Anki.
+2. **Novelty check.**
 
    ```bash
-   python3 src/anki_realtime.py flush --dry-run --skip-anki
+   python3 src/anki_queue.py check
    ```
 
-3. **Live flush.** Drain the queue:
+   Review any duplicates surfaced. If genuinely duplicate, remove: `python3 src/anki_queue.py remove --claim-id "<id>"`. If the queued card tests something the matched card does not, keep it.
+
+3. **Flush.**
 
    ```bash
-   python3 src/anki_realtime.py flush --min-queue 1
+   python3 src/anki_queue.py flush
    ```
 
-   Report the JSON metrics verbatim: `synthesized`, `deduped`, `created`,
-   `duplicates`, `decks_touched`. Any entry under `errors` is a hard
-   warning — tell Gabriel AnkiConnect may be down.
+   Report: cards created, duplicates filtered, decks touched. If AnkiConnect is unavailable, say so -- the queue persists and will flush next time.
+
+## Card creation (on explicit request)
+
+When Gabriel asks to create cards for a specific topic (not during a study session), generate cards following the shared learning contract's card rules and enqueue them:
+
+```bash
+python3 src/anki_queue.py enqueue \
+  --session "manual" --exchange-id 0 \
+  --deck "Neurosurgery::<Domain>::<Topic Title>" \
+  --card-type <cloze|qa> \
+  --topic "<topic>" --concept "<concept>" \
+  --cloze "<text>" --answer "<text>" \
+  --tags "anki-sync"
+```
+
+Then run the check and flush steps above.
 
 ## Hard rules
 
-- Never edit `data/Sessions/anki_queue.jsonl` directly. Treat it as
-  opaque — the Python layer owns its format.
-- Never call AnkiConnect directly from inside a skill turn. All writes
-  go through `src/anki_realtime.py` so ChromaDB dedup stays authoritative.
-- Models: the synthesis pass always uses Gemini 3 Flash
-  (`gemini-3-flash-preview`). Do not swap it.
-- Deck naming is fixed at `Neurosurgery::<Domain>::<Topic>`. The nine
-  valid domains mirror the KG taxonomy: Vascular, Trauma, Tumor, Spine,
-  Functional, Pediatric, Peripheral Nerve, Anatomy, General. Do not
-  propose a different scheme on a whim — subsequent dedup and stats
-  sync rely on deck stability.
-- If AnkiConnect is unavailable, the queue stays intact and the flush
-  will retry on the next natural trigger. Do not "repair" by clearing
-  the queue file.
-
-## Legacy bulk flow (only if explicitly requested)
-
-The older blind-validated, image-enriched card authoring flow
-(`data/Sessions/anki_sync_runs/`) is preserved for one-off backlog work,
-e.g. "rebuild cards from this 40-page report". Invoke only on explicit
-request. Steps:
-
-1. Write source text to `data/Sessions/current_session_verbatim.txt`.
-2. Resolve deck → `data/Sessions/anki_sync_runs/current_topic.json`.
-3. Extract atomic claims → `current_claims.json`.
-4. `python3 src/anki_sync_cli.py filter_novelty`.
-5. Draft cards with blind validation → `final_cards.json`.
-6. `python3 src/anki_sync_cli.py validate_final_cards`.
-7. Image enrichment (optional) + `process_selected_images`.
-8. `python3 src/anki_sync_cli.py dispatch`.
-
-Stop and surface any failure. Do not fall back to the legacy path from
-an automatic trigger — only on explicit user instruction.
+- Never edit `data/Sessions/anki_queue.jsonl` directly. The Python layer owns its format.
+- Deck naming: `Neurosurgery::<Domain>::<Topic>`. Valid domains: Vascular, Trauma, Tumor, Spine, Functional, Pediatric, Peripheral Nerve, Anatomy, General.
+- If AnkiConnect is unavailable, the queue stays intact. Do not "repair" by clearing the queue file.
 
 ## Finish
 
-Concise one-screen summary: queue size, cards created, cards deduped,
-decks touched, stats sync result. One line per number. No running
-commentary. If everything was a no-op (queue empty, nothing to sync),
-say so in one sentence.
+Concise one-screen summary: queue size, cards created, cards deduped, decks touched. One line per number. If everything was a no-op, say so in one sentence.

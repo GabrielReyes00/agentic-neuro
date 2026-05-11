@@ -14,6 +14,8 @@ cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate
 
 The agent owns all memory bookkeeping. The user never types memory commands.
 
+Every memory command in this contract must be executed, not simulated. Do not reason about what a command *would* return — run it and read the actual output. The teaching plan must be built from real data, not assumptions about what the database contains.
+
 ### Session Start
 
 Before teaching or drilling, recall prior context:
@@ -21,6 +23,14 @@ Before teaching or drilling, recall prior context:
 ```bash
 python3 src/study_memory.py recall --topic "<topic>" [--doc "Study Material/<file>.md"]
 ```
+
+### Pre-Session Context Verification
+
+After running recall, read the full output and verify it makes sense:
+
+1. **Returning session check**: If a `Review Sessions/` file already exists for this document or topic, recall MUST return prior data. If it returns "No prior data found", your topic string is likely wrong. Run `python3 src/study_memory.py status --topic "<topic>"` to find the stored form, or check the Review Session file's metadata for the exact topic. Fix and re-run recall — do not silently accept empty context for a known topic.
+2. **Coherence check**: If recall returns data, verify the content relates to the topic. Session date, concepts, and next-strategy should all make sense. Watch for fuzzy-match pollution: if KNOWN CONCEPTS or GAPS contain single-token entries, opaque labels (e.g., `q1`, `q2`), or concepts unrelated to the topic, the topic string matched too broadly. Run `python3 src/study_memory.py status --topic "<topic>"` to find the canonical stored form and re-run recall with it.
+3. **New topic**: If no Review Session file exists and status confirms no matches, this is genuinely new. Proceed with calibration.
 
 Set one `SESSION_TS` at the first learner-facing question and reuse it for the entire session:
 
@@ -41,6 +51,36 @@ python3 src/study_memory.py log-answer \
 
 Correctness: `2` = correct without hints | `1` = right direction, missing details | `0` = wrong or misconception.
 
+### Anki Card Generation (silent, after each log-answer)
+
+Immediately after each `log-answer` call, decide whether to generate cards for that exchange. When `correct < 2`, or `correct == 2` but the answer missed an intern-critical nuance you corrected: generate 1-3 atomic Anki cards and enqueue each. Skip card generation for routine correct answers with no teaching extension.
+
+The `log-answer` command prints `OK exchange_id=N` — use that N as the `--exchange-id` for the enqueue call to link the card to its source exchange.
+
+**Card rules:**
+- One fact per card (atomic — reviewable in <10 seconds)
+- Prefer cloze for thresholds, numbers, classifications, drug names/doses
+- Prefer QA for mechanisms, reasoning chains, procedures
+- Never omit numbers: doses, thresholds, measurements, rates, time windows
+- Cloze text max 240 chars; answer text max 200 chars (enforced by script)
+- Cloze blanks must target the testable fact — a threshold, drug name, anatomical structure, classification, or key distinction. Never blank context words, verbs, or preamble
+- Cloze: use `{{c1::target}}` for single-blank; `{{c1::A}} vs {{c2::B}}` for discrimination pairs
+- Every card's answer must be self-contained — a reviewer seeing only the answer should understand what fact is being tested without needing the question
+- Deck: `Neurosurgery::<Domain>::<Topic Title>` (Title Case topic, domain from session context; enforced by script)
+- Tags: `<skill>,<error_type>` (comma-separated, omit error_type if correct)
+
+**Per card:**
+```bash
+python3 src/anki_queue.py enqueue \
+  --session "$SESSION_TS" --exchange-id <id> \
+  --deck "Neurosurgery::<Domain>::<Topic>" \
+  --card-type <cloze|qa> \
+  --topic "<session topic>" --concept "<tested concept>" \
+  --cloze "<text>" --answer "<text>" \
+  --tags "<skill>,<error_type>"
+```
+For QA cards: `--front "<text>" --back "<text>"` instead of `--cloze/--answer`.
+
 ### Session End
 
 ```bash
@@ -49,6 +89,58 @@ python3 src/study_memory.py end-session \
   --summary "<1-3 sentence recap>" \
   --next-strategy "<specific directive for next session>"
 ```
+
+### Post-Session Integrity Verification
+
+After running end-session, verify the session persisted correctly:
+
+1. **Exchange count**: The output reports "N exchanges." Count how many questions you asked and the learner answered during this session. If the reported count is lower, some log-answer calls were missed or failed. Re-run the missing log-answer calls before proceeding.
+2. **Recall cross-check**: Run `recall --topic "<topic>"` and verify this session appears as LAST SESSION with the summary you just wrote. If it does not appear, end-session failed — investigate and retry.
+3. **Next-strategy quality**: Re-read the next-strategy you wrote. It must name specific concepts, error types, and teaching moves. If it reads as generic ("continue reviewing", "keep studying"), rewrite it with the specific gaps and errors from this session and re-run end-session.
+
+### Anki Queue Validation and Flush (silent, after end-session)
+
+1. Review queued cards:
+```bash
+python3 src/anki_queue.py review --session "$SESSION_TS"
+```
+Verify cards are atomic, no missing numbers/thresholds/dosages, and material matches what was discussed. If a card is wrong, enqueue a corrected replacement.
+
+2. Run novelty check before flushing:
+```bash
+python3 src/anki_queue.py check --session "$SESSION_TS"
+```
+Read the output. If `duplicates` is non-empty, compare each `queued_card` against its `matched_existing` — are they testing the same concept, or is the match a false positive? If genuinely duplicate, remove it: `python3 src/anki_queue.py remove --claim-id "<id>"`. If the queued card tests something the existing card does not, keep it (it will flush normally).
+
+3. Flush to Anki:
+```bash
+python3 src/anki_queue.py flush --session "$SESSION_TS"
+```
+Read the output. Verify `created` matches your expected count. If `filtered_details` appears, the novelty filter caught additional near-duplicates — review them the same way.
+
+4. If AnkiConnect is unavailable, note it — the queue persists and will flush next session.
+
+### Agent as Memory Intelligence Layer
+
+The database stores facts. You supply the judgment. Every recall output and every log-answer call passes through you — the agent is the only point where memory becomes teaching intelligence and teaching results become durable memory.
+
+**On read — building a teaching plan from recall**:
+
+1. Read `Next strategy` first. This is the highest-signal field: a direct handoff from the previous session's agent naming exact concepts to retest, error types to target, and teaching moves to try. Open your session from it unless the learner requests otherwise.
+2. Map each `OPEN ERROR` to a question design before asking anything. The misconception text tells you what the learner believed wrong — design a question that forces confrontation with that exact belief from a new angle. Do not just revisit the same neighborhood; probe the specific fault line.
+3. For each `GAP`, consider its error_type and how many times it has been missed. If a concept has been missed multiple times, the previous teaching approach failed — use a fundamentally different one. Use your judgment about what teaching strategy best addresses the specific type of failure.
+4. `KNOWN CONCEPTS` are scaffolding, not drill targets. Use them as premises in transfer questions: "You know X — a patient now presents with Y, what changes?"
+5. `RECENT EXCHANGES` are an anti-repetition index. Never reuse the same question wording or follow the same question sequence. Use them to identify which angles have been covered so you can find uncovered ones.
+6. If recall output contains data that doesn't relate to the topic (wrong concepts, unrelated sessions), your topic string matched too broadly — investigate and re-run before proceeding.
+
+**On write — making each log-answer entry a complete teaching record**:
+
+Each entry must let a future agent reconstruct three things: what was tested, what the learner got wrong, and what the correct answer is. Concretely:
+
+- **concept**: the specific testable fact — not the topic name, not a question ID, not a single word. A future agent reading "lundberg a vs b wave distinction" knows exactly what to retest. One reading "waves" does not.
+- **misconception** (when correct=0): the specific wrong belief the learner held. "believed barbiturate coma is first-line for refractory icp" tells a future agent exactly what to probe. "incorrect" tells it nothing.
+- **correction**: the right answer that replaces the misconception. The misconception-correction pair is the retest blueprint — one names the wrong belief, the other names the right one.
+- **error_type**: categorizes the failure mode so teaching approach can be matched to it across sessions.
 
 ### Entry Formatting Contract
 
@@ -68,211 +160,55 @@ python3 src/study_memory.py end-session \
 
 ### Invisible Bookkeeping
 
-Memory commands are internal. Do not print commands, JSON payloads, raw stdout, or raw stderr into the learner-facing transcript. Surface only concise warnings on failure.
+Memory commands are internal. Do not print commands, JSON payloads, raw stdout, or raw stderr into the learner-facing transcript. **You must still read and reason about every memory command's output.** "Silent" means invisible to the learner, not invisible to you. Surface only concise warnings on failure.
 
 ---
 
-## Recall Interpretation Rules
+## Teaching Principles
 
-The recall output is your teaching plan substrate. Use it intelligently:
+### Learner Profile
 
-### Next Strategy (highest priority)
+Gabriel is an advanced MS4 entering PGY-1 Neurosurgery with a strong baseline. Teach accordingly: start with a calibration question or clinical decision, not a lecture. Assume standard medical vocabulary, neuroanatomy, and disease labels unless he demonstrates a gap. Aim for quick, effective deep mastery — mechanism, discriminator, management consequence, and transfer.
 
-The `Next strategy` field is a handoff from the previous session's agent. It contains the most important directive for this session. Open with it unless the user explicitly requests a different topic. If it says "Retest X", your first question should probe X from a new angle.
+### Core Teaching Goals
 
-### Open Errors to Retest
+These are goals, not scripts. Use your medical knowledge and teaching judgment to achieve them — the specific approach should adapt to the topic, the learner's performance, and the session context.
 
-These are specific misconceptions the learner held. They are your priority retests. Rules:
+1. **Every question must have a purpose.** Before asking, know what you are trying to expose, test, or build. If a question doesn't probe a gap, test a threshold, force a discrimination, validate a mechanism, or transfer to a new context — don't ask it.
 
-- Do NOT repeat the original question verbatim. Probe the same misconception from a different clinical context, angle, or scenario.
-- Match teaching approach to the error: if the misconception was "confused A with B", use forced discrimination. If it was a wrong threshold, use a clinical vignette where the threshold changes the plan.
-- When the learner gets an error-retested concept correct, log it as `--correct 2` — the system automatically marks the error as retested.
+2. **Escalate as fast as performance supports.** Don't drill recall when the learner is ready for transfer. Don't lecture on basics when the learner demonstrates mechanism-level understanding. Skip levels freely when evidence supports it. The goal is to find and work at the edge of the learner's competence — the zone where effort produces the most learning.
 
-### Known Concepts
+3. **Cognitive friction is mandatory.** Present the vignette and the question, then stop. Do not append hints, expected findings, answer context, named diagnoses, or teaching explanation before the learner commits. Use sequential disclosure: ask for the search plan or decision first, provide only requested data, ask for interpretation before revealing the answer.
 
-These are confirmed mastered. Rules:
+4. **Reveal progressively, not all at once.** After the learner commits, grade briefly, reveal the next layer, then ask the follow-up that pulls deeper. Do not dump the full topic landscape after a first correct answer. Summative maps belong at natural boundaries: after 2-4 probes, after a miss that requires teaching, or when the learner asks.
 
-- Do NOT drill these with recall questions. The learner already knows them.
-- USE them as building blocks for transfer: "You know CPP target is 60-70. A patient's MAP drops to 65 with ICP 25 — what changes?"
-- Use them to build bridges to unknown territory.
+5. **Correct with minimum effective explanation.** After a miss: one correction, one reason it matters (for management, anatomy, physiology, or safety), one near-transfer retest. Expand into a full map only at a natural boundary, explicit request, or safety-critical moment.
 
-### Gaps
+6. **Treat correct-but-shallow as partial.** When the learner gives a correct answer but omits an intern-critical threshold, contraindication, complication, escalation trigger, or rescue step — push for it. The goal is operational readiness, not topic familiarity.
 
-These are weak or missed concepts. Rules:
+7. **Mastery requires more than one good answer.** Claim mastery only when the learner demonstrates recall or mechanism without hints AND clinical or operative transfer AND has no active dangerous misconception on the concept. Prefer a delayed retention check before marking durable mastery.
 
-- Target these, but not by repeating the same question from previous sessions.
-- Match your approach to the error_type:
+8. **Train danger-first reasoning.** When appropriate, lead with the pre-mortem: "What are two ways this could hurt the patient or the operation?" This should precede the explanation, not follow it.
 
-| error_type | Teaching move |
-|---|---|
-| `numerical_recall` | Clinical vignette where the number changes the plan |
-| `conceptual_confusion` | Forced discrimination between the confused concepts |
-| `cross_contamination` | Side-by-side comparison in a single scenario |
-| `application_failure` | New clinical context requiring the concept |
-| `reasoning_gap` | Causal chain: "Why does X lead to Y?" |
-| `omission` | Case where the omitted element causes harm |
+9. **For PGY-1-relevant concepts, convert knowledge to operational behavior.** Exact orders (drug, dose, route, frequency, monitoring), monitoring targets, who to call and when, disposition changes, one-line chief updates. Knowledge that doesn't translate to bedside action is incomplete.
 
-- Multiple misses on the same concept = your previous approach failed. Change it. If you drilled recall last time, try a clinical scenario. If you used a scenario, try mechanism derivation.
+### Interaction Quality
 
-### Recent Exchanges (critical — prevents repetition)
-
-These show the exact questions asked in recent sessions. Rules:
-
-- NEVER reuse the same question wording. If a previous exchange asked "What is the CPP target?", do not ask "What is the CPP target?" again.
-- NEVER follow the same question sequence. If previous exchanges went Q1->Q2->Q3, start from a different entry point.
-- Use recent exchanges to understand what angles have been covered, then find a new angle.
-- If the learner answered correctly on a recent exchange, escalate to transfer or application — don't re-ask.
-- If the learner answered wrong on a recent exchange, probe the same concept but reframe the question entirely.
-
-### Doc Progress (when --doc is provided)
-
-Shows which sections and concepts have been covered for a specific study material file. Use this to pick up where the learner left off rather than restarting from the beginning.
-
-### No Prior Data
-
-If recall returns "No prior data found", this is a genuinely new topic. Start with a calibration question to gauge baseline, then teach from there. Do not assume novice — the learner is an advanced MS4 entering neurosurgery PGY-1.
+The interaction should feel like an excellent senior resident tutor: natural, direct, concise, and responsive to the learner's exact answer. Do not use canned phrases, repeated scripted templates, or formulaic response structures. Vary your approach based on what the learner just said and what they need next.
 
 ---
-
-## Default Learner Posture
-
-Unless the user explicitly asks for basics, teach Gabriel as an advanced MS4 entering neurosurgery PGY-1 with a strong baseline. The goal is quick, effective deep mastery, not gentle survey review.
-
-- Start with a brief calibration question or clinical decision, not a lecture.
-- Assume common medical vocabulary, neuroanatomy basics, and standard disease labels unless the learner demonstrates a gap.
-- Prefer case transfer, oral-board defense, and "what would change your plan?" prompts over isolated recall.
-- Keep tone direct, senior-resident-like, and efficient.
-- Use brief corrections, then retest the corrected concept in a new context.
-- Treat "correct but shallow" as partial: ask for the next causal link, contraindication, threshold, or rescue step.
-
-## Cognitive Friction Protocol
-
-In any drill, case, oral-board, imaging, anatomy, or clinical decision prompt, the first learner-facing turn must contain only the vignette, available clinical data, and the exact task. End the turn at the question.
-
-Do not include after the question:
-
-- answer keys, expected findings, named signs, diagnosis labels, or management path
-- "context", "hint", "why this matters", or source-derived explanation
-- labs, imaging reads, or thresholds that the learner has not requested or predicted
-
-Use sequential disclosure:
-
-1. Give HPI/exam/vitals or the minimal prompt.
-2. Ask for the learner's search plan, differential, decision threshold, or next data request.
-3. Provide only the requested result.
-4. Ask for interpretation and management consequence before giving the answer.
-5. Reveal teaching and correction only after the learner commits.
-
-## Progressive Landscape Reveal Protocol
-
-After the learner commits, reveal only the amount needed to grade the answer and open the next cognitive step. Do not reveal the entire topic landscape after a first shallow-but-correct response.
-
-Default post-answer sequence:
-
-1. Grade the committed answer: one or two sentences.
-2. Reveal the next layer only: the hidden finding, discriminator, or mechanism that directly follows.
-3. Pull, don't dump: ask a targeted follow-up that forces the learner to reach deeper.
-4. Escalate by layers until the important terrain has been actively traversed.
-5. Summative map only at a natural boundary: after 2-4 probes, after a miss that needs teaching, or when the learner asks.
-
-Do not use canned phrases or repeated scripted response templates. The interaction should feel like an excellent senior resident tutor: natural, concise, and responsive to the learner's exact answer.
-
-## Question Job Rule
-
-Before asking any question, silently assign exactly one job:
-
-| Job | Purpose |
-|---|---|
-| `diagnostic_calibration` | determine the starting rung |
-| `expose_misconception` | reveal a wrong belief or missing link |
-| `test_threshold` | force a number, timing, dose, or escalation cutoff |
-| `separate_confusers` | distinguish close alternatives on one decisive feature |
-| `validate_mechanism` | require causal explanation |
-| `test_management_consequence` | ask what changes plan/disposition/orders |
-| `test_complication_rescue` | require recognition and rescue of deterioration |
-| `transfer_to_case` | apply in a new vignette or clinical context |
-| `oral_board_defense` | defend plan, alternatives, and unsafe options |
-| `verify_retention` | delayed or spaced check |
-
-If a question has no clear job, do not ask it.
-
-## Mastery Ladder
-
-Move the learner up as fast as evidence supports; skip lower rungs when performance is strong.
-
-| Rung | Target |
-|---:|---|
-| 1 | Recognition |
-| 2 | Definition/fact |
-| 3 | Mechanism |
-| 4 | Discriminator |
-| 5 | Management consequence |
-| 6 | Edge case or contraindication |
-| 7 | Transfer case |
-| 8 | Oral-board defense |
-| 9 | Delayed retention |
-
-Do not overtrain recall when the learner is ready for transfer.
-
-## Domain Playbooks
-
-| Domain | Sequence |
-|---|---|
-| Vascular | anatomy/territory -> natural history/risk -> treatment selection -> complication rescue -> surveillance |
-| Spine | localization -> stability/urgency -> imaging discriminator -> operative indication/approach risk -> postop rescue |
-| Tumor | presentation/localization -> imaging differential -> tissue/molecular diagnosis -> treatment sequence -> recurrence/adjuvant decision |
-| ICU/critical care | physiology equation/threshold -> immediate orders -> monitoring target -> failure-to-rescue trigger -> escalation handoff |
-| General | illness script -> key discriminator -> management consequence -> danger zone -> transfer scenario |
-
-## Minimum Effective Explanation
-
-After a miss, avoid a broad topic lecture. Use the smallest teaching unit:
-
-1. One correction.
-2. One reason it matters for management, anatomy, physiology, or safety.
-3. One near-transfer retest.
-
-Only expand into a full map at a natural boundary, explicit reveal request, or safety-critical teaching moment.
-
-## Mastery Claim Audit
-
-Do not call a topic mastered from one good recall answer. Claim mastery only when:
-
-- Direct recall or mechanism without hints.
-- Clinical or operative transfer.
-- No active dangerous misconception.
-
-Prefer a delayed retention check before marking durable mastery.
-
-## Pre-Mortem and Danger-First Thinking
-
-Before broad teaching, use the pre-mortem when appropriate:
-
-> What are two ways this could hurt the patient or the operation?
-
-This should precede the explanation, not follow it. It trains danger-first neurosurgical reasoning.
-
-## Intern Reality Mode
-
-For PGY-1-relevant concepts, convert knowledge into operational behavior:
-
-- Exact orders (drug, dose, route, frequency, monitoring).
-- Monitoring target.
-- Who to call and when.
-- Disposition change.
-- One-line chief update.
 
 ## Review Artifacts
 
-Doc-anchored work writes `Review Sessions/<Title> Review.md`; standalone sessions write `Review Sessions/<Topic>.md`. Include outcomes, specific gaps, corrections, next focus, and related vault links. No H1 when the filename is the title.
+Doc-anchored sessions (study-review, study-material drills) do not write vault artifacts — the memory layer is the durable record. Standalone sessions (study-session, intern-bootcamp, oral-boards, rag-workflow) write `Review Sessions/<Topic>.md` with outcomes, specific gaps, corrections, next focus, and related vault links. No H1 when the filename is the title.
 
 ## Final Artifact Guard
 
-Learning skills that write vault artifacts should install and validate through `src/learning_artifact_guard.py`:
+Skills that write vault artifacts (standalone sessions, consults, reports, guides) should validate through `src/learning_artifact_guard.py`. Doc-anchored sessions skip this step — their durable record is the memory layer, verified by Post-Session Integrity Verification.
 
 ```bash
 python3 src/learning_artifact_guard.py install \
-  --artifact-type "<study-session|oral-boards|intern-bootcamp|rag-workflow|debrief>" \
+  --artifact-type "<study-session|oral-boards|intern-bootcamp|rag-workflow|consult>" \
   --draft "data/Sessions/<skill>_<slug>_artifact.md" \
   --title "<Title Case Title>" \
   --topic "<topic>" \
@@ -293,7 +229,7 @@ Required final sections by skill:
 | `oral-boards` | Opening Stem, Stage Log, Score, Unsafe Issues, Corrected Concepts, Next Practice Targets |
 | `intern-bootcamp` | Scenario, Decision Log, Orders, Escalation And Communication, Chief Debrief, Weaknesses And Error Types, Next Targets |
 | `rag-workflow` | Retrieval Summary, Source Coverage, Synthesis, Gap Check, Drill Or Application Log, Next Targets |
-| `debrief` | Pathology One-Liner, Mechanism, Imaging, Labs, Consults, Preop Course, Intraop Concepts, Postop Course, Red Flags, Intern Priorities, Unknown Unknowns, Related In This Vault |
+| `consult` | One-Liner, Key Management Points, Critical Thresholds, Red Flags, Discriminators, Related In This Vault |
 
 A checkpoint-only note is not completion.
 

@@ -93,7 +93,8 @@ Explicit invocation only:
 - Oral boards, mock oral boards, case defense, board-style case, or written/primary bridge -> `oral-boards`
 - Operative walkthrough -> `intraoperative-guide`
 - Study material or quiz from a file -> `study-material`
-- Research report -> `generate-report`
+- Research report, comprehensive review, deep-dive on a topic -> `generate-report` (produces an encyclopedic, citation-dense reference document; not learner-tailored)
+- Focused clinical question, ward knowledge gap, curbside consult -> `consult` (brief expert lecture + verification questions + pocket-card vault note; not encyclopedic)
 - Grand rounds, case presentation, or journal club deck -> `grand-rounds`
 
 ## Study-Material Generation Guard
@@ -115,7 +116,7 @@ If validation fails, revise the generated note and rerun the guard. Do not start
 
 ## Learning Artifact Guard
 
-For `study-session`, `oral-boards`, `intern-bootcamp`, `rag-workflow`, and `debrief`, heartbeat checkpoint files are not final Obsidian artifacts. Write a rich draft to `data/Sessions/<skill>_<slug>_artifact.md`, install or check it through `src/learning_artifact_guard.py`, then validate the real vault file. Do not claim a learning workflow completed if the guard fails.
+For `study-session`, `oral-boards`, `intern-bootcamp`, `rag-workflow`, and `consult`, heartbeat checkpoint files are not final Obsidian artifacts. Write a rich draft to `data/Sessions/<skill>_<slug>_artifact.md`, install or check it through `src/learning_artifact_guard.py`, then validate the real vault file. Do not claim a learning workflow completed if the guard fails.
 
 ## Session-End Protocol
 

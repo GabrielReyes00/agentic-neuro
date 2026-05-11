@@ -1957,6 +1957,41 @@ def _extract_images(hits: list) -> list:
     return extracted
 
 
+def _collapse_repeated_prefixes(text: str, min_len: int = 60, min_reps: int = 3) -> str:
+    """Collapse long substrings that repeat excessively in LanceDB passage text.
+
+    Table ingestion produces text like 'Table 76.2 Very Long Name.Col = Val'
+    with the table name (100+ chars) repeated per cell.  This finds any long
+    substring that appears 3+ times and keeps the first occurrence, replacing
+    subsequent ones with a short '[...]' marker.
+
+    Also collapses pipe-table header rows where every column cell is identical
+    (e.g. '| Long Name | Long Name | Long Name |') into a single mention.
+    """
+    # Find "Table X.Y <title>" strings that repeat
+    candidates = re.findall(r"(Table\s+[\d.]+\s+\S[^|]{" + str(min_len - 10) + r",}?)(?=[.|])", text)
+    if not candidates:
+        return text
+
+    from collections import Counter
+    counts = Counter(candidates)
+    result = text
+
+    for substr, count in counts.items():
+        if count < min_reps or len(substr) < min_len:
+            continue
+        # Keep first occurrence, replace the rest
+        first = result.find(substr)
+        if first == -1:
+            continue
+        before = result[:first + len(substr)]
+        after = result[first + len(substr):]
+        after = after.replace(substr, "[tbl]")
+        result = before + after
+
+    return result
+
+
 def _format_hit_block(hit: dict, passage_id: str = "") -> Optional[str]:
     """Format a single hit into a passage block. Returns None for reference chunks.
 
@@ -1966,6 +2001,7 @@ def _format_hit_block(hit: dict, passage_id: str = "") -> Optional[str]:
     # Use distilled text if available (axis-aware text-level selection),
     # otherwise fall back to raw text
     text = hit.get("distilled_text") or hit.get("text", "")
+    text = _collapse_repeated_prefixes(text)
     if _is_reference_chunk(text):
         return None
 
@@ -1993,7 +2029,8 @@ def _format_hit_block(hit: dict, passage_id: str = "") -> Optional[str]:
 
     # Only append table_markdown separately if not already included via distilled_text
     if hit.get("table_markdown") and not hit.get("distilled_text"):
-        block += f"\n\n[TEXTBOOK THEORY TABLE DATA]\n{hit['table_markdown']}"
+        table_md = _collapse_repeated_prefixes(hit["table_markdown"])
+        block += f"\n\n[TEXTBOOK THEORY TABLE DATA]\n{table_md}"
 
     return block
 
@@ -2562,9 +2599,17 @@ def _detect_coverage_gaps(hits: list, axes: List[str]) -> List[str]:
 
 def compare(query: str, append: bool = False, output_file: str = "",
             visual: bool = False, no_distill: bool = False,
-            use_learner: bool = True, no_frontier: bool = False):
-    """Retrieve, build context, write to scratch_context.md.
+            use_learner: bool = True, no_frontier: bool = False,
+            stdout: bool = False):
+    """Retrieve, build context, and deliver to the agent.
+
     This is the primary entrypoint called by the agent workflow.
+
+    Delivery modes:
+      --stdout   Print formatted context to stdout (agent gets it inline
+                 from the bash tool result — no file, no extra read step).
+      --output   Write to a custom file path.
+      (default)  Write to data/Sessions/scratch_context.md.
 
     Frontier search is always triggered (unless --no-frontier) to ensure
     up-to-date PMC literature is included alongside textbook retrieval.
@@ -2668,25 +2713,34 @@ def compare(query: str, append: bool = False, output_file: str = "",
     )
     prompt_content = build_scratch_context(result, frontier_text, visual=visual)
 
-    if output_file:
-        context_file = Path(output_file)
-    else:
-        context_file = SESSIONS_DIR / "scratch_context.md"
-    context_file.parent.mkdir(parents=True, exist_ok=True)
+    n_passages = len(result["hits"])
+    source_set = {h.get("source_key", "") for h in result["hits"] if h.get("source_key")}
+    n_sources = len(source_set)
+    ms = result["latency"]["total_ms"]
 
-    if append and context_file.exists():
-        existing = context_file.read_text(encoding="utf-8")
-        merged, added, skipped = _merge_source_blocks(existing, prompt_content)
-        context_file.write_text(merged, encoding="utf-8")
-        print(f"OK appended — {added} new, {skipped} dupes | "
-              f"{result['metadata']['unique_sources']} src | "
-              f"{result['latency']['total_ms']:.0f}ms")
+    if stdout:
+        # Deliver context directly to agent via stdout — no file intermediary.
+        # Summary line goes to stderr so it doesn't pollute the context.
+        print(prompt_content)
+        print(f"OK {n_passages} passages | {n_sources} sources | {ms:.0f}ms",
+              file=sys.stderr)
+    elif append and output_file:
+        context_file = Path(output_file)
+        context_file.parent.mkdir(parents=True, exist_ok=True)
+        if context_file.exists():
+            existing = context_file.read_text(encoding="utf-8")
+            merged, added, skipped = _merge_source_blocks(existing, prompt_content)
+            context_file.write_text(merged, encoding="utf-8")
+            print(f"OK appended — {added} new, {skipped} dupes | "
+                  f"{result['metadata']['unique_sources']} src | "
+                  f"{result['latency']['total_ms']:.0f}ms")
+        else:
+            context_file.write_text(prompt_content, encoding="utf-8")
+            print(f"OK {n_passages} passages | {n_sources} sources | {ms:.0f}ms")
     else:
+        context_file = Path(output_file) if output_file else SESSIONS_DIR / "scratch_context.md"
+        context_file.parent.mkdir(parents=True, exist_ok=True)
         context_file.write_text(prompt_content, encoding="utf-8")
-        n_passages = len(result["hits"])
-        source_set = {h.get("source_key", "") for h in result["hits"] if h.get("source_key")}
-        n_sources = len(source_set)
-        ms = result["latency"]["total_ms"]
         print(f"OK {n_passages} passages | {n_sources} sources | {ms:.0f}ms")
 
     _log_to_knowledge_graph(
@@ -3363,9 +3417,13 @@ if __name__ == "__main__":
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
 
     # compare
-    p_compare = subparsers.add_parser("compare", help="Retrieve and write scratch_context.md")
+    p_compare = subparsers.add_parser("compare",
+                                      help="Retrieve, rerank, distill, and deliver textbook context")
     p_compare.add_argument("query", help="Search query")
-    p_compare.add_argument("--append", action="store_true", help="Append to existing context")
+    p_compare.add_argument("--stdout", action="store_true",
+                           help="Print context to stdout (agent gets it inline, no file)")
+    p_compare.add_argument("--append", action="store_true",
+                           help="Append to existing context file (requires --output)")
     p_compare.add_argument("--output", default="", help="Custom output file path")
     p_compare.add_argument("--visual", action="store_true", help="Extract images from hits")
     p_compare.add_argument("--no-distill", action="store_true",
@@ -3413,7 +3471,8 @@ if __name__ == "__main__":
         compare(args.query, append=args.append, output_file=args.output,
                 visual=args.visual, no_distill=args.no_distill,
                 use_learner=not args.no_learner,
-                no_frontier=args.no_frontier)
+                no_frontier=args.no_frontier,
+                stdout=args.stdout)
 
     elif args.command == "compare_multi":
         compare_multi(args.queries, no_distill=args.no_distill,

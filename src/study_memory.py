@@ -393,6 +393,35 @@ def recall(conn: sqlite3.Connection, topic: str | None, doc: str | None) -> str:
 # log-answer
 # ---------------------------------------------------------------------------
 
+VALID_ERROR_TYPES = frozenset({
+    "conceptual_confusion", "numerical_recall", "cross_contamination",
+    "application_failure", "reasoning_gap", "omission",
+})
+
+
+def _validate_entry(topic: str, concept: str, correct: int,
+                     error_type: str, misconception: str) -> list[str]:
+    """Reject obviously malformed entries. Returns list of error messages."""
+    problems: list[str] = []
+    words_t = topic.split()
+    if len(words_t) > 8:
+        problems.append(f"TOPIC too long ({len(words_t)} words, max 8): '{topic}'")
+    if len(words_t) < 2:
+        problems.append(f"TOPIC too short ({len(words_t)} word, min 2): '{topic}'")
+    words_c = concept.split()
+    if len(words_c) < 2:
+        problems.append(f"CONCEPT too vague (single word): '{concept}'")
+    if re.match(r'^q\d+$', concept):
+        problems.append(f"CONCEPT is a question ID, not a concept name: '{concept}'")
+    if correct == 0 and not misconception.strip():
+        problems.append("MISCONCEPTION required when correct=0 (state the specific wrong belief)")
+    if misconception.strip().lower() in ("incorrect", "unsure", "wrong", "user was unsure"):
+        problems.append(f"MISCONCEPTION too generic: '{misconception}'. State the specific wrong belief.")
+    if error_type and error_type not in VALID_ERROR_TYPES:
+        problems.append(f"ERROR_TYPE invalid: '{error_type}'. Must be one of: {', '.join(sorted(VALID_ERROR_TYPES))}")
+    return problems
+
+
 def log_answer(
     conn: sqlite3.Connection,
     session_id: str,
@@ -410,6 +439,10 @@ def log_answer(
     now = datetime.now(timezone.utc).isoformat()
     topic = _normalize(topic)
     concept = _normalize(concept)
+
+    problems = _validate_entry(topic, concept, correct, error_type, misconception)
+    if problems:
+        return "VALIDATION ERROR -- fix and retry:\n  " + "\n  ".join(problems)
 
     # Auto-create session if not exists
     existing = conn.execute(
@@ -472,7 +505,7 @@ def log_answer(
     else:
         right = 1 if correct >= 1 else 0
         wrong = 1 if correct == 0 else 0
-        status = "partial" if correct >= 1 else "unknown"
+        status = "known" if correct == 2 else ("partial" if correct == 1 else "unknown")
         conn.execute(
             """INSERT INTO concepts
                (topic, concept, status, times_right, times_wrong,

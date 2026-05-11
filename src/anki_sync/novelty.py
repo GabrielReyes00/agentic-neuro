@@ -15,6 +15,7 @@ class NoveltyDecision:
     claim_text: str
     max_similarity: float
     is_novel: bool
+    matched_text: str = ""
 
 
 class NoveltyStore:
@@ -33,23 +34,26 @@ class NoveltyStore:
         vectors = list(self._embedder.embed(list(texts)))
         return [list(map(float, vec.tolist() if hasattr(vec, "tolist") else vec)) for vec in vectors]
 
-    def _query_max_similarity(self, embedding: list[float]) -> float:
+    def _query_max_similarity(self, embedding: list[float]) -> tuple[float, str]:
+        """Return (max_similarity, matched_document_text)."""
         if self._collection.count() == 0:
-            return 0.0
+            return 0.0, ""
         result = self._collection.query(
             query_embeddings=[embedding],
             n_results=1,
-            include=["distances"],
+            include=["distances", "documents"],
         )
         distances = (result.get("distances") or [[]])[0]
+        documents = (result.get("documents") or [[]])[0]
         if not distances:
-            return 0.0
+            return 0.0, ""
         try:
             distance = float(distances[0])
         except Exception:
-            return 0.0
-        similarity = 1.0 - distance
-        return max(0.0, min(1.0, similarity))
+            return 0.0, ""
+        similarity = max(0.0, min(1.0, 1.0 - distance))
+        matched_text = documents[0] if documents else ""
+        return similarity, matched_text
 
     def filter_novel_claims(
         self,
@@ -64,7 +68,7 @@ class NoveltyStore:
         decisions: list[NoveltyDecision] = []
 
         for claim, emb in zip(claims, embeddings):
-            sim = self._query_max_similarity(emb)
+            sim, matched = self._query_max_similarity(emb)
             is_novel = sim <= threshold
             decisions.append(
                 NoveltyDecision(
@@ -72,6 +76,7 @@ class NoveltyStore:
                     claim_text=claim.claim_text,
                     max_similarity=sim,
                     is_novel=is_novel,
+                    matched_text=matched,
                 )
             )
             if is_novel:
@@ -97,9 +102,9 @@ class NoveltyStore:
             docs.append(claim.claim_text)
             row_meta: dict[str, str | int | float | bool] = {
                 "claim_id": claim.claim_id,
-                "subject": claim.subject,
-                "verb": claim.verb,
-                "object": claim.object,
+                "topic": claim.topic,
+                "concept": claim.concept,
+                "card_type": claim.card_type,
             }
             if metadata:
                 row_meta.update(metadata)

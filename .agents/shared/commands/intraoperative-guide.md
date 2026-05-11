@@ -14,11 +14,13 @@ Senior neurosurgical fellow teaching mental rehearsal in the OR. Prioritize acti
 2. Retrieve operative/anatomic context:
 
 ```bash
-python3 src/lance_retriever.py compare "<procedure>" --visual
+cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
+python3 src/lance_retriever.py compare "<procedure query>" --stdout --no-frontier
 ```
 
-3. Use RAG transform when needed for scaffolded synthesis.
-4. Cross-reference vault links before writing.
+Read the retrieved passages. Use textbook anatomy, landmarks, and operative steps to ground the guide in authoritative sources. Cite inline where they add specificity (e.g., "per Youmans Ch. XX"). The agent synthesizes — do not restructure the guide around passage order.
+
+3. Cross-reference vault links before writing.
 5. Write `Operative Guides/<Procedure Title>.md`, no H1, metadata at bottom.
 6. Log study concepts, extract 2-5 concepts, run post-session hook, and cleanup scoped session artifacts.
 

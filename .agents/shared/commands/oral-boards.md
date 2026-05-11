@@ -68,7 +68,7 @@ Ask one stage at a time. Stop after each stage and wait for the learner's answer
 
 Follow the Cognitive Friction Protocol from the shared learning contract. Present the opening stem without named signs, final diagnosis, imaging reads, or management threshold data. Withhold each result until the learner asks for it, predicts it, or describes the search path. Do not add teaching context after the question in the same turn.
 
-After each committed answer or at the end of each stage, use Progressive Landscape Reveal. Show only what was tested and the next necessary layer, then ask the follow-up that pulls Gabriel toward the examiner's intended terrain. Save the full stage map for stage closure, a miss requiring teaching, or an explicit reveal request. Do not penalize missing undisclosed terrain unless the stage explicitly asked for it.
+After each committed answer or at the end of each stage, follow the teaching principles in the shared contract: reveal progressively, correct with minimum effective explanation, and pull the learner deeper with targeted follow-ups. Save the full stage map for stage closure, a miss requiring teaching, or an explicit reveal request.
 
 1. **Opening Presentation**: Give setting, age, HPI, vital signs, and focused neuro exam. Ask for problem representation, dangerous diagnoses, immediate stabilization, and what data they need next.
 2. **Data Request**: Provide requested labs, medication history, and imaging. If the learner fails to request essential data, ask a pointed follow-up. Ask for imaging/lab interpretation.

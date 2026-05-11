@@ -68,9 +68,8 @@ Find public methods missing return type annotations across the critical API surf
 cd /Users/gabrielreyes/agentic-neuro && grep -n "^    def [a-z]\|^def [a-z]" \
   src/study_memory.py \
   src/lance_retriever.py \
-  src/anki_sync_cli.py \
-  src/debrief_context_assembler.py \
-  src/debrief_writer.py \
+  src/anki_queue.py \
+  
   src/learning_artifact_guard.py \
   | grep -v "^\s*#" | grep -v " -> " | head -60
 ```
@@ -146,8 +145,8 @@ Also check for unused imports in the most import-heavy files:
 
 ```bash
 cd /Users/gabrielreyes/agentic-neuro && grep -n "^import \|^from " \
-  src/study_memory.py src/lance_retriever.py src/anki_sync_cli.py \
-  src/debrief_context_assembler.py src/learning_artifact_guard.py | head -50
+  src/study_memory.py src/lance_retriever.py src/anki_queue.py \
+  src/learning_artifact_guard.py | head -50
 ```
 
 Penalty: **-4 pts** per confirmed orphaned function (defined, never called, not part of public API contract). **-1 pt** per confirmed unused import. Cap at -15.
@@ -160,8 +159,7 @@ The mixin classes are the most-called API surface. Check their public methods fo
 
 ```bash
 cd /Users/gabrielreyes/agentic-neuro && grep -n "    def [a-z]\|^def [a-z]" \
-  src/study_memory.py src/debrief_context_assembler.py \
-  src/debrief_writer.py src/learning_artifact_guard.py
+  src/study_memory.py src/learning_artifact_guard.py
 ```
 
 For each public method found, read 2-3 lines after the `def` line to check if a docstring (`"""`) immediately follows. Methods with no docstring where the logic is non-obvious are findings.
@@ -182,7 +180,7 @@ The 5 critical paths — each untested costs **-1 pt**:
 2. `study_memory.py` → `recall` topic matching with alias expansion
 3. `study_memory.py` → `end-session` stats computation and strategy persistence
 4. `lance_retriever.py` → `search` fusion and reranking pipeline
-5. `anki_sync_cli.py` → dedup threshold behavior
+5. `anki_queue.py` → enqueue validation and novelty dedup behavior
 
 Cap at -5.
 

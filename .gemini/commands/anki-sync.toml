@@ -1,13 +1,13 @@
-description = "Extract flashcards from session and sync to Anki via AnkiConnect"
+description = "Manual Anki card flush, review, or creation via anki_queue.py"
 
 prompt = """
-ACTIVE COMMAND: /anki-sync — 9-step sequential card pipeline.
+ACTIVE COMMAND: /anki-sync
 
-MANDATORY: Step 6 blind validation must complete on every card before writing final_cards.json. Step 6.5 CLI gate must pass before dispatch. Step 9 hooks (KG, Obsidian, cleanup) never skipped.
+Manual flush, review, or card creation for the Anki pipeline. All card work uses `anki_queue.py` — review, check for duplicates, then flush.
 
 User's request: {{args}}
 
 ---
 
-@{.gemini/commands/anki-sync.md}
+@{.agents/shared/commands/anki-sync.md}
 """

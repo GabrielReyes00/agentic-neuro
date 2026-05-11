@@ -1,6 +1,6 @@
 ---
 name: study_review
-description: Socratic review from an existing Study Material note — memory-enabled, doc-anchored.
+description: Socratic review from an existing vault document (Reports/ or Study Material/) — memory-enabled, doc-anchored, no vault artifact.
 ---
 
 # Study Review
@@ -9,6 +9,20 @@ Gemini runtime wrapper for `/study-review`. The canonical contract lives in `.ag
 
 ## Gemini Runtime Constraints
 
-- Grade every answer starting with exactly one of: `Correct`, `Partial`, or `Not quite`.
-- After every evaluated answer, run `study_memory.py log-answer` silently per the shared contract. Do not skip this step.
-- Do not call Anki directly per turn.
+### Per-Turn Sequence (mandatory, after every evaluated answer)
+
+After the learner answers and you grade/correct, execute this two-step sequence silently before asking the next question:
+
+1. **Log the answer**: `python3 src/study_memory.py log-answer ...` per the shared contract. Read the output — it prints `OK exchange_id=N`.
+2. **Enqueue Anki cards** (if warranted): `python3 src/anki_queue.py enqueue ...` using the exchange_id from step 1. See GEMINI.md §6 and the shared contract for card rules and when to generate cards.
+
+Both steps use the same `SESSION_TS`. Do not defer enqueue to session end — cards must be enqueued per turn so the queue reflects the full session.
+
+### Session End
+
+At session end, follow the shared contract's Anki Queue Validation and Flush protocol:
+1. `python3 src/anki_queue.py review --session "$SESSION_TS"`
+2. `python3 src/anki_queue.py check --session "$SESSION_TS"` — review duplicates
+3. `python3 src/anki_queue.py flush --session "$SESSION_TS"`
+
+All Anki card work uses `anki_queue.py`. There is no other pipeline.

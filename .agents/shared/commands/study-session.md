@@ -13,7 +13,7 @@ python3 src/study_memory.py status
 
 If the user has not specified a topic, use `status` output to identify weak concepts and open errors, then propose a topic. If the user asks "what should I study?", pick the topic with the most open errors or weakest concepts and explain why.
 
-If `recall` returns prior data, apply the Recall Interpretation Rules from the shared contract. Shape the session around `Next strategy`, retest `OPEN ERRORS`, skip `KNOWN CONCEPTS`, and never repeat `RECENT EXCHANGES`.
+If `recall` returns prior data, use it to build your teaching plan per the **Agent as Memory Intelligence Layer** section of the shared contract.
 
 If the user has selected a specific Obsidian document, apply Requested-Document Priority: use the document as the primary curriculum and weave prior context only when directly prerequisite, confusable, safety-critical, or a single brief bridge.
 
@@ -28,16 +28,7 @@ If the user has selected a specific Obsidian document, apply Requested-Document 
 
 Redistribute skipped time to New Territory.
 
-Remediation routing (from recall interpretation rules):
-
-| Error type | Mode |
-|---|---|
-| `numerical_recall` | Clinical vignette where the number changes the plan |
-| `conceptual_confusion` | Forced discrimination |
-| `cross_contamination` | Confusable-pair side-by-side |
-| `application_failure` | New clinical context |
-| `reasoning_gap` | Causal scaffold |
-| `omission` | Case where omitted element causes harm |
+Use your judgment to match remediation approach to the error type — if a previous approach failed on the same concept, change strategies.
 
 ## Step 2: Present Plan
 
@@ -49,14 +40,7 @@ Ask one question at a time. After every evaluated learner answer, run `log-answe
 
 Follow Cognitive Friction Protocol: each prompt ends at the question. No hints, no answer context, no teaching until after the learner commits.
 
-Follow Progressive Landscape Reveal: grade briefly, reveal one layer, ask the targeted follow-up.
-
-Component behavior:
-
-1. Error Retests: probe the misconception from a new angle (never the same question). Use the error_type to pick the teaching move.
-2. Gap Remediation: use the error-matched mode from the table above.
-3. New Territory: start with calibration if topic is new, then advance up the mastery ladder.
-4. Transfer Challenge: one scenario applying a known concept in a new clinical context.
+Follow the teaching principles in the shared contract: reveal progressively, correct with minimum effective explanation, escalate as fast as performance supports.
 
 ## Step 4: Summary and Finish
 

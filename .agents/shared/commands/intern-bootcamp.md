@@ -68,7 +68,7 @@ If the learner chooses a weakness, shift to tutor mode:
 | application failure | `socratic-drill` |
 | reasoning gap | layered causal walkthrough |
 
-Pipeline: retrieve with `lance_retriever.py compare`, transform with `.agents/shared/commands/rag-transform.md`, teach, then micro-test in a different context.
+Pipeline: retrieve with `lance_retriever.py compare --stdout --no-frontier`, synthesize the retrieved context yourself, teach, then micro-test in a different context.
 
 ## Module Catalog
 

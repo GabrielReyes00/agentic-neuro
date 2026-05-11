@@ -26,30 +26,16 @@ data/knowledge_graph.db
 data/knowledge_graph.db-wal
 data/knowledge_graph.db-shm
 
-# === Ephemeral Session Files (regenerated per query) ===
-data/Sessions/scratch_context.md
-data/Sessions/transform_output.md
-data/Sessions/synthesis_digest.md
-data/Sessions/learner_context.json
-data/Sessions/retrieval_gap.json
-data/Sessions/frontier_cache.md
-data/Sessions/active_lesson_sections.json
-data/Sessions/active_lesson_plan.md
-data/Sessions/session_digest_*.md
-data/Sessions/figures/
+# === Ephemeral Session Files (regenerated per session) ===
+data/Sessions/
 
-# === Test/Benchmark Outputs ===
-data/Sessions/test*_*.md
-data/Sessions/benchmark_*.json
+# === Database Backups ===
+data/study_memory_backup_*.db
 
-# === Telemetry & Logs ===
-data/Sessions/search_telemetry.jsonl
-data/Sessions/case_log_sync.txt
-data/Sessions/concept_review_queue.json
-data/Sessions/difficulty_target.json
-data/Sessions/last_session_narrative.json
-data/Sessions/transform_directives.json
-data/Sessions/episodic_memory.json
+# === Runtime State & Caches ===
+data/artifacts/
+data/fastembed_cache/
+data/runtime/
 
 # === Local User Config / Scratch ===
 data/pgy_config.json

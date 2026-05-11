@@ -1,9 +1,15 @@
-description = "Multi-agent research report generator — neurosurgical topic review with citations"
+description = "Encyclopedic neurosurgical reference report — textbook-chapter ambition, agent-driven research and self-audit"
 
 prompt = """
-ACTIVE COMMAND: /generate-report — Multi-phase research report (Phases 0-7).
+ACTIVE COMMAND: /generate-report — Produce an encyclopedic, citation-dense reference report on a neurosurgical topic.
 
-MANDATORY hooks: recall before research, INDEX guard before write, concept extraction after write, end-session at completion. RAG opt-out is not a verification failure.
+You MUST read and follow `.agents/shared/commands/generate-report.md` end-to-end. Do not improvise. The shared command is principle-driven, not phase-driven — exercise judgment on scope, source weighting, and structure within the contract.
+
+Hard requirements before you write the file:
+- Match or exceed the structural and citation density of the reference exemplar at `Reports/Sphenoid Wing Meningiomas.md` in the vault.
+- Meet every Quality Floor in the shared command (Key Numbers Table ≥10 rows, Differentiator ≥5 entities, Failure Modes ≥6 specific pitfalls, ≥8 unique citations, ≥3 inline wikilinks, ≥200 lines body).
+- Self-audit the draft against the Quality Contract before writing. If any floor fails, run more research and rewrite — do not write a deficient file.
+- Anchor the report in memory via the two-step `log-answer` + `end-session` sequence in the shared command.
 
 User's topic: {{args}}
 

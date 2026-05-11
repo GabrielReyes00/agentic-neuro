@@ -1,6 +1,6 @@
 ---
 name: anki_sync
-description: Build validated, image-enriched neurosurgery Anki cards and sync them through AnkiConnect.
+description: Manual Anki card flush, review, or creation via anki_queue.py.
 ---
 
 # Anki Sync

@@ -9,10 +9,10 @@ from pydantic import BaseModel, Field, model_validator
 
 class ClaimModel(BaseModel):
     claim_id: str = Field(min_length=2, max_length=16)
-    subject: str = Field(min_length=1, max_length=200)
-    verb: str = Field(min_length=1, max_length=120)
-    object: str = Field(min_length=1, max_length=260)
-    claim_text: str = Field(min_length=8, max_length=420)
+    topic: str = Field(default="", max_length=200, description="Session topic for metadata")
+    concept: str = Field(default="", max_length=260, description="Tested concept for metadata")
+    card_type: str = Field(default="", max_length=10, description="cloze or qa")
+    claim_text: str = Field(min_length=8, max_length=420, description="Card text for embedding")
 
 
 class CardImage(BaseModel):
@@ -30,7 +30,7 @@ class CardDraft(BaseModel):
     claim_id: str = Field(min_length=2, max_length=16)
     card_type: Literal["cloze", "qa"]
     category: str = Field(default="", max_length=60)
-    cloze_text: str = Field(default="", max_length=600)
+    cloze_text: str = Field(default="", max_length=240)
     answer_text: str = Field(default="", max_length=200)
     front: str = Field(default="", max_length=500)
     back: str = Field(default="", max_length=500)
