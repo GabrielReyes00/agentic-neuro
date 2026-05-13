@@ -3,6 +3,17 @@
 **Arch**: Gemini CLI + LanceDB RAG + MCP (Gmail, GCal, Chrome) + Commands
 **Parity**: Claude support in `CLAUDE.md` + `.claude/commands/`. Gemini must be self-contained here; do not assume it reads Claude instructions.
 
+## §0 Shared Workflow Authority
+
+The canonical workflow contracts live in `.agents/shared/commands/`. Gemini command wrappers in `.gemini/commands/` are thin adapters that must read and follow the corresponding shared command file. If this root file conflicts with a shared command, the shared command wins for that workflow.
+
+Key shared contracts:
+- `.agents/shared/commands/learning-session-contract.md` — memory operations, Adaptive Teaching Doctrine, Anki Card Doctrine, session-end integrity, and shared teaching behavior.
+- `.agents/shared/commands/study-review.md` — doc-anchored and memory-driven review.
+- `.agents/shared/commands/consult.md` — lecture-first clinical consult, verification, Anki, pocket-card write.
+- `.agents/shared/commands/generate-report.md` — citation-dense report generation, Mastery Objectives, report validation.
+- `.agents/shared/commands/intraoperative-guide.md` — operative walkthroughs with Mastery Objectives.
+
 ## §1 Universal Directives
 
 1. No bare "Done" — surface meaningful output or a clarifying question.
@@ -87,11 +98,11 @@ At 12+ turns in study sessions, notify user and offer digest before continuing. 
 
 ## §5 Skill -> Vault Write Rules
 
-- **generate-report**: `Reports/<Title>.md` + INDEX. Encyclopedic, citation-dense reference document — textbook-chapter ambition, not learner-tailored. Mandatory content: TL;DR, Key Numbers Table, Differentiator section, operative walkthrough (when procedural), failure modes / pitfalls, evidence-quality labels on recommendations, effect-size magnitudes on trials, mechanism->consequence chains for molecular content, inline wikilink cross-citations, and a final `## Related in This Vault` section. Citations always required at point of claim (PMID/DOI/textbook+page). Self-audit before write is the intelligence layer of the skill — no phase gates, no plan approval. After write, log a `study_memory.py end-session` entry so downstream `/study-review` can discover the report.
-- **intraoperative-guide**: `Operative Guides/<Title>.md` + INDEX. Same cross-ref.
+- **generate-report**: `Reports/<Title>.md` + INDEX. Encyclopedic, citation-dense reference document — textbook-chapter ambition, not learner-tailored. Mandatory content includes TL;DR, Key Numbers Table, Differentiator, operative walkthrough when procedural, failure modes/pitfalls, evidence-quality labels, effect-size magnitudes, mechanism->consequence chains, inline wikilink cross-citations, `## Mastery Objectives`, and final `## Related in This Vault`. Citations always required at point of claim (PMID/DOI/textbook+page). Self-audit before write is the intelligence layer of the skill — no phase gates, no plan approval. After write, validate the target report and log a `study_memory.py end-session` entry so downstream `/study-review` can discover it.
+- **intraoperative-guide**: `Operative Guides/<Title>.md` + INDEX. Includes `## Mastery Objectives` plus cross-ref.
 - **study-material**: `Study Material/<Title>.md` + INDEX. Title Case from source doc name. Must pass `src/study_material_guard.py` before claiming success or starting a drill.
 - **grand-rounds**: `Presentations/Cases/<Title>.md` or `Presentations/Articles/<Title>.md` via `src/grand_rounds_writer.py` with `--require-quality-gate`. Scrub PHI before case writes.
-- **consult**: `Consults/<Topic Title>.md`. Focused pocket-card vault note for ward reference -- brief lecture model, not encyclopedic. Agent writes the pocket card directly. If a prior consult on the same topic exists, append an `## Encounter -- YYYY-MM-DD` section. Dual-source Anki cards: lecture content (thresholds, drugs, doses) + verification question misses. Memory recall informs teaching approach, never content omission. No H1, YAML at bottom.
+- **consult**: `Consults/<Topic Title>.md`. Focused pocket-card vault note for ward reference -- brief lecture model, not encyclopedic. Agent writes the pocket card directly. If a prior consult on the same topic exists, append an `## Encounter -- YYYY-MM-DD` section. Dual-source Anki cards follow the shared Anki Card Doctrine: lecture content + verification question misses. Memory recall informs teaching approach, never content omission. Include compact `## Mastery Objectives`. No H1, YAML at bottom.
 - **study-review**: No vault artifact in either invocation mode (doc-anchored or memory-driven) -- the memory layer (`study_memory.py`) is the durable record. `log-answer` after each answer (with `--doc` only when reviewing a vault file); `end-session` at close.
 
 Before writing to any vault folder: ensure `INDEX.md` exists and scan existing vault files for valid wikilinks.
@@ -159,7 +170,7 @@ python3 src/anki_queue.py enqueue \
 ```
 For QA cards: `--front "<text>" --back "<text>"` instead of `--cloze/--answer`.
 
-Cards are queued to `data/Sessions/anki_queue.jsonl` and flushed to AnkiConnect at session end only. See the shared learning contract for card rules and flush protocol.
+Cards are queued to `data/Sessions/anki_queue.jsonl` and flushed to AnkiConnect at session end only. Follow the Anki Card Doctrine in the shared learning contract for card intent and quality, plus the flush protocol below.
 
 ### Session End (silent)
 
@@ -238,7 +249,7 @@ Default: answer directly from model knowledge. Skills are opt-in -- never auto-t
 
 ### Anki
 
-Card creation is inline in every learning skill via `anki_queue.py enqueue/check/flush` per the shared contract. There is no separate Anki skill -- when the user asks to "save to Anki" or "make cards", do it inline from the current session context.
+Card creation is inline in every learning skill via `anki_queue.py enqueue/check/flush` per the shared Anki Card Doctrine. There is no separate Anki skill -- when the user asks to "save to Anki" or "make cards", do it inline from the current session context.
 
 ### Study Sessions
 
@@ -249,7 +260,7 @@ Card creation is inline in every learning skill via `anki_queue.py enqueue/check
 
 Persona-shaped sessions (intern-style firefight, oral-board staged cases, ward consult drills) run inside the memory-driven mode; the agent adjusts question shape and tone based on what the learner asks for. The reference topic bank at `Reference/Oral Boards Topic Bank.md` is a curated pool for board-style case selection.
 
-Follow `.agents/shared/commands/study-review.md` for the full workflow and `.agents/shared/commands/learning-session-contract.md` for shared teaching principles and memory operations. The memory layer is the durable record -- no vault artifact is written.
+Follow `.agents/shared/commands/study-review.md` for the full workflow and `.agents/shared/commands/learning-session-contract.md` for shared teaching principles, Adaptive Teaching Doctrine, Anki Card Doctrine, and memory operations. The memory layer is the durable record -- no vault artifact is written. For document-anchored review, read the full document and use `## Mastery Objectives` only as a coverage checksum when present.
 
 ### Answer Directly
 Clinical questions, explanations, comparisons, coding: model knowledge. Offer RAG if depth warrants.

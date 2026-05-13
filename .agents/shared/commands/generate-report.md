@@ -74,6 +74,7 @@ The report MUST contain the following content elements. The agent decides depth,
 - **Evidence quality labels** on every major recommendation — Level I/II/III/IV, or Guideline / RCT / Cohort / Case Series / Expert Consensus. The reader must be able to tell at a glance whether a recommendation is trial-grade or opinion-grade.
 - **Effect-size magnitudes** on every cited trial — absolute risk reduction, NNT, mRS shift, hazard ratios, odds ratios. Never "significant" alone.
 - **Mechanism → consequence chains** for any molecular, genetic, or pathophysiologic content. No orphan facts. If a mutation, pathway, or physiologic principle is named, its functional and clinical consequence is stated in the same passage.
+- **Mastery Objectives** — a final `## Mastery Objectives` section defining what a reader should be able to do with the report's knowledge under clinical, operative, or oral-board pressure. Use testable action verbs; do not address Gabriel directly.
 - **Cross-references** — wikilinks to existing vault notes woven through the prose at the point of relevance, plus a final `## Related in This Vault` section listing the most relevant prior reports, guides, and concepts with one line on the relationship.
 
 If a Mandatory Element is genuinely not applicable to a specific topic (e.g., operative walkthrough on a pure pharmacology report, mechanism→consequence chains on a pure operative anatomy report), state the omission briefly in your self-audit reasoning and proceed.
@@ -85,6 +86,7 @@ If a Mandatory Element is genuinely not applicable to a specific topic (e.g., op
 - Failure modes: **≥6 specific named pitfalls**, each describing the error and its mechanism — not generic cautions.
 - Unique citations: **≥8 distinct sources**, mixing PubMed primary literature and textbook RAG.
 - Wikilinks: **≥3 inline cross-references** plus the final `## Related in This Vault` section, all verified to resolve.
+- Mastery Objectives: `## Mastery Objectives` present with **5-10** testable objectives using action verbs; weak verbs such as "know," "understand," "appreciate," "be familiar with," "review," and "learn" fail the contract.
 - Total length: **≥200 lines** of body content for a typical topic; encyclopedic ambition usually pushes 250–350. A short report is a red flag, not a feature.
 
 These are floors, not ceilings. The Sphenoid Wing Meningiomas reference exemplar exceeds every floor — use it as the calibration point.
@@ -131,11 +133,12 @@ Raw tokens like `PMID:26738503` or `DOI:10.1007/...` without a link wrapper are 
 
 This is the intelligence layer of this skill. Before committing the file, read your own draft end-to-end and validate:
 
-- **Opening block** — H2 `## Clinical Utility & Quick Reference` present with all four required children (blockquoted TL;DR, `### When to Reference This Report`, `### Key Numbers at a Glance` with the canonical `| Parameter | Value | Context | Source |` table header, `### Decision Framework` as numbered bolded steps), in that order. Run `python3 src/report_validator.py` after writing to confirm structural compliance — its exit code is binary.
+- **Opening block** — H2 `## Clinical Utility & Quick Reference` present with all four required children (blockquoted TL;DR, `### When to Reference This Report`, `### Key Numbers at a Glance` with the canonical `| Parameter | Value | Context | Source |` table header, `### Decision Framework` as numbered bolded steps), in that order. After writing, run `python3 src/report_validator.py "/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Reports/<Title Case Title>.md"` to confirm structural compliance for the target report — its exit code is binary.
 - **Comprehensiveness** — every Mandatory Element from the Quality Contract is present, or its absence is justified by the topic.
 - **Density** — the prose integrates sources rather than serial-summarizing them. No padding sections, no encyclopedic-history filler when operational depth is missing.
 - **Citation integrity** — every quantitative claim, every recommendation, every mechanism is cited. The cited source actually supports the claim made (semantic check, not string match). PMIDs and DOIs are verbatim from the source tool, not constructed.
 - **Specificity** — the prose names thresholds, percentages, named maneuvers, page references, named series. No "studies suggest," no "is known to," no "recent evidence indicates."
+- **Mastery Objectives** — `## Mastery Objectives` contains 5-10 testable objectives, uses strong action verbs, avoids weak verbs, and maps to management-changing discriminators, thresholds, mechanisms, complications, anatomy-risk relationships, or operative decisions from the report body.
 - **Wikilinks resolve** to real vault notes from your Step 2 vault scan. No invented filenames — verify each `[[...]]` against the scan output before writing.
 - **Voice** — reads like an expert reference chapter, not an AI summary. No "in conclusion," no "it is important to note," no narrator commentary.
 - **No learner-tailoring leakage** — the report does not address "you," does not mention PGY level, does not skip content because something might be assumed.
@@ -148,7 +151,7 @@ This is not a checklist gate. If the draft fails the contract on any axis, re-re
 
 ## Finish
 
-1. **Write the file** to `Reports/<Title Case Title>.md`. No H1 header — the filename is the title in Obsidian. Start with the TL;DR. End with the Key Numbers Table, `## Related in This Vault`, and a YAML metadata block at the bottom (per CLAUDE.md §1).
+1. **Write the file** to `Reports/<Title Case Title>.md`. No H1 header — the filename is the title in Obsidian. Start with the opening `## Clinical Utility & Quick Reference` block. End the body with topic sections, `## Mastery Objectives`, `## Related in This Vault`, and a YAML metadata block at the bottom (per CLAUDE.md §1).
 
 2. **Update `Reports/INDEX.md`** with the new entry per the standard table format.
 

@@ -88,6 +88,8 @@ Check both `Reports/<slug>.md` and `Study Material/<slug>.md`. If both exist, de
 
 Read the full vault file identified in Step 0. This is your curriculum — you cannot teach from a document you haven't read. Note the document's structure, key sections, and density of material so your question design can cover it systematically.
 
+If the document contains `## Mastery Objectives`, extract them only after reading the full file. Treat them as a coverage checksum for the session plan, not as a substitute curriculum. The questions must still be grounded in the document body and traceable to its actual content.
+
 ### Step 2: Recall prior context (silent)
 
 ```bash
@@ -134,7 +136,7 @@ Regardless of document type or teaching approach, every study-review session mus
 
 1. **The session tests, it does not lecture.** The majority of session time is spent on the learner answering questions, not the agent explaining material. Teaching happens through corrections and follow-ups after the learner commits, not before.
 
-2. **Questions span multiple cognitive levels within the session.** A session that stays at pure recall is too shallow. A session that jumps straight to oral-board defense without confirming foundational knowledge is too ambitious. Within a single session, the agent should probe across at least 2-3 levels: recall/mechanism, discrimination/application, and transfer/complication. The mix should be driven by real-time performance — escalate when the learner demonstrates competence, drop back when they reveal gaps.
+2. **Questions span multiple mastery operations within the session.** A session that stays at pure recall is too shallow. Within a single session, the agent should probe 2-3 of the Adaptive Teaching Doctrine operations as performance supports: discrimination, quantification, sequencing, mechanistic explanation, and transfer. The mix is driven by real-time performance and prior memory, not by a fixed template.
 
 3. **Prior errors are addressed before new territory.** Open errors and persistent gaps from recall and scouting are the highest-value targets. A session that ignores known misconceptions to cover new ground is leaving dangerous gaps unfixed.
 
@@ -158,7 +160,7 @@ In both cases, the document is the curriculum boundary — the agent's questions
 
 ### Question Design
 
-Use the document's structure as a scaffold, not a script. The teaching principles in the shared contract define what your questions should achieve — every question has a purpose, escalate as fast as performance supports, and prioritize the edge of the learner's competence.
+Use the document's structure as a scaffold, not a script. The shared contract defines what your questions should achieve: every question has a purpose, targets a specific mastery operation, and prioritizes the edge of the learner's competence.
 
 Your recall output, scouting notes, and medical knowledge should drive question selection. Prior errors and gaps from this and related topics are high-priority targets. New document sections should be covered. Known concepts should be used as building blocks for deeper questions, not re-drilled.
 
@@ -166,17 +168,13 @@ Ask one question per turn, then stop. Start with active recall or a clinical dec
 
 ### Post-Answer Flow
 
-After each answer: grade it, correct or deepen as needed, then move to the next question. The shared contract's teaching principles (cognitive friction, progressive reveal, minimum effective explanation, correct-but-shallow as partial) guide how much to reveal and when. Keep responses concise — the goal is to spend session time on the learner's thinking, not the agent's explanations.
+After each answer: grade it, then choose the next teaching move using the shared contract's Adaptive Teaching Doctrine. Cognitive friction, progressive reveal, minimum effective explanation, and correct-but-shallow-as-partial govern how much to reveal and when. Keep responses concise — the goal is to spend session time on the learner's thinking, not the agent's explanations.
 
 ### Adaptive Pacing
 
-Let real-time performance compress or expand time-on-concept:
+Let real-time performance compress or expand time-on-concept, but do not create a second local decision tree here. Use the Adaptive Teaching Doctrine for wrong, partial, shallow-correct, repaired-miss, and repeated-error behavior.
 
-- **Strong performance** (correct at application/transfer level): skip planned recall or mechanism questions on the same concept — the learner has demonstrated they don't need them. Advance to the next gap, untested section, or a harder transfer scenario. Do not linger on confirmed knowledge.
-- **Weak performance** (wrong or partial): do not advance past the concept. Correct minimally, then immediately retest the same concept from a different angle or clinical context before moving on. An unrepaired gap that gets left behind will compound — fix it now.
-- **Mixed signals** (correct on recall, partial on application): the concept is understood but not operationalized. Push to the level where the learner breaks — a management consequence, a complication, a contraindication — then repair and move on.
-
-The goal is to spend the maximum proportion of session time at the learner's frontier — the boundary between what they can and cannot do. Questions below the frontier waste time; questions far above it produce noise instead of learning.
+The goal is to spend the maximum proportion of session time at the learner's frontier — the boundary between what they can and cannot do. Questions below the frontier waste time; questions far above it produce noise instead of learning. Strong performance should move quickly toward harder transfer or uncovered material; unrepaired misses should narrow the session until the false rule is removed.
 
 ### Session Length Checkpoint
 

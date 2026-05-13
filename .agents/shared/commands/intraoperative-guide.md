@@ -21,6 +21,7 @@ python3 src/lance_retriever.py compare "<procedure query>" --stdout --no-frontie
 Read the retrieved passages. Use textbook anatomy, landmarks, and operative steps to ground the guide in authoritative sources. Cite inline where they add specificity (e.g., "per Youmans Ch. XX"). The agent synthesizes — do not restructure the guide around passage order.
 
 3. Cross-reference vault links before writing.
+4. Before write, self-check that `## Mastery Objectives` is present with 5-10 testable objectives emphasizing approach selection, anatomy-risk, critical steps, bail-outs, complication recognition, and immediate postop consequences.
 5. Write `Operative Guides/<Procedure Title>.md`, no H1, metadata at bottom.
 6. Log study concepts, extract 2-5 concepts, run post-session hook, and cleanup scoped session artifacts.
 
@@ -35,5 +36,6 @@ Read the retrieved passages. Use textbook anatomy, landmarks, and operative step
 7. **Closure and Immediate Post-Op**: first-24-hour checks.
 8. **Complications and Signatures**: 3-4 procedure-specific complications, presentation, action, recognition error.
 9. **Operative Debrief Question**: one reasoning question.
+10. **Mastery Objectives**: 5-10 testable objectives defining what the learner should be able to do after mentally rehearsing the guide.
 
 Depth adapts to learner context: foundations for depth 0, compressed basics and danger/decisions for depth 1-2, variations and failure recovery for depth 3+.

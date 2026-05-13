@@ -3,6 +3,17 @@
 **Status**: Active | **Arch**: Codex + LanceDB RAG + MCP + Skills
 **Multi-Agent**: Python memory backend is agent-agnostic. Claude uses `CLAUDE.md`; Gemini CLI uses `GEMINI.md` and `.gemini/commands/`. All agents share LanceDB, SQLite study memory, Obsidian vault sync, and Anki infrastructure.
 
+## Shared Workflow Authority
+
+The canonical workflow contracts live in `.agents/shared/commands/`. Codex skills in `.agents/codex/skills/` are thin adapters that must read and follow the corresponding shared command file. If this root file conflicts with a shared command, the shared command wins for that workflow.
+
+Key shared contracts:
+- `.agents/shared/commands/learning-session-contract.md` — memory operations, Adaptive Teaching Doctrine, Anki Card Doctrine, session-end integrity, and shared teaching behavior.
+- `.agents/shared/commands/study-review.md` — doc-anchored and memory-driven review.
+- `.agents/shared/commands/consult.md` — lecture-first clinical consult, verification, Anki, pocket-card write.
+- `.agents/shared/commands/generate-report.md` — citation-dense report generation, Mastery Objectives, report validation.
+- `.agents/shared/commands/intraoperative-guide.md` — operative walkthroughs with Mastery Objectives.
+
 ## User Profile
 
 Gabriel Reyes | Advanced MS4 entering PGY-1 Neurosurgery | Baylor College of Medicine
@@ -97,7 +108,7 @@ Explicit invocation only:
 - Focused clinical question, ward knowledge gap, curbside consult -> `consult` (brief expert lecture + verification questions + pocket-card vault note; not encyclopedic)
 - Grand rounds, case presentation, or journal club deck -> `grand-rounds`
 
-Anki: card creation is inline in every learning skill via `anki_queue.py enqueue/check/flush`. There is no separate Anki skill.
+Anki: card creation is inline in every learning skill via `anki_queue.py enqueue/check/flush` and follows the Anki Card Doctrine in `.agents/shared/commands/learning-session-contract.md`. There is no separate Anki skill.
 
 Persona-shaped sessions (intern-style firefight, oral-board staged cases, ward consult drills) run inside `study-review`'s memory-driven mode -- the agent adjusts question shape and tone based on what the learner asks for. The reference topic bank at `Reference/Oral Boards Topic Bank.md` in the vault is a curated pool for board-style case selection.
 
@@ -127,3 +138,7 @@ Learning commands are complete only after required workflow steps finish:
 4. `anki_queue.py review` + `check` + `flush` for the session's queued cards.
 
 If the user exits abruptly, finalize with available data and do not claim full completion.
+
+## Artifact Mastery Objectives
+
+Generated `Reports/`, `Consults/`, and `Operative Guides/` artifacts include a `## Mastery Objectives` section per their shared command contracts. `study-review --doc` must read the full document first and use Mastery Objectives only as a coverage checksum, never as a substitute for the source body.

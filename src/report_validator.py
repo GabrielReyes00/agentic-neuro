@@ -11,6 +11,8 @@ Checks (per file):
       * H3 `### Decision Framework`
   - `### Key Numbers at a Glance` is followed by a Markdown table whose header
     row matches `| Parameter | Value | Context | Source |` (whitespace-tolerant).
+  - H2 `## Mastery Objectives` appears after the opening block and before bottom
+    YAML, with 5-10 objective lines using testable action verbs.
   - No `Generation Mode:` line anywhere in the file (legacy anti-pattern).
   - No H1 (`^# `) anywhere in the file.
   - YAML metadata appears at the bottom, not the top (no `---` on line 1).
@@ -21,6 +23,7 @@ Exit code: 0 if all reports pass, 1 if any fail.
 
 Usage:
     python3 src/report_validator.py
+    python3 src/report_validator.py "/path/to/Reports/Topic.md"
 """
 
 from __future__ import annotations
@@ -47,6 +50,12 @@ GEN_MODE_RE = re.compile(r"^Generation Mode\s*:", re.MULTILINE)
 H1_RE = re.compile(r"^#\s", re.MULTILINE)
 RAG_CALLOUT_RE = re.compile(r"^>\s*\[!info\]\s*RAG Supplemented\s*$", re.MULTILINE)
 ANY_RAG_CALLOUT_HINT_RE = re.compile(r"^>\s*\[!\w+\].*RAG", re.MULTILINE | re.IGNORECASE)
+H2_RE = re.compile(r"^##\s+(.+?)\s*$", re.MULTILINE)
+OBJECTIVE_LINE_RE = re.compile(r"^\s*(?:[-*]\s+|\d+[.)]\s+)(.+?)\s*$")
+WEAK_OBJECTIVE_VERB_RE = re.compile(
+    r"^(?:\*\*)?(?:know|understand|appreciate|be familiar with|review|learn)\b",
+    re.IGNORECASE,
+)
 
 # Matches a single existing markdown link target, with no nested brackets in the label.
 EXISTING_LINK_RE = re.compile(r"\[[^\[\]]*\]\(https?://[^)]+\)")
@@ -63,6 +72,23 @@ TEXTBOOK_HINT_RE = re.compile(
     r"\b(?:Youmans|Greenberg|Handbook|Atlas|Operative Neurosurgical Techniques|Rhoton|StatPearls|p\.\s*\d+|\d(?:st|nd|rd|th)\s+Ed\b|Cranial Anatomy|Comprehensive Neurosurgical)",
     re.IGNORECASE,
 )
+
+
+def _bottom_yaml_start_line(text: str) -> int | None:
+    lines = text.splitlines()
+    if not lines or lines[-1].strip() != "---":
+        return None
+    for idx in range(len(lines) - 2, -1, -1):
+        if lines[idx].strip() == "---":
+            return idx + 1
+    return None
+
+
+def _strip_objective_markup(text: str) -> str:
+    text = text.strip()
+    text = re.sub(r"^\*\*(.*?)\*\*", r"\1", text)
+    text = re.sub(r"^`(.*?)`", r"\1", text)
+    return text.strip()
 
 
 def validate(path: Path) -> list[str]:
@@ -144,6 +170,41 @@ def validate(path: Path) -> list[str]:
                 f"with header `| Parameter | Value | Context | Source |`"
             )
 
+    # Mastery Objectives section: required after opening block and before bottom YAML.
+    h2_positions = [(m.group(1).strip(), text.count("\n", 0, m.start()) + 1) for m in H2_RE.finditer(text)]
+    mastery_positions = [(name, ln) for name, ln in h2_positions if name == "Mastery Objectives"]
+    bottom_yaml_line = _bottom_yaml_start_line(text)
+    if not mastery_positions:
+        failures.append("missing required H2 `## Mastery Objectives`")
+    else:
+        mastery_name, mastery_line = mastery_positions[0]
+        if mastery_line <= first_h2:
+            failures.append(f"line {mastery_line}: `## Mastery Objectives` must appear after the opening Clinical Utility section")
+        if bottom_yaml_line is not None and mastery_line >= bottom_yaml_line:
+            failures.append(f"line {mastery_line}: `## Mastery Objectives` must appear before bottom YAML metadata")
+
+        next_mastery_h2 = next((ln for _, ln in h2_positions if ln > mastery_line), len(lines) + 1)
+        section_end = min(next_mastery_h2, bottom_yaml_line or len(lines) + 1)
+        mastery_lines = lines[mastery_line: section_end - 1]
+        objectives: list[tuple[int, str]] = []
+        for offset, line in enumerate(mastery_lines, mastery_line + 1):
+            match = OBJECTIVE_LINE_RE.match(line)
+            if match:
+                objective = _strip_objective_markup(match.group(1))
+                if objective:
+                    objectives.append((offset, objective))
+        if len(objectives) < 5 or len(objectives) > 10:
+            failures.append(
+                f"line {mastery_line}: `## Mastery Objectives` must contain 5-10 objective list items "
+                f"(found {len(objectives)})"
+            )
+        for ln, objective in objectives:
+            if WEAK_OBJECTIVE_VERB_RE.search(objective):
+                failures.append(
+                    f"line {ln}: weak Mastery Objective verb in `{objective[:80]}`; "
+                    "use a testable action verb"
+                )
+
     # RAG callout sanity (optional, but if hinted must be exact)
     if ANY_RAG_CALLOUT_HINT_RE.search(text) and not RAG_CALLOUT_RE.search(text):
         failures.append(
@@ -207,17 +268,25 @@ def validate(path: Path) -> list[str]:
 
 
 def main() -> int:
-    if not REPORTS_DIR.is_dir():
-        print(f"Reports directory not found: {REPORTS_DIR}", file=sys.stderr)
-        return 1
+    if len(sys.argv) > 1:
+        files = [Path(arg) for arg in sys.argv[1:]]
+    else:
+        if not REPORTS_DIR.is_dir():
+            print(f"Reports directory not found: {REPORTS_DIR}", file=sys.stderr)
+            return 1
+        files = sorted(p for p in REPORTS_DIR.glob("*.md") if p.name != "INDEX.md")
 
-    files = sorted(p for p in REPORTS_DIR.glob("*.md") if p.name != "INDEX.md")
     if not files:
         print("No report files found.", file=sys.stderr)
         return 1
 
     total_failures = 0
     for path in files:
+        if not path.exists():
+            total_failures += 1
+            print(f"FAIL  {path}")
+            print("        - file does not exist")
+            continue
         failures = validate(path)
         if failures:
             total_failures += 1

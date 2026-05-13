@@ -1,6 +1,6 @@
 ---
 name: study-review
-description: Use when Gabriel asks for /study-review, study review, or the related workflow; follows the shared agent-agnostic command contract. Socratic review from an existing Study Material note with semantic memory planning and hooks.
+description: Use when Gabriel asks for /study-review, study review, or the related workflow; follows the shared agent-agnostic command contract. Memory-enabled Socratic review from an existing vault document or memory-driven weak-spot queue.
 ---
 
 # Study Review

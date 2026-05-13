@@ -72,6 +72,8 @@ These override the shared contract's Socratic defaults:
 5. **Complete content regardless of memory state.** Memory shapes how you teach, never what you teach. Every consult delivers the full applicable knowledge.
 6. **Speak like a senior at the workstation.** Direct, confident, specific. No hedging. No "it depends" without then saying what it depends on and what to do in each case.
 
+The shared Adaptive Teaching Doctrine applies to verification questions and the future-study handoff, not to the initial consult lecture. Do not turn the consult into a Socratic session before delivering the answer.
+
 ---
 
 ## The Consult
@@ -107,7 +109,7 @@ Two independent sources of Anki cards, both using `anki_queue.py enqueue` per th
 
 **Source 2: Verification question cards (1-3 per miss).** Generated after each `log-answer` where `correct < 2` or where the correct answer missed a critical nuance. These cards encode the misconception-correction pair.
 
-Card rules per the shared contract. Cloze for thresholds/numbers/drugs; QA for mechanisms/reasoning. Flush at session end.
+Card quality follows the shared Anki Card Doctrine. Flush at session end.
 
 ---
 
@@ -121,6 +123,7 @@ Content (agent selects what applies — no fixed scaffold):
 - Critical thresholds/orders (specific numbers, drugs, doses)
 - Red flags / escalation triggers
 - Discriminators (what this is NOT and why it matters)
+- Mastery Objectives (3-7 testable objectives that define what the resident should be able to do after the consult)
 - Related in This Vault (wikilinks verified against Step 2 scan)
 - YAML at bottom
 
@@ -168,4 +171,5 @@ BAD: "Continue studying this topic."
 - Verification questions: **>=2** logged via `log-answer`
 - Lecture content Anki cards: **>=3** cards from lecture material (thresholds, drugs, doses, etc.)
 - Wikilinks: **>=1** inline cross-reference in the pocket card, verified against vault scan
+- Mastery Objectives: `## Mastery Objectives` present with **3-7** testable objectives
 - The resident can manage or co-manage the problem after reading the consult and pocket card
