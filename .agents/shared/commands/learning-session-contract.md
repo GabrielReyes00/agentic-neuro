@@ -104,7 +104,7 @@ Operational summary: create cards preferentially from wrong answers, partial ans
 - Cloze: use `{{c1::target}}` for single-blank; multi-cloze is allowed only when all deletions are tightly related to one concept and each deletion is independently worth testing
 - Cloze answer text is queue-review metadata only and is not written into Anki `Back Extra`; do not duplicate the revealed cloze sentence there
 - QA card backs must be self-contained — a reviewer seeing only the answer should understand what fact is being tested without needing the question
-- Deck: `Neurosurgery::<Domain>::<Topic Title>` (Title Case topic, domain from session context; enforced by script)
+- Deck: `Neurosurgery::<Domain>::<Topic Title>` (Title Case topic, domain from session context; enforced by script). Exception: `/intraoperative-guide` cards must use `Neurosurgery::Procedures::<Operative Guide Title>` per that workflow's contract.
 - Tags: `<skill>,<error_type>` (comma-separated, omit error_type if correct)
 
 **Per card:**
@@ -310,7 +310,7 @@ Skills that produce vault reference content still write their own outputs direct
 | `study-material` | `Study Material/<Title>.md` | Q&A document |
 | `consult` | `Consults/<Topic Title>.md` | Pocket card |
 | `generate-report` | `Reports/<Title>.md` | Encyclopedic reference |
-| `intraoperative-guide` | `Operative Guides/<Title>.md` | Operative walkthrough |
+| `intraoperative-guide` | `Operative Guides/<Title>.md` | Operative rehearsal guide |
 | `grand-rounds` | `Presentations/Cases\|Articles/<Title>.md` | Presentation note |
 
 `study-review` writes no vault artifact in either invocation mode — the memory layer is the durable record. No H1 in any vault file (filename is the title). YAML metadata at bottom.

@@ -1,9 +1,9 @@
-description = "Step-by-step operative walkthrough — danger zones, landmarks, bail-outs"
+description = "Deep-research operative rehearsal guide with decomposition, serial RAG, operative knowledge map, verified Obsidian wikilinks, expert review, gap repair, readable formatting, validation, and procedure-deck Anki routing"
 
 prompt = """
-ACTIVE COMMAND: /intraoperative-guide — Full operative protocol with mandatory hooks.
+ACTIVE COMMAND: /intraoperative-guide -- Deep-research operative rehearsal guide with mandatory hooks.
 
-MANDATORY: recall at start, RAG retrieval (--visual), transform sub-task, cross-reference discovery, vault write + INDEX, concept extraction, end-session at completion.
+MANDATORY: read and follow the shared command orchestrator, reload its referenced modules at each checkpoint, perform procedure decomposition, scan the real Obsidian vault for verified wikilinks, run serial multi-query RAG retrieval, distill sources, build and review the operative knowledge map, synthesize a readable Obsidian-native draft from the reviewed map, run expert completeness review before any real vault write, repair gaps with targeted RAG/PubMed/internal expansion until approved, write the vault guide + INDEX only after approval, validate with src/operative_guide_validator.py, route any Anki cards to Neurosurgery::Procedures::<Operative Guide Title>, perform concept extraction, and end-session at completion.
 
 User's request: {{args}}
 

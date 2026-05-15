@@ -14,7 +14,7 @@ Key shared contracts:
 - `.agents/shared/commands/study-review.md` — doc-anchored and memory-driven review.
 - `.agents/shared/commands/consult.md` — lecture-first clinical consult, verification, Anki, pocket-card write.
 - `.agents/shared/commands/generate-report.md` — citation-dense report generation, Mastery Objectives, report validation.
-- `.agents/shared/commands/intraoperative-guide.md` — operative walkthroughs with Mastery Objectives.
+- `.agents/shared/commands/intraoperative-guide.md` — deep-research operative rehearsal guides with procedure decomposition, serial RAG, operative knowledge maps, verified Obsidian wikilinks, restrained readable formatting, adversarial expert review, gap repair, structural validation, procedure-specific Anki decks, and Mastery Objectives.
 
 ## §1 Universal Directives
 
@@ -72,7 +72,7 @@ After Gabriel commits to an answer, reveal progressively. Grade the answer brief
 | Folder | Writer | Purpose |
 |--------|--------|---------|
 | `Reports/` | `/generate-report` | Research reports with citations |
-| `Operative Guides/` | `/intraoperative-guide` | Step-by-step surgical walkthroughs |
+| `Operative Guides/` | `/intraoperative-guide` | Deep-research operative rehearsal guides |
 | `Study Material/` | `/study-material` | Concept maps + question banks |
 | `Presentations/` | `/grand-rounds` | Grand rounds, case presentation, and journal club artifacts. Case notes live in `Presentations/Cases/`; article notes live in `Presentations/Articles/`. Decks are generated to `/Users/gabrielreyes/Desktop/` |
 | `Consults/` | `/consult` | Focused clinical consult pocket cards for ward reference. If a prior consult on the same topic exists, a dated encounter section is appended rather than creating a duplicate |
@@ -89,7 +89,7 @@ After Gabriel commits to an answer, reveal progressively. Grade the answer brief
 ## §5 Skill → Vault Write Rules
 
 - **generate-report**: `Reports/<Title>.md` + INDEX. Encyclopedic, citation-dense reference document — textbook-chapter ambition, not learner-tailored. Mandatory content includes TL;DR, Key Numbers Table, Differentiator, operative walkthrough when procedural, failure modes/pitfalls, evidence-quality labels, effect-size magnitudes, mechanism→consequence chains, inline wikilink cross-citations, `## Mastery Objectives`, and final `## Related in This Vault`. Citations always required at point of claim (PMID/DOI/textbook+page). Self-audit before write is the intelligence layer of the skill — no phase gates, no plan approval. After write, validate the target report and log a `study_memory.py end-session` entry so downstream `/study-review` can discover it.
-- **intraoperative-guide**: `Operative Guides/<Title>.md` + INDEX. Includes `## Mastery Objectives` plus cross-ref.
+- **intraoperative-guide**: `Operative Guides/<Title>.md` + INDEX. Deep-research operative rehearsal manual with procedure decomposition, serial multi-query textbook RAG, operative knowledge map, verified inline wikilinks, restrained Obsidian callouts/tables for readability, setup/equipment, stepwise sequence, anatomy expansion, critical moments, pitfalls, bail-outs, complications, `## Mastery Objectives`, and `## Related in This Vault`. Knowledge-map review, expert completeness review, and gap repair are required before any real vault write; validate with `src/operative_guide_validator.py` after approval. Any Anki cards from the guide must route to `Neurosurgery::Procedures::<Title>`.
 - **study-material**: `Study Material/<Title>.md` + INDEX. Title Case from source doc name.
 - **grand-rounds**: `Presentations/Cases/<Title>.md` or `Presentations/Articles/<Title>.md` via `src/grand_rounds_writer.py`, plus `Presentations/INDEX.md` and `data/Sessions/grand_rounds_<slug>_manifest.json`. Generated `.pptx` lives on Desktop. No H1, bottom YAML. Scrub PHI before case writes. Run the deck quality gate with `--require-quality-gate`. Rehearsal is optional; memory logging begins only if rehearsal starts.
 - **consult**: `Consults/<Topic Title>.md`. Focused pocket-card vault note for ward reference — brief lecture model, not encyclopedic. Agent writes the pocket card directly (no dedicated writer script). If a prior consult on the same topic exists, append an `## Encounter — YYYY-MM-DD` section rather than creating a duplicate. Dual-source Anki cards follow the shared Anki Card Doctrine: lecture content + verification question misses. Memory recall informs teaching approach, never content omission. Include compact `## Mastery Objectives`. No H1, YAML at bottom.

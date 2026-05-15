@@ -16,7 +16,7 @@ Key shared contracts:
 - `.agents/shared/commands/study-review.md` — doc-anchored and memory-driven review.
 - `.agents/shared/commands/consult.md` — lecture-first clinical consult, verification, Anki, pocket-card write.
 - `.agents/shared/commands/generate-report.md` — citation-dense report generation, Mastery Objectives, report validation.
-- `.agents/shared/commands/intraoperative-guide.md` — operative walkthroughs with Mastery Objectives.
+- `.agents/shared/commands/intraoperative-guide.md` — deep-research operative rehearsal guides with procedure decomposition, serial RAG, operative knowledge maps, verified Obsidian wikilinks, restrained readable formatting, adversarial expert review, gap repair, structural validation, procedure-specific Anki decks, and Mastery Objectives.
 
 ## User Profile
 
@@ -110,7 +110,7 @@ Always intercept:
 
 Explicit invocation only:
 - `/study-review`, "let's review [X]", "quiz me on [doc]", "continue our session on [doc]" -> `study-review` (doc-anchored mode)
-- Operative walkthrough -> `intraoperative-guide`
+- Operative rehearsal guide / operative walkthrough -> `intraoperative-guide`
 - Study material or quiz from a file -> `study-material`
 - Research report, comprehensive review, deep-dive on a topic -> `generate-report` (produces an encyclopedic, citation-dense reference document; not learner-tailored)
 - Focused clinical question, ward knowledge gap, curbside consult -> `consult` (brief expert lecture + verification questions + pocket-card vault note; not encyclopedic)
