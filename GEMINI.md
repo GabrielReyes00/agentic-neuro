@@ -9,6 +9,8 @@ The canonical workflow contracts live in `.agents/shared/commands/`. Gemini comm
 
 Key shared contracts:
 - `.agents/shared/commands/learning-session-contract.md` — memory operations, Adaptive Teaching Doctrine, Anki Card Doctrine, session-end integrity, and shared teaching behavior.
+- `.agents/shared/commands/anki-card-quality.md` — short card-quality, cloze, deck taxonomy, and duplicate-judgment rules for all Anki creation/review.
+- `.agents/shared/commands/anki-deck-maintenance.md` — separate live Anki deck rewrite/reorganization workflow; Anki is ground truth and Chroma is rebuilt from Anki.
 - `.agents/shared/commands/study-review.md` — doc-anchored and memory-driven review.
 - `.agents/shared/commands/consult.md` — lecture-first clinical consult, verification, Anki, pocket-card write.
 - `.agents/shared/commands/generate-report.md` — citation-dense report generation, Mastery Objectives, report validation.
@@ -88,11 +90,9 @@ At 12+ turns in study sessions, notify user and offer digest before continuing. 
 | `Consults/` | `/consult` | Focused clinical consult pocket cards for ward reference. If a prior consult on the same topic exists, a dated encounter section is appended rather than creating a duplicate |
 | `Reference/` | Agent (on request) | Curated reference notes (e.g., `Oral Boards Topic Bank.md`) used to seed memory-driven sessions |
 | `Concepts/` | Agent | Glossary of atomic concepts extracted by skills per §7c. `INDEX.md` is auto-regenerated. **Protected** (never overwrite): `Neurosurgery Consult Workflow.md`, `Neurosurgery Consult Checklists by Pathology.md`, `Peripheral Nerve Injury Classifications (Seddon & Sunderland).md` |
-| `Dashboard.md` | `vault_writers.py` (auto) | Live memory snapshot: coverage, open errors, weak concepts, stale knowledge, recent sessions. Regenerated on every `end-session`. **Do not hand-edit.** |
-| `ACGME Readiness.md` | `vault_writers.py` (auto) | Full PGY-1 curriculum view with progress overlay + higher-PGY catalog. Driven by `data/acgme_curriculum.json` × `study_memory.db`. Regenerated on every `end-session`. **Do not hand-edit.** |
-| `ACGME Canvases/` | `vault_writers.py` (auto) | One `.canvas` per ACGME milestone showing every curriculum topic colored by mastery. Regenerated on every `end-session`. **Do not hand-edit.** |
+| `Dashboard.md` | `study_memory.py summary` | Live learner-state context: coverage, open errors, weak concepts, stale knowledge, recent sessions. **Do not hand-edit generated views.** |
+| `ACGME Readiness.md` | `study_memory.py summary` | Active readiness context comes from the learner-memory summary. **Do not hand-edit generated views.** |
 
-**Curriculum spec**: `data/acgme_curriculum.json` is the 265-topic source of truth (milestone, domain, PGY target, priority). Consumed by `vault_writers.py`. Edit JSON to revise scope.
 
 **Tags**: `skill/{report,guide,study-material,study-review,rag,consult,grand-rounds}` | `domain/{vascular,spine,tumor,trauma,functional,pediatric,peripheral-nerve,general,anatomy}` | `type/{reference,session,case,article,concept}` | `source/{agent,user}`
 
@@ -111,7 +111,7 @@ Before writing to any vault folder: ensure `INDEX.md` exists and scan existing v
 
 **DB:** `data/study_memory.db` | **CLI:** `src/study_memory.py`
 
-The memory layer tracks what has been covered, learned, mistaken, and what to focus on next across study sessions. It uses a single SQLite database with abbreviation-aware search (EVD, ICP, SAH, etc. expand automatically).
+The active memory layer is the claim-centered learner model.
 
 ### Session Start (silent, agent-only -- never echo to user)
 
@@ -121,20 +121,18 @@ Context-pulling is **mode-conditional** to prevent topic drift.
 
 ```bash
 cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
-python3 src/study_memory.py recall --topic "<topic>" [--doc "<folder>/<file>.md"]
-# Optional, only if the topic has known confusion history:
-python3 src/study_memory.py confusions --topic "<topic>"
+python3 src/study_memory.py summary --topic "<topic>" --limit 8 --scaffold-limit 2
 ```
 
-**Do NOT run `prep` in topic-anchored mode.** A user studying EVD management does not want drift to spine surgery or pediatric tumors because errors are open there. If a relevant open error lives within today's topic, `recall` surfaces it; retest inline. Otherwise it stays invisible -- that is the point.
+**Do NOT run global summary in topic-anchored mode.** A user studying EVD management does not want drift to spine surgery or pediatric tumors because errors are open there. If a relevant open error lives within today's topic, `summary` surfaces it; retest inline. Otherwise it stays invisible -- that is the point.
 
-**Memory-driven custom review only** -- user asked "what should I review", "drill my weak spots", "build me a custom session" with no named topic. Run prep:
+**Memory-driven custom review only** -- user asked "what should I review", "drill my weak spots", "build me a custom session" with no named topic. Run global summary:
 
 ```bash
-python3 src/study_memory.py prep
+python3 src/study_memory.py summary --limit 12 --scaffold-limit 0
 ```
 
-`prep` surfaces oldest open errors, stale-known concepts, recent cross-contamination patterns, and the prior session's `next_strategy`. Agent-only context -- never echoed, never narrated as a menu.
+Global summary surfaces active retest cards, recent repairs, and session handoff state. Agent-only context -- never echoed, never narrated as a menu.
 
 ### After Every Q&A (silent)
 
@@ -165,12 +163,12 @@ python3 src/anki_queue.py enqueue \
   --deck "Neurosurgery::<Domain>::<Topic Title>" \
   --card-type <cloze|qa> \
   --topic "<session topic>" --concept "<tested concept>" \
-  --cloze "<text with {{c1::blank}}>" --answer "<self-contained answer>" \
+  --cloze "<text with {{c1::blank}}>" \
   --tags "<skill>,<error_type>"
 ```
-For QA cards: `--front "<text>" --back "<text>"` instead of `--cloze/--answer`.
+For QA cards: `--front "<text>" --back "<text>"` instead of `--cloze`.
 
-Cards are queued to `data/Sessions/anki_queue.jsonl` and flushed to AnkiConnect at session end only. Follow the Anki Card Doctrine in the shared learning contract for card intent and quality, plus the flush protocol below.
+Cards are queued to `data/Sessions/anki_queue.jsonl` and flushed to AnkiConnect at session end only. Follow the Anki Card Doctrine in the shared learning contract and read `.agents/shared/commands/anki-card-quality.md` before drafting or validating cards.
 
 ### Session End (silent)
 
@@ -190,7 +188,7 @@ BAD: "Continue studying", "Review more"
 
 When the topic changes mid-session, run recall for the new topic before asking questions on it:
 ```bash
-python3 src/study_memory.py recall --topic "<new topic>"
+python3 src/study_memory.py summary --topic "<new topic>" --limit 8 --scaffold-limit 2
 ```
 
 ### Entry Formatting Contract
@@ -233,7 +231,7 @@ Default: answer directly from model knowledge. Skills are opt-in -- never auto-t
 |---|---|
 | "inbox", "triage emails", "check my mail" | `inbox-workflow` |
 | "what should I study", "what should I review", "drill my weak spots", "go after my open errors", "build me a custom session", "board-style case" | `study-review` (memory-driven mode) |
-| "gaps", "dashboard", "ACGME readiness" | Point the user at the live `Dashboard.md` / `ACGME Readiness.md` (auto-regenerated on every `end-session`). For an ad-hoc refresh between sessions: `python3 src/vault_writers.py`. |
+| "gaps", "dashboard", "ACGME readiness" | Use `python3 src/study_memory.py summary --limit 12 --scaffold-limit 0` for active learner state. |
 | "what books", "list textbooks", "what's loaded" | recipe: `python3 src/lance_retriever.py list_textbooks` |
 | Calendar/scheduling/events | GCal MCP tools |
 
@@ -249,7 +247,9 @@ Default: answer directly from model knowledge. Skills are opt-in -- never auto-t
 
 ### Anki
 
-Card creation is inline in every learning skill via `anki_queue.py enqueue/check/flush` per the shared Anki Card Doctrine. There is no separate Anki skill -- when the user asks to "save to Anki" or "make cards", do it inline from the current session context.
+Card creation is inline in every learning skill via `anki_queue.py enqueue/check/flush` per the shared Anki Card Doctrine. Before drafting or validating cards, read `.agents/shared/commands/anki-card-quality.md` for focused card-quality, cloze, taxonomy, and duplicate rules. There is no separate Anki runtime skill -- when the user asks to "save to Anki" or "make cards", do it inline from the current session context.
+
+For current-deck cleanup, rewriting, taxonomy reorganization, or Chroma rebuilds, use `.agents/shared/commands/anki-deck-maintenance.md`. Anki is ground truth; Chroma is only rebuilt from live Anki.
 
 ### Study Sessions
 
@@ -271,13 +271,13 @@ Clinical questions, explanations, comparisons, coding: model knowledge. Offer RA
 
 | Data | Location |
 |------|----------|
-| Study memory (exchanges, concepts, sessions, errors, doc progress) | `data/study_memory.db` |
+| Study memory (claim-centered learner model) | `data/study_memory.db` |
 | Textbook chunks + embeddings | `neurosurgery_v4.lance` (46,714 rows, 22 books) |
-| Anki card dedup + embeddings | `data/chromadb_store_anki_memory` |
+| Anki advisory overlap cache rebuilt from live Anki | `data/chromadb_store_anki_memory` |
 | Anki card queue (per-session) | `data/Sessions/anki_queue.jsonl` |
 | Reports, guides, study docs, reviews, concepts | Obsidian vault |
 | ACGME curriculum catalog (265 topics) | `data/acgme_curriculum.json` |
-| Auto-regenerated vault interfaces | `Dashboard.md`, `ACGME Readiness.md`, `ACGME Canvases/`, `Concepts/INDEX.md` (writer: `src/vault_writers.py`, fires on `end-session`) |
+| Learner memory interface | `python3 src/study_memory.py summary --limit 12 --scaffold-limit 0` |
 
 ## §10 Command Reference
 
@@ -285,18 +285,19 @@ Clinical questions, explanations, comparisons, coding: model knowledge. Offer RA
 # Shell prefix — ALL commands:
 cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate &&
 
-# study_memory.py — session memory (see §6 for full usage)
-recall --topic "T" [--doc "<folder>/X.md"]
+# study_memory.py — active session memory (see §6 for full usage)
+summary --topic "T" --limit 8 --scaffold-limit 2
+summary --limit 12 --scaffold-limit 0
 log-answer --session "TS" --topic "T" --concept "C" --question "Q" --answer "A" --correct 0|1|2 [--correction "..."] [--error-type "..."] [--misconception "..."] [--doc "..."] [--skill "..."]
 end-session --session "TS" --summary "..." --next-strategy "..."
-status [--topic "T"]
-add-alias --alias "A" --canonical "C"
+status
+resolve-topic --topic "T" [--doc "<folder>/X.md"]
 
 # anki_queue.py — per-session card queue (see shared contract for full workflow)
-enqueue --session "TS" --exchange-id N --deck "D" --card-type cloze|qa --topic "T" --concept "C" [--cloze/--answer or --front/--back] [--tags "t1,t2"]
+enqueue --session "TS" --exchange-id N --deck "D" --card-type cloze|qa --topic "T" --concept "C" [--cloze or --front/--back] [--tags "t1,t2"]
 review [--session "TS"]
-check [--session "TS"]           # novelty pre-flight: surfaces duplicate pairs for agent review
-flush [--session "TS"] [--dry-run]
+check [--session "TS"]           # mandatory quality/overlap report for agent review
+flush [--session "TS"] [--dry-run] [--allow-duplicate-candidates]
 remove --claim-id "ID"           # drop a confirmed duplicate from queue
 
 # lance_retriever.py — textbook RAG

@@ -1,0 +1,582 @@
+from __future__ import annotations
+
+import json
+import sqlite3
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+import study_memory
+
+
+class StudyMemoryTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.memory_path = Path(self.tmp.name) / "study_memory.db"
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def _memory_conn(self) -> sqlite3.Connection:
+        return study_memory._get_db(self.memory_path)
+
+    def _log_scaffolds(self, conn: sqlite3.Connection, topic: str, count: int) -> None:
+        for idx in range(count):
+            study_memory.log_answer(
+                conn,
+                session_id=f"session-scaffold-{topic}-{idx}",
+                topic=topic,
+                concept=f"scaffold concept {idx}",
+                question=f"Scaffold check {idx}?",
+                answer="correct",
+                correct=2,
+                tested_claim=f"{topic} durable scaffold claim {idx}.",
+                learner_claim="Correct.",
+                corrected_rule="Durable.",
+            )
+
+    def test_partial_answer_creates_claim_state_and_retrieval_card(self) -> None:
+        conn = self._memory_conn()
+        try:
+            study_memory.log_answer(
+                conn,
+                session_id="session-1",
+                topic="hypertension management",
+                concept="sah vasospasm norepinephrine units",
+                question="What norepi dose units?",
+                answer="0.05 mcg/kg/hr",
+                correct=1,
+                correction="Norepinephrine starts around 0.05-0.1 mcg/kg/min.",
+                error_type="numerical_recall",
+                tested_claim="Norepinephrine for SAH vasospasm is dosed in mcg/kg/min.",
+                learner_claim="Used mcg/kg/hr.",
+                missing_edge="norepinephrine unit mcg/kg/min",
+                corrected_rule="Use mcg/kg/min, not mcg/kg/hr.",
+                clinical_consequence="Wrong unit underdoses pressor support.",
+                retest_prompt_shape="Ask for norepinephrine starting dose and units in SAH DCI.",
+            )
+            state = conn.execute(
+                """SELECT cs.state, cs.priority, cs.reason, cr.score
+                   FROM claim_state cs
+                   JOIN claim_results cr ON cr.id = cs.last_result_id"""
+            ).fetchone()
+            self.assertEqual(state["state"], "partially_repaired")
+            self.assertEqual(state["priority"], "urgent")
+            self.assertIn("mcg/kg/min", state["reason"])
+            self.assertEqual(state["score"], 1)
+            summary = study_memory.retrieval_summary(conn, topic="hypertension management", limit=2)
+            self.assertIn("must_retest", summary)
+            self.assertIn("SAH DCI", summary)
+        finally:
+            conn.close()
+
+    def test_correct_after_gap_marks_repaired_same_session(self) -> None:
+        conn = self._memory_conn()
+        try:
+            study_memory.log_answer(
+                conn,
+                session_id="session-2",
+                topic="hypertension management",
+                concept="icp safe antihypertensives",
+                question="Why avoid nitroprusside?",
+                answer="Maybe venodilation helps.",
+                correct=0,
+                correction="Nitroprusside vasodilates cerebral vessels and raises CBV/ICP.",
+                error_type="conceptual_confusion",
+                tested_claim="Nitroprusside and hydralazine raise ICP through cerebral vasodilation.",
+                missing_edge="cerebral vasodilation raises cerebral blood volume and ICP",
+            )
+            study_memory.log_answer(
+                conn,
+                session_id="session-2",
+                topic="hypertension management",
+                concept="icp safe antihypertensives",
+                question="Which agents are acceptable?",
+                answer="Nicardipine and labetalol; avoid hydralazine and nitroprusside.",
+                correct=2,
+                tested_claim="Nitroprusside and hydralazine raise ICP through cerebral vasodilation.",
+                learner_claim="Correctly separated acceptable and avoided agents.",
+                corrected_rule="Use nicardipine/labetalol; avoid hydralazine/nitroprusside in ICP risk.",
+            )
+            state = conn.execute("SELECT state FROM claim_state").fetchone()
+            self.assertEqual(state["state"], "repaired_same_session")
+            events = [r["event_type"] for r in conn.execute("SELECT event_type FROM state_events ORDER BY id")]
+            self.assertEqual(events, ["missed", "repaired"])
+            summary = study_memory.retrieval_summary(conn, topic="hypertension management", limit=3)
+            self.assertIn("recent_repair", summary)
+            self.assertIn("delayed retention", summary)
+        finally:
+            conn.close()
+
+    def test_same_claim_across_concept_labels_updates_one_state(self) -> None:
+        conn = self._memory_conn()
+        try:
+            claim = "Secured SAH DCI uses MAP +20-40 and norepinephrine mcg/kg/min."
+            study_memory.log_answer(
+                conn,
+                session_id="session-claim",
+                topic="hypertension management",
+                concept="sah vasospasm norepinephrine units",
+                question="Dose units?",
+                answer="mcg/kg/hr",
+                correct=1,
+                tested_claim=claim,
+                missing_edge="norepinephrine unit mcg/kg/min",
+                corrected_rule="Use mcg/kg/min.",
+            )
+            study_memory.log_answer(
+                conn,
+                session_id="session-claim",
+                topic="hypertension management",
+                concept="sah dci induced hypertension pressor order",
+                question="Full order?",
+                answer="MAP +20-40, norepi 0.05-0.1 mcg/kg/min.",
+                correct=2,
+                tested_claim=claim,
+                learner_claim="Correctly gave MAP and norepinephrine units.",
+                corrected_rule="Use MAP +20-40 and norepinephrine mcg/kg/min.",
+            )
+            rows = conn.execute("SELECT state, priority FROM claim_state").fetchall()
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["state"], "repaired_same_session")
+            self.assertEqual(rows[0]["priority"], "medium")
+            summary = json.loads(study_memory.retrieval_summary(conn, topic="hypertension management", limit=5))
+            card_types = [card["type"] for card in summary["cards"]]
+            self.assertIn("recent_repair", card_types)
+            self.assertNotIn("must_retest", card_types)
+        finally:
+            conn.close()
+
+    def test_near_duplicate_claim_uses_existing_claim_state(self) -> None:
+        conn = self._memory_conn()
+        try:
+            study_memory.log_answer(
+                conn,
+                session_id="session-near-dup",
+                topic="hypertension management",
+                concept="sah dci induced hypertension",
+                question="What is the MAP and pressor strategy?",
+                answer="MAP +20-40 with norepi.",
+                correct=2,
+                tested_claim="Symptomatic SAH vasospasm/DCI should be treated with induced hypertension to MAP 20-40 above baseline using norepinephrine, dosed in mcg/kg/min.",
+                corrected_rule="Use norepinephrine 0.05-0.1 mcg/kg/min to raise MAP 20-40 above baseline.",
+                expected_answer_edge="MAP +20-40 over baseline; norepinephrine 0.05-0.1 mcg/kg/min",
+            )
+            study_memory.log_answer(
+                conn,
+                session_id="session-near-dup",
+                topic="hypertension management",
+                concept="secured sah dci induced hypertension norepinephrine",
+                question="Retest the order.",
+                answer="Raise MAP 20-40 with norepi 0.05-0.1 mcg/kg/min.",
+                correct=2,
+                tested_claim="Symptomatic secured SAH vasospasm/DCI should be treated with induced hypertension to MAP 20-40 above baseline using norepinephrine dosed in mcg/kg/min, titrated to neurologic response.",
+                corrected_rule="For secured SAH DCI, raise MAP 20-40 above baseline with norepinephrine 0.05-0.1 mcg/kg/min.",
+                expected_answer_edge="MAP +20-40 over baseline; norepinephrine 0.05-0.1 mcg/kg/min; titrate to exam",
+                teaching_intent="retention_check",
+            )
+            states = conn.execute("SELECT claim_slug, claim_text, state FROM claim_state").fetchall()
+            self.assertEqual(len(states), 1)
+            self.assertEqual(states[0]["state"], "durable")
+            slugs = [row["claim_slug"] for row in conn.execute("SELECT claim_slug FROM claim_results")]
+            self.assertEqual(len(set(slugs)), 1)
+        finally:
+            conn.close()
+
+    def test_retention_check_promotes_repair_to_durable(self) -> None:
+        conn = self._memory_conn()
+        try:
+            claim = "Secured SAH DCI uses MAP +20-40 and norepinephrine mcg/kg/min."
+            study_memory.log_answer(
+                conn,
+                session_id="session-repair",
+                topic="hypertension management",
+                concept="sah norepi units",
+                question="Units?",
+                answer="mcg/kg/hr",
+                correct=1,
+                tested_claim=claim,
+                missing_edge="norepinephrine unit mcg/kg/min",
+                corrected_rule="Use mcg/kg/min.",
+            )
+            study_memory.log_answer(
+                conn,
+                session_id="session-repair",
+                topic="hypertension management",
+                concept="sah norepi units",
+                question="Try again.",
+                answer="mcg/kg/min",
+                correct=2,
+                tested_claim=claim,
+                corrected_rule="Use mcg/kg/min.",
+                teaching_intent="repair_after_miss",
+            )
+            study_memory.log_answer(
+                conn,
+                session_id="session-retention",
+                topic="hypertension management",
+                concept="sah norepi units",
+                question="Delayed check: units?",
+                answer="mcg/kg/min",
+                correct=2,
+                tested_claim=claim,
+                corrected_rule="Use mcg/kg/min.",
+                teaching_intent="retention_check",
+            )
+            state = conn.execute("SELECT state FROM claim_state").fetchone()
+            self.assertEqual(state["state"], "durable")
+            events = [r["event_type"] for r in conn.execute("SELECT event_type FROM state_events ORDER BY id")]
+            self.assertEqual(events, ["partial", "repaired", "retention_passed"])
+            summary = json.loads(study_memory.retrieval_summary(conn, topic="hypertension management", limit=5))
+            card_types = [card["type"] for card in summary["cards"]]
+            self.assertIn("scaffold", card_types)
+            self.assertNotIn("recent_repair", card_types)
+        finally:
+            conn.close()
+
+    def test_regression_after_durable_is_explicit(self) -> None:
+        conn = self._memory_conn()
+        try:
+            claim = "Acute spontaneous ICH should avoid SBP below 130."
+            study_memory.log_answer(
+                conn,
+                session_id="session-durable",
+                topic="hypertension management",
+                concept="ich bp floor",
+                question="ICH floor?",
+                answer="Do not go below 130.",
+                correct=2,
+                tested_claim=claim,
+                corrected_rule="Avoid SBP below 130.",
+            )
+            study_memory.log_answer(
+                conn,
+                session_id="session-regress",
+                topic="hypertension management",
+                concept="ich bp floor",
+                question="Later ICH floor?",
+                answer="Below 120 is okay.",
+                correct=1,
+                tested_claim=claim,
+                missing_edge="regressed on SBP floor below 130",
+                corrected_rule="Avoid SBP below 130.",
+            )
+            state = conn.execute("SELECT state, priority FROM claim_state").fetchone()
+            self.assertEqual(state["state"], "regressed")
+            self.assertEqual(state["priority"], "urgent")
+            events = [r["event_type"] for r in conn.execute("SELECT event_type FROM state_events ORDER BY id")]
+            self.assertEqual(events, ["confirmed", "regressed"])
+        finally:
+            conn.close()
+
+    def test_dci_partial_is_urgent(self) -> None:
+        conn = self._memory_conn()
+        try:
+            study_memory.log_answer(
+                conn,
+                session_id="session-dci",
+                topic="hypertension management",
+                concept="sah dci norepinephrine units",
+                question="SAH DCI norepi units?",
+                answer="mcg/kg/hr",
+                correct=1,
+                error_type="numerical_recall",
+                tested_claim="Secured SAH DCI uses norepinephrine dosed in mcg/kg/min.",
+                missing_edge="norepinephrine unit mcg/kg/min",
+                corrected_rule="Use mcg/kg/min.",
+            )
+            state = conn.execute("SELECT priority FROM claim_state").fetchone()
+            self.assertEqual(state["priority"], "urgent")
+        finally:
+            conn.close()
+
+    def test_session_handoff_updates_single_card(self) -> None:
+        conn = self._memory_conn()
+        try:
+            study_memory.log_answer(
+                conn,
+                session_id="session-one",
+                topic="hypertension management",
+                concept="ich bp target",
+                question="ICH target?",
+                answer="130-140",
+                correct=2,
+            )
+            study_memory.end_session(conn, session_id="session-one", summary="First handoff.", next_strategy="Retest A.")
+            study_memory.end_session(conn, session_id="session-one", summary="Second handoff.", next_strategy="Retest B.")
+            rows = conn.execute(
+                "SELECT summary, next_action FROM retrieval_cards WHERE card_type = 'session_handoff'"
+            ).fetchall()
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["summary"], "Second handoff.")
+            self.assertEqual(rows[0]["next_action"], "Retest B.")
+        finally:
+            conn.close()
+
+    def test_session_handoff_compacts_without_mid_sentence_truncation(self) -> None:
+        conn = self._memory_conn()
+        try:
+            study_memory.log_answer(
+                conn,
+                session_id="session-compact",
+                topic="hypertension management",
+                concept="ich bp target",
+                question="ICH target?",
+                answer="130-140",
+                correct=2,
+            )
+            summary = (
+                "First sentence is the important compressed handoff. "
+                + "Second sentence contains extra details that should not be cut in the middle of a word. " * 20
+            )
+            next_strategy = (
+                "Retest exact ischemic stroke thresholds first. "
+                + "Then continue with long explanatory content that should be compacted cleanly. " * 20
+            )
+            study_memory.end_session(conn, session_id="session-compact", summary=summary, next_strategy=next_strategy)
+            row = conn.execute(
+                "SELECT summary, next_action FROM retrieval_cards WHERE card_type = 'session_handoff'"
+            ).fetchone()
+            self.assertLessEqual(len(row["summary"]), 500)
+            self.assertLessEqual(len(row["next_action"]), 500)
+            self.assertTrue(row["summary"].endswith(".") or row["summary"].endswith("..."))
+            self.assertTrue(row["next_action"].endswith(".") or row["next_action"].endswith("..."))
+        finally:
+            conn.close()
+
+    def test_dense_exchange_logs_multiple_claims_without_duplicate_exchanges(self) -> None:
+        conn = self._memory_conn()
+        try:
+            question = "Same SBP 190: unsecured SAH, ICH, TBI with high ICP, and ischemic stroke no tPA?"
+            answer = "SAH <160, ICH 130-140, TBI raise MAP for CPP, stroke permissive to 220/120."
+            study_memory.log_exchange_claims(
+                conn,
+                session_id="dense-session",
+                topic="hypertension management",
+                question=question,
+                answer=answer,
+                claims=[
+                    {
+                        "concept": "unsecured sah bp target",
+                        "correct": 2,
+                        "tested_claim": "Unsecured aneurysmal SAH should be lowered to SBP <160 while preserving CPP.",
+                        "corrected_rule": "Target SBP <160 before securing; avoid aggressive normalization.",
+                    },
+                    {
+                        "concept": "acute ich bp target",
+                        "correct": 2,
+                        "tested_claim": "Acute spontaneous ICH should be lowered to SBP 130-140 and avoid SBP below 130.",
+                        "corrected_rule": "Target SBP 130-140; avoid below 130.",
+                    },
+                    {
+                        "concept": "tbi cpp map augmentation",
+                        "correct": 2,
+                        "tested_claim": "In ICP-monitored TBI, calculate CPP=MAP-ICP and raise MAP to CPP 60-70 when low.",
+                        "corrected_rule": "Raise MAP when CPP is low despite acceptable SBP.",
+                    },
+                    {
+                        "concept": "ischemic stroke permissive hypertension",
+                        "correct": 2,
+                        "tested_claim": "Acute ischemic stroke without tPA allows permissive hypertension up to 220/120.",
+                        "corrected_rule": "Do not lower unless above 220/120 or end-organ emergency.",
+                    },
+                ],
+            )
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM exchanges").fetchone()[0], 1)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM claim_results").fetchone()[0], 4)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM claim_state").fetchone()[0], 4)
+            turns = conn.execute("SELECT turn FROM exchanges").fetchall()
+            self.assertEqual([row["turn"] for row in turns], [1])
+        finally:
+            conn.close()
+
+    def test_dense_exchange_mixed_scores_create_separate_states(self) -> None:
+        conn = self._memory_conn()
+        try:
+            study_memory.log_exchange_claims(
+                conn,
+                session_id="dense-mixed",
+                topic="hypertension management",
+                question="Compare agents in elevated ICP.",
+                answer="Nicardipine ok, labetalol beta-only ok, nitroprusside may help venous drainage.",
+                claims=[
+                    {
+                        "concept": "nicardipine icp neutrality",
+                        "correct": 2,
+                        "tested_claim": "Nicardipine is acceptable in ICP-risk BP lowering because it is clinically ICP-neutral.",
+                        "corrected_rule": "Nicardipine is clinically ICP-neutral.",
+                    },
+                    {
+                        "concept": "labetalol mechanism",
+                        "correct": 1,
+                        "tested_claim": "Labetalol is combined alpha-1 and beta blockade and is clinically ICP-neutral.",
+                        "missing_edge": "labetalol is not beta-only; it has alpha-1 blockade",
+                        "corrected_rule": "Labetalol is alpha-1 plus beta blockade.",
+                        "error_type": "conceptual_confusion",
+                    },
+                    {
+                        "concept": "nitroprusside icp effect",
+                        "correct": 0,
+                        "tested_claim": "Nitroprusside is avoided in elevated ICP because cerebral vasodilation raises CBV/ICP.",
+                        "missing_edge": "cerebral vasodilation raises CBV and ICP",
+                        "corrected_rule": "Avoid nitroprusside in ICP-risk patients.",
+                        "error_type": "conceptual_confusion",
+                        "misconception": "believed venodilation may help ICP",
+                    },
+                ],
+            )
+            states = {
+                row["claim_text"]: row["state"]
+                for row in conn.execute("SELECT claim_text, state FROM claim_state")
+            }
+            self.assertIn("durable", states.values())
+            self.assertIn("partially_repaired", states.values())
+            self.assertIn("missed", states.values())
+            summary = study_memory.retrieval_summary(conn, topic="hypertension management", limit=10)
+            self.assertIn("must_retest", summary)
+            self.assertIn("scaffold", summary)
+        finally:
+            conn.close()
+
+    def test_retrieval_caps_scaffolds_independent_of_total_limit(self) -> None:
+        conn = self._memory_conn()
+        try:
+            self._log_scaffolds(conn, "hypertension management", 6)
+            study_memory.log_answer(
+                conn,
+                session_id="session-gap",
+                topic="hypertension management",
+                concept="dci norepinephrine units",
+                question="Norepinephrine units for DCI?",
+                answer="mcg/kg/hr",
+                correct=1,
+                tested_claim="SAH DCI norepinephrine is dosed in mcg/kg/min.",
+                missing_edge="norepinephrine unit mcg/kg/min",
+                corrected_rule="Use mcg/kg/min.",
+            )
+            payload = json.loads(
+                study_memory.retrieval_summary(
+                    conn,
+                    topic="hypertension management",
+                    limit=20,
+                    scaffold_limit=2,
+                )
+            )
+            card_types = [card["type"] for card in payload["cards"]]
+            self.assertEqual(card_types.count("scaffold"), 2)
+            self.assertIn("must_retest", card_types)
+            self.assertEqual(payload["counts"]["scaffold"], 6)
+            self.assertEqual(payload["omitted"]["scaffold"], 4)
+            self.assertTrue(payload["retrieval_guidance"]["is_truncated"])
+            self.assertEqual(payload["retrieval_guidance"]["omitted_high_signal"], {})
+            self.assertTrue(payload["retrieval_guidance"]["suggested_commands"])
+        finally:
+            conn.close()
+
+    def test_retrieval_scaffold_only_topic_still_uses_compact_payload(self) -> None:
+        conn = self._memory_conn()
+        try:
+            self._log_scaffolds(conn, "cerebral blood flow physiology", 5)
+            payload = json.loads(
+                study_memory.retrieval_summary(
+                    conn,
+                    topic="cerebral blood flow physiology",
+                    limit=8,
+                    scaffold_limit=2,
+                )
+            )
+            self.assertEqual(len(payload["cards"]), 2)
+            self.assertTrue(all(card["type"] == "scaffold" for card in payload["cards"]))
+            self.assertEqual(payload["counts"], {"scaffold": 5})
+            self.assertEqual(payload["omitted"], {"scaffold": 3})
+            self.assertEqual(payload["retrieval_guidance"]["scope"], "topic")
+        finally:
+            conn.close()
+
+    def test_retrieval_can_suppress_scaffolds_but_report_omissions(self) -> None:
+        conn = self._memory_conn()
+        try:
+            self._log_scaffolds(conn, "hypertension management", 3)
+            payload = json.loads(
+                study_memory.retrieval_summary(
+                    conn,
+                    topic="hypertension management",
+                    limit=8,
+                    include_scaffolds=False,
+                )
+            )
+            self.assertEqual(payload["cards"], [])
+            self.assertEqual(payload["counts"], {"scaffold": 3})
+            self.assertEqual(payload["omitted"], {"scaffold": 3})
+        finally:
+            conn.close()
+
+    def test_global_retrieval_suppresses_scaffolds_by_default(self) -> None:
+        conn = self._memory_conn()
+        try:
+            self._log_scaffolds(conn, "hypertension management", 3)
+            self._log_scaffolds(conn, "tbi management", 2)
+            payload = json.loads(study_memory.retrieval_summary(conn, limit=10))
+            self.assertEqual(payload["cards"], [])
+            self.assertEqual(payload["counts"], {"scaffold": 5})
+            self.assertEqual(payload["omitted"], {"scaffold": 5})
+            self.assertEqual(payload["retrieval_guidance"]["scope"], "global")
+            self.assertIn("--include-global-scaffolds", payload["retrieval_guidance"]["suggested_commands"][0])
+
+            with_scaffolds = json.loads(
+                study_memory.retrieval_summary(
+                    conn,
+                    limit=10,
+                    scaffold_limit=2,
+                    include_global_scaffolds=True,
+                )
+            )
+            self.assertEqual(len(with_scaffolds["cards"]), 2)
+            self.assertEqual(with_scaffolds["omitted"], {"scaffold": 3})
+        finally:
+            conn.close()
+
+    def test_topic_hint_overrides_doc_context_and_records_session_topics(self) -> None:
+        conn = self._memory_conn()
+        try:
+            doc = "Reports/Hypertension Management in the Neuro ICU and Emergency Department.md"
+            study_memory.log_answer(
+                conn,
+                session_id="session-doc",
+                topic="hypertension management",
+                concept="unsecured sah bp target",
+                question="What SBP target?",
+                answer="<160",
+                correct=2,
+                doc_path=doc,
+            )
+            study_memory.log_answer(
+                conn,
+                session_id="session-doc",
+                topic="tbi management",
+                concept="cpp calculation map target with elevated icp",
+                question="MAP 78 ICP 26: what is CPP?",
+                answer="52, raise MAP.",
+                correct=2,
+                doc_path=doc,
+            )
+            topics = [
+                r["canonical_slug"]
+                for r in conn.execute(
+                    """SELECT t.canonical_slug
+                       FROM session_topics st
+                       JOIN topics t ON t.id = st.topic_id
+                       WHERE st.session_id = ?
+                       ORDER BY t.canonical_slug""",
+                    ("session-doc",),
+                )
+            ]
+            self.assertEqual(topics, ["hypertension-management-neuro-emergencies", "tbi-management"])
+        finally:
+            conn.close()
+
+if __name__ == "__main__":
+    unittest.main()

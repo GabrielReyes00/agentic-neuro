@@ -344,7 +344,7 @@ If yes, ask Gabriel to choose one rehearsal mode:
 - **Talk Run-Through**: slide-by-slide transitions, timing, sequencing, and where the speaker notes are too thin or too long.
 
 Then:
-1. Set `SESSION_TS` and run `study_memory.py recall --topic "<topic>"`.
+1. Set `SESSION_TS` and run `study_memory.py summary --topic "<topic>" --limit 8 --scaffold-limit 2`.
 2. Use anticipated questions as the first question bank.
 3. In Faculty Q&A, probe article critique, decision rationale, teaching points, and skipped nice-to-have terrain.
 4. In Talk Run-Through, move slide by slide: ask Gabriel for the transition and thesis of the next slide, then tighten delivery.

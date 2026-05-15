@@ -2,7 +2,7 @@
 
 Focused, expert-level clinical teaching triggered by a knowledge gap on the wards. The interaction model is a curbside consult with a senior resident or attending — a brief, dense lecture on a specific topic followed by verification questions, not a Socratic teaching session.
 
-Follow `.agents/shared/commands/learning-session-contract.md` for memory bookkeeping (recall, log-answer, end-session, Anki queue) and entry formatting. The teaching principles below are specific to `/consult` and override the shared contract's Socratic teaching principles where they conflict.
+Follow `.agents/shared/commands/learning-session-contract.md` for memory bookkeeping (memory summary, log-answer, end-session, Anki queue) and entry formatting. The teaching principles below are specific to `/consult` and override the shared contract's Socratic teaching principles where they conflict.
 
 ---
 
@@ -24,15 +24,15 @@ After the consult, the resident should have the necessary information to manage 
 
 Parse the user's input into a topic slug. Freeform input is expected — the user may dump a clinical scenario, a single phrase, or a question. Extract the core topic silently and proceed. Ask one clarifying question only if the topic is genuinely ambiguous.
 
-### Step 1: Recall (silent)
+### Step 1: Memory Summary (silent)
 
 ```bash
 cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
 SESSION_TS=$(date -u +%Y-%m-%dT%H:%M:%S+00:00) && \
-python3 src/study_memory.py recall --topic "<topic>"
+python3 src/study_memory.py summary --topic "<topic>" --limit 8 --scaffold-limit 2
 ```
 
-Read the output. Use it to shape verification questions and lecture framing — NOT to omit content. If prior errors exist, note them for targeted verification and natural correction within the lecture. If no prior data, this is a new topic.
+Read the output, including `counts`, `omitted`, and `retrieval_guidance`. Use it to shape verification questions and lecture framing — NOT to omit content. If prior errors exist, note them for targeted verification and natural correction within the lecture. If no prior data, this is a new topic.
 
 **Critical rule: memory informs teaching approach, never content omission.** Every consult delivers the full applicable knowledge regardless of prior exposure.
 
@@ -109,7 +109,7 @@ Two independent sources of Anki cards, both using `anki_queue.py enqueue` per th
 
 **Source 2: Verification question cards (1-3 per miss).** Generated after each `log-answer` where `correct < 2` or where the correct answer missed a critical nuance. These cards encode the misconception-correction pair.
 
-Card quality follows the shared Anki Card Doctrine. Flush at session end.
+Card quality follows `.agents/shared/commands/anki-card-quality.md` plus the shared Anki Card Doctrine. Flush at session end.
 
 ---
 
@@ -143,7 +143,7 @@ Content (agent selects what applies — no fixed scaffold):
 
 1. **Write the pocket card** to `Consults/<Topic Title>.md` (or append if merge target exists). No H1, YAML at bottom.
 
-2. **Flush Anki queue** — review, novelty check, flush per shared contract.
+2. **Flush Anki queue** — review, advisory quality/overlap check, flush per shared contract.
 
 3. **End session** with a specific `--next-strategy`:
 

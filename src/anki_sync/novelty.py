@@ -26,9 +26,10 @@ class NoveltyStore:
         self._client = chromadb.PersistentClient(path=str(db_path))
         self._collection = self._client.get_or_create_collection(
             name=collection_name,
-            metadata={"hnsw:space": "cosine", "schema": "anki_claim_memory_v1"},
+            metadata={"hnsw:space": "cosine", "schema": "anki_claim_memory"},
         )
         self._embedder = TextEmbedding(model_name=embedding_model)
+        self._collection_name = collection_name
 
     def _embed(self, texts: Iterable[str]) -> list[list[float]]:
         vectors = list(self._embedder.embed(list(texts)))
@@ -111,3 +112,24 @@ class NoveltyStore:
             metas.append(row_meta)
 
         self._collection.upsert(ids=ids, documents=docs, metadatas=metas, embeddings=embeddings)
+
+    def replace_claims(
+        self,
+        claims: list[ClaimModel],
+        metadata: Mapping[str, str | int | float | bool] | None = None,
+    ) -> None:
+        """Replace the Chroma collection with the supplied claims.
+
+        Use this only when rebuilding from live Anki, which is the source of
+        truth. The novelty store is an advisory cache, not an independent
+        record that can veto new cards.
+        """
+        try:
+            self._client.delete_collection(self._collection_name)
+        except Exception:
+            pass
+        self._collection = self._client.get_or_create_collection(
+            name=self._collection_name,
+            metadata={"hnsw:space": "cosine", "schema": "anki_claim_memory"},
+        )
+        self.persist_claims(claims, metadata)

@@ -37,10 +37,10 @@ If `Reports/<Title>.md` already exists, treat the request as a regeneration: ove
 
 ```bash
 cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
-python3 src/study_memory.py recall --topic "<topic>"
+python3 src/study_memory.py summary --topic "<topic>" --limit 8 --scaffold-limit 2
 ```
 
-The sole purpose of recall here is to surface existing vault reports on overlapping subject matter so the new report can reference them via wikilink rather than duplicate their coverage. Do not use recall to assess what the learner knows or to compress depth — these reports are not learner-tailored.
+The sole purpose of memory summary here is to surface existing related memory/report anchors on overlapping subject matter so the new report can reference them via wikilink rather than duplicate their coverage. Do not use summary to assess what the learner knows or to compress depth — these reports are not learner-tailored.
 
 ### Step 2: Vault scan for cross-citation targets (silent)
 
@@ -157,7 +157,7 @@ This is not a checklist gate. If the draft fails the contract on any axis, re-re
 
 3. **Concept extraction** per CLAUDE.md §7c — identify 2–5 atomic concepts not already in `Concepts/` and write each as its own concept stub.
 
-4. **Log to memory** so downstream `/study-review` and future `/generate-report` runs can discover this report. Two calls in sequence — `log-answer` anchors the topic (sessions with zero exchanges are not topic-indexed in `study_memory.py`, so a single anchor entry is required), then `end-session` records the summary and next-strategy directive:
+4. **Log to memory** so downstream `/study-review` and future `/generate-report` runs can discover this report. Two calls in sequence — `log-answer` creates a topic-indexed memory anchor entry, then `end-session` records the summary and next-strategy directive:
 
 ```bash
 cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \

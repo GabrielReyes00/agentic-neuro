@@ -8,9 +8,11 @@ Use this contract from any command that teaches, drills, simulates, or writes a 
 cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate
 ```
 
-## Memory Layer (3 commands)
+## Memory Layer (Active)
 
 **DB:** `data/study_memory.db` | **CLI:** `src/study_memory.py`
+
+The claim-centered memory database is the only active learner-memory store. There is no dual-write workflow.
 
 The agent owns all memory bookkeeping. The user never types memory commands.
 
@@ -23,30 +25,29 @@ Context-pulling is **mode-conditional**. The wrong commands at the wrong time ca
 **Topic-anchored sessions** (the user named a topic, document, or clinical question — e.g., "let's review EVD management", `/consult` on hydrocephalus, `/study-material` from a file):
 
 ```bash
-python3 src/study_memory.py recall --topic "<topic>" [--doc "<folder>/<file>.md"]
-# Optional, only if the topic has known confusion history:
-python3 src/study_memory.py confusions --topic "<topic>"
+python3 src/study_memory.py summary --topic "<topic>" --limit 8 --scaffold-limit 2
 ```
 
-Both commands are inherently topic-scoped. **Do NOT run `prep` in this mode.** Open errors, stale knowledge, or next-strategy hints from unrelated topics must not influence the session. Stay on the user's chosen topic. If a prior open error happens to live within today's topic, `recall` will surface it; retest as part of the natural arc. If it lives outside today's topic, it is invisible to the agent — that is the point.
+This command is inherently topic-scoped. **Do NOT run global retrieval in this mode.** Open errors, stale knowledge, or next-strategy hints from unrelated topics must not influence the session. Stay on the user's chosen topic. If a prior open error happens to live within today's topic, `summary` will surface it; retest as part of the natural arc. If it lives outside today's topic, it is invisible to the agent — that is the point.
 
 **Memory-driven custom review only** (the user asked "what should I study", "drill my weak spots", "build me a custom session", "go after my open errors", or a similar memory-first request with no named topic):
 
 ```bash
-python3 src/study_memory.py prep
+python3 src/study_memory.py summary --limit 12 --scaffold-limit 0
 ```
 
-`prep` surfaces oldest open errors, stale-known concepts, recent cross-contamination patterns, and the prior session's `next_strategy`. **This is agent-only context — never echoed to the learner.** Use it to compose the review queue. This is the one mode where global state is the input.
+Global `summary` surfaces high-signal active retest cards and recent session handoff state while suppressing scaffolds by default. **This is agent-only context — never echoed to the learner.** Use it to compose the review queue. This is the one mode where global state is the input. Use `--include-global-scaffolds` only if no stronger due gaps dominate and you need broad target selection.
 
 In all modes: read command output silently. Do not paste it into the chat, summarize it as a menu, or telegraph "I know you got this wrong before." The data shapes your questioning; it does not shape your narration.
 
 ### Pre-Session Context Verification
 
-After running recall, read the full output and verify it makes sense:
+After running `summary`, read the full JSON and verify it makes sense:
 
-1. **Returning session check**: If `study_memory.py status --topic "<topic>"` shows prior sessions for this topic, `recall` MUST return prior data. If it returns "No prior data found", your topic string is likely wrong — run status with variants to find the canonical stored form, fix it, and re-run recall. Do not silently accept empty context for a known topic.
-2. **Coherence check**: If recall returns data, verify the content relates to the topic. Session date, concepts, and next-strategy should all make sense. Watch for fuzzy-match pollution: if KNOWN CONCEPTS or GAPS contain single-token entries, opaque labels (e.g., `q1`, `q2`), or concepts unrelated to the topic, the topic string matched too broadly. Run `python3 src/study_memory.py status --topic "<topic>"` to find the canonical stored form and re-run recall with it.
-3. **New topic**: If no Review Session file exists and status confirms no matches, this is genuinely new. Proceed with calibration.
+1. **Retrieval completeness check**: Always inspect `counts`, `omitted`, and `retrieval_guidance`. If `retrieval_guidance.omitted_high_signal` is non-empty, run a suggested expansion command before teaching.
+2. **Returning session check**: If this is a known topic but `cards`, `counts`, and `omitted` are empty, the topic string may be wrong. Run `python3 src/study_memory.py resolve-topic --topic "<topic>" [--doc "<folder>/<file>.md"]`, fix the topic, and re-run summary. Do not silently accept empty context for a known topic.
+3. **Coherence check**: If summary returns data, verify the cards relate to the requested topic. Card topics, claims, and session handoff should all make sense. If the output contains unrelated concepts, your topic string matched too broadly — resolve the topic and re-run summary.
+4. **New topic**: If no Review Session file exists and summary is genuinely empty, proceed with calibration.
 
 Set one `SESSION_TS` at the first learner-facing question and reuse it for the entire session:
 
@@ -62,7 +63,22 @@ python3 src/study_memory.py log-answer \
   --question "<your question, verbatim>" --answer "<user's answer, verbatim>" \
   --correct <0|1|2> \
   [--correction "<text>"] [--error-type "<type>"] [--misconception "<text>"] \
-  [--doc "<path>"] [--skill "<skill>"]
+  [--doc "<path>"] [--skill "<skill>"] \
+  [--tested-claim "<what was being tested>"] \
+  [--learner-claim "<compact summary of committed answer>"] \
+  [--missing-edge "<missing threshold/discriminator/step/mechanism>"] \
+  [--corrected-rule "<replacement rule>"] \
+  [--clinical-consequence "<why this matters clinically>"] \
+  [--retest-prompt-shape "<how to test this next time>"] \
+  [--learning-operation "<recall|discrimination|quantification|sequencing|mechanism|transfer>"] \
+  [--teaching-intent "<new_material|retest_open_gap|repair_after_miss|transfer_check|retention_check|synthesis>"] \
+  [--expected-answer-edge "<exact discriminator/threshold/step required for full credit>"] \
+  [--coverage-role "<primary_doc|related_topic_probe|repair_probe|synthesis|memory_probe>"] \
+  [--source-section "<document section or heading when known>"] \
+  [--source-anchor "<subheading, TU id, or local anchor when known>"] \
+  [--curriculum-unit "<compact unit label when useful>"] \
+  [--answer-mode "<unaided|prompted|after_hint|after_teaching|self_corrected>"] \
+  [--confidence-observed "<low|medium|high|hesitant|fluent>"]
 ```
 
 Correctness: `2` = correct without hints | `1` = right direction, missing details | `0` = wrong or misconception.
@@ -75,39 +91,19 @@ The `log-answer` command prints `OK exchange_id=N` — use that N as the `--exch
 
 **Anki Card Doctrine**
 
-Anki cards are not miniature notes. They are instruments for preserving a specific cognitive operation the learner must be able to perform without help.
+Card quality, cloze policy, deck taxonomy, and duplicate judgment are governed by `.agents/shared/commands/anki-card-quality.md`. Read that short file before drafting or validating queued cards.
 
-Before creating a card, identify the memory trace being protected. Do not write the card until the intent is clear.
-
-High-value card intents:
-
-1. **Threshold** — a number, dose, cutoff, time window, or grading boundary that changes management.
-2. **Discriminator** — the feature that separates confusable diagnoses, scales, imaging patterns, anatomy, or treatment paths.
-3. **Mechanism-Consequence** — why a finding, lesion, intervention, or device behavior produces a clinical effect.
-4. **Contraindication or Exception** — when the usual rule fails or becomes dangerous.
-5. **Complication Recognition** — early clue, feared complication, and immediate implication.
-6. **Anatomy-Risk** — structure, corridor, vascular territory, tract, or nerve linked to injury consequence.
-7. **Algorithm Step** — the next action given a specific clinical state.
-8. **Classification-to-Management** — named category linked to prognosis, treatment, surveillance, or operative planning.
-9. **Failure Mode** — how a treatment, shunt, drain, construct, closure, or diagnostic assumption fails.
-
-Create cards preferentially from wrong answers, partial answers, repeated shallow answers, high-risk thresholds, management-changing distinctions, mechanisms that explain multiple decisions, and complications where delayed recognition matters.
-
-A good card tests one durable claim. It should be answerable from memory, not from recognition or vibes. It should make the learner retrieve the edge that matters.
-
-Avoid cards that ask broad "what is X?" questions, encode an entire algorithm in one prompt, preserve source wording without transformation, depend on institution-specific handoff culture, or test trivia that does not change interpretation, management, anatomy, or risk.
-
-Prefer cloze cards for precise thresholds, drug details, named classifications, and tight contrast pairs. Prefer basic QA cards for discriminators, mechanisms, complication recognition, anatomy-risk relationships, and management reasoning.
-
-Every card should pass this test: if Gabriel gets this card right one month from now, what clinical or conceptual failure has been prevented?
+Operational summary: create cards preferentially from wrong answers, partial answers, repeated shallow answers, high-risk thresholds, management-changing distinctions, mechanisms that explain multiple decisions, and complications where delayed recognition matters. Skip routine correct answers with no teaching extension.
 
 **Mechanical card constraints:**
 - One fact per card (atomic — reviewable in <10 seconds)
 - Never omit numbers: doses, thresholds, measurements, rates, time windows
-- Cloze text max 240 chars; answer text max 200 chars (enforced by script)
+- Cloze text max 240 chars; QA answer text max 500 chars (enforced by script)
+- Prompt should usually be <=35 words; Basic backs should usually be <=45 words
 - Cloze blanks must target the testable fact — a threshold, drug name, anatomical structure, classification, or key distinction. Never blank context words, verbs, or preamble
-- Cloze: use `{{c1::target}}` for single-blank; `{{c1::A}} vs {{c2::B}}` for discrimination pairs
-- Every card's answer must be self-contained — a reviewer seeing only the answer should understand what fact is being tested without needing the question
+- Cloze: use `{{c1::target}}` for single-blank; multi-cloze is allowed only when all deletions are tightly related to one concept and each deletion is independently worth testing
+- Cloze answer text is queue-review metadata only and is not written into Anki `Back Extra`; do not duplicate the revealed cloze sentence there
+- QA card backs must be self-contained — a reviewer seeing only the answer should understand what fact is being tested without needing the question
 - Deck: `Neurosurgery::<Domain>::<Topic Title>` (Title Case topic, domain from session context; enforced by script)
 - Tags: `<skill>,<error_type>` (comma-separated, omit error_type if correct)
 
@@ -118,10 +114,10 @@ python3 src/anki_queue.py enqueue \
   --deck "Neurosurgery::<Domain>::<Topic>" \
   --card-type <cloze|qa> \
   --topic "<session topic>" --concept "<tested concept>" \
-  --cloze "<text>" --answer "<text>" \
+  --cloze "<text>" \
   --tags "<skill>,<error_type>"
 ```
-For QA cards: `--front "<text>" --back "<text>"` instead of `--cloze/--answer`.
+For QA cards: `--front "<text>" --back "<text>"` instead of `--cloze`.
 
 ### Session End
 
@@ -136,11 +132,13 @@ python3 src/study_memory.py end-session \
 
 After running end-session, verify the session persisted correctly:
 
-1. **Exchange count**: The output reports "N exchanges." Count how many questions you asked and the learner answered during this session. If the reported count is lower, some log-answer calls were missed or failed. Re-run the missing log-answer calls before proceeding.
-2. **Recall cross-check**: Run `recall --topic "<topic>"` and verify this session appears as LAST SESSION with the summary you just wrote. If it does not appear, end-session failed — investigate and retry.
+1. **Exchange count**: Run `python3 src/study_memory.py status` or inspect the session rows if needed. Count how many questions you asked and the learner answered during this session. If the count is lower, some log-answer calls were missed or failed. Re-run the missing log-answer calls before proceeding.
+2. **Summary cross-check**: Run `python3 src/study_memory.py summary --topic "<topic>" --limit 8 --scaffold-limit 2` and verify the `session_handoff` card reflects the summary and next-strategy you just wrote. If it does not appear, end-session failed or topic assignment is wrong — investigate and retry.
 3. **Next-strategy quality**: Re-read the next-strategy you wrote. It must name specific concepts, error types, and teaching moves. If it reads as generic ("continue reviewing", "keep studying"), rewrite it with the specific gaps and errors from this session and re-run end-session.
 
 ### Anki Queue Validation and Flush (silent, after end-session)
+
+This is the second agent intervention point. The first was card drafting before `enqueue`; this queue review is where the agent validates queued cards against `.agents/shared/commands/anki-card-quality.md` and fixes the queue before anything reaches Anki.
 
 1. Review queued cards:
 ```bash
@@ -148,34 +146,47 @@ python3 src/anki_queue.py review --session "$SESSION_TS"
 ```
 Verify cards are atomic, no missing numbers/thresholds/dosages, and material matches what was discussed. If a card is wrong, enqueue a corrected replacement.
 
-2. Run novelty check before flushing:
+Apply `.agents/shared/commands/anki-card-quality.md` during this review. Remove or rewrite feedback-derived prompts, overlong Basic backs, non-canonical isolated facts, and true duplicates before flushing.
+
+2. Run mandatory Chroma/same-batch overlap and quality check before flushing:
 ```bash
 python3 src/anki_queue.py check --session "$SESSION_TS"
 ```
-Read the output. If `duplicates` is non-empty, compare each `queued_card` against its `matched_existing` — are they testing the same concept, or is the match a false positive? If genuinely duplicate, remove it: `python3 src/anki_queue.py remove --claim-id "<id>"`. If the queued card tests something the existing card does not, keep it (it will flush normally).
+Read the output. If `duplicate_candidates` is non-empty, compare each candidate by tested memory trace, not wording. If genuinely duplicate, remove it: `python3 src/anki_queue.py remove --claim-id "<id>"`. If the queued card tests something the existing card does not, keep it as a false positive. If quality warnings are true positives, rewrite or remove the queued card before flush.
 
 3. Flush to Anki:
 ```bash
 python3 src/anki_queue.py flush --session "$SESSION_TS"
 ```
-Read the output. Verify `created` matches your expected count. If `filtered_details` appears, the novelty filter caught additional near-duplicates — review them the same way.
+Read the output. `flush` re-runs the duplicate gate and refuses to proceed if Chroma or same-batch duplicate candidates remain. Only use `--allow-duplicate-candidates` after you have reviewed every candidate from `check` and judged all remaining candidates false positives. Verify `created + duplicate + failed` accounts for the reviewed queue.
 
 4. If AnkiConnect is unavailable, note it — the queue persists and will flush next session.
 
+Live deck rewrites, taxonomy cleanup, and Chroma rebuilds are a separate workflow governed by `.agents/shared/commands/anki-deck-maintenance.md`; do not use that workflow as a broom after every session. Routine sessions must prevent duplicates before flush.
+
 ### Agent as Memory Intelligence Layer
 
-The database stores facts. You supply the judgment. Every recall output and every log-answer call passes through you — the agent is the only point where memory becomes teaching intelligence and teaching results become durable memory.
+The database stores facts. You supply the judgment. Every summary output and every log-answer call passes through you — the agent is the only point where memory becomes teaching intelligence and teaching results become durable memory.
 
-Interpret recall metadata through the Adaptive Teaching Doctrine below. Memory is evidence for judgment, not a rigid routing table.
+Interpret summary metadata through the Adaptive Teaching Doctrine below. Memory is evidence for judgment, not a rigid routing table.
 
-**On read — building a teaching plan from recall**:
+Use a staged agent-facing read path. First use `python3 src/study_memory.py summary --topic "<topic>"` for compact claim-state retrieval cards. Treat this as a triage layer, not a full dump. Always read `counts`, `omitted`, and `retrieval_guidance` before teaching:
+
+- If `retrieval_guidance.omitted_high_signal` is non-empty, run one of the suggested expansion commands before designing the session.
+- If scaffold cards were omitted, expand `--scaffold-limit` only when you need a coverage map or transfer-question premises. Scaffolds are confirmed knowledge, not primary drill targets.
+- For memory-driven global review, default global summaries intentionally suppress scaffolds; use `--include-global-scaffolds` only when selecting broad review targets and no stronger due gaps dominate.
+- Inspect raw exchange/claim rows only when the compact cards are ambiguous or when auditing the learner model.
+
+The goal is not to dump every remembered sentence into the agent; it is to expose the smallest actionable memory surface while making truncation visible and giving the agent explicit drill-down commands.
+
+**On read — building a teaching plan from summary**:
 
 1. Read `Next strategy` first. This is the highest-signal field: a direct handoff from the previous session's agent naming exact concepts to retest, error types to target, and teaching moves to try. Open your session from it unless the learner requests otherwise.
 2. Map each `OPEN ERROR` to a question design before asking anything. The misconception text tells you what the learner believed wrong — design a question that forces confrontation with that exact belief from a new angle. Do not just revisit the same neighborhood; probe the specific fault line.
 3. For each `GAP`, consider its error_type and how many times it has been missed. If a concept has been missed multiple times, the previous teaching approach failed — use a fundamentally different one. Use your judgment about what teaching strategy best addresses the specific type of failure.
 4. `KNOWN CONCEPTS` are scaffolding, not drill targets. Use them as premises in transfer questions: "You know X — a patient now presents with Y, what changes?"
 5. `RECENT EXCHANGES` are an anti-repetition index. Never reuse the same question wording or follow the same question sequence. Use them to identify which angles have been covered so you can find uncovered ones.
-6. If recall output contains data that doesn't relate to the topic (wrong concepts, unrelated sessions), your topic string matched too broadly — investigate and re-run before proceeding.
+6. If summary output contains data that doesn't relate to the topic (wrong concepts, unrelated sessions), your topic string matched too broadly — investigate and re-run before proceeding.
 
 **On write — making each log-answer entry a complete teaching record**:
 
@@ -185,6 +196,8 @@ Each entry must let a future agent reconstruct three things: what was tested, wh
 - **misconception** (when correct=0): the specific wrong belief the learner held. "believed barbiturate coma is first-line for refractory icp" tells a future agent exactly what to probe. "incorrect" tells it nothing.
 - **correction**: the right answer that replaces the misconception. The misconception-correction pair is the retest blueprint — one names the wrong belief, the other names the right one.
 - **error_type**: categorizes the failure mode so teaching approach can be matched to it across sessions.
+- **structured signal fields**: add compact structured judgment whenever feasible. `tested_claim` names the cognitive target; `learner_claim` summarizes the committed answer; `missing_edge` is the absent number/discriminator/step/mechanism for partial/wrong answers; `corrected_rule` is the future retrieval target; `clinical_consequence` explains why it matters; `retest_prompt_shape` gives the next agent a concrete probe shape. These are not replacements for verbatim Q/A; they are the agent's memory intelligence layer.
+- **retrieval metadata**: use `teaching_intent`, `expected_answer_edge`, `coverage_role`, and source fields to make future retrieval concise. `expected_answer_edge` should be the scoring key in one phrase. `coverage_role` distinguishes primary document progress from repair probes or related-topic probes. `answer_mode` and `confidence_observed` should capture whether a correct answer was fluent and unaided versus prompted or hesitant.
 
 ### Entry Formatting Contract
 
@@ -279,16 +292,16 @@ The interaction should feel like an excellent senior resident tutor: natural, di
 
 ## Review Artifacts
 
-Session bookkeeping lives entirely in `study_memory.db`. No skill writes session logs to a vault folder. Post-Session Integrity Verification confirms the database write.
+Session bookkeeping lives entirely in `data/study_memory.db`. No skill writes session logs to a vault folder. Post-Session Integrity Verification confirms the database write.
 
-**Auto-regenerated vault interfaces.** `study_memory.py end-session` invokes `src/vault_writers.py` at the end of every session, which rewrites four interfaces from `study_memory.db` × `data/acgme_curriculum.json`:
+**Auto-regenerated vault interfaces.** Routine learning-session bookkeeping lives in the memory database; use `study_memory.py summary` for learner-state context unless a workflow explicitly writes a vault artifact.
 
 - `Dashboard.md` — live snapshot: coverage, open errors, weak concepts, stale knowledge, recent sessions.
 - `ACGME Readiness.md` — full PGY-1 curriculum view with progress overlay + higher-PGY catalog.
 - `ACGME Canvases/*.canvas` — one canvas per ACGME milestone, every topic colored by mastery.
 - `Concepts/INDEX.md` — domain-grouped glossary index.
 
-These are read-only outputs. The agent never hand-edits them; if a refresh is needed mid-session, run `python3 src/vault_writers.py`.
+These are read-only outputs. The agent never hand-edits them.
 
 Skills that produce vault reference content still write their own outputs directly:
 

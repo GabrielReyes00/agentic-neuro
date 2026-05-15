@@ -107,6 +107,22 @@ class AnkiClient:
                 out.extend(item for item in chunk if isinstance(item, dict))
         return out
 
+    def update_note_fields(self, note_id: int, fields: dict[str, str]) -> None:
+        """Update fields on an existing note without recreating cards."""
+        self._invoke("updateNoteFields", note={"id": int(note_id), "fields": fields})
+
+    def change_deck(self, card_ids: list[int], deck_name: str) -> None:
+        """Move existing cards to a deck while preserving scheduling history."""
+        if not card_ids:
+            return
+        self.ensure_deck(deck_name)
+        self._invoke("changeDeck", cards=[int(c) for c in card_ids], deck=deck_name)
+
+    def add_tags(self, note_ids: list[int], tags: list[str]) -> None:
+        if not note_ids or not tags:
+            return
+        self._invoke("addTags", notes=[int(n) for n in note_ids], tags=" ".join(tags))
+
     def store_media_file(self, filename: str, data_b64: str) -> None:
         """Store an image file in Anki's collection.media folder via AnkiConnect."""
         self._invoke(
@@ -155,18 +171,7 @@ class AnkiClient:
 
         if card.card_type == "cloze":
             note["modelName"] = "Cloze"
-            cloze_fields = self._model_fields("Cloze")
-            extra_field = "Extra" if "Extra" in cloze_fields else "Back Extra" if "Back Extra" in cloze_fields else None
-            fields = {"Text": _format_text(card.cloze_text)}
-            if extra_field:
-                extra_parts = []
-                answer_text = _format_text(getattr(card, "answer_text", "") or "")
-                if answer_text:
-                    extra_parts.append(answer_text)
-                if img_html:
-                    extra_parts.append(img_html)
-                fields[extra_field] = "<br>".join(extra_parts)
-            note["fields"] = fields
+            note["fields"] = {"Text": _format_text(card.cloze_text)}
         else:
             note["modelName"] = "Basic"
             front_text = _format_text(card.front)
@@ -181,7 +186,7 @@ class AnkiClient:
 
             note["fields"] = {
                 "Front": front_text,
-                "Back": back_text,
+                "Back": f'<div class="neuro-agent-back">{back_text}</div>',
             }
 
         try:

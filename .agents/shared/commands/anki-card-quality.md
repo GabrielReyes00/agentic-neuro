@@ -1,0 +1,118 @@
+# Anki Card Quality Contract
+
+Purpose: give every agent a short, fresh context for drafting and validating Anki cards. This file governs card quality for Codex, Claude, Gemini, normal queue workflows, and live deck maintenance.
+
+## Core Standard
+
+Anki cards are not miniature notes. Each card protects one memory trace: the specific cognitive operation Gabriel must perform without help.
+
+Before enqueueing, name the protected trace in your head:
+- threshold or dose
+- discriminator between confusable entities
+- mechanism -> consequence
+- contraindication or dangerous exception
+- complication clue -> implication
+- anatomy -> risk
+- clinical state -> next action
+- classification -> management/prognosis
+- device/procedure failure mode
+
+If you cannot name the trace, do not make the card.
+
+## Hard Rejects
+
+Do not intentionally enqueue cards with any of these defects. If a flawed card reaches the queue, fix or remove it during queue review before flush:
+- Feedback prose from tutoring: "Correct interpretation...", "key discriminator is Correct...", "Strong operational handoff...", or similar grading language.
+- Broad prompts: "What is X?", "Describe Y", "Explain the whole algorithm", unless rewritten to a specific decision edge.
+- Long Basic backs that read like teaching notes. If the answer needs more than one compact sentence, split or rewrite.
+- Missing numbers, units, doses, rates, windows, cutoffs, or named scales when those are the point.
+- Context-dependent pronouns or vague wording: "it", "they", "this", "usually", "important", "appropriate" without a concrete clinical anchor.
+- Trivia that does not change interpretation, management, anatomy, operative risk, or complication recognition.
+- Institution-specific handoff culture unless the card tests a generalizable safety behavior.
+
+## Card Shape
+
+Every card must be:
+- atomic enough to review in under 10 seconds
+- succinct, with the prompt ideally <=35 words
+- specific about the clinical/anatomic context
+- self-contained, so the answer is meaningful during review
+- management-relevant or conceptually load-bearing
+
+Preferred forms:
+- Cloze: thresholds, doses, named classifications, paired contrasts, anatomy labels, time windows.
+- Basic QA: mechanisms, discriminators, complication recognition, anatomy-risk relationships, and management reasoning.
+
+## Multi-Cloze Policy
+
+Multi-cloze notes are allowed when all deletions belong to one tightly related concept and each deletion is independently worth testing.
+
+Good multi-cloze:
+- same pressure-target bundle: ICP threshold + CPP target
+- same grading contrast: Hunt-Hess clinical severity vs Modified Fisher CT blood burden
+- same drug dosing fact: starting dose + max dose
+
+Bad multi-cloze:
+- unrelated facts joined because they appeared in the same paragraph
+- algorithm steps spanning multiple clinical states
+- a teaching summary with many blanks
+
+Remember: in Anki, different cloze numbers (`c1`, `c2`) create separate review cards from one note. Multiple blanks with the same cloze number are tested together.
+
+## Deck Taxonomy
+
+Use one canonical deck for isolated atomic facts. Use domain decks only when the card prompt contains domain-specific logic.
+
+Canonical routing defaults:
+- `Neurosurgery::Neurocritical care::EVD Management` — EVD setup, troubleshooting, infection, weaning, clamp trials, over/underdrainage.
+- `Neurosurgery::Trauma::TBI and ICP Management` — severe TBI thresholds, CPP target, ICP treatment threshold, osmotherapy, TBI-specific management.
+- `Neurosurgery::Neurocritical care::ICP Monitoring` — ICP waveforms, P1/P2/P3, damping, compliance monitoring.
+- `Neurosurgery::Trauma::Herniation Syndromes` — Cushing physiology, herniation recognition, blown pupil with BP implications.
+- `Neurosurgery::Neurocritical care::Hypertension Management` — general neuro-ICU BP drugs, dosing, ICH/AIS/PRES/autonomic BP rules.
+- `Neurosurgery::Vascular::SAH and Vasospasm Management` — aneurysmal SAH, nimodipine, Hunt-Hess, modified Fisher, DCI/vasospasm, secured-aneurysm induced hypertension.
+- `Neurosurgery::Vascular::Aneurysm Surgery` — clipping, temporary clipping, PComA/MCA aneurysm operative anatomy.
+- `Neurosurgery::Trauma::Depressed Skull Fracture` — depressed/open skull fracture indications and danger zones.
+- `Neurosurgery::Spine::Autonomic Dysreflexia` — chronic SCI at/above T6 autonomic dysreflexia.
+- `Neurosurgery::General::Neuroimaging` — modality artifacts, flow voids, contrast limitations, imaging discriminators.
+
+Examples:
+- "CPP = MAP - ICP" belongs once under TBI/ICP Management, not repeated in Vascular, Tumor, and General.
+- "Do not lower BP first in Cushing/herniation physiology" belongs under Herniation Syndromes unless the prompt is a domain-specific scenario.
+- "Nimodipine is continued for 21 days after aSAH" belongs under SAH and Vasospasm Management.
+
+## Duplicate Judgment
+
+A card is duplicate if getting the existing card right would prove the same memory trace:
+- same number or threshold
+- same drug/dose/rate
+- same contraindication
+- same discriminator
+- same next action for the same clinical state
+
+Keep both only when the second card adds a genuinely different operation:
+- isolated fact vs applied case
+- threshold recall vs management consequence
+- anatomy label vs operative risk
+- same disease but different decision point
+
+At queue review, `check` is mandatory. If it reports duplicate candidates, compare the tested claim, not just surface wording. Remove true duplicates before flush. If every remaining candidate is a false positive, `flush --allow-duplicate-candidates` may be used; otherwise normal `flush` will block.
+
+## Workflow Boundaries
+
+Normal learning sessions have two agent checkpoints:
+1. Drafting before `anki_queue.py enqueue`.
+2. Queue review after `anki_queue.py review` and mandatory `check`, before `flush`.
+
+Live deck cleanup is separate and follows `.agents/shared/commands/anki-deck-maintenance.md`. In that workflow, preserve review history by updating notes and moving cards in place; rebuild Chroma only after live Anki is clean. Do not rely on deck maintenance to clean duplicates created by routine sessions.
+
+## Final Pre-Flush Checklist
+
+For each queued card, answer yes/no:
+1. What exact failure does this prevent one month from now?
+2. Is there one primary tested claim?
+3. Are all numbers and units present?
+4. Is the card free of tutoring feedback language?
+5. Is the deck canonical for an isolated fact?
+6. If it overlaps another card, does it test a different operation?
+
+If any answer is no, rewrite, split, move, or remove before flushing.

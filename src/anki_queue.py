@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Lean Anki card queue: enqueue, review, and flush to AnkiConnect with dedup."""
+"""Lean Anki card queue.
+
+This script handles deterministic queue mechanics. Agents own card-quality
+judgment via `.agents/shared/commands/anki-card-quality.md`.
+"""
 
 from __future__ import annotations
 
@@ -8,6 +12,7 @@ import hashlib
 import json
 import re
 import sys
+from difflib import SequenceMatcher
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -20,7 +25,18 @@ CHROMADB_PATH = "data/chromadb_store_anki_memory"
 ANKI_URL = "http://localhost:8765"
 EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
 NOVELTY_THRESHOLD = 0.70
+BATCH_DUPLICATE_THRESHOLD = 0.84
 COLLECTION_NAME = "anki_claim_memory"
+MAX_PROMPT_WORDS = 35
+MAX_QA_BACK_WORDS = 45
+
+_FEEDBACK_RE = re.compile(
+    r"\b("
+    r"correct interpretation|correct core distinction|strong operational handoff|"
+    r"key discriminator is\s+(correct|strong)|for .+?, the key discriminator is"
+    r")\b",
+    re.IGNORECASE,
+)
 
 
 def _claim_id(text: str) -> str:
@@ -61,13 +77,129 @@ def _answer_text(entry: dict) -> str:
     return entry.get("back", "")
 
 
+def _strip_cloze(text: str) -> str:
+    text = re.sub(r"\{\{c\d+::(.*?)(::.*?)?\}\}", r"\1", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _word_count(text: str) -> int:
+    return len(_strip_cloze(text).split())
+
+
+def _normalize_claim_text(text: str) -> str:
+    text = _strip_cloze(text).lower()
+    text = re.sub(r"\b\d+(?:\.\d+)?\b", "#", text)
+    text = re.sub(r"[^a-z0-9#]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _claim_text_for_entry(entry: dict) -> str:
+    """Build the text used for advisory overlap checks.
+
+    Basic cards need the answer included so two differently worded questions
+    testing the same threshold/action collide more reliably. Cloze cards keep
+    the visible prompt as the primary claim because cloze deletions already
+    encode the target facts.
+    """
+    front = _card_text(entry)
+    if entry.get("card_type") == "qa":
+        answer = _answer_text(entry)
+        text = f"{front} -> {answer}" if answer else front
+    else:
+        text = front
+
+    concept = entry.get("concept", "")
+    if concept:
+        text = f"{concept}: {text}"
+    return text[:420]
+
+
+def _quality_warnings(entry: dict) -> list[str]:
+    warnings: list[str] = []
+    text = _card_text(entry)
+    answer = _answer_text(entry)
+    if _word_count(text) > MAX_PROMPT_WORDS:
+        warnings.append(f"prompt_over_{MAX_PROMPT_WORDS}_words")
+    if entry.get("card_type") == "qa" and _word_count(answer) > MAX_QA_BACK_WORDS:
+        warnings.append(f"qa_back_over_{MAX_QA_BACK_WORDS}_words")
+    if _FEEDBACK_RE.search(_strip_cloze(text)):
+        warnings.append("feedback_derived_prompt")
+    return warnings
+
+
+def _batch_duplicate_details(
+    entries: list[dict],
+    store: NoveltyStore,
+    threshold: float = BATCH_DUPLICATE_THRESHOLD,
+) -> list[dict]:
+    """Return same-batch overlap candidates for agent review."""
+    if not entries:
+        return []
+
+    duplicate_details: list[dict] = []
+    kept_entries: list[dict] = []
+    kept_embedding_indices: list[int] = []
+
+    embeddings: list[list[float]] | None = None
+    try:
+        raw_embeddings = store._embed([_claim_text_for_entry(e) for e in entries])
+        embeddings = []
+        for vec in raw_embeddings:
+            norm = sum(float(x) * float(x) for x in vec) ** 0.5 or 1.0
+            embeddings.append([float(x) / norm for x in vec])
+        if len(embeddings) != len(entries):
+            raise ValueError("embedding count mismatch")
+    except Exception:
+        embeddings = None
+
+    for idx, entry in enumerate(entries):
+        text = _claim_text_for_entry(entry)
+        normalized = _normalize_claim_text(text)
+        duplicate: dict | None = None
+
+        for kept_idx, kept in enumerate(kept_entries):
+            kept_text = _claim_text_for_entry(kept)
+            kept_normalized = _normalize_claim_text(kept_text)
+            lexical = SequenceMatcher(None, normalized, kept_normalized).ratio()
+            semantic = 0.0
+            if embeddings is not None:
+                kept_embedding_idx = kept_embedding_indices[kept_idx]
+                semantic = sum(
+                    a * b for a, b in zip(embeddings[idx], embeddings[kept_embedding_idx])
+                )
+            score = max(lexical, semantic)
+            if score >= threshold:
+                duplicate = {
+                    "queued_card": _card_text(entry),
+                    "matched_queued_card": _card_text(kept),
+                    "similarity": round(score, 4),
+                    "claim_id": entry.get("claim_id", _claim_id(_card_text(entry))),
+                }
+                break
+
+        if duplicate:
+            duplicate_details.append(duplicate)
+            continue
+
+        kept_entries.append(entry)
+        kept_embedding_indices.append(idx)
+
+    return duplicate_details
+
+
 # ── enqueue ─────────────────────────────────────────────────────────
 
 _DECK_RE = re.compile(r"^Neurosurgery::.+::.+$")
 
 
-def _validate_enqueue(text: str, deck: str, card_type: str) -> list[str]:
-    """Return list of problems. Empty = valid."""
+def _validate_enqueue(
+    text: str,
+    deck: str,
+    card_type: str,
+    answer: str = "",
+    tags: str = "",
+) -> list[str]:
+    """Return mechanical problems. Agentic quality judgment happens later."""
     problems: list[str] = []
     if len(text.split()) < 4:
         problems.append(f"Card text too short ({len(text.split())} words, min 4)")
@@ -96,7 +228,8 @@ def enqueue(
 ) -> bool:
     text = cloze if card_type == "cloze" else front
 
-    problems = _validate_enqueue(text, deck, card_type)
+    answer_text = answer if card_type == "cloze" else back
+    problems = _validate_enqueue(text, deck, card_type, answer_text, tags)
     if problems:
         print("VALIDATION ERROR -- fix and retry:\n  " + "\n  ".join(problems),
               file=sys.stderr)
@@ -169,13 +302,17 @@ def review(session: str | None = None, queue_path: Path = QUEUE_PATH) -> list[di
     return entries
 
 
-# ── check (novelty pre-flight) ─────────────────────────────────────
+# ── check (advisory pre-flight) ────────────────────────────────────
 
 def check(
     session: str | None = None,
     queue_path: Path = QUEUE_PATH,
 ) -> dict:
-    """Run novelty check and surface duplicate pairs for agent review."""
+    """Surface quality warnings and overlap candidates for agent review.
+
+    This command never decides what should flush. Chroma is an advisory index
+    rebuilt from live Anki, not a source of truth.
+    """
     all_entries = _read_queue(queue_path)
     if session:
         to_check = [e for e in all_entries if e.get("session_ts") == session]
@@ -183,8 +320,8 @@ def check(
         to_check = all_entries
 
     if not to_check:
-        print(json.dumps({"queue_size": 0, "novel": 0, "duplicates": []}))
-        return {"queue_size": 0, "novel": 0, "duplicates": []}
+        print(json.dumps({"queue_size": 0, "duplicate_candidates": [], "quality_warnings": []}))
+        return {"queue_size": 0, "duplicate_candidates": [], "quality_warnings": []}
 
     claims = []
     for e in to_check:
@@ -195,27 +332,42 @@ def check(
             topic=e.get("topic", ""),
             concept=e.get("concept", ""),
             card_type=e.get("card_type", ""),
-            claim_text=text[:420],
+            claim_text=_claim_text_for_entry(e),
         ))
 
     store = NoveltyStore(CHROMADB_PATH, COLLECTION_NAME, EMBEDDING_MODEL)
     _, decisions = store.filter_novel_claims(claims, NOVELTY_THRESHOLD)
+    batch_dup_details = _batch_duplicate_details(to_check, store)
 
-    novel_count = sum(1 for d in decisions if d.is_novel)
-    duplicates = []
+    duplicate_candidates = []
     for d, e in zip(decisions, to_check):
         if not d.is_novel:
-            duplicates.append({
+            duplicate_candidates.append({
+                "source": "anki_chroma_cache",
                 "queued_card": _card_text(e),
                 "matched_existing": d.matched_text,
                 "similarity": round(d.max_similarity, 4),
                 "claim_id": d.claim_id,
             })
+    for detail in batch_dup_details:
+        detail["source"] = "same_queue_batch"
+        duplicate_candidates.append(detail)
+
+    quality_warnings = []
+    for e in to_check:
+        warnings = _quality_warnings(e)
+        if warnings:
+            quality_warnings.append({
+                "claim_id": e.get("claim_id", _claim_id(_card_text(e))),
+                "card": _card_text(e),
+                "warnings": warnings,
+            })
 
     result = {
         "queue_size": len(to_check),
-        "novel": novel_count,
-        "duplicates": duplicates,
+        "duplicate_candidates": duplicate_candidates,
+        "duplicates": duplicate_candidates,
+        "quality_warnings": quality_warnings,
     }
     print(json.dumps(result, indent=2))
     return result
@@ -226,6 +378,7 @@ def check(
 def flush(
     session: str | None = None,
     dry_run: bool = False,
+    allow_duplicate_candidates: bool = False,
     queue_path: Path = QUEUE_PATH,
 ) -> dict:
     all_entries = _read_queue(queue_path)
@@ -240,6 +393,21 @@ def flush(
         print(json.dumps({"queue_size": 0}))
         return {"queue_size": 0}
 
+    preflight = check(session=session, queue_path=queue_path)
+    duplicate_candidates = preflight.get("duplicate_candidates", [])
+    if duplicate_candidates and not allow_duplicate_candidates:
+        result = {
+            "error": "duplicate_candidates_require_agent_review",
+            "queue_size": len(to_flush),
+            "duplicate_candidates": duplicate_candidates,
+            "message": (
+                "Run anki_queue.py check, remove true duplicates, or rerun flush "
+                "with --allow-duplicate-candidates only after judging all candidates false positives."
+            ),
+        }
+        print(json.dumps(result, indent=2))
+        return result
+
     if not dry_run:
         client = AnkiClient(ANKI_URL)
         ok, err = client.check_connection()
@@ -248,19 +416,11 @@ def flush(
             print(json.dumps({"error": f"AnkiConnect unavailable: {err}"}))
             return {"error": err}
 
-    claims = []
     drafts = []
     for e in to_flush:
         text = _card_text(e)
         cid = e.get("claim_id", _claim_id(text))
 
-        claims.append(ClaimModel(
-            claim_id=cid,
-            topic=e.get("topic", ""),
-            concept=e.get("concept", ""),
-            card_type=e.get("card_type", ""),
-            claim_text=text[:420],
-        ))
         drafts.append(CardDraft(
             claim_id=cid,
             card_type=e["card_type"],
@@ -270,33 +430,13 @@ def flush(
             back=e.get("back", ""),
         ))
 
-    store = NoveltyStore(CHROMADB_PATH, COLLECTION_NAME, EMBEDDING_MODEL)
-    novel_claims, decisions = store.filter_novel_claims(claims, NOVELTY_THRESHOLD)
-    novel_ids = {c.claim_id for c in novel_claims}
-
-    novel_drafts = [d for d in drafts if d.claim_id in novel_ids]
-    novel_entries = [e for e in to_flush if e.get("claim_id", "") in novel_ids]
-    filtered_count = len(to_flush) - len(novel_drafts)
-
-    # Build duplicate details for agent review
-    dup_details = []
-    for d, e in zip(decisions, to_flush):
-        if not d.is_novel:
-            dup_details.append({
-                "queued_card": _card_text(e),
-                "matched_existing": d.matched_text,
-                "similarity": round(d.max_similarity, 4),
-            })
-
     if dry_run:
         metrics = {
             "queue_size": len(to_flush),
-            "novel": len(novel_drafts),
-            "filtered_duplicate": filtered_count,
+            "would_dispatch": len(drafts),
+            "duplicate_candidate_count": len(duplicate_candidates),
             "dry_run": True,
         }
-        if dup_details:
-            metrics["duplicate_details"] = dup_details
         print(json.dumps(metrics, indent=2))
         return metrics
 
@@ -306,7 +446,7 @@ def flush(
     decks_touched: set[str] = set()
     errors: list[str] = []
 
-    for draft, entry in zip(novel_drafts, novel_entries):
+    for draft, entry in zip(drafts, to_flush):
         deck = entry.get("deck", "Neurosurgery::General::Session")
         tags = entry.get("tags", [])
         if isinstance(tags, str):
@@ -329,21 +469,17 @@ def flush(
             failed += 1
             errors.append(str(e))
 
-    if novel_claims:
-        store.persist_claims(novel_claims, {"source": "anki_queue"})
-
     _write_queue(queue_path, remaining)
 
     metrics = {
         "queue_size": len(to_flush),
         "created": created,
         "duplicate": duplicate,
-        "novel_filtered": filtered_count,
+        "duplicate_candidate_count": len(duplicate_candidates),
+        "duplicate_gate": "overridden" if duplicate_candidates else "clear",
         "failed": failed,
         "decks_touched": sorted(decks_touched),
     }
-    if dup_details:
-        metrics["filtered_details"] = dup_details
     if errors:
         metrics["errors"] = errors
 
@@ -379,6 +515,11 @@ def main(argv: list[str] | None = None) -> int:
     p_flush = sub.add_parser("flush")
     p_flush.add_argument("--session", default=None)
     p_flush.add_argument("--dry-run", action="store_true")
+    p_flush.add_argument(
+        "--allow-duplicate-candidates",
+        action="store_true",
+        help="Proceed only after an agent has reviewed check output and judged candidates false positives.",
+    )
 
     p_remove = sub.add_parser("remove")
     p_remove.add_argument("--claim-id", required=True,
@@ -411,7 +552,11 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "flush":
-        result = flush(session=args.session, dry_run=args.dry_run)
+        result = flush(
+            session=args.session,
+            dry_run=args.dry_run,
+            allow_duplicate_candidates=args.allow_duplicate_candidates,
+        )
         return 1 if "error" in result else 0
 
     if args.command == "remove":

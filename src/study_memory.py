@@ -1,8 +1,14 @@
 #!/usr/bin/env python3
-"""Lean persistent memory layer for study sessions.
+"""Claim-centered learner memory ledger.
 
-Single file, 6 SQLite tables, 5 CLI commands.
-Replaces the old 13K-line knowledge_graph + memory_orchestrator stack.
+This is the active study memory layer. It is designed around a small staged
+interface for agents:
+
+1. exchanges preserve raw Q/A evidence.
+2. claim_results capture one assessed cognitive claim per exchange.
+3. claim_state is the compact learner model.
+4. state_events preserve history.
+5. retrieval_cards are the agent-facing triage surface.
 """
 
 from __future__ import annotations
@@ -12,6 +18,7 @@ import json
 import re
 import sqlite3
 import sys
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -19,411 +26,823 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
 DB_PATH = DATA_DIR / "study_memory.db"
 
+VALID_GAP_TYPES = frozenset({
+    "conceptual_confusion",
+    "numerical_recall",
+    "cross_contamination",
+    "application_failure",
+    "reasoning_gap",
+    "omission",
+})
+
 STOPWORDS = frozenset(
-    "the a an of in for with and or to on by is at as it its from that this"
+    "the a an of in for with and or to on by is at as it its from that this "
+    "after before per via vs versus during over under into onto management"
     .split()
 )
 
-SEED_ALIASES: dict[str, str] = {
-    "evd": "external ventricular drain",
-    "icp": "intracranial pressure",
-    "cpp": "cerebral perfusion pressure",
-    "csf": "cerebrospinal fluid",
-    "sah": "subarachnoid hemorrhage",
-    "asah": "aneurysmal subarachnoid hemorrhage",
-    "tbi": "traumatic brain injury",
-    "avm": "arteriovenous malformation",
-    "dbs": "deep brain stimulation",
-    "vp": "ventriculoperitoneal",
-    "srs": "stereotactic radiosurgery",
-    "mca": "middle cerebral artery",
-    "aca": "anterior cerebral artery",
-    "pca": "posterior cerebral artery",
-    "pica": "posterior inferior cerebellar artery",
-    "gbm": "glioblastoma",
-    "idh": "isocitrate dehydrogenase",
-    "acdf": "anterior cervical discectomy and fusion",
-    "sci": "spinal cord injury",
-    "sdh": "subdural hematoma",
-    "edh": "epidural hematoma",
-    "ich": "intracerebral hemorrhage",
-    "mfs": "modified fisher scale",
-    "hh": "hunt hess",
-    "gcs": "glasgow coma scale",
-    "wfns": "world federation of neurosurgical societies",
-    "crw": "cosman roberts wells",
-    "acgme": "accreditation council for graduate medical education",
-    "dci": "delayed cerebral ischemia",
-    "cns": "central nervous system",
-    "pns": "peripheral nervous system",
-    "ct": "computed tomography",
-    "mri": "magnetic resonance imaging",
-    "cta": "ct angiography",
-    "dsa": "digital subtraction angiography",
-    "or": "operating room",
-}
-
 SCHEMA_SQL = """
-CREATE TABLE IF NOT EXISTS exchanges (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id  TEXT NOT NULL,
-    ts          TEXT NOT NULL,
-    turn        INTEGER NOT NULL,
-    topic       TEXT NOT NULL,
-    concept     TEXT NOT NULL,
-    question    TEXT NOT NULL,
-    answer      TEXT NOT NULL,
-    correct     INTEGER NOT NULL,
-    correction  TEXT DEFAULT '',
-    error_type  TEXT DEFAULT '',
-    misconception TEXT DEFAULT '',
-    doc_path    TEXT DEFAULT '',
-    skill       TEXT DEFAULT ''
+PRAGMA foreign_keys = ON;
+
+CREATE TABLE IF NOT EXISTS topics (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    canonical_slug TEXT NOT NULL UNIQUE,
+    display_name TEXT NOT NULL,
+    domain TEXT NOT NULL DEFAULT '',
+    parent_topic_id INTEGER,
+    primary_doc_path TEXT DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT '',
+    FOREIGN KEY(parent_topic_id) REFERENCES topics(id)
 );
-CREATE INDEX IF NOT EXISTS idx_ex_session ON exchanges(session_id);
-CREATE INDEX IF NOT EXISTS idx_ex_topic ON exchanges(topic);
-CREATE INDEX IF NOT EXISTS idx_ex_concept ON exchanges(concept);
+
+CREATE TABLE IF NOT EXISTS topic_aliases (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    topic_id INTEGER NOT NULL,
+    alias TEXT NOT NULL UNIQUE,
+    source TEXT NOT NULL DEFAULT 'resolver',
+    confidence REAL NOT NULL DEFAULT 1.0,
+    FOREIGN KEY(topic_id) REFERENCES topics(id)
+);
+CREATE INDEX IF NOT EXISTS idx_memory_topic_aliases_topic ON topic_aliases(topic_id);
 
 CREATE TABLE IF NOT EXISTS concepts (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    topic           TEXT NOT NULL,
-    concept         TEXT NOT NULL,
-    status          TEXT NOT NULL DEFAULT 'unknown',
-    times_right     INTEGER DEFAULT 0,
-    times_wrong     INTEGER DEFAULT 0,
-    last_error_type TEXT DEFAULT '',
-    last_misconception TEXT DEFAULT '',
-    last_tested     TEXT,
-    UNIQUE(topic, concept)
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    topic_id INTEGER NOT NULL,
+    canonical_slug TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    concept_type TEXT NOT NULL DEFAULT 'clinical_rule',
+    safety_critical INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT '',
+    UNIQUE(topic_id, canonical_slug),
+    FOREIGN KEY(topic_id) REFERENCES topics(id)
 );
-CREATE INDEX IF NOT EXISTS idx_con_topic ON concepts(topic);
-CREATE INDEX IF NOT EXISTS idx_con_status ON concepts(status);
+CREATE INDEX IF NOT EXISTS idx_memory_concepts_topic ON concepts(topic_id);
+
+CREATE TABLE IF NOT EXISTS concept_aliases (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    concept_id INTEGER NOT NULL,
+    alias TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT 'agent',
+    confidence REAL NOT NULL DEFAULT 1.0,
+    UNIQUE(concept_id, alias),
+    FOREIGN KEY(concept_id) REFERENCES concepts(id)
+);
+CREATE INDEX IF NOT EXISTS idx_memory_concept_aliases_alias ON concept_aliases(alias);
 
 CREATE TABLE IF NOT EXISTS sessions (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id      TEXT NOT NULL UNIQUE,
-    started         TEXT NOT NULL,
-    ended           TEXT,
-    skill           TEXT DEFAULT '',
-    topics_json     TEXT DEFAULT '[]',
-    summary         TEXT DEFAULT '',
-    next_strategy   TEXT DEFAULT '',
-    confusions_json TEXT DEFAULT '[]',
-    stats_json      TEXT DEFAULT '{}',
-    doc_path        TEXT DEFAULT ''
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL UNIQUE,
+    started TEXT NOT NULL,
+    ended TEXT DEFAULT '',
+    skill TEXT DEFAULT '',
+    primary_topic_id INTEGER,
+    doc_path TEXT DEFAULT '',
+    summary TEXT DEFAULT '',
+    next_strategy TEXT DEFAULT '',
+    stats_json TEXT DEFAULT '{}',
+    FOREIGN KEY(primary_topic_id) REFERENCES topics(id)
 );
 
-CREATE TABLE IF NOT EXISTS doc_progress (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    doc_path        TEXT NOT NULL UNIQUE,
-    session_count   INTEGER DEFAULT 0,
-    last_studied    TEXT,
-    sections_done   TEXT DEFAULT '[]',
-    concepts_known  TEXT DEFAULT '[]',
-    concepts_gap    TEXT DEFAULT '[]',
-    notes           TEXT DEFAULT ''
+CREATE TABLE IF NOT EXISTS session_topics (
+    session_id TEXT NOT NULL,
+    topic_id INTEGER NOT NULL,
+    PRIMARY KEY(session_id, topic_id),
+    FOREIGN KEY(topic_id) REFERENCES topics(id)
 );
 
-CREATE TABLE IF NOT EXISTS errors (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    ts          TEXT NOT NULL,
-    topic       TEXT NOT NULL,
-    concept     TEXT NOT NULL,
-    error_type  TEXT DEFAULT '',
-    misconception TEXT NOT NULL,
-    correction  TEXT DEFAULT '',
-    retested    INTEGER DEFAULT 0,
-    retest_ts   TEXT DEFAULT ''
+CREATE TABLE IF NOT EXISTS exchanges (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    ts TEXT NOT NULL,
+    turn INTEGER NOT NULL,
+    topic_id INTEGER NOT NULL,
+    concept_id INTEGER NOT NULL,
+    raw_question TEXT NOT NULL,
+    raw_answer TEXT NOT NULL,
+    doc_path TEXT DEFAULT '',
+    skill TEXT DEFAULT '',
+    source_json TEXT NOT NULL DEFAULT '{}',
+    FOREIGN KEY(topic_id) REFERENCES topics(id),
+    FOREIGN KEY(concept_id) REFERENCES concepts(id)
 );
-CREATE INDEX IF NOT EXISTS idx_err_topic ON errors(topic);
-CREATE INDEX IF NOT EXISTS idx_err_retested ON errors(retested);
+CREATE INDEX IF NOT EXISTS idx_memory_exchanges_session ON exchanges(session_id);
+CREATE INDEX IF NOT EXISTS idx_memory_exchanges_topic ON exchanges(topic_id);
 
-CREATE TABLE IF NOT EXISTS aliases (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    alias       TEXT NOT NULL UNIQUE,
-    canonical   TEXT NOT NULL
+CREATE TABLE IF NOT EXISTS claim_results (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    exchange_id INTEGER NOT NULL,
+    topic_id INTEGER NOT NULL,
+    concept_id INTEGER NOT NULL,
+    claim_slug TEXT NOT NULL,
+    claim_text TEXT NOT NULL,
+    score INTEGER NOT NULL CHECK(score IN (0, 1, 2)),
+    gap_type TEXT DEFAULT '',
+    learner_claim TEXT NOT NULL DEFAULT '',
+    missing_edge TEXT NOT NULL DEFAULT '',
+    corrected_rule TEXT NOT NULL DEFAULT '',
+    clinical_consequence TEXT NOT NULL DEFAULT '',
+    retest_prompt_shape TEXT NOT NULL DEFAULT '',
+    learning_operation TEXT NOT NULL DEFAULT '',
+    agent_signal_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT '',
+    FOREIGN KEY(exchange_id) REFERENCES exchanges(id),
+    FOREIGN KEY(topic_id) REFERENCES topics(id),
+    FOREIGN KEY(concept_id) REFERENCES concepts(id)
 );
-CREATE INDEX IF NOT EXISTS idx_alias_canonical ON aliases(canonical);
+CREATE INDEX IF NOT EXISTS idx_memory_claim_results_exchange ON claim_results(exchange_id);
+CREATE INDEX IF NOT EXISTS idx_memory_claim_results_topic ON claim_results(topic_id);
+CREATE INDEX IF NOT EXISTS idx_memory_claim_results_score ON claim_results(score);
+
+CREATE TABLE IF NOT EXISTS claim_state (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    topic_id INTEGER NOT NULL,
+    concept_id INTEGER NOT NULL,
+    claim_slug TEXT NOT NULL,
+    claim_text TEXT NOT NULL,
+    state TEXT NOT NULL,
+    priority TEXT NOT NULL DEFAULT 'medium',
+    gap_type TEXT DEFAULT '',
+    last_result_id INTEGER,
+    source_result_id INTEGER,
+    last_seen_ts TEXT NOT NULL DEFAULT '',
+    next_due_ts TEXT DEFAULT '',
+    reason TEXT NOT NULL DEFAULT '',
+    UNIQUE(topic_id, concept_id, claim_slug),
+    FOREIGN KEY(topic_id) REFERENCES topics(id),
+    FOREIGN KEY(concept_id) REFERENCES concepts(id),
+    FOREIGN KEY(last_result_id) REFERENCES claim_results(id),
+    FOREIGN KEY(source_result_id) REFERENCES claim_results(id)
+);
+CREATE INDEX IF NOT EXISTS idx_memory_claim_state_state ON claim_state(state);
+CREATE INDEX IF NOT EXISTS idx_memory_claim_state_priority ON claim_state(priority);
+CREATE INDEX IF NOT EXISTS idx_memory_claim_state_topic ON claim_state(topic_id);
+
+CREATE TABLE IF NOT EXISTS state_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    claim_state_id INTEGER NOT NULL,
+    event_type TEXT NOT NULL,
+    result_id INTEGER,
+    ts TEXT NOT NULL,
+    detail TEXT NOT NULL DEFAULT '',
+    FOREIGN KEY(claim_state_id) REFERENCES claim_state(id),
+    FOREIGN KEY(result_id) REFERENCES claim_results(id)
+);
+CREATE INDEX IF NOT EXISTS idx_memory_state_events_state ON state_events(claim_state_id);
+
+CREATE TABLE IF NOT EXISTS retrieval_cards (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    topic_id INTEGER NOT NULL,
+    claim_state_id INTEGER,
+    card_type TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active',
+    priority TEXT NOT NULL DEFAULT 'medium',
+    summary TEXT NOT NULL DEFAULT '',
+    next_action TEXT NOT NULL DEFAULT '',
+    evidence_result_id INTEGER,
+    updated_ts TEXT NOT NULL DEFAULT '',
+    detail_json TEXT NOT NULL DEFAULT '{}',
+    UNIQUE(topic_id, claim_state_id, card_type),
+    FOREIGN KEY(topic_id) REFERENCES topics(id),
+    FOREIGN KEY(claim_state_id) REFERENCES claim_state(id),
+    FOREIGN KEY(evidence_result_id) REFERENCES claim_results(id)
+);
+CREATE INDEX IF NOT EXISTS idx_memory_retrieval_topic ON retrieval_cards(topic_id);
+CREATE INDEX IF NOT EXISTS idx_memory_retrieval_priority ON retrieval_cards(priority);
+CREATE INDEX IF NOT EXISTS idx_memory_retrieval_status ON retrieval_cards(status);
 """
 
 
-# ---------------------------------------------------------------------------
-# Database helpers
-# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class TopicResolution:
+    slug: str
+    display_name: str
+    domain: str
+    aliases: tuple[str, ...]
+    confidence: float = 0.85
+
 
 def _get_db(path: Path | None = None) -> sqlite3.Connection:
-    p = path or DB_PATH
-    p.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(p))
+    db_path = path or DB_PATH
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(SCHEMA_SQL)
-    _seed_aliases(conn)
+    conn.commit()
     return conn
 
 
-def _seed_aliases(conn: sqlite3.Connection) -> None:
-    for alias, canonical in SEED_ALIASES.items():
-        conn.execute(
-            "INSERT OR IGNORE INTO aliases (alias, canonical) VALUES (?, ?)",
-            (alias, canonical),
-        )
-    conn.commit()
-
-
-# ---------------------------------------------------------------------------
-# Text normalization and matching
-# ---------------------------------------------------------------------------
-
 def _normalize(text: str) -> str:
-    text = text.strip().lower()
+    text = (text or "").strip().lower()
+    text = re.sub(r"[^\w\s\-/]", " ", text)
     text = re.sub(r"\s+", " ", text)
-    text = re.sub(r"[^\w\s\-/]", "", text)
-    return text
+    return text.strip()
 
 
-def _tokenize(text: str) -> set[str]:
-    return {w for w in _normalize(text).split() if w not in STOPWORDS}
+def _tokens(text: str) -> set[str]:
+    normalized = _normalize(text).replace("-", " ").replace("/", " ")
+    return {w for w in normalized.split() if w not in STOPWORDS and len(w) > 1}
 
 
-def _expand_query(conn: sqlite3.Connection, query: str) -> set[str]:
-    tokens = _tokenize(query)
-    expanded = set(tokens)
-    for token in list(tokens):
+def _slug(text: str) -> str:
+    out = _normalize(text).replace("/", " ").replace("-", " ")
+    out = re.sub(r"\s+", "-", out).strip("-")
+    return out or "uncategorized"
+
+
+def _display(text: str) -> str:
+    keep_upper = {"tbi", "evd", "sah", "ich", "dci", "icp", "cpp", "avm", "mri", "ct", "cta", "dsa"}
+    return " ".join(w.upper() if w in keep_upper else w.capitalize() for w in _normalize(text.replace("-", " ")).split())
+
+
+def _doc_alias(doc_path: str) -> str:
+    return _normalize(Path(doc_path).stem.replace("_", " ")) if doc_path else ""
+
+
+def _resolve_topic_patterns(hay: str) -> TopicResolution | None:
+    hay = _normalize(hay)
+    if not hay:
+        return None
+    if "hypertension" in hay or "blood pressure" in hay or re.search(r"\bbp\b", hay):
+        return TopicResolution(
+            "hypertension-management-neuro-emergencies",
+            "Hypertension Management in Neuro Emergencies",
+            "vascular",
+            (
+                "hypertension management",
+                "neuro icu hypertension",
+                "bp management neuro icu",
+                "htn neuro icu",
+                "hypertension management in neuro emergencies",
+                "hypertension management in the neuro icu and emergency department",
+            ),
+            0.95,
+        )
+    if "tbi" in hay or "traumatic brain injury" in hay:
+        return TopicResolution(
+            "tbi-management",
+            "TBI Management",
+            "trauma",
+            ("tbi management", "traumatic brain injury management", "severe tbi"),
+            0.95,
+        )
+    if "evd" in hay or "external ventricular" in hay:
+        return TopicResolution(
+            "evd-management-icu",
+            "EVD Management in ICU",
+            "critical-care",
+            ("evd management in icu", "external ventricular drain management", "evd management"),
+            0.95,
+        )
+    if "vasospasm" in hay or "dci" in hay:
+        return TopicResolution(
+            "sah-vasospasm-management",
+            "SAH Vasospasm Management",
+            "vascular",
+            ("vasospasm after sah", "subarachnoid hemorrhage vasospasm", "dci management"),
+            0.9,
+        )
+    if "sah" in hay or "subarachnoid" in hay:
+        return TopicResolution(
+            "sah-management",
+            "SAH Management",
+            "vascular",
+            ("sah management", "subarachnoid hemorrhage management", "aneurysmal subarachnoid hemorrhage"),
+            0.85,
+        )
+    if "long tract" in hay or "dcml" in hay or "spinothalamic" in hay or "corticospinal" in hay:
+        return TopicResolution(
+            "long-tracts",
+            "Long Tracts",
+            "anatomy",
+            ("long tracts", "dcml", "spinothalamic tract", "corticospinal tract"),
+            0.9,
+        )
+    if "neuroimaging" in hay or "traumatic tap" in hay or "xanthochromia" in hay:
+        return TopicResolution(
+            "neuroimaging-sah-hemorrhage",
+            "Neuroimaging SAH and Hemorrhage",
+            "imaging",
+            ("neuroimaging lab 2", "traumatic tap vs sah", "sah stroke imaging vascular"),
+            0.85,
+        )
+    return None
+
+
+def resolve_topic(conn: sqlite3.Connection, topic_hint: str, doc_path: str = "") -> TopicResolution:
+    hint = _normalize(topic_hint)
+    doc_alias = _doc_alias(doc_path)
+    if hint:
         row = conn.execute(
-            "SELECT canonical FROM aliases WHERE alias = ?", (token,)
+            "SELECT t.* FROM topic_aliases a JOIN topics t ON t.id = a.topic_id WHERE a.alias = ?",
+            (hint,),
         ).fetchone()
         if row:
-            expanded.update(_tokenize(row["canonical"]))
-        for r in conn.execute(
-            "SELECT alias FROM aliases WHERE canonical LIKE ?",
-            (f"%{token}%",),
-        ):
-            expanded.add(r["alias"])
-    return expanded
+            aliases = tuple(r["alias"] for r in conn.execute("SELECT alias FROM topic_aliases WHERE topic_id = ?", (row["id"],)))
+            return TopicResolution(row["canonical_slug"], row["display_name"], row["domain"], aliases, 1.0)
+        row = conn.execute("SELECT * FROM topics WHERE canonical_slug = ?", (_slug(hint),)).fetchone()
+        if row:
+            aliases = tuple(r["alias"] for r in conn.execute("SELECT alias FROM topic_aliases WHERE topic_id = ?", (row["id"],)))
+            return TopicResolution(row["canonical_slug"], row["display_name"], row["domain"], aliases, 1.0)
+        resolution = _resolve_topic_patterns(hint)
+        if resolution:
+            return resolution
+    if doc_alias:
+        row = conn.execute(
+            "SELECT t.* FROM topic_aliases a JOIN topics t ON t.id = a.topic_id WHERE a.alias = ?",
+            (doc_alias,),
+        ).fetchone()
+        if row:
+            aliases = tuple(r["alias"] for r in conn.execute("SELECT alias FROM topic_aliases WHERE topic_id = ?", (row["id"],)))
+            return TopicResolution(row["canonical_slug"], row["display_name"], row["domain"], aliases, 1.0)
+        resolution = _resolve_topic_patterns(doc_alias)
+        if resolution:
+            return resolution
+    base = hint or doc_alias or "uncategorized memory"
+    return TopicResolution(_slug(base), _display(base), "general", (base,), 0.65)
 
 
-def _match_score(query_tokens: set[str], target_tokens: set[str]) -> float:
-    if not target_tokens or not query_tokens:
+def _ensure_topic(conn: sqlite3.Connection, resolution: TopicResolution, doc_path: str = "") -> int:
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        """INSERT OR IGNORE INTO topics
+           (canonical_slug, display_name, domain, primary_doc_path, created_at)
+           VALUES (?, ?, ?, ?, ?)""",
+        (resolution.slug, resolution.display_name, resolution.domain, doc_path or "", now),
+    )
+    if doc_path:
+        conn.execute(
+            "UPDATE topics SET primary_doc_path = COALESCE(NULLIF(primary_doc_path, ''), ?) WHERE canonical_slug = ?",
+            (doc_path, resolution.slug),
+        )
+    topic_id = int(conn.execute("SELECT id FROM topics WHERE canonical_slug = ?", (resolution.slug,)).fetchone()[0])
+    aliases = set(resolution.aliases) | {resolution.slug.replace("-", " "), _normalize(resolution.display_name)}
+    if doc_path:
+        aliases.add(_doc_alias(doc_path))
+    for alias in aliases:
+        if alias:
+            conn.execute(
+                "INSERT OR IGNORE INTO topic_aliases (topic_id, alias, source, confidence) VALUES (?, ?, ?, ?)",
+                (topic_id, _normalize(alias), "resolver", resolution.confidence),
+            )
+    return topic_id
+
+
+def _concept_type(text: str) -> str:
+    hay = _normalize(text)
+    if any(x in hay for x in ("dose", "target", "threshold", " map ", "sbp", "cpp", "icp", "mg", "mmhg", "mcg")):
+        return "threshold"
+    if any(x in hay for x in (" vs ", "distinction", "different", "discriminator", "distinguish", "contrast")):
+        return "discriminator"
+    if any(x in hay for x in ("sequence", "order", "workflow", "first", "next")):
+        return "algorithm_step"
+    if any(x in hay for x in ("mechanism", "pathophysiology", "physiology", "why")):
+        return "mechanism_consequence"
+    return "clinical_rule"
+
+
+def _is_safety_critical(topic_slug: str, text: str) -> int:
+    hay = _normalize(f"{topic_slug} {text}")
+    triggers = (
+        "herniation", "cushing", "blood pressure", "hypertension", "cpp", "icp",
+        "vasospasm", "dci", "antiplatelet", "hemorrhage", "stroke", "airway",
+        "nicardipine", "norepinephrine", "seizure", "infection", "ventriculitis",
+    )
+    return int(any(t in hay for t in triggers))
+
+
+def _ensure_concept(conn: sqlite3.Connection, topic_id: int, topic_slug: str, concept: str, question: str = "", correction: str = "") -> int:
+    now = datetime.now(timezone.utc).isoformat()
+    slug = _slug(concept)
+    text = f"{concept} {question} {correction}"
+    conn.execute(
+        """INSERT OR IGNORE INTO concepts
+           (topic_id, canonical_slug, display_name, concept_type, safety_critical, created_at)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (topic_id, slug, _normalize(concept), _concept_type(text), _is_safety_critical(topic_slug, text), now),
+    )
+    concept_id = int(conn.execute(
+        "SELECT id FROM concepts WHERE topic_id = ? AND canonical_slug = ?",
+        (topic_id, slug),
+    ).fetchone()[0])
+    conn.execute(
+        "INSERT OR IGNORE INTO concept_aliases (concept_id, alias, source, confidence) VALUES (?, ?, ?, ?)",
+        (concept_id, _normalize(concept), "agent", 1.0),
+    )
+    return concept_id
+
+
+def _first_sentence(text: str, fallback: str = "") -> str:
+    clean = re.sub(r"\s+", " ", (text or "").strip())
+    if not clean:
+        return fallback
+    match = re.search(r"(.{1,240}?[.!?])\s", clean + " ")
+    return match.group(1) if match else clean[:240]
+
+
+def _normalize_gap_type(error_type: str, score: int, missing_edge: str) -> str:
+    et = _normalize(error_type).replace(" ", "_").replace("-", "_")
+    if et in VALID_GAP_TYPES:
+        return et
+    if score == 0:
+        return "reasoning_gap"
+    if score == 1:
+        return "omission" if missing_edge else "reasoning_gap"
+    return ""
+
+
+def _learning_operation(concept: str, question: str, explicit: str = "") -> str:
+    if explicit:
+        return _normalize(explicit).replace(" ", "_")
+    hay = _normalize(f"{concept} {question}")
+    if any(x in hay for x in ("what map", "dose", "target", "threshold", "how fast", "mg", "mmhg", "mcg")):
+        return "quantification"
+    if any(x in hay for x in ("for each", "distinguish", " vs ", "same sbp", "different", "contrast")):
+        return "discrimination"
+    if any(x in hay for x in ("first", "sequence", "next 5 minutes", "order")):
+        return "sequencing"
+    if any(x in hay for x in ("why", "equation", "physiologic", "mechanism")):
+        return "mechanism"
+    return "transfer"
+
+
+def _priority(topic_slug: str, claim_text: str, gap_type: str, score: int) -> str:
+    hay = _normalize(f"{topic_slug} {claim_text} {gap_type}")
+    if score < 2 and any(x in hay for x in ("herniation", "cushing", "icp", "cpp", "vasospasm", "dci", "stroke", "ich")):
+        return "urgent"
+    if score == 0 or gap_type in {"application_failure", "cross_contamination", "numerical_recall"}:
+        return "high"
+    if score == 1:
+        return "medium"
+    return "low"
+
+
+def _claim_state_for_score(
+    score: int,
+    existing_state: str | None = None,
+    teaching_intent: str = "",
+) -> tuple[str, str]:
+    if existing_state == "durable" and score < 2:
+        return "regressed", "regressed"
+    if score == 0:
+        return "missed", "missed"
+    if score == 1:
+        return "partially_repaired", "partial"
+    if teaching_intent == "retention_check" and existing_state in {
+        "missed",
+        "partially_repaired",
+        "repaired_same_session",
+        "regressed",
+    }:
+        return "durable", "retention_passed"
+    if existing_state in {"missed", "partially_repaired", "repaired_same_session", "regressed"}:
+        return "repaired_same_session", "repaired"
+    return "durable", "confirmed"
+
+
+def _ensure_session(conn: sqlite3.Connection, session_id: str, started: str, skill: str, topic_id: int, doc_path: str) -> None:
+    conn.execute(
+        """INSERT OR IGNORE INTO sessions
+           (session_id, started, skill, primary_topic_id, doc_path)
+           VALUES (?, ?, ?, ?, ?)""",
+        (session_id, started, skill, topic_id, doc_path),
+    )
+    conn.execute("INSERT OR IGNORE INTO session_topics (session_id, topic_id) VALUES (?, ?)", (session_id, topic_id))
+    if doc_path:
+        conn.execute(
+            "UPDATE sessions SET doc_path = COALESCE(NULLIF(doc_path, ''), ?) WHERE session_id = ?",
+            (doc_path, session_id),
+        )
+
+
+def _upsert_retrieval_card(
+    conn: sqlite3.Connection,
+    *,
+    topic_id: int,
+    claim_state_id: int,
+    card_type: str,
+    priority: str,
+    summary: str,
+    next_action: str,
+    evidence_result_id: int,
+    updated_ts: str,
+    detail: dict[str, str | int | float] | None = None,
+) -> None:
+    status = "active"
+    conn.execute(
+        """INSERT INTO retrieval_cards
+           (topic_id, claim_state_id, card_type, status, priority, summary, next_action,
+            evidence_result_id, updated_ts, detail_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(topic_id, claim_state_id, card_type) DO UPDATE SET
+             status = excluded.status,
+             priority = excluded.priority,
+             summary = excluded.summary,
+             next_action = excluded.next_action,
+             evidence_result_id = excluded.evidence_result_id,
+             updated_ts = excluded.updated_ts,
+             detail_json = excluded.detail_json""",
+        (
+            topic_id,
+            claim_state_id,
+            card_type,
+            status,
+            priority,
+            _compact_text(summary),
+            _compact_text(next_action),
+            evidence_result_id,
+            updated_ts,
+            json.dumps(detail or {}, sort_keys=True),
+        ),
+    )
+
+
+def _deactivate_other_cards(conn: sqlite3.Connection, claim_state_id: int, keep_card_type: str) -> None:
+    conn.execute(
+        "UPDATE retrieval_cards SET status = 'inactive' WHERE claim_state_id = ? AND card_type != ?",
+        (claim_state_id, keep_card_type),
+    )
+
+
+def _derive_claim(
+    *,
+    concept: str,
+    tested_claim: str,
+    corrected_rule: str,
+    correction: str,
+) -> str:
+    return (
+        tested_claim.strip()
+        or corrected_rule.strip()
+        or correction.strip()
+        or f"Apply {concept.strip()} in a clinical or study vignette."
+    )
+
+
+def _compact_text(text: str, limit: int = 500) -> str:
+    text = re.sub(r"\s+", " ", (text or "").strip())
+    if len(text) <= limit:
+        return text
+    cut = text[:limit].rstrip()
+    sentence_end = max(cut.rfind(". "), cut.rfind("; "), cut.rfind(": "))
+    if sentence_end >= max(80, int(limit * 0.55)):
+        return cut[: sentence_end + 1].strip()
+    return cut.rstrip(" ,;:.") + "..."
+
+
+def _claim_match_score(existing: sqlite3.Row, candidate_text: str, expected_edge: str, corrected_rule: str) -> float:
+    existing_text = " ".join((existing["claim_text"] or "", existing["reason"] or ""))
+    existing_tokens = _tokens(existing_text)
+    candidate_tokens = _tokens(" ".join((candidate_text, expected_edge, corrected_rule)))
+    if not existing_tokens or not candidate_tokens:
         return 0.0
-    intersection = query_tokens & target_tokens
-    union = query_tokens | target_tokens
-    return len(intersection) / len(union) if union else 0.0
+    overlap = len(existing_tokens & candidate_tokens)
+    containment = overlap / max(1, min(len(existing_tokens), len(candidate_tokens)))
+    jaccard = overlap / max(1, len(existing_tokens | candidate_tokens))
+    return max(containment, jaccard)
 
 
-def _topic_matches(conn: sqlite3.Connection, query: str) -> list[str]:
-    expanded_q = _expand_query(conn, query)
-    norm_q = _normalize(query)
+def _find_matching_claim_state(
+    conn: sqlite3.Connection,
+    *,
+    topic_id: int,
+    claim_slug: str,
+    claim_text: str,
+    corrected_rule: str,
+    agent_signal: dict[str, str],
+) -> sqlite3.Row | None:
+    exact = conn.execute(
+        """SELECT id, claim_slug, claim_text, state, reason
+           FROM claim_state
+           WHERE topic_id = ? AND claim_slug = ?
+           ORDER BY last_seen_ts DESC LIMIT 1""",
+        (topic_id, claim_slug),
+    ).fetchone()
+    if exact:
+        return exact
 
-    all_topics: set[str] = set()
-    for row in conn.execute("SELECT DISTINCT topic FROM exchanges"):
-        all_topics.add(row["topic"])
-    for row in conn.execute("SELECT DISTINCT topic FROM concepts"):
-        all_topics.add(row["topic"])
+    expected_edge = agent_signal.get("expected_answer_edge", "")
+    candidate_tokens = _tokens(" ".join((claim_text, expected_edge, corrected_rule)))
+    if len(candidate_tokens) < 5:
+        return None
+    if not expected_edge and len(_tokens(corrected_rule)) < 5:
+        return None
+    rows = conn.execute(
+        """SELECT id, claim_slug, claim_text, state, reason
+           FROM claim_state
+           WHERE topic_id = ?
+           ORDER BY last_seen_ts DESC LIMIT 30""",
+        (topic_id,),
+    ).fetchall()
+    best: tuple[float, sqlite3.Row] | None = None
+    for row in rows:
+        score = _claim_match_score(row, claim_text, expected_edge, corrected_rule)
+        if score >= 0.62 and (best is None or score > best[0]):
+            best = (score, row)
+    return best[1] if best else None
 
-    scored: list[tuple[str, float]] = []
-    for topic in all_topics:
-        norm_t = _normalize(topic)
-        if norm_q in norm_t or norm_t in norm_q:
-            scored.append((topic, 1.0))
-            continue
-        expanded_t = _expand_query(conn, topic)
-        score = _match_score(expanded_q, expanded_t)
-        if score >= 0.25:
-            scored.append((topic, score))
 
-    scored.sort(key=lambda x: x[1], reverse=True)
-    return [t for t, _ in scored]
-
-
-# ---------------------------------------------------------------------------
-# recall
-# ---------------------------------------------------------------------------
-
-def recall(conn: sqlite3.Connection, topic: str | None, doc: str | None) -> str:
-    lines: list[str] = []
-    matched_topics: list[str] = []
-
-    if topic:
-        matched_topics = _topic_matches(conn, topic)
-        label = topic
-    elif doc:
-        label = doc
-        for row in conn.execute("SELECT DISTINCT topic FROM exchanges WHERE doc_path = ?", (doc,)):
-            matched_topics.append(row["topic"])
+def _log_claim_result(
+    conn: sqlite3.Connection,
+    *,
+    exchange_id: int,
+    topic_id: int,
+    concept_id: int,
+    topic_slug: str,
+    concept: str,
+    score: int,
+    error_type: str,
+    answer: str,
+    correction: str,
+    misconception: str,
+    tested_claim: str,
+    learner_claim: str,
+    missing_edge: str,
+    corrected_rule: str,
+    clinical_consequence: str,
+    retest_prompt_shape: str,
+    learning_operation: str,
+    agent_signal: dict[str, str],
+    now: str,
+) -> int:
+    claim_text = _derive_claim(concept=concept, tested_claim=tested_claim, corrected_rule=corrected_rule, correction=correction)
+    claim_slug = _slug(claim_text)
+    learner = learner_claim.strip() or _first_sentence(answer, "No learner answer captured.")
+    missing = missing_edge.strip()
+    fixed_rule = corrected_rule.strip() or correction.strip()
+    consequence = clinical_consequence.strip()
+    retest = retest_prompt_shape.strip() or f"Use a new vignette testing {concept} without repeating the original wording."
+    if score < 2 and not missing:
+        missing = misconception.strip() or _first_sentence(correction)
+    if score < 2 and not consequence:
+        consequence = "Future review should target this missing edge because it changes management or discrimination."
+    gap_type = _normalize_gap_type(error_type, score, missing)
+    existing = _find_matching_claim_state(
+        conn,
+        topic_id=topic_id,
+        claim_slug=claim_slug,
+        claim_text=claim_text,
+        corrected_rule=fixed_rule,
+        agent_signal=agent_signal,
+    )
+    if existing and existing["claim_slug"] != claim_slug:
+        claim_slug = existing["claim_slug"]
+    conn.execute(
+        """INSERT INTO claim_results
+           (exchange_id, topic_id, concept_id, claim_slug, claim_text, score, gap_type,
+            learner_claim, missing_edge, corrected_rule, clinical_consequence,
+            retest_prompt_shape, learning_operation, agent_signal_json, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            exchange_id,
+            topic_id,
+            concept_id,
+            claim_slug,
+            claim_text,
+            score,
+            gap_type,
+            learner,
+            missing,
+            fixed_rule,
+            consequence,
+            retest,
+            _learning_operation(concept, claim_text, learning_operation),
+            json.dumps(agent_signal, sort_keys=True),
+            now,
+        ),
+    )
+    result_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+    teaching_intent = _normalize(agent_signal.get("teaching_intent", "")).replace(" ", "_")
+    state, event = _claim_state_for_score(score, existing["state"] if existing else None, teaching_intent)
+    priority = _priority(topic_slug, claim_text, gap_type, score)
+    if state == "repaired_same_session" and priority == "low":
+        priority = "medium"
+    reason = missing or fixed_rule or learner
+    if existing:
+        state_id = int(existing["id"])
+        conn.execute(
+            """UPDATE claim_state
+               SET claim_text = ?, state = ?, priority = ?, gap_type = ?,
+                   last_result_id = ?, source_result_id = COALESCE(source_result_id, ?),
+                   last_seen_ts = ?, reason = ?
+               WHERE id = ?""",
+            (claim_text, state, priority, gap_type, result_id, result_id, now, reason, state_id),
+        )
     else:
-        return "ERROR: provide --topic or --doc"
-
-    if not matched_topics and not doc:
-        return f"No prior data found for '{label}'."
-
-    lines.append(f"=== RECALL: {label} ===")
-    lines.append("")
-
-    # --- Last session ---
-    session = None
-    if matched_topics:
-        placeholders = ",".join("?" for _ in matched_topics)
-        for t in matched_topics:
-            rows = conn.execute(
-                "SELECT DISTINCT session_id FROM exchanges WHERE topic = ? ORDER BY ts DESC LIMIT 3",
-                (t,),
-            ).fetchall()
-            for r in rows:
-                s = conn.execute(
-                    "SELECT * FROM sessions WHERE session_id = ? AND summary != ''",
-                    (r["session_id"],),
-                ).fetchone()
-                if s and (session is None or s["started"] > session["started"]):
-                    session = s
-    if doc and not session:
-        session = conn.execute(
-            "SELECT * FROM sessions WHERE doc_path = ? AND summary != '' ORDER BY started DESC LIMIT 1",
-            (doc,),
-        ).fetchone()
-    if session:
-        date = session["started"][:10]
-        skill = session["skill"] or "session"
-        lines.append(f"LAST SESSION ({date}, {skill}):")
-        if session["summary"]:
-            lines.append(f"  Summary: {session['summary']}")
-        if session["next_strategy"]:
-            lines.append(f"  Next strategy: {session['next_strategy']}")
-        lines.append("")
-
-    # --- Concepts ---
-    known: list[str] = []
-    gaps: list[str] = []
-    if matched_topics:
-        for t in matched_topics:
-            for row in conn.execute(
-                "SELECT * FROM concepts WHERE topic = ? ORDER BY times_right DESC", (t,)
-            ):
-                entry = f"{row['concept']} (confirmed {row['times_right']}x)"
-                if row["status"] == "known":
-                    known.append(entry)
-                elif row["status"] == "partial":
-                    detail = f"{row['concept']} (partial, right {row['times_right']}x wrong {row['times_wrong']}x)"
-                    gaps.append(detail)
-                else:
-                    detail = f"{row['concept']} (missed {row['times_wrong']}x"
-                    if row["last_error_type"]:
-                        detail += f", {row['last_error_type']}"
-                    if row["last_misconception"]:
-                        detail += f', misconception: "{row["last_misconception"]}"'
-                    detail += ")"
-                    gaps.append(detail)
-
-    if known:
-        lines.append(f"KNOWN CONCEPTS ({len(known)}):")
-        for k in known[:10]:
-            lines.append(f"  - {k}")
-        if len(known) > 10:
-            lines.append(f"  ... and {len(known) - 10} more")
-        lines.append("")
-
-    if gaps:
-        lines.append(f"GAPS ({len(gaps)}):")
-        for g in gaps[:10]:
-            lines.append(f"  - {g}")
-        if len(gaps) > 10:
-            lines.append(f"  ... and {len(gaps) - 10} more")
-        lines.append("")
-
-    # --- Open errors ---
-    open_errors: list[sqlite3.Row] = []
-    if matched_topics:
-        for t in matched_topics:
-            for row in conn.execute(
-                "SELECT * FROM errors WHERE topic = ? AND retested = 0 ORDER BY ts DESC",
-                (t,),
-            ):
-                open_errors.append(row)
-    if open_errors:
-        lines.append(f"OPEN ERRORS TO RETEST ({len(open_errors)}):")
-        for e in open_errors[:8]:
-            lines.append(f'  - "{e["misconception"]}" ({e["ts"][:10]})')
-        lines.append("")
-
-    # --- Recent exchanges ---
-    recent: list[sqlite3.Row] = []
-    if matched_topics:
-        for t in matched_topics:
-            for row in conn.execute(
-                "SELECT * FROM exchanges WHERE topic = ? ORDER BY ts DESC LIMIT 5",
-                (t,),
-            ):
-                recent.append(row)
-    if doc:
-        for row in conn.execute(
-            "SELECT * FROM exchanges WHERE doc_path = ? ORDER BY ts DESC LIMIT 5",
-            (doc,),
-        ):
-            if not any(r["id"] == row["id"] for r in recent):
-                recent.append(row)
-    recent.sort(key=lambda r: r["ts"], reverse=True)
-    if recent:
-        lines.append(f"RECENT EXCHANGES (last {min(len(recent), 5)}):")
-        correct_map = {0: "wrong", 1: "partial", 2: "correct"}
-        for r in recent[:5]:
-            q_short = r["question"][:80] + ("..." if len(r["question"]) > 80 else "")
-            lines.append(f"  Q: {q_short} -> {correct_map.get(r['correct'], '?')} (turn {r['turn']})")
-        lines.append("")
-
-    # --- Doc progress ---
-    if doc:
-        dp = conn.execute(
-            "SELECT * FROM doc_progress WHERE doc_path = ?", (doc,)
-        ).fetchone()
-        if dp:
-            lines.append(f"DOC PROGRESS ({doc}):")
-            lines.append(f"  Sessions: {dp['session_count']} | Last: {dp['last_studied'] or 'never'}")
-            known_list = json.loads(dp["concepts_known"] or "[]")
-            gap_list = json.loads(dp["concepts_gap"] or "[]")
-            lines.append(f"  Concepts known: {len(known_list)} | Gaps: {len(gap_list)}")
-            lines.append("")
-
-    if len(lines) <= 2:
-        return f"No prior data found for '{label}'."
-
-    return "\n".join(lines)
+        conn.execute(
+            """INSERT INTO claim_state
+               (topic_id, concept_id, claim_slug, claim_text, state, priority, gap_type,
+                last_result_id, source_result_id, last_seen_ts, reason)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (topic_id, concept_id, claim_slug, claim_text, state, priority, gap_type, result_id, result_id, now, reason),
+        )
+        state_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+    conn.execute(
+        "INSERT INTO state_events (claim_state_id, event_type, result_id, ts, detail) VALUES (?, ?, ?, ?, ?)",
+        (state_id, event, result_id, now, reason),
+    )
+    if state in {"missed", "partially_repaired", "repaired_same_session", "regressed"}:
+        card_type = "must_retest" if state in {"missed", "partially_repaired", "regressed"} else "recent_repair"
+        _deactivate_other_cards(conn, state_id, card_type)
+        next_action = retest if state != "repaired_same_session" else "Run a delayed retention check before treating this repair as durable."
+        summary = f"{state}: {missing or fixed_rule or claim_text}"
+        _upsert_retrieval_card(
+            conn,
+            topic_id=topic_id,
+            claim_state_id=state_id,
+            card_type=card_type,
+            priority=priority,
+            summary=summary,
+            next_action=next_action,
+            evidence_result_id=result_id,
+            updated_ts=now,
+            detail={"claim": claim_text, "consequence": consequence},
+        )
+    elif state == "durable":
+        _deactivate_other_cards(conn, state_id, "scaffold")
+        _mark_related_repairs(
+            conn,
+            topic_id=topic_id,
+            result_id=result_id,
+            claim_text=claim_text,
+            corrected_rule=fixed_rule,
+            learner_claim=learner,
+            now=now,
+        )
+        _upsert_retrieval_card(
+            conn,
+            topic_id=topic_id,
+            claim_state_id=state_id,
+            card_type="scaffold",
+            priority="low",
+            summary=f"Durable scaffold: {claim_text}",
+            next_action="Use as scaffold; avoid direct re-drill unless stale or contradicted.",
+            evidence_result_id=result_id,
+            updated_ts=now,
+            detail={"learner_claim": learner},
+        )
+    return result_id
 
 
-# ---------------------------------------------------------------------------
-# log-answer
-# ---------------------------------------------------------------------------
-
-VALID_ERROR_TYPES = frozenset({
-    "conceptual_confusion", "numerical_recall", "cross_contamination",
-    "application_failure", "reasoning_gap", "omission",
-})
+def _related_repair_score(open_state: sqlite3.Row, claim_text: str, corrected_rule: str, learner_claim: str) -> float:
+    target = _tokens(" ".join((open_state["reason"] or "", open_state["claim_text"] or "")))
+    if not target:
+        return 0.0
+    repair = _tokens(" ".join((claim_text, corrected_rule, learner_claim)))
+    return len(target & repair) / max(1, len(target))
 
 
-def _validate_entry(topic: str, concept: str, correct: int,
-                     error_type: str, misconception: str) -> list[str]:
-    """Reject obviously malformed entries. Returns list of error messages."""
-    problems: list[str] = []
-    words_t = topic.split()
-    if len(words_t) > 8:
-        problems.append(f"TOPIC too long ({len(words_t)} words, max 8): '{topic}'")
-    if len(words_t) < 2:
-        problems.append(f"TOPIC too short ({len(words_t)} word, min 2): '{topic}'")
-    words_c = concept.split()
-    if len(words_c) < 2:
-        problems.append(f"CONCEPT too vague (single word): '{concept}'")
-    if re.match(r'^q\d+$', concept):
-        problems.append(f"CONCEPT is a question ID, not a concept name: '{concept}'")
-    if correct == 0 and not misconception.strip():
-        problems.append("MISCONCEPTION required when correct=0 (state the specific wrong belief)")
-    if misconception.strip().lower() in ("incorrect", "unsure", "wrong", "user was unsure"):
-        problems.append(f"MISCONCEPTION too generic: '{misconception}'. State the specific wrong belief.")
-    if error_type and error_type not in VALID_ERROR_TYPES:
-        problems.append(f"ERROR_TYPE invalid: '{error_type}'. Must be one of: {', '.join(sorted(VALID_ERROR_TYPES))}")
-    return problems
+def _mark_related_repairs(
+    conn: sqlite3.Connection,
+    *,
+    topic_id: int,
+    result_id: int,
+    claim_text: str,
+    corrected_rule: str,
+    learner_claim: str,
+    now: str,
+) -> None:
+    rows = conn.execute(
+        """SELECT id, claim_text, reason
+           FROM claim_state
+           WHERE topic_id = ?
+             AND state IN ('missed', 'partially_repaired', 'regressed')""",
+        (topic_id,),
+    ).fetchall()
+    for row in rows:
+        score = _related_repair_score(row, claim_text, corrected_rule, learner_claim)
+        if score < 0.35:
+            continue
+        rationale = f"Related correct claim repaired prior state by overlap score {score:.2f}."
+        conn.execute(
+            """UPDATE claim_state
+               SET state = 'repaired_same_session', priority = 'medium',
+                   last_result_id = ?, last_seen_ts = ?, reason = ?
+               WHERE id = ?""",
+            (result_id, now, rationale, row["id"]),
+        )
+        _deactivate_other_cards(conn, row["id"], "recent_repair")
+        conn.execute(
+            "INSERT INTO state_events (claim_state_id, event_type, result_id, ts, detail) VALUES (?, ?, ?, ?, ?)",
+            (row["id"], "related_repair", result_id, now, rationale),
+        )
+        _upsert_retrieval_card(
+            conn,
+            topic_id=topic_id,
+            claim_state_id=row["id"],
+            card_type="recent_repair",
+            priority="medium",
+            summary=f"Related repair: {row['claim_text']}",
+            next_action="Run a delayed retention check before treating this repair as durable.",
+            evidence_result_id=result_id,
+            updated_ts=now,
+            detail={"repair_confidence": round(score, 3), "rationale": rationale},
+        )
 
 
 def log_answer(
     conn: sqlite3.Connection,
+    *,
     session_id: str,
     topic: str,
     concept: str,
@@ -435,457 +854,504 @@ def log_answer(
     misconception: str = "",
     doc_path: str = "",
     skill: str = "",
-) -> str:
-    now = datetime.now(timezone.utc).isoformat()
-    topic = _normalize(topic)
-    concept = _normalize(concept)
-
-    problems = _validate_entry(topic, concept, correct, error_type, misconception)
-    if problems:
-        return "VALIDATION ERROR -- fix and retry:\n  " + "\n  ".join(problems)
-
-    # Auto-create session if not exists
-    existing = conn.execute(
-        "SELECT id, topics_json FROM sessions WHERE session_id = ?", (session_id,)
-    ).fetchone()
-    if not existing:
-        conn.execute(
-            "INSERT INTO sessions (session_id, started, skill, topics_json, doc_path) VALUES (?, ?, ?, ?, ?)",
-            (session_id, now, skill, json.dumps([topic]), doc_path),
-        )
-    else:
-        topics_list = json.loads(existing["topics_json"] or "[]")
-        if topic not in topics_list:
-            topics_list.append(topic)
-            conn.execute(
-                "UPDATE sessions SET topics_json = ? WHERE session_id = ?",
-                (json.dumps(topics_list), session_id),
-            )
-
-    # Count existing exchanges in this session for turn auto-assignment
-    turn_count = conn.execute(
-        "SELECT COUNT(*) as c FROM exchanges WHERE session_id = ?", (session_id,)
-    ).fetchone()["c"]
-    turn = turn_count + 1
-
-    # Insert exchange
+    turn: int | None = None,
+    ts: str | None = None,
+    tested_claim: str = "",
+    learner_claim: str = "",
+    missing_edge: str = "",
+    corrected_rule: str = "",
+    clinical_consequence: str = "",
+    retest_prompt_shape: str = "",
+    learning_operation: str = "",
+    teaching_intent: str = "",
+    expected_answer_edge: str = "",
+    coverage_role: str = "",
+    source_section: str = "",
+    source_anchor: str = "",
+    curriculum_unit: str = "",
+    answer_mode: str = "",
+    confidence_observed: str = "",
+) -> int:
+    now = ts or datetime.now(timezone.utc).isoformat()
+    resolution = resolve_topic(conn, topic, doc_path)
+    topic_id = _ensure_topic(conn, resolution, doc_path)
+    concept_id = _ensure_concept(conn, topic_id, resolution.slug, concept, question, correction)
+    _ensure_session(conn, session_id, now, skill, topic_id, doc_path)
+    if turn is None:
+        turn = int(conn.execute("SELECT COUNT(*) FROM exchanges WHERE session_id = ?", (session_id,)).fetchone()[0]) + 1
+    source = {
+        "teaching_intent": teaching_intent,
+        "expected_answer_edge": expected_answer_edge,
+        "coverage_role": coverage_role,
+        "source_section": source_section,
+        "source_anchor": source_anchor,
+        "curriculum_unit": curriculum_unit,
+        "answer_mode": answer_mode,
+        "confidence_observed": confidence_observed,
+    }
     conn.execute(
         """INSERT INTO exchanges
-           (session_id, ts, turn, topic, concept, question, answer, correct,
-            correction, error_type, misconception, doc_path, skill)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (session_id, now, turn, topic, concept, question, answer, correct,
-         correction, error_type, misconception, doc_path, skill),
+           (session_id, ts, turn, topic_id, concept_id, raw_question, raw_answer,
+            doc_path, skill, source_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            session_id,
+            now,
+            turn,
+            topic_id,
+            concept_id,
+            question,
+            answer,
+            doc_path,
+            skill,
+            json.dumps(source, sort_keys=True),
+        ),
     )
-    exchange_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-
-    # Upsert concept mastery
-    existing_concept = conn.execute(
-        "SELECT * FROM concepts WHERE topic = ? AND concept = ?", (topic, concept)
-    ).fetchone()
-    if existing_concept:
-        right = existing_concept["times_right"]
-        wrong = existing_concept["times_wrong"]
-        if correct >= 1:
-            right += 1
-        if correct == 0:
-            wrong += 1
-        status = "known" if right >= 2 and right > wrong else (
-            "partial" if right >= 1 else "unknown"
-        )
-        conn.execute(
-            """UPDATE concepts SET status = ?, times_right = ?, times_wrong = ?,
-               last_error_type = CASE WHEN ? != '' THEN ? ELSE last_error_type END,
-               last_misconception = CASE WHEN ? != '' THEN ? ELSE last_misconception END,
-               last_tested = ?
-               WHERE topic = ? AND concept = ?""",
-            (status, right, wrong, error_type, error_type,
-             misconception, misconception, now, topic, concept),
-        )
-    else:
-        right = 1 if correct >= 1 else 0
-        wrong = 1 if correct == 0 else 0
-        status = "known" if correct == 2 else ("partial" if correct == 1 else "unknown")
-        conn.execute(
-            """INSERT INTO concepts
-               (topic, concept, status, times_right, times_wrong,
-                last_error_type, last_misconception, last_tested)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (topic, concept, status, right, wrong, error_type, misconception, now),
-        )
-
-    # Track errors
-    error_msg = ""
-    if correct == 0 and misconception:
-        conn.execute(
-            """INSERT INTO errors (ts, topic, concept, error_type, misconception, correction)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (now, topic, concept, error_type, misconception, correction),
-        )
-        error_msg = " [error logged]"
-    elif correct == 2:
-        # Check if this corrects a prior error
-        open_err = conn.execute(
-            "SELECT id FROM errors WHERE concept = ? AND retested = 0 ORDER BY ts DESC LIMIT 1",
-            (concept,),
-        ).fetchone()
-        if open_err:
-            conn.execute(
-                "UPDATE errors SET retested = 1, retest_ts = ? WHERE id = ?",
-                (now, open_err["id"]),
-            )
-            error_msg = f" [error #{open_err['id']} retested]"
-
-    # Update doc_progress
-    if doc_path:
-        dp = conn.execute(
-            "SELECT * FROM doc_progress WHERE doc_path = ?", (doc_path,)
-        ).fetchone()
-        if dp:
-            known_list = json.loads(dp["concepts_known"] or "[]")
-            gap_list = json.loads(dp["concepts_gap"] or "[]")
-            if correct >= 1 and concept not in known_list:
-                known_list.append(concept)
-            if correct == 0 and concept not in gap_list:
-                gap_list.append(concept)
-            if concept in gap_list and correct == 2:
-                gap_list.remove(concept)
-            conn.execute(
-                "UPDATE doc_progress SET concepts_known = ?, concepts_gap = ?, last_studied = ? WHERE doc_path = ?",
-                (json.dumps(known_list), json.dumps(gap_list), now, doc_path),
-            )
-        else:
-            known_list = [concept] if correct >= 1 else []
-            gap_list = [concept] if correct == 0 else []
-            conn.execute(
-                "INSERT INTO doc_progress (doc_path, session_count, last_studied, concepts_known, concepts_gap) VALUES (?, 1, ?, ?, ?)",
-                (doc_path, now, json.dumps(known_list), json.dumps(gap_list)),
-            )
-
+    exchange_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+    _log_claim_result(
+        conn,
+        exchange_id=exchange_id,
+        topic_id=topic_id,
+        concept_id=concept_id,
+        topic_slug=resolution.slug,
+        concept=concept,
+        score=correct,
+        error_type=error_type,
+        answer=answer,
+        correction=correction,
+        misconception=misconception,
+        tested_claim=tested_claim,
+        learner_claim=learner_claim,
+        missing_edge=missing_edge,
+        corrected_rule=corrected_rule,
+        clinical_consequence=clinical_consequence,
+        retest_prompt_shape=retest_prompt_shape,
+        learning_operation=learning_operation,
+        agent_signal={k: v for k, v in source.items() if v},
+        now=now,
+    )
     conn.commit()
-    return f"OK exchange_id={exchange_id}{error_msg}"
+    return exchange_id
 
 
-# ---------------------------------------------------------------------------
-# end-session
-# ---------------------------------------------------------------------------
-
-def end_session(
+def log_exchange_claims(
     conn: sqlite3.Connection,
+    *,
     session_id: str,
-    summary: str,
-    next_strategy: str,
-    confusions: str = "[]",
-) -> str:
-    now = datetime.now(timezone.utc).isoformat()
+    topic: str,
+    question: str,
+    answer: str,
+    claims: list[dict[str, object]],
+    doc_path: str = "",
+    skill: str = "",
+    turn: int | None = None,
+    ts: str | None = None,
+    teaching_intent: str = "",
+    expected_answer_edge: str = "",
+    coverage_role: str = "",
+    source_section: str = "",
+    source_anchor: str = "",
+    curriculum_unit: str = "",
+    answer_mode: str = "",
+    confidence_observed: str = "",
+) -> int:
+    """Log one raw Q/A exchange with multiple assessed claim results."""
+    if not claims:
+        raise ValueError("claims must contain at least one claim")
+    now = ts or datetime.now(timezone.utc).isoformat()
+    first_concept = str(claims[0].get("concept") or "multi-claim exchange")
+    first_correction = str(claims[0].get("correction") or claims[0].get("corrected_rule") or "")
+    resolution = resolve_topic(conn, topic, doc_path)
+    topic_id = _ensure_topic(conn, resolution, doc_path)
+    exchange_concept_id = _ensure_concept(conn, topic_id, resolution.slug, first_concept, question, first_correction)
+    _ensure_session(conn, session_id, now, skill, topic_id, doc_path)
+    if turn is None:
+        turn = int(conn.execute("SELECT COUNT(*) FROM exchanges WHERE session_id = ?", (session_id,)).fetchone()[0]) + 1
+    source = {
+        "teaching_intent": teaching_intent,
+        "expected_answer_edge": expected_answer_edge,
+        "coverage_role": coverage_role,
+        "source_section": source_section,
+        "source_anchor": source_anchor,
+        "curriculum_unit": curriculum_unit,
+        "answer_mode": answer_mode,
+        "confidence_observed": confidence_observed,
+        "claim_count": str(len(claims)),
+    }
+    conn.execute(
+        """INSERT INTO exchanges
+           (session_id, ts, turn, topic_id, concept_id, raw_question, raw_answer,
+            doc_path, skill, source_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            session_id,
+            now,
+            turn,
+            topic_id,
+            exchange_concept_id,
+            question,
+            answer,
+            doc_path,
+            skill,
+            json.dumps(source, sort_keys=True),
+        ),
+    )
+    exchange_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+    for claim in claims:
+        concept = str(claim.get("concept") or first_concept)
+        correction = str(claim.get("correction") or "")
+        corrected_rule = str(claim.get("corrected_rule") or "")
+        concept_id = _ensure_concept(conn, topic_id, resolution.slug, concept, question, correction or corrected_rule)
+        claim_signal = {k: v for k, v in source.items() if v}
+        claim_signal.update({
+            k: str(claim[k])
+            for k in ("teaching_intent", "expected_answer_edge", "coverage_role", "source_section", "source_anchor", "curriculum_unit", "answer_mode", "confidence_observed")
+            if k in claim and claim[k]
+        })
+        _log_claim_result(
+            conn,
+            exchange_id=exchange_id,
+            topic_id=topic_id,
+            concept_id=concept_id,
+            topic_slug=resolution.slug,
+            concept=concept,
+            score=int(claim.get("correct", claim.get("score", 2))),
+            error_type=str(claim.get("error_type") or ""),
+            answer=answer,
+            correction=correction,
+            misconception=str(claim.get("misconception") or ""),
+            tested_claim=str(claim.get("tested_claim") or ""),
+            learner_claim=str(claim.get("learner_claim") or ""),
+            missing_edge=str(claim.get("missing_edge") or ""),
+            corrected_rule=corrected_rule,
+            clinical_consequence=str(claim.get("clinical_consequence") or ""),
+            retest_prompt_shape=str(claim.get("retest_prompt_shape") or ""),
+            learning_operation=str(claim.get("learning_operation") or ""),
+            agent_signal=claim_signal,
+            now=now,
+        )
+    conn.commit()
+    return exchange_id
 
-    # Compute stats
-    rows = conn.execute(
-        "SELECT correct FROM exchanges WHERE session_id = ?", (session_id,)
-    ).fetchall()
-    total = len(rows)
-    right = sum(1 for r in rows if r["correct"] == 2)
-    partial = sum(1 for r in rows if r["correct"] == 1)
-    wrong = sum(1 for r in rows if r["correct"] == 0)
-    stats = json.dumps({"total": total, "correct": right, "partial": partial, "wrong": wrong})
 
-    # Get topics for output
-    session = conn.execute(
-        "SELECT topics_json, doc_path FROM sessions WHERE session_id = ?", (session_id,)
-    ).fetchone()
-    topics_str = ""
-    if session:
-        topics_list = json.loads(session["topics_json"] or "[]")
-        topics_str = ", ".join(topics_list)
+def end_session(conn: sqlite3.Connection, *, session_id: str, summary: str, next_strategy: str, ended: str | None = None, stats_json: str = "{}") -> None:
+    now = ended or datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        """INSERT OR IGNORE INTO sessions
+           (session_id, started, ended, summary, next_strategy, stats_json)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (session_id, now, now, summary, next_strategy, stats_json),
+    )
+    conn.execute(
+        "UPDATE sessions SET ended = ?, summary = ?, next_strategy = ?, stats_json = ? WHERE session_id = ?",
+        (now, summary, next_strategy, stats_json, session_id),
+    )
+    topic_row = conn.execute("SELECT primary_topic_id FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
+    if topic_row and topic_row["primary_topic_id"]:
+        _upsert_session_card(conn, int(topic_row["primary_topic_id"]), session_id, summary, next_strategy, now)
+    conn.commit()
 
-    # Update or create session
+
+def _upsert_session_card(conn: sqlite3.Connection, topic_id: int, session_id: str, summary: str, next_strategy: str, now: str) -> None:
     existing = conn.execute(
-        "SELECT id FROM sessions WHERE session_id = ?", (session_id,)
+        """SELECT id FROM retrieval_cards
+           WHERE topic_id = ? AND claim_state_id IS NULL AND card_type = 'session_handoff'
+           ORDER BY updated_ts DESC LIMIT 1""",
+        (topic_id,),
     ).fetchone()
+    payload = json.dumps({"session_id": session_id}, sort_keys=True)
     if existing:
         conn.execute(
-            """UPDATE sessions SET ended = ?, summary = ?, next_strategy = ?,
-               confusions_json = ?, stats_json = ? WHERE session_id = ?""",
-            (now, summary, next_strategy, confusions, stats, session_id),
+            """UPDATE retrieval_cards
+               SET status = 'active', priority = 'medium', summary = ?, next_action = ?,
+                   evidence_result_id = NULL, updated_ts = ?, detail_json = ?
+               WHERE id = ?""",
+            (_compact_text(summary), _compact_text(next_strategy), now, payload, existing["id"]),
         )
     else:
         conn.execute(
-            """INSERT INTO sessions (session_id, started, ended, summary, next_strategy,
-               confusions_json, stats_json) VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (session_id, now, now, summary, next_strategy, confusions, stats),
+            """INSERT INTO retrieval_cards
+               (topic_id, claim_state_id, card_type, status, priority, summary, next_action,
+                evidence_result_id, updated_ts, detail_json)
+               VALUES (?, NULL, 'session_handoff', 'active', 'medium', ?, ?, NULL, ?, ?)""",
+            (topic_id, _compact_text(summary), _compact_text(next_strategy), now, payload),
         )
 
-    # Update doc_progress session_count
-    if session and session["doc_path"]:
-        conn.execute(
-            "UPDATE doc_progress SET session_count = session_count + 1 WHERE doc_path = ?",
-            (session["doc_path"],),
+
+def _retrieval_card_payload(row: sqlite3.Row) -> dict[str, str | None]:
+    return {
+        "topic": row["topic"],
+        "type": row["card_type"],
+        "priority": row["priority"],
+        "state": row["state"],
+        "claim": row["claim_text"],
+        "summary": row["summary"],
+        "next_action": row["next_action"],
+    }
+
+
+def _summary_command(
+    *,
+    topic: str,
+    limit: int,
+    scaffold_limit: int,
+    include_global_scaffolds: bool = False,
+) -> str:
+    parts = ["python3 src/study_memory.py summary"]
+    if topic:
+        parts.append(f'--topic "{topic}"')
+    parts.append(f"--limit {limit}")
+    parts.append(f"--scaffold-limit {scaffold_limit}")
+    if include_global_scaffolds:
+        parts.append("--include-global-scaffolds")
+    return " ".join(parts)
+
+
+def _retrieval_guidance(
+    *,
+    topic: str,
+    limit: int,
+    scaffold_limit: int,
+    counts: dict[str, int],
+    omitted: dict[str, int],
+    include_global_scaffolds: bool,
+) -> dict[str, object]:
+    high_signal_types = ("must_retest", "session_handoff", "recent_repair")
+    omitted_high_signal = {k: omitted[k] for k in high_signal_types if omitted.get(k, 0)}
+    suggested_commands: list[str] = []
+
+    if omitted_high_signal:
+        suggested_commands.append(
+            _summary_command(
+                topic=topic,
+                limit=limit + sum(omitted_high_signal.values()),
+                scaffold_limit=scaffold_limit,
+                include_global_scaffolds=include_global_scaffolds,
+            )
+        )
+    if topic and omitted.get("scaffold", 0):
+        suggested_commands.append(
+            _summary_command(
+                topic=topic,
+                limit=limit,
+                scaffold_limit=min(counts.get("scaffold", scaffold_limit), max(scaffold_limit * 2, 4)),
+            )
+        )
+    if not topic and omitted.get("scaffold", 0) and not include_global_scaffolds:
+        suggested_commands.append(
+            _summary_command(
+                topic=topic,
+                limit=limit,
+                scaffold_limit=scaffold_limit,
+                include_global_scaffolds=True,
+            )
         )
 
-    conn.commit()
-    out = [f"Session closed. {total} exchanges: {right} correct, {partial} partial, {wrong} wrong."]
-    if topics_str:
-        out.append(f"Topics: {topics_str}")
-    out.append("Next strategy saved.")
-
-    # Auto-regenerate vault interfaces (Dashboard, ACGME Readiness, Canvases, Concepts INDEX).
-    # Silent on success; warn on failure but do not abort the session-end record.
-    try:
-        from vault_writers import regenerate_all  # type: ignore
-        warnings = regenerate_all(conn)
-        if warnings:
-            for w in warnings:
-                print(f"WARN vault-writer: {w}", file=sys.stderr)
-    except Exception as e:  # noqa: BLE001
-        print(f"WARN vault-writer skipped: {e}", file=sys.stderr)
-
-    return "\n".join(out)
+    return {
+        "scope": "topic" if topic else "global",
+        "is_truncated": bool(omitted),
+        "omitted_high_signal": omitted_high_signal,
+        "default_policy": (
+            "Compact first pass: must_retest/session_handoff/recent_repair are prioritized; "
+            "scaffolds are capped because they are transfer premises, not primary drill targets."
+        ),
+        "expand_when": [
+            "Expand immediately if omitted_high_signal is non-empty before designing a teaching plan.",
+            "Expand scaffold_limit only when building a coverage map or transfer-question premises for this topic.",
+            "For global retrieval, keep scaffolds suppressed unless explicitly selecting broad review targets.",
+        ],
+        "suggested_commands": suggested_commands,
+    }
 
 
-# ---------------------------------------------------------------------------
-# status
-# ---------------------------------------------------------------------------
-
-def status(conn: sqlite3.Connection, topic: str | None = None) -> str:
-    lines: list[str] = []
-
-    total_sessions = conn.execute("SELECT COUNT(*) as c FROM sessions").fetchone()["c"]
-    total_exchanges = conn.execute("SELECT COUNT(*) as c FROM exchanges").fetchone()["c"]
-    total_concepts = conn.execute("SELECT COUNT(*) as c FROM concepts").fetchone()["c"]
-    total_errors = conn.execute("SELECT COUNT(*) as c FROM errors WHERE retested = 0").fetchone()["c"]
-    total_aliases = conn.execute("SELECT COUNT(*) as c FROM aliases").fetchone()["c"]
-
-    lines.append("=== STUDY MEMORY STATUS ===")
-    lines.append(f"Sessions: {total_sessions} | Exchanges: {total_exchanges} | Concepts: {total_concepts}")
-    lines.append(f"Open errors: {total_errors} | Aliases: {total_aliases}")
-    lines.append("")
-
+def retrieval_summary(
+    conn: sqlite3.Connection,
+    topic: str = "",
+    limit: int = 8,
+    scaffold_limit: int = 2,
+    include_scaffolds: bool = True,
+    include_global_scaffolds: bool = False,
+) -> str:
+    limit = max(0, limit)
+    scaffold_limit = max(0, scaffold_limit)
+    topic_filter = ""
+    params: list[str | int] = []
     if topic:
-        matched = _topic_matches(conn, topic)
-        if matched:
-            lines.append(f"Matching topics for '{topic}': {', '.join(matched[:5])}")
-        else:
-            lines.append(f"No matches for '{topic}'.")
-        lines.append("")
+        resolution = resolve_topic(conn, topic)
+        topic_row = conn.execute("SELECT id FROM topics WHERE canonical_slug = ?", (resolution.slug,)).fetchone()
+        if not topic_row:
+            return json.dumps(
+                {
+                    "cards": [],
+                    "counts": {},
+                    "omitted": {},
+                    "retrieval_guidance": {
+                        "scope": "topic",
+                        "is_truncated": False,
+                        "omitted_high_signal": {},
+                        "default_policy": "No resolved topic matched this query.",
+                        "expand_when": ["Re-run with a more specific topic string or inspect topic aliases."],
+                        "suggested_commands": [],
+                    },
+                },
+                indent=2,
+            )
+        topic_filter = "AND rc.topic_id = ?"
+        params.append(int(topic_row["id"]))
 
-    # Top weak concepts
-    weak = conn.execute(
-        "SELECT topic, concept, times_wrong, last_misconception FROM concepts WHERE status = 'unknown' ORDER BY times_wrong DESC LIMIT 5"
-    ).fetchall()
-    if weak:
-        lines.append("TOP WEAK CONCEPTS:")
-        for w in weak:
-            line = f"  - {w['topic']}: {w['concept']} (missed {w['times_wrong']}x)"
-            if w["last_misconception"]:
-                line += f' -- "{w["last_misconception"]}"'
-            lines.append(line)
-        lines.append("")
-
-    # Recent sessions
-    recent = conn.execute(
-        "SELECT session_id, started, skill, topics_json FROM sessions ORDER BY started DESC LIMIT 5"
-    ).fetchall()
-    if recent:
-        lines.append("RECENT SESSIONS:")
-        for s in recent:
-            topics_list = json.loads(s["topics_json"] or "[]")
-            topics_short = ", ".join(topics_list[:3])
-            lines.append(f"  - {s['started'][:10]} ({s['skill'] or 'session'}): {topics_short}")
-
-    return "\n".join(lines)
-
-
-# ---------------------------------------------------------------------------
-# prep -- agent-only session-start context
-# ---------------------------------------------------------------------------
-
-def prep(conn: sqlite3.Connection) -> str:
-    """Dense agent-facing context for opening a session.
-
-    Surfaces unresolved work the agent should weave into questioning
-    opportunistically when topics intersect. NEVER echoed to the user.
-    """
-    lines: list[str] = []
-    lines.append("=== SESSION PREP (agent-only context, do not echo) ===")
-    lines.append("")
-
-    open_errs = conn.execute(
-        "SELECT topic, concept, misconception, ts FROM errors "
-        "WHERE retested = 0 AND misconception != '' "
-        "ORDER BY ts ASC LIMIT 5"
-    ).fetchall()
-    if open_errs:
-        lines.append(f"OPEN ERRORS ({len(open_errs)} oldest, unretested):")
-        for r in open_errs:
-            lines.append(f"  - {r['topic']} / {r['concept']}")
-            lines.append(f'    "{r["misconception"]}" (since {r["ts"][:10]})')
-        lines.append("")
-
-    stale = conn.execute(
-        "SELECT topic, concept, last_tested FROM concepts "
-        "WHERE status = 'known' AND last_tested IS NOT NULL "
-        "AND date(last_tested) < date('now','-21 days') "
-        "ORDER BY last_tested ASC LIMIT 5"
-    ).fetchall()
-    if stale:
-        lines.append(f"STALE KNOWN ({len(stale)}, >21d unverified):")
-        for r in stale:
-            lines.append(f"  - {r['topic']} / {r['concept']} (last {r['last_tested'][:10]})")
-        lines.append("")
-
-    confusions = conn.execute(
-        "SELECT topic, concept, misconception, ts FROM errors "
-        "WHERE error_type = 'cross_contamination' AND misconception != '' "
-        "ORDER BY ts DESC LIMIT 8"
-    ).fetchall()
-    if confusions:
-        lines.append(f"RECENT CONFUSION PATTERNS ({len(confusions)} cross_contamination):")
-        for r in confusions:
-            lines.append(f'  - {r["topic"]} / {r["concept"]}: "{r["misconception"]}" ({r["ts"][:10]})')
-        lines.append("")
-
-    last = conn.execute(
-        "SELECT started, next_strategy FROM sessions "
-        "WHERE ended IS NOT NULL AND next_strategy != '' "
-        "ORDER BY started DESC LIMIT 1"
-    ).fetchone()
-    if last:
-        lines.append(f"LAST SESSION NEXT-STRATEGY ({last['started'][:10]}):")
-        lines.append(f'  "{last["next_strategy"]}"')
-        lines.append("")
-
-    if len(lines) <= 2:
-        return "No prep signals -- new memory or no open work."
-
-    lines.append("GUIDANCE: weave these into questioning when topics intersect. Do not echo this block.")
-    return "\n".join(lines)
-
-
-# ---------------------------------------------------------------------------
-# confusions -- cross-contamination pattern query
-# ---------------------------------------------------------------------------
-
-def confusions_query(conn: sqlite3.Connection, topic: str | None = None) -> str:
-    """List cross_contamination errors, optionally scoped to a topic.
-
-    Agent-facing utility for picking a teaching angle when a new topic opens
-    that historically gets confused with another.
-    """
-    if topic:
-        matched = _topic_matches(conn, topic)
-        if not matched:
-            return f"No confusion patterns for '{topic}'."
-        rows: list[sqlite3.Row] = []
-        for t in matched:
-            for r in conn.execute(
-                "SELECT topic, concept, misconception, correction, ts FROM errors "
-                "WHERE error_type = 'cross_contamination' AND misconception != '' AND topic = ? "
-                "ORDER BY ts DESC",
-                (t,),
-            ):
-                rows.append(r)
-        header = f"=== CONFUSION PATTERNS for '{topic}' ({len(rows)}) ==="
-    else:
-        rows = conn.execute(
-            "SELECT topic, concept, misconception, correction, ts FROM errors "
-            "WHERE error_type = 'cross_contamination' AND misconception != '' "
-            "ORDER BY ts DESC"
+    counts = {
+        row["card_type"]: int(row["n"])
+        for row in conn.execute(
+            f"""SELECT rc.card_type, COUNT(*) AS n
+                FROM retrieval_cards rc
+                WHERE rc.status = 'active' {topic_filter}
+                GROUP BY rc.card_type""",
+            params,
         ).fetchall()
-        header = f"=== ALL CONFUSION PATTERNS ({len(rows)}) ==="
+    }
 
-    if not rows:
-        return f"No cross_contamination errors logged{f' for {topic}' if topic else ''}."
+    select_sql = f"""SELECT rc.card_type, rc.priority, rc.summary, rc.next_action,
+                  t.canonical_slug AS topic, cs.claim_text, cs.state
+           FROM retrieval_cards rc
+           JOIN topics t ON t.id = rc.topic_id
+           LEFT JOIN claim_state cs ON cs.id = rc.claim_state_id
+           WHERE rc.status = 'active' {topic_filter}"""
+    order_sql = """ORDER BY CASE rc.priority
+               WHEN 'urgent' THEN 0
+               WHEN 'high' THEN 1
+               WHEN 'medium' THEN 2
+               ELSE 3
+             END,
+             CASE rc.card_type
+               WHEN 'must_retest' THEN 0
+               WHEN 'session_handoff' THEN 1
+               WHEN 'recent_repair' THEN 2
+               WHEN 'scaffold' THEN 3
+               ELSE 4
+             END,
+             rc.updated_ts DESC
+           LIMIT ?"""
 
-    lines = [header, ""]
-    for r in rows:
-        lines.append(f'  - {r["topic"]} / {r["concept"]} ({r["ts"][:10]})')
-        lines.append(f'    misconception: "{r["misconception"]}"')
-        if r["correction"]:
-            lines.append(f'    correction: "{r["correction"]}"')
-    return "\n".join(lines)
+    rows: list[sqlite3.Row] = []
+    if limit:
+        rows = conn.execute(
+            f"{select_sql} AND rc.card_type != 'scaffold' {order_sql}",
+            [*params, limit],
+        ).fetchall()
+        remaining = max(0, limit - len(rows))
+        allow_scaffolds = include_scaffolds and (bool(topic) or include_global_scaffolds)
+        scaffold_take = min(scaffold_limit, remaining) if allow_scaffolds else 0
+        if scaffold_take:
+            rows.extend(
+                conn.execute(
+                    f"{select_sql} AND rc.card_type = 'scaffold' {order_sql}",
+                    [*params, scaffold_take],
+                ).fetchall()
+            )
 
+    returned_counts: dict[str, int] = {}
+    for row in rows:
+        returned_counts[row["card_type"]] = returned_counts.get(row["card_type"], 0) + 1
+    omitted = {
+        card_type: max(0, count - returned_counts.get(card_type, 0))
+        for card_type, count in counts.items()
+        if count > returned_counts.get(card_type, 0)
+    }
 
-# ---------------------------------------------------------------------------
-# add-alias
-# ---------------------------------------------------------------------------
-
-def add_alias(conn: sqlite3.Connection, alias: str, canonical: str) -> str:
-    alias = alias.strip().lower()
-    canonical = canonical.strip().lower()
-    conn.execute(
-        "INSERT OR REPLACE INTO aliases (alias, canonical) VALUES (?, ?)",
-        (alias, canonical),
+    return json.dumps(
+        {
+            "cards": [_retrieval_card_payload(row) for row in rows],
+            "counts": counts,
+            "omitted": omitted,
+            "retrieval_guidance": _retrieval_guidance(
+                topic=topic,
+                limit=limit,
+                scaffold_limit=scaffold_limit,
+                counts=counts,
+                omitted=omitted,
+                include_global_scaffolds=include_global_scaffolds,
+            ),
+        },
+        indent=2,
     )
-    conn.commit()
-    return f"OK alias '{alias}' -> '{canonical}'"
 
 
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
+def status(conn: sqlite3.Connection) -> str:
+    rows = {
+        "topics": conn.execute("SELECT COUNT(*) FROM topics").fetchone()[0],
+        "concepts": conn.execute("SELECT COUNT(*) FROM concepts").fetchone()[0],
+        "exchanges": conn.execute("SELECT COUNT(*) FROM exchanges").fetchone()[0],
+        "claim_results": conn.execute("SELECT COUNT(*) FROM claim_results").fetchone()[0],
+        "claim_states": conn.execute("SELECT COUNT(*) FROM claim_state").fetchone()[0],
+        "retrieval_cards": conn.execute("SELECT COUNT(*) FROM retrieval_cards").fetchone()[0],
+        "must_retest": conn.execute("SELECT COUNT(*) FROM claim_state WHERE state IN ('missed','partially_repaired','regressed')").fetchone()[0],
+        "recent_repairs": conn.execute("SELECT COUNT(*) FROM claim_state WHERE state = 'repaired_same_session'").fetchone()[0],
+    }
+    return json.dumps(rows, indent=2)
+
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        prog="study_memory",
-        description="Lean persistent memory for study sessions.",
-    )
+    parser = argparse.ArgumentParser(description="Claim-centered study memory ledger")
     sub = parser.add_subparsers(dest="command")
 
-    # recall
-    p_recall = sub.add_parser("recall")
-    p_recall.add_argument("--topic", default=None)
-    p_recall.add_argument("--doc", default=None)
+    p_resolve = sub.add_parser("resolve-topic")
+    p_resolve.add_argument("--topic", required=True)
+    p_resolve.add_argument("--doc", default="")
 
-    # log-answer
     p_log = sub.add_parser("log-answer")
     p_log.add_argument("--session", required=True)
     p_log.add_argument("--topic", required=True)
     p_log.add_argument("--concept", required=True)
     p_log.add_argument("--question", required=True)
     p_log.add_argument("--answer", required=True)
-    p_log.add_argument("--correct", type=int, required=True, choices=[0, 1, 2])
+    p_log.add_argument("--correct", type=int, choices=[0, 1, 2], required=True)
     p_log.add_argument("--correction", default="")
     p_log.add_argument("--error-type", default="")
     p_log.add_argument("--misconception", default="")
     p_log.add_argument("--doc", default="")
     p_log.add_argument("--skill", default="")
+    p_log.add_argument("--tested-claim", default="")
+    p_log.add_argument("--learner-claim", default="")
+    p_log.add_argument("--missing-edge", default="")
+    p_log.add_argument("--corrected-rule", default="")
+    p_log.add_argument("--clinical-consequence", default="")
+    p_log.add_argument("--retest-prompt-shape", default="")
+    p_log.add_argument("--learning-operation", default="")
+    p_log.add_argument("--teaching-intent", default="")
+    p_log.add_argument("--expected-answer-edge", default="")
+    p_log.add_argument("--coverage-role", default="")
+    p_log.add_argument("--source-section", default="")
+    p_log.add_argument("--source-anchor", default="")
+    p_log.add_argument("--curriculum-unit", default="")
+    p_log.add_argument("--answer-mode", default="")
+    p_log.add_argument("--confidence-observed", default="")
 
-    # end-session
     p_end = sub.add_parser("end-session")
     p_end.add_argument("--session", required=True)
     p_end.add_argument("--summary", required=True)
     p_end.add_argument("--next-strategy", required=True)
-    p_end.add_argument("--confusions", default="[]")
+    p_end.add_argument("--stats-json", default="{}")
 
-    # status
-    p_status = sub.add_parser("status")
-    p_status.add_argument("--topic", default=None)
+    p_summary = sub.add_parser("summary")
+    p_summary.add_argument("--topic", default="")
+    p_summary.add_argument("--limit", type=int, default=8)
+    p_summary.add_argument("--scaffold-limit", type=int, default=2)
+    p_summary.add_argument("--no-scaffolds", action="store_true")
+    p_summary.add_argument("--include-global-scaffolds", action="store_true")
 
-    # prep (agent-only session start context)
-    sub.add_parser("prep")
-
-    # confusions (cross_contamination pattern query)
-    p_conf = sub.add_parser("confusions")
-    p_conf.add_argument("--topic", default=None)
-
-    # add-alias
-    p_alias = sub.add_parser("add-alias")
-    p_alias.add_argument("--alias", required=True)
-    p_alias.add_argument("--canonical", required=True)
+    sub.add_parser("status")
 
     args = parser.parse_args()
-
     if not args.command:
         parser.print_help()
         sys.exit(1)
 
     conn = _get_db()
-
     try:
-        if args.command == "recall":
-            print(recall(conn, args.topic, args.doc))
+        if args.command == "resolve-topic":
+            print(json.dumps(resolve_topic(conn, args.topic, args.doc).__dict__, indent=2))
         elif args.command == "log-answer":
-            print(log_answer(
+            exchange_id = log_answer(
                 conn,
                 session_id=args.session,
                 topic=args.topic,
@@ -894,27 +1360,43 @@ def main() -> None:
                 answer=args.answer,
                 correct=args.correct,
                 correction=args.correction,
-                error_type=getattr(args, "error_type", ""),
+                error_type=args.error_type,
                 misconception=args.misconception,
                 doc_path=args.doc,
                 skill=args.skill,
-            ))
+                tested_claim=args.tested_claim,
+                learner_claim=args.learner_claim,
+                missing_edge=args.missing_edge,
+                corrected_rule=args.corrected_rule,
+                clinical_consequence=args.clinical_consequence,
+                retest_prompt_shape=args.retest_prompt_shape,
+                learning_operation=args.learning_operation,
+                teaching_intent=args.teaching_intent,
+                expected_answer_edge=args.expected_answer_edge,
+                coverage_role=args.coverage_role,
+                source_section=args.source_section,
+                source_anchor=args.source_anchor,
+                curriculum_unit=args.curriculum_unit,
+                answer_mode=args.answer_mode,
+                confidence_observed=args.confidence_observed,
+            )
+            print(f"OK exchange_id={exchange_id}")
         elif args.command == "end-session":
-            print(end_session(
-                conn,
-                session_id=args.session,
-                summary=args.summary,
-                next_strategy=getattr(args, "next_strategy", ""),
-                confusions=args.confusions,
-            ))
+            end_session(conn, session_id=args.session, summary=args.summary, next_strategy=args.next_strategy, stats_json=args.stats_json)
+            print("OK session closed")
+        elif args.command == "summary":
+            print(
+                retrieval_summary(
+                    conn,
+                    topic=args.topic,
+                    limit=args.limit,
+                    scaffold_limit=args.scaffold_limit,
+                    include_scaffolds=not args.no_scaffolds,
+                    include_global_scaffolds=args.include_global_scaffolds,
+                )
+            )
         elif args.command == "status":
-            print(status(conn, args.topic))
-        elif args.command == "prep":
-            print(prep(conn))
-        elif args.command == "confusions":
-            print(confusions_query(conn, args.topic))
-        elif args.command == "add-alias":
-            print(add_alias(conn, args.alias, args.canonical))
+            print(status(conn))
     finally:
         conn.close()
 

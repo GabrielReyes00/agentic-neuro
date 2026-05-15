@@ -7,7 +7,7 @@ Follow `.agents/shared/commands/learning-session-contract.md`.
 ## Phase 1: Generate Material
 
 1. Infer a clean Title Case topic from the filename.
-2. Run `study_memory.py recall --topic "<topic>"` to load learner context.
+2. Run `study_memory.py summary --topic "<topic>" --limit 8 --scaffold-limit 2` to load learner context.
 3. If the source is already marked `Generation Mode: [+RAG]`, skip the RAG opt-in prompt. Otherwise ask whether to enrich with local RAG.
 4. Enumerate all chunks before extraction:
    - PPTX: slides, titles, body, notes, image descriptions.
@@ -134,10 +134,10 @@ Notify with counts only after the guard passes, then offer: start drilling, revi
 Before drilling:
 
 ```bash
-python3 src/study_memory.py recall --doc "Study Material/<Topic Title>.md" --topic "<topic>"
+python3 src/study_memory.py summary --topic "<topic>" --limit 8 --scaffold-limit 2
 ```
 
-The selected document is the curriculum. New documents start at TU-01. Returning documents prioritize previously missed concepts from this same document, then continue forward. Use recall output to identify known/gap/error concepts for this document. Prior misses from other sessions may appear only under the Requested-Document Priority rule: directly related, close confuser, safety-critical, or one brief due bridge.
+The selected document is the curriculum. New documents start at TU-01. Returning documents prioritize previously missed concepts from this same document, then continue forward. Use memory summary output to identify scaffold, must-retest, recent-repair, and handoff concepts for this document. Prior misses from other sessions may appear only under the Requested-Document Priority rule: directly related, close confuser, safety-critical, or one brief due bridge.
 
 ## Study Mode Gate
 
@@ -215,4 +215,4 @@ At section boundaries, use the compression card if it fits the source: one-breat
 
 ## Finish
 
-Run `study_memory.py end-session` with a specific `--next-strategy` for the next drill on this document. Follow the **Post-Session Integrity Verification** protocol from the shared contract. Then follow the **Anki Queue Validation and Flush** protocol — generate cards for incorrect, partial, and high-yield exchanges, then flush. Clean up `data/Sessions/` temps.
+Run `study_memory.py end-session` with a specific `--next-strategy` for the next drill on this document. Follow the **Post-Session Integrity Verification** protocol from the shared contract. Then follow the **Anki Queue Validation and Flush** protocol — generate cards for incorrect, partial, and high-yield exchanges using `.agents/shared/commands/anki-card-quality.md`, then flush. Clean up `data/Sessions/` temps.

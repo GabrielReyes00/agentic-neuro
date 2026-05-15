@@ -33,24 +33,24 @@ The reference topic bank at `Reference/Oral Boards Topic Bank.md` in the vault i
 
 When invoked without a document, compose the session from memory state.
 
-### Step 0: Status scan
+### Step 0: Global memory summary
 
 ```bash
 cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
-python3 src/study_memory.py status
+python3 src/study_memory.py summary --limit 12 --scaffold-limit 0
 ```
 
-Read the global picture: overall coverage, top weak concepts with error types and misconceptions, recent sessions with summaries.
+Read the global picture: active `must_retest` cards, session handoffs, recent repairs, and `retrieval_guidance`.
 
-### Step 1: Per-candidate recall
+### Step 1: Per-candidate summary
 
 For each candidate topic the status output surfaces (top weak concepts, recent open errors, stale-but-PGY-relevant areas, anything the learner named):
 
 ```bash
-python3 src/study_memory.py recall --topic "<candidate topic>"
+python3 src/study_memory.py summary --topic "<candidate topic>" --limit 8 --scaffold-limit 2
 ```
 
-Read each recall output per the **Agent as Memory Intelligence Layer** section of the shared contract. Note next-strategy, open errors, gaps, and recent exchanges per topic.
+Read each summary output per the **Agent as Memory Intelligence Layer** section of the shared contract. Note session handoff, active retest cards, recent repairs, and scaffold premises per topic.
 
 ### Step 2: Compose the review queue
 
@@ -90,26 +90,24 @@ Read the full vault file identified in Step 0. This is your curriculum — you c
 
 If the document contains `## Mastery Objectives`, extract them only after reading the full file. Treat them as a coverage checksum for the session plan, not as a substitute curriculum. The questions must still be grounded in the document body and traceable to its actual content.
 
-### Step 2: Recall prior context (silent)
+### Step 2: Retrieve prior memory context (silent)
 
 ```bash
 cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
-python3 src/study_memory.py recall \
-  --doc "<folder>/<slug>.md" \
-  --topic "<doc topic>"
+python3 src/study_memory.py summary --topic "<doc topic>" --limit 8 --scaffold-limit 2
 ```
 
 Follow the **Pre-Session Context Verification** protocol from the shared contract before proceeding. `SESSION_TS` is set per the shared contract at the first learner-facing question.
 
-Use the recall output to build your teaching plan per the **Agent as Memory Intelligence Layer** section of the shared contract. If this is a returning session, open with a one-sentence recap and move directly to questioning — do not re-explain known material. If this is a new topic, start at the beginning of the document.
+Use the memory summary output to build your teaching plan per the **Agent as Memory Intelligence Layer** section of the shared contract. If this is a returning session, open with a one-sentence recap and move directly to questioning — do not re-explain known material. If this is a new topic, start at the beginning of the document.
 
 **Requested-Document Priority**: The requested document is the primary curriculum. Related-topic context and prior memory should inform your question design and probe strategy, but never displace forward progress through the document's material.
 
 ### Step 3: Related-topic scouting (silent)
 
-After primary recall, identify 3-5 topics that are clinically prerequisite to, mechanistically intertwined with, or commonly confused with the study topic. Use your medical knowledge — these should be topics where a gap would undermine understanding of the primary material. For EVD management, examples: CPP physiology, hydrocephalus, ICP monitoring, CSF dynamics. For TBI management: cerebral autoregulation, herniation syndromes, ICP treatment tiers.
+After primary summary, identify 3-5 topics that are clinically prerequisite to, mechanistically intertwined with, or commonly confused with the study topic. Use your medical knowledge — these should be topics where a gap would undermine understanding of the primary material. For EVD management, examples: CPP physiology, hydrocephalus, ICP monitoring, CSF dynamics. For TBI management: cerebral autoregulation, herniation syndromes, ICP treatment tiers.
 
-Run `recall --topic "<related topic>"` for each. Read the output and note:
+Run `summary --topic "<related topic>"` for each. Read the output and note:
 
 - **Prior knowledge**: concepts the learner has confirmed — these are scaffolding for transfer questions ("You know CPP targets from our ICP work. This EVD patient's CPP is 52 — what do you do?")
 - **Prior errors or gaps**: misconceptions or weak concepts in related areas — these are high-value probe targets because a wrong belief about CPP physiology will produce wrong EVD management decisions
@@ -211,7 +209,7 @@ python3 src/study_memory.py log-answer \
 
 Correctness: `2` = correct | `1` = partial (right direction, missing key detail) | `0` = wrong or misconception
 
-Follow the Anki Card Generation protocol from the shared learning contract after each log-answer call.
+Follow the Anki Card Generation protocol from the shared learning contract after each log-answer call. Use `.agents/shared/commands/anki-card-quality.md` when drafting and validating cards.
 
 ---
 

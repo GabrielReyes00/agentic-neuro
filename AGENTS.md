@@ -7,8 +7,12 @@
 
 The canonical workflow contracts live in `.agents/shared/commands/`. Codex skills in `.agents/codex/skills/` are thin adapters that must read and follow the corresponding shared command file. If this root file conflicts with a shared command, the shared command wins for that workflow.
 
+Codex CLI slash commands are exposed through the repo-local plugin at `plugins/agentic-neuro/commands/`, registered by `.agents/plugins/marketplace.json`. The command files are thin wrappers around the shared contracts; do not duplicate workflow logic there. Codex skills are still useful for natural-language triggering, but they are not slash commands by themselves.
+
 Key shared contracts:
 - `.agents/shared/commands/learning-session-contract.md` — memory operations, Adaptive Teaching Doctrine, Anki Card Doctrine, session-end integrity, and shared teaching behavior.
+- `.agents/shared/commands/anki-card-quality.md` — short card-quality, cloze, deck taxonomy, and duplicate-judgment rules for all Anki creation/review.
+- `.agents/shared/commands/anki-deck-maintenance.md` — separate live Anki deck rewrite/reorganization workflow; Anki is ground truth and Chroma is rebuilt from Anki.
 - `.agents/shared/commands/study-review.md` — doc-anchored and memory-driven review.
 - `.agents/shared/commands/consult.md` — lecture-first clinical consult, verification, Anki, pocket-card write.
 - `.agents/shared/commands/generate-report.md` — citation-dense report generation, Mastery Objectives, report validation.
@@ -51,34 +55,37 @@ cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && <command>
 
 ## Memory Contract
 
-The long-term memory system uses `src/study_memory.py` (SQLite-backed, lean):
+The active long-term memory system is the claim-centered learner model at `data/study_memory.db`, accessed only through `src/study_memory.py`. The claim-centered memory database is the only active learner-memory store. There is no dual-write workflow.
 
-Context-pulling is mode-conditional. **Topic-anchored** sessions (user named a topic or document) use only the topic-scoped commands; **memory-driven custom review** sessions (no named topic) use `prep`.
+`study_memory.py summary` is a staged retrieval interface, not a full dump. Agents must read `counts`, `omitted`, and `retrieval_guidance`; if high-signal cards were omitted, run the suggested expansion before teaching. Expand scaffold cards only when needed for coverage mapping or transfer-question premises.
+
+Context-pulling is mode-conditional. **Topic-anchored** sessions (user named a topic or document) use only topic-scoped memory summary; **memory-driven custom review** sessions (no named topic) use global memory summary.
 
 ```bash
 # Topic-anchored session start (agent-only -- do not echo to user)
-python3 src/study_memory.py recall --topic "<topic>" [--doc "<folder>/<file>.md"]
-# Optional, only if the topic has confusion history:
-python3 src/study_memory.py confusions --topic "<topic>"
-# Do NOT run `prep` here -- global state would tempt drift off the chosen topic.
+python3 src/study_memory.py summary --topic "<topic>" --limit 8 --scaffold-limit 2
+# Do NOT run global summary here -- global state would tempt drift off the chosen topic.
 
 # Memory-driven custom review session start (no named topic, user asked
 # "what should I review" / "drill my weak spots" / similar)
-python3 src/study_memory.py prep
+python3 src/study_memory.py summary --limit 12 --scaffold-limit 0
 
 # After every Q&A — log the exchange
 python3 src/study_memory.py log-answer \
   --session "$SESSION_TS" --topic "<topic>" --concept "<concept>" \
   --question "<question>" --answer "<answer>" --correct <0|1|2> \
   [--correction "..."] [--error-type "..."] [--misconception "..."] \
-  [--doc "..."] [--skill "..."]
+  [--doc "..."] [--skill "..."] \
+  [--tested-claim "..."] [--learner-claim "..."] [--missing-edge "..."] \
+  [--corrected-rule "..."] [--clinical-consequence "..."] \
+  [--retest-prompt-shape "..."] [--learning-operation "..."]
 
 # Session end
 python3 src/study_memory.py end-session \
   --session "$SESSION_TS" --summary "..." --next-strategy "..."
 ```
 
-`prep` is the only command that surfaces unrelated topics; it must only run when the user has explicitly opted into a memory-driven custom session. Read silently; never echo; never narrate as a menu of options.
+Global memory summary is the only retrieval mode that surfaces unrelated topics; it must only run when the user has explicitly opted into a memory-driven custom session. Read silently; never echo; never narrate as a menu of options.
 
 Memory writes are allowed only when the user explicitly asks to save/capture memory or when they intentionally start a memory-enabled learning workflow such as `/study-review`, `/study-material`, or `/consult`. Outside those workflows, answer directly unless the user asks to save.
 
@@ -87,6 +94,7 @@ For active-answer memory, preserve the actual educational exchange:
 - Log every agent question plus the user's answer after evaluation.
 - Use `--correct 2` for correct with no hints, `--correct 1` for partial, and `--correct 0` for wrong/misconception.
 - For partial/wrong answers, include `--error-type`, `--misconception`, and `--correction`.
+- Add structured signal fields whenever an evaluated answer is logged so the claim-centered learner model is useful: `--tested-claim` names the cognitive target, `--learner-claim` summarizes the committed answer, `--missing-edge` names the absent discriminator/threshold/step when partial/wrong, `--corrected-rule` states the replacement rule, `--clinical-consequence` explains why it matters, and `--retest-prompt-shape` tells the next agent how to probe it. If a field is unavailable under time pressure, the memory layer derives a conservative fallback, but the agent should supply these fields whenever feasible.
 - Write a specific, actionable `--next-strategy` at session end.
 
 ## Capability Router
@@ -96,7 +104,7 @@ Default: answer clinical questions directly from model knowledge. Use tools/skil
 Always intercept:
 - Inbox/email -> `inbox-workflow`
 - "What should I study/review", "drill my weak spots", "go after my open errors", "build me a custom session", "board-style case" -> `study-review` (memory-driven mode)
-- Gaps/dashboard/ACGME readiness -> point at the live vault interfaces (`Dashboard.md`, `ACGME Readiness.md`, `ACGME Canvases/`), auto-regenerated by `src/vault_writers.py` on every `study_memory.py end-session`. Ad-hoc refresh: `python3 src/vault_writers.py`.
+- Gaps/dashboard/ACGME readiness -> use `python3 src/study_memory.py summary --limit 12 --scaffold-limit 0` for active learner state.
 - Textbook inventory -> recipe: `python3 src/lance_retriever.py list_textbooks`
 - Calendar/scheduling/events -> GCal MCP
 
@@ -108,7 +116,9 @@ Explicit invocation only:
 - Focused clinical question, ward knowledge gap, curbside consult -> `consult` (brief expert lecture + verification questions + pocket-card vault note; not encyclopedic)
 - Grand rounds, case presentation, or journal club deck -> `grand-rounds`
 
-Anki: card creation is inline in every learning skill via `anki_queue.py enqueue/check/flush` and follows the Anki Card Doctrine in `.agents/shared/commands/learning-session-contract.md`. There is no separate Anki skill.
+Anki: card creation is inline in every learning skill via `anki_queue.py enqueue/check/flush` and follows the Anki Card Doctrine in `.agents/shared/commands/learning-session-contract.md` plus the focused quality rules in `.agents/shared/commands/anki-card-quality.md`. There is no separate Anki runtime skill.
+
+Current-deck cleanup, card rewriting, taxonomy reorganization, and Chroma rebuilds use the separate `.agents/shared/commands/anki-deck-maintenance.md` workflow. Do not let Chroma suppress cards as ground truth; rebuild it from live Anki after approved deck edits.
 
 Persona-shaped sessions (intern-style firefight, oral-board staged cases, ward consult drills) run inside `study-review`'s memory-driven mode -- the agent adjusts question shape and tone based on what the learner asks for. The reference topic bank at `Reference/Oral Boards Topic Bank.md` in the vault is a curated pool for board-style case selection.
 

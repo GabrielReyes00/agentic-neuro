@@ -41,8 +41,6 @@ class CardDraft(BaseModel):
         if self.card_type == "cloze":
             if not self.cloze_text.strip() or "{{c1::" not in self.cloze_text:
                 raise ValueError("cloze card requires cloze_text containing {{c1::...}}")
-            if not self.answer_text.strip():
-                raise ValueError("cloze card requires answer_text")
             return self
 
         if not self.front.strip() or not self.back.strip():

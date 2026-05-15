@@ -1,0 +1,41 @@
+{
+  "name": "agentic-neuro",
+  "version": "0.1.0",
+  "description": "Neurosurgery learning workflows for Codex CLI",
+  "author": {
+    "name": "Gabriel Reyes"
+  },
+  "homepage": "https://github.com/GabrielReyes00/agentic-neuro",
+  "repository": "https://github.com/GabrielReyes00/agentic-neuro",
+  "license": "UNLICENSED",
+  "keywords": [
+    "neurosurgery",
+    "learning",
+    "study-review",
+    "anki",
+    "obsidian",
+    "rag"
+  ],
+  "skills": "../../.agents/codex/skills/",
+  "interface": {
+    "displayName": "Agentic Neuro",
+    "shortDescription": "Neurosurgery tutoring, reports, consults, and study workflows",
+    "longDescription": "Repo-local Codex plugin exposing the agentic-neuro shared workflow contracts as slash commands while keeping the command logic centralized in .agents/shared/commands.",
+    "developerName": "Gabriel Reyes",
+    "category": "Education",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/GabrielReyes00/agentic-neuro",
+    "privacyPolicyURL": "https://github.com/GabrielReyes00/agentic-neuro",
+    "termsOfServiceURL": "https://github.com/GabrielReyes00/agentic-neuro",
+    "defaultPrompt": [
+      "Start a study review from my weak spots",
+      "Generate a neurosurgery report",
+      "Run a focused consult"
+    ],
+    "screenshots": [],
+    "brandColor": "#1f6feb"
+  }
+}

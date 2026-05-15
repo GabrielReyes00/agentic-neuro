@@ -36,6 +36,22 @@ class AnkiNoveltyTests(unittest.TestCase):
         self.assertEqual(second_pass, [])
         self.assertFalse(decisions[0].is_novel)
 
+    def test_replace_claims_rebuilds_collection(self) -> None:
+        store = self._store()
+        first = self._claim("C001", "Temporary clipping reduces aneurysm turgor before final clip placement.")
+        second = self._claim("C002", "A new unrelated Anki claim should replace old cache contents.")
+
+        store.persist_claims([first])
+        store.replace_claims([second], {"source": "live_anki_rebuild"})
+
+        self.assertEqual(store._collection.count(), 1)
+        duplicate_first, decisions_first = store.filter_novel_claims([first], threshold=0.8)
+        duplicate_second, decisions_second = store.filter_novel_claims([second], threshold=0.8)
+        self.assertEqual(duplicate_first, [first])
+        self.assertTrue(decisions_first[0].is_novel)
+        self.assertEqual(duplicate_second, [])
+        self.assertFalse(decisions_second[0].is_novel)
+
     def _store(self) -> NoveltyStore:
         try:
             import chromadb  # type: ignore
@@ -48,8 +64,9 @@ class AnkiNoveltyTests(unittest.TestCase):
         store._client = chromadb.PersistentClient(path=tmp.name)
         store._collection = store._client.get_or_create_collection(
             name="test_claims",
-            metadata={"hnsw:space": "cosine", "schema": "anki_claim_memory_v1"},
+            metadata={"hnsw:space": "cosine", "schema": "anki_claim_memory"},
         )
+        store._collection_name = "test_claims"
 
         def fake_embed(_self: NoveltyStore, texts: list[str]) -> list[list[float]]:
             vectors: list[list[float]] = []

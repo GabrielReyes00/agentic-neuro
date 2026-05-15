@@ -13,7 +13,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 import anki_queue
 from anki_sync.schemas import CardDraft, ClaimModel
-from anki_sync.anki_client import AnkiDispatchResult
+from anki_sync.anki_client import AnkiClient, AnkiDispatchResult
+from anki_sync.novelty import NoveltyDecision
 
 
 class EnqueueTests(unittest.TestCase):
@@ -75,16 +76,17 @@ class EnqueueTests(unittest.TestCase):
         self.assertFalse(self.queue.exists())
 
     def test_enqueue_rejects_bad_cloze(self):
-        with self.assertRaises(Exception):
-            anki_queue.enqueue(
-                session="ts",
-                exchange_id=1,
-                deck="Neurosurgery::General::Test",
-                card_type="cloze",
-                cloze="No cloze markers in this text at all",
-                answer="Some answer",
-                queue_path=self.queue,
-            )
+        ok = anki_queue.enqueue(
+            session="ts",
+            exchange_id=1,
+            deck="Neurosurgery::General::Test",
+            card_type="cloze",
+            cloze="No cloze markers in this text at all",
+            answer="Some answer",
+            queue_path=self.queue,
+        )
+        self.assertFalse(ok)
+        self.assertFalse(self.queue.exists())
 
     def test_enqueue_multiple_appends(self):
         for i in range(3):
@@ -99,6 +101,115 @@ class EnqueueTests(unittest.TestCase):
             )
         entries = anki_queue._read_queue(self.queue)
         self.assertEqual(len(entries), 3)
+
+    def test_cloze_answer_is_optional(self):
+        draft = CardDraft(
+            claim_id="abc123",
+            card_type="cloze",
+            cloze_text="CPP target is {{c1::60-70}} mmHg in TBI",
+        )
+        self.assertEqual(draft.answer_text, "")
+
+    def test_enqueue_allows_related_multi_cloze(self):
+        ok = anki_queue.enqueue(
+            session="ts",
+            exchange_id=1,
+            deck="Neurosurgery::Trauma::ICP",
+            card_type="cloze",
+            cloze=(
+                "Severe TBI pressure targets: treat ICP above {{c1::22 mmHg}} "
+                "and target CPP {{c2::60-70 mmHg}}."
+            ),
+            queue_path=self.queue,
+        )
+
+        self.assertTrue(ok)
+
+    def test_enqueue_allows_feedback_prompt_for_agent_review(self):
+        ok = anki_queue.enqueue(
+            session="ts",
+            exchange_id=1,
+            deck="Neurosurgery::Vascular::EVD",
+            card_type="cloze",
+            cloze=(
+                "For flat EVD waveform unreliable ICP, the key discriminator is "
+                "{{c1::Correct interpretation}}: the displayed ICP is not trustworthy."
+            ),
+            queue_path=self.queue,
+        )
+
+        self.assertTrue(ok)
+        entries = anki_queue._read_queue(self.queue)
+        self.assertEqual(len(entries), 1)
+
+    def test_enqueue_allows_long_basic_answer_for_agent_review(self):
+        ok = anki_queue.enqueue(
+            session="ts",
+            exchange_id=1,
+            deck="Neurosurgery::General::Hypertension",
+            card_type="qa",
+            front="How should neurogenic hypertension be triaged?",
+            back=" ".join(f"word{i}" for i in range(46)),
+            queue_path=self.queue,
+        )
+
+        self.assertTrue(ok)
+        entries = anki_queue._read_queue(self.queue)
+        self.assertEqual(len(entries), 1)
+
+
+class AnkiClientFormattingTests(unittest.TestCase):
+    def test_cloze_add_note_does_not_write_back_extra(self):
+        client = AnkiClient("http://localhost:8765")
+        calls = []
+
+        def fake_invoke(action, **params):
+            calls.append((action, params))
+            if action == "addNote":
+                return 12345
+            return None
+
+        client._invoke = fake_invoke
+        result = client.add_card(
+            CardDraft(
+                claim_id="abc123",
+                card_type="cloze",
+                cloze_text="CPP target is {{c1::60-70}} mmHg in TBI",
+                answer_text="60-70 mmHg",
+            ),
+            "Neurosurgery::Trauma::ICP",
+        )
+
+        self.assertEqual(result.status, "created")
+        note = [params["note"] for action, params in calls if action == "addNote"][0]
+        self.assertEqual(note["modelName"], "Cloze")
+        self.assertEqual(set(note["fields"]), {"Text"})
+
+    def test_qa_back_is_wrapped_for_grey_styling(self):
+        client = AnkiClient("http://localhost:8765")
+        calls = []
+
+        def fake_invoke(action, **params):
+            calls.append((action, params))
+            if action == "addNote":
+                return 12346
+            return None
+
+        client._invoke = fake_invoke
+        result = client.add_card(
+            CardDraft(
+                claim_id="def456",
+                card_type="qa",
+                front="What is CPP?",
+                back="MAP minus ICP.",
+            ),
+            "Neurosurgery::Trauma::ICP",
+        )
+
+        self.assertEqual(result.status, "created")
+        note = [params["note"] for action, params in calls if action == "addNote"][0]
+        self.assertEqual(note["modelName"], "Basic")
+        self.assertEqual(note["fields"]["Back"], '<div class="neuro-agent-back">MAP minus ICP.</div>')
 
 
 class ReviewTests(unittest.TestCase):
@@ -162,38 +273,46 @@ class FlushTests(unittest.TestCase):
                 queue_path=self.queue,
             )
 
+    def _mock_no_existing_duplicates(self, MockStore):
+        mock_store = MockStore.return_value
+        mock_store.filter_novel_claims.side_effect = lambda claims, threshold: (claims, [
+            NoveltyDecision(
+                claim_id=c.claim_id,
+                claim_text=c.claim_text,
+                max_similarity=0,
+                is_novel=True,
+            )
+            for c in claims
+        ])
+        mock_store._embed.side_effect = lambda texts: [
+            [1.0, float(i)] for i, _ in enumerate(texts)
+        ]
+        return mock_store
+
     @patch.object(anki_queue, "NoveltyStore")
     @patch.object(anki_queue, "AnkiClient")
-    def test_flush_dispatches_and_dedup(self, MockClient, MockStore):
-        self._enqueue_sample()
+    def test_flush_dispatches_after_clear_duplicate_gate(self, MockClient, MockStore):
+        self._enqueue_sample(n=1)
         entries = anki_queue._read_queue(self.queue)
-        first_cid = entries[0]["claim_id"]
-        first_text = entries[0]["cloze_text"]
-
-        mock_store = MockStore.return_value
-        mock_store.filter_novel_claims.return_value = (
-            [ClaimModel(claim_id=first_cid, subject="EVD infection", verb="increases with",
-                        object="duration and manipulation", claim_text=first_text[:420])],
-            [],
-        )
+        self._mock_no_existing_duplicates(MockStore)
 
         mock_client = MockClient.return_value
         mock_client.check_connection.return_value = (True, "")
         mock_client.add_card.return_value = AnkiDispatchResult(
-            claim_id=first_cid, card_type="cloze", status="created", note_id=12345, error="",
+            claim_id="x", card_type="cloze", status="created", note_id=12345, error="",
         )
 
         result = anki_queue.flush(queue_path=self.queue)
 
-        self.assertEqual(result["created"], 1)
+        self.assertEqual(result["created"], len(entries))
+        self.assertEqual(result["duplicate_candidate_count"], 0)
+        self.assertEqual(result["duplicate_gate"], "clear")
         self.assertIn("Neurosurgery::Vascular::EVD Management", result["decks_touched"])
-        mock_store.persist_claims.assert_called_once()
         remaining = anki_queue._read_queue(self.queue)
         self.assertEqual(len(remaining), 0)
 
-    @patch.object(anki_queue, "NoveltyStore")
     @patch.object(anki_queue, "AnkiClient")
-    def test_flush_preserves_queue_on_anki_unavailable(self, MockClient, MockStore):
+    def test_flush_preserves_queue_on_anki_unavailable(self, MockClient):
         self._enqueue_sample()
 
         mock_client = MockClient.return_value
@@ -210,15 +329,7 @@ class FlushTests(unittest.TestCase):
     def test_flush_session_filter_preserves_other_sessions(self, MockClient, MockStore):
         self._enqueue_sample(session="keep-me", n=1)
         self._enqueue_sample(session="flush-me", n=1)
-
-        mock_store = MockStore.return_value
-        entries_to_flush = [e for e in anki_queue._read_queue(self.queue) if e["session_ts"] == "flush-me"]
-        mock_store.filter_novel_claims.return_value = (
-            [ClaimModel(claim_id=e["claim_id"], subject="EVD infection", verb="increases with",
-                        object="duration and manipulation", claim_text=e["cloze_text"][:420])
-             for e in entries_to_flush],
-            [],
-        )
+        self._mock_no_existing_duplicates(MockStore)
 
         mock_client = MockClient.return_value
         mock_client.check_connection.return_value = (True, "")
@@ -238,15 +349,120 @@ class FlushTests(unittest.TestCase):
 
     @patch.object(anki_queue, "NoveltyStore")
     def test_flush_dry_run(self, MockStore):
-        self._enqueue_sample()
-        mock_store = MockStore.return_value
-        mock_store.filter_novel_claims.return_value = ([], [])
+        self._enqueue_sample(n=1)
+        self._mock_no_existing_duplicates(MockStore)
 
         result = anki_queue.flush(dry_run=True, queue_path=self.queue)
 
         self.assertTrue(result.get("dry_run"))
+        self.assertEqual(result["would_dispatch"], 1)
+        remaining = anki_queue._read_queue(self.queue)
+        self.assertEqual(len(remaining), 1)
+
+    @patch.object(anki_queue, "NoveltyStore")
+    @patch.object(anki_queue, "AnkiClient")
+    def test_flush_blocks_duplicate_candidates_by_default(self, MockClient, MockStore):
+        self._enqueue_sample(n=2)
+        mock_store = self._mock_no_existing_duplicates(MockStore)
+        mock_store._embed.return_value = [[1.0, 0.0], [1.0, 0.0]]
+
+        result = anki_queue.flush(queue_path=self.queue)
+
+        self.assertEqual(result["error"], "duplicate_candidates_require_agent_review")
+        self.assertEqual(len(result["duplicate_candidates"]), 1)
+        self.assertFalse(MockClient.return_value.add_card.called)
         remaining = anki_queue._read_queue(self.queue)
         self.assertEqual(len(remaining), 2)
+
+    @patch.object(anki_queue, "NoveltyStore")
+    @patch.object(anki_queue, "AnkiClient")
+    def test_flush_allows_duplicate_candidates_with_explicit_override(self, MockClient, MockStore):
+        self._enqueue_sample(n=2)
+        mock_store = self._mock_no_existing_duplicates(MockStore)
+        mock_store._embed.return_value = [[1.0, 0.0], [1.0, 0.0]]
+
+        mock_client = MockClient.return_value
+        mock_client.check_connection.return_value = (True, "")
+        mock_client.add_card.return_value = AnkiDispatchResult(
+            claim_id="x", card_type="cloze", status="created", note_id=12345, error="",
+        )
+
+        result = anki_queue.flush(
+            queue_path=self.queue,
+            allow_duplicate_candidates=True,
+        )
+
+        self.assertEqual(result["created"], 2)
+        self.assertEqual(result["duplicate_gate"], "overridden")
+        remaining = anki_queue._read_queue(self.queue)
+        self.assertEqual(len(remaining), 0)
+
+    @patch.object(anki_queue, "NoveltyStore")
+    def test_check_reports_intra_batch_duplicate(self, MockStore):
+        anki_queue.enqueue(
+            session="ts", exchange_id=1,
+            deck="Neurosurgery::General::ICP",
+            card_type="qa",
+            front="What is cerebral perfusion pressure?",
+            back="CPP equals MAP minus ICP.",
+            queue_path=self.queue,
+        )
+        anki_queue.enqueue(
+            session="ts", exchange_id=2,
+            deck="Neurosurgery::Trauma::ICP",
+            card_type="qa",
+            front="How do you calculate CPP?",
+            back="CPP equals MAP minus ICP.",
+            queue_path=self.queue,
+        )
+
+        mock_store = MockStore.return_value
+        mock_store.filter_novel_claims.side_effect = lambda claims, threshold: (claims, [
+            NoveltyDecision(
+                claim_id=c.claim_id,
+                claim_text=c.claim_text,
+                max_similarity=0,
+                is_novel=True,
+            )
+            for c in claims
+        ])
+        mock_store._embed.return_value = [[1.0, 0.0], [1.0, 0.0]]
+
+        result = anki_queue.check(queue_path=self.queue)
+
+        self.assertEqual(len(result["duplicate_candidates"]), 1)
+        self.assertEqual(len(result["duplicates"]), 1)
+
+    @patch.object(anki_queue, "NoveltyStore")
+    def test_check_reports_quality_warnings_without_blocking(self, MockStore):
+        anki_queue.enqueue(
+            session="ts",
+            exchange_id=1,
+            deck="Neurosurgery::Vascular::EVD",
+            card_type="cloze",
+            cloze=(
+                "For flat EVD waveform unreliable ICP, the key discriminator is "
+                "{{c1::Correct interpretation}}: the displayed ICP is not trustworthy."
+            ),
+            queue_path=self.queue,
+        )
+
+        mock_store = MockStore.return_value
+        mock_store.filter_novel_claims.side_effect = lambda claims, threshold: (claims, [
+            NoveltyDecision(
+                claim_id=c.claim_id,
+                claim_text=c.claim_text,
+                max_similarity=0,
+                is_novel=True,
+            )
+            for c in claims
+        ])
+        mock_store._embed.return_value = [[1.0, 0.0]]
+
+        result = anki_queue.check(queue_path=self.queue)
+
+        self.assertEqual(result["queue_size"], 1)
+        self.assertEqual(result["quality_warnings"][0]["warnings"], ["feedback_derived_prompt"])
 
 
 if __name__ == "__main__":

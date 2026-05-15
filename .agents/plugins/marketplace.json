@@ -1,0 +1,20 @@
+{
+  "name": "agentic-neuro-marketplace",
+  "interface": {
+    "displayName": "Agentic Neuro Local Plugins"
+  },
+  "plugins": [
+    {
+      "name": "agentic-neuro",
+      "source": {
+        "source": "local",
+        "path": "./plugins/agentic-neuro"
+      },
+      "policy": {
+        "installation": "INSTALLED_BY_DEFAULT",
+        "authentication": "ON_USE"
+      },
+      "category": "Education"
+    }
+  ]
+}
