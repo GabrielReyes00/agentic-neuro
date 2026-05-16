@@ -6,14 +6,36 @@ Use this module only after expert completeness review returns `APPROVED`.
 
 Install the approved guide, run deterministic validation, and complete shared learning-system bookkeeping without altering the expert-approved substance except to fix validation failures.
 
+## Verdict Chain Gate (machine-readable enforcement)
+
+Before any write, confirm the verdict chain is complete and consistent. The finalize module **must not** advance unless every required verdict JSON exists, is well-formed, and carries an approving verdict where applicable.
+
+Required files under `data/Sessions/<Title>/verdicts/`:
+
+1. `decomposition.json` — `coverage_matrix_complete: true`.
+2. `research.json` — `minimum_floor_met: true` (or every shortfall has a recorded internal-knowledge justification). For intermediate and complex procedures, `frontier_outcomes_query_present: true` is also required; if false, the workflow must return to the research checkpoint and run at least one outcomes query without `--no-frontier` before finalization can proceed. This is a gate, not a flag.
+3. `coverage_ledger.json` — present at `data/Sessions/<Title>/coverage_ledger.json`, every required block has `status: covered` or a recorded `internal_only` justification, and no block has `review_status: gap` in the latest ledger.
+4. `map-review-cycle-<N>.json` — most recent cycle has `verdict: "MAP_APPROVED"`.
+5. `expert-review-cycle-<N>.json` — most recent cycle has `verdict: "APPROVED"`.
+6. `gap-repair-cycle-<N>.json` — present for every cycle where expert review returned `REVISION REQUIRED`. The final gap-repair cycle must not have `user_escalation_required: true` unless the user has explicitly authorized shipping with labeled gaps.
+
+Run a verdict-chain check before writing:
+
+```bash
+cd /Users/gabrielreyes/agentic-neuro && \
+ls "data/Sessions/<Title>/verdicts/" 2>/dev/null
+```
+
+If any required verdict file is missing, the workflow is incomplete. Do **not** write the real vault, memory, concepts, or Anki artifacts. Surface the missing verdict to the user and return to the appropriate checkpoint.
+
 ## Preconditions
 
-- The guide has passed `.agents/shared/commands/intraoperative-guide-review.md` with `APPROVED`.
-- The decomposition and operative knowledge-map review are complete.
+- The verdict chain above is complete.
 - Every wikilink in the guide was verified against the real vault scan.
 - The guide has no H1 and no top YAML.
 - Bottom YAML metadata is present.
 - `## Mastery Objectives` and `## Related in This Vault` are present before bottom YAML.
+- `## Pre-Scrub Mental Rehearsal` is present near the end of the guide for intermediate and complex procedures.
 
 ## Write Target
 
@@ -79,19 +101,36 @@ Before final validation, verify all wikilinks:
 
 For real runs, delete or discard temporary workflow ledgers, decomposition notes, research briefs, operative knowledge maps, expert review memos, and gap-repair memos before skill execution concludes unless Gabriel explicitly asks to preserve them. These files are workflow scaffolding, not vault artifacts.
 
+**Retain the `data/Sessions/<Title>/verdicts/` directory by default**, even on real runs, until Gabriel confirms cleanup. The verdict chain is the reproducibility audit trail. If Gabriel asks to delete it, do so explicitly; otherwise leave it in place for inspection.
+
 For dry runs or explicit debugging, preserve the dry-run guide and workflow ledger in `data/Sessions/` so output quality and agent behavior can be inspected.
+
+## Token Ledger
+
+For dry runs and workflow-calibration runs, write a compact token ledger:
+
+```text
+data/Sessions/<Title>/token_ledger.json
+```
+
+At minimum record estimated tokens (`chars/4`) for raw RAG audit files, source cards, coverage ledger, knowledge map, reviewer verdicts, final guide, downstream active context excluding raw RAG, and all artifacts including raw audit. This ledger is not a quality gate, but it makes optimization regressions visible.
 
 ## User-Facing Summary
 
 Report:
 
 - Final file path or dry-run path.
-- Source mix.
-- Number of expert review cycles.
-- Whether the workflow ledger was completed.
-- Whether decomposition and operative knowledge-map review completed.
-- Whether targeted RAG or PubMed gap repair was needed.
+- Source mix and per-domain retrieval count.
+- Source-card path and whether raw retrieval dumps were only retained for audit.
+- Coverage-ledger path and whether structured IDs/pointers were used instead of prose handoffs.
+- Whether context budgets were followed or intentionally exceeded, with the reason.
+- Procedure complexity.
+- Verdict chain summary: decomposition complete, research floor met (or justified shortfalls), map-review cycles and final verdict, expert-review cycles and final verdict, gap-repair cycles.
+- Whether targeted RAG or PubMed gap repair was needed, and which escalation rules (if any) fired.
 - Validator result.
 - Wikilinks added or reason none were added.
 - Whether vault/memory/Anki writes were performed.
-- Any intentionally omitted domains and why.
+- Coverage Matrix blocks satisfied / total.
+- Any intentionally omitted or compact-only blocks and the recorded justification.
+- Path to the verdict chain directory.
+- Token-ledger summary for dry runs or calibration runs.

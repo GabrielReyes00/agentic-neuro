@@ -19,6 +19,7 @@ import subprocess
 import sys
 import threading
 import time
+from datetime import datetime, timezone
 
 # ── Venv & working directory guard ───────────────────────────────────────────
 if __name__ == "__main__":
@@ -2100,6 +2101,163 @@ def build_scratch_context(result: dict, frontier_text: str = "",
     return context
 
 
+def _split_sentences(text: str) -> list[str]:
+    """Lightweight sentence splitter for source-card extraction."""
+    text = re.sub(r"\s+", " ", text or "").strip()
+    if not text:
+        return []
+    return [s.strip() for s in re.split(r"(?<=[.!?])\s+(?=[A-Z0-9])", text) if s.strip()]
+
+
+_OPERATIVE_SIGNAL_RE = re.compile(
+    r"\b("
+    r"indicat|contraindicat|approach|exposure|plane|retractor|longus|"
+    r"decompress|foramin|osteophyte|PLL|OPLL|graft|cage|plate|screw|"
+    r"monitor|SSEP|MEP|MAP|cuff|hemost|bleed|injur|complication|"
+    r"avoid|repair|rescue|tamponade|angiograph|dysphagia|laryngeal|"
+    r"esophag|vertebral artery|outcome|arthroplasty|pseudarthrosis|"
+    r"adjacent|hematoma|CSF|dural|fusion|alignment|kyphosis"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+_NUMBER_RE = re.compile(
+    r"(?:\b\d+(?:\.\d+)?\s*(?:%|degrees?|mm|cm|years?|months?|weeks?|days?|hours?|lbs?)\b|"
+    r"\b(?:less than|more than|greater than|fewer than|up to|approximately|around|about)\s+\d+)",
+    re.IGNORECASE,
+)
+
+
+def _compact_sentences(text: str, max_items: int = 5) -> list[str]:
+    """Select conduct-changing sentences without calling an LLM."""
+    scored: list[tuple[int, int, str]] = []
+    for idx, sent in enumerate(_split_sentences(text)):
+        if len(sent) < 45:
+            continue
+        score = 0
+        score += 3 if _OPERATIVE_SIGNAL_RE.search(sent) else 0
+        score += 2 if _NUMBER_RE.search(sent) else 0
+        score += 1 if len(sent) < 260 else 0
+        if score:
+            scored.append((score, -idx, sent[:420]))
+    scored.sort(reverse=True)
+    selected = [s for _, _, s in scored[:max_items]]
+    if selected:
+        return selected
+    return [s[:420] for s in _split_sentences(text)[:max_items]]
+
+
+def _numbers_from_text(text: str, max_items: int = 8) -> list[str]:
+    seen: set[str] = set()
+    values: list[str] = []
+    for match in _NUMBER_RE.finditer(text or ""):
+        val = match.group(0).strip()
+        key = val.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        values.append(val)
+        if len(values) >= max_items:
+            break
+    return values
+
+
+def _is_low_value_source_card(hit: dict, text: str) -> bool:
+    """Skip cards that are mostly index/reference navigation rather than content."""
+    citation = (hit.get("citation") or "").lower()
+    if " ch: index " in f" {citation} ":
+        return True
+    if " ch: r " in f" {citation} ":
+        return True
+    low_value_markers = len(re.findall(r"\b\d{2,4}-\d{2,4}\b|,\s*[123]\s*=", text or ""))
+    signal_sentences = sum(1 for s in _split_sentences(text) if _OPERATIVE_SIGNAL_RE.search(s))
+    return low_value_markers >= 8 and signal_sentences <= 2
+
+
+def build_source_cards_jsonl(
+    result: dict,
+    frontier_text: str = "",
+    coverage_blocks: Optional[list[str]] = None,
+    max_takeaways: int = 8,
+    card_prefix: str = "QCARD",
+    compact_schema: bool = True,
+) -> str:
+    """Build compact machine-readable source cards from retrieval hits.
+
+    This is deliberately extractive and conservative. The agent still reasons
+    from the cards, but it no longer needs to ingest raw RAG dumps just to make
+    the first compression pass.
+    """
+    query = result["query"]
+    rows: list[dict[str, Any]] = []
+    for idx, hit in enumerate(result.get("hits", []), 1):
+        text = hit.get("distilled_text") or hit.get("text", "")
+        text = _collapse_repeated_prefixes(text)
+        if not text or _is_reference_chunk(text):
+            continue
+        if _is_low_value_source_card(hit, text):
+            continue
+        meta = hit.get("metadata", {}) or {}
+        row = {
+            "card_id": f"{card_prefix}-{idx:02d}",
+            "citation": hit.get("citation", "uncited"),
+            "page_start": meta.get("page_start"),
+            "takeaways": [s[:260] for s in _compact_sentences(text, max_items=max_takeaways)],
+            "numbers_thresholds_effects": _numbers_from_text(text, max_items=5),
+            "raw_ref": {
+                "child_id": hit.get("child_id"),
+                "source_key": hit.get("source_key", ""),
+                "chunk_index": meta.get("chunk_index"),
+            },
+        }
+        if not compact_schema:
+            row.update({
+                "query": query,
+                "coverage_blocks": coverage_blocks or [],
+                "source_key": hit.get("source_key", ""),
+                "has_figure": bool(meta.get("has_image")),
+                "has_table": bool(meta.get("has_table")),
+                "operative_consequence": "Use for operative decision-making, risk anticipation, or rescue planning if relevant to the coverage block.",
+                "uncertainty": "Extractive card; inspect raw passage if a passage-level dispute or exact quotation matters.",
+            })
+        rows.append(row)
+
+    if frontier_text and "No external frontier notes provided" not in frontier_text:
+        row = {
+            "card_id": f"{card_prefix}-{len(rows)+1:02d}",
+            "citation": "Frontier Evidence",
+            "page_start": None,
+            "takeaways": _compact_sentences(frontier_text, max_items=max_takeaways),
+            "numbers_thresholds_effects": _numbers_from_text(frontier_text),
+            "raw_ref": {"cache": str(SESSIONS_DIR / "frontier_cache.md")},
+        }
+        if not compact_schema:
+            row.update({
+                "query": query,
+                "coverage_blocks": coverage_blocks or [],
+                "source_key": "frontier",
+                "has_figure": False,
+                "has_table": False,
+                "operative_consequence": "Use only when contemporary evidence changes selection, consent, or outcomes defense.",
+                "uncertainty": "Frontier note is extractive; verify primary article if exact practice-changing claim is disputed.",
+            })
+        rows.append(row)
+
+    header = {
+        "type": "source_card_manifest",
+        "query": query,
+        "coverage_blocks": coverage_blocks or [],
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "card_count": len(rows),
+        "format": "jsonl",
+        "schema": "compact" if compact_schema else "verbose",
+    }
+    return "\n".join([json.dumps(header, ensure_ascii=False)] + [
+        json.dumps(row, ensure_ascii=False) for row in rows
+    ]) + "\n"
+
+
 # ── High-level CLI commands ──────────────────────────────────────────────────
 
 def _run_frontier_search(query: str) -> bool:
@@ -2215,7 +2373,15 @@ def _detect_coverage_gaps(hits: list, axes: List[str]) -> List[str]:
 
 def compare(query: str, output_file: str = "",
             visual: bool = False, no_distill: bool = False,
-            no_frontier: bool = False, stdout: bool = False):
+            no_frontier: bool = False, stdout: bool = False,
+            card_json: bool = False,
+            card_output: str = "",
+            coverage_blocks: Optional[list[str]] = None,
+            max_passages: int = 0,
+            frontier_max_chars: int = 0,
+            card_prefix: str = "QCARD",
+            max_takeaways: int = 4,
+            verbose_cards: bool = False):
     """Retrieve, build context, and deliver to the agent.
 
     This is the primary entrypoint called by the agent workflow.
@@ -2326,17 +2492,48 @@ def compare(query: str, output_file: str = "",
         frontier_started_at,
         frontier_status,
     )
+    if max_passages and max_passages > 0:
+        result["hits"] = result["hits"][:max_passages]
+
+    if frontier_max_chars and frontier_max_chars > 0 and len(frontier_text) > frontier_max_chars:
+        frontier_text = (
+            frontier_text[:frontier_max_chars].rstrip()
+            + "\n\n[Frontier evidence truncated by --frontier-max-chars; inspect frontier_cache.md for full audit.]"
+        )
+
     prompt_content = build_scratch_context(result, frontier_text, visual=visual)
+    card_content = ""
+    if card_json:
+        card_content = build_source_cards_jsonl(
+            result,
+            frontier_text=frontier_text,
+            coverage_blocks=coverage_blocks or [],
+            card_prefix=card_prefix,
+            max_takeaways=max_takeaways,
+            compact_schema=not verbose_cards,
+        )
 
     n_passages = len(result["hits"])
     source_set = {h.get("source_key", "") for h in result["hits"] if h.get("source_key")}
     n_sources = len(source_set)
     ms = result["latency"]["total_ms"]
 
+    if card_output:
+        card_path = Path(card_output)
+        card_path.parent.mkdir(parents=True, exist_ok=True)
+        card_path.write_text(card_content or build_source_cards_jsonl(
+            result,
+            frontier_text=frontier_text,
+            coverage_blocks=coverage_blocks or [],
+            card_prefix=card_prefix,
+            max_takeaways=max_takeaways,
+            compact_schema=not verbose_cards,
+        ), encoding="utf-8")
+
     if stdout:
         # Deliver context directly to agent via stdout — no file intermediary.
         # Summary line goes to stderr so it doesn't pollute the context.
-        print(prompt_content)
+        print(card_content if card_json else prompt_content)
         print(f"OK {n_passages} passages | {n_sources} sources | {ms:.0f}ms",
               file=sys.stderr)
     else:
@@ -2344,6 +2541,51 @@ def compare(query: str, output_file: str = "",
         context_file.parent.mkdir(parents=True, exist_ok=True)
         context_file.write_text(prompt_content, encoding="utf-8")
         print(f"OK {n_passages} passages | {n_sources} sources | {ms:.0f}ms")
+
+
+# ── Warm-up ──────────────────────────────────────────────────────────────────
+#
+# Each fresh `compare` invocation pays ~10-15s in model load + HuggingFace
+# network checks before retrieval can begin. The `warmup` subcommand is a
+# one-shot in-process preload that confirms the HuggingFace cache is healthy
+# and prints per-stage timings — useful as a sanity check before a batch of
+# RAG queries from the same process. It does NOT spawn a daemon.
+
+def _warm_models(verbose: bool = True) -> Dict[str, float]:
+    """Preload BGE-M3, the default cross-encoder reranker, and SciSpacy NER.
+
+    Returns a per-stage timing dict. Network calls happen only if the HuggingFace
+    cache is missing or stale; set HF_HUB_OFFLINE=1 to force fully offline.
+    """
+    timings: Dict[str, float] = {}
+
+    if verbose:
+        print("[warmup] loading LanceDB table…", flush=True)
+    t0 = time.time()
+    _get_lance_table()
+    timings["lancedb_table"] = time.time() - t0
+
+    if verbose:
+        print("[warmup] loading BGE-M3 embedding model…", flush=True)
+    t0 = time.time()
+    _get_embedding_model()
+    timings["embedding_bge_m3"] = time.time() - t0
+
+    if verbose:
+        print(f"[warmup] loading cross-encoder reranker '{DEFAULT_RERANKER}'…", flush=True)
+    t0 = time.time()
+    _get_reranker(DEFAULT_RERANKER)
+    timings["reranker_cross_encoder"] = time.time() - t0
+
+    if verbose:
+        print("[warmup] loading SciSpacy NER (en_ner_bc5cdr_md)…", flush=True)
+    t0 = time.time()
+    _get_ner_nlp()
+    timings["ner_scispacy"] = time.time() - t0
+
+    if verbose:
+        print("[warmup] done. timings (s):", {k: round(v, 2) for k, v in timings.items()}, flush=True)
+    return timings
 
 
 def list_textbooks():
@@ -2391,6 +2633,22 @@ if __name__ == "__main__":
                            help="Bypass adaptive context distillation")
     p_compare.add_argument("--no-frontier", action="store_true",
                            help="Skip automatic frontier (PMC) search")
+    p_compare.add_argument("--card-json", action="store_true",
+                           help="Print/write compact JSONL source cards instead of full formatted context")
+    p_compare.add_argument("--card-output", default="",
+                           help="Optional path for JSONL source-card output")
+    p_compare.add_argument("--coverage-block", action="append", default=[],
+                           help="Coverage block label to attach to emitted source cards; repeatable")
+    p_compare.add_argument("--max-passages", type=int, default=0,
+                           help="Limit final passage/card count after retrieval and distillation")
+    p_compare.add_argument("--frontier-max-chars", type=int, default=0,
+                           help="Truncate frontier evidence in output/cards to this many characters")
+    p_compare.add_argument("--card-prefix", default="QCARD",
+                           help="Prefix for emitted source card IDs, e.g. Q1-CARD")
+    p_compare.add_argument("--max-takeaways", type=int, default=4,
+                           help="Maximum extractive takeaways per emitted source card")
+    p_compare.add_argument("--verbose-cards", action="store_true",
+                           help="Include repeated query/coverage metadata on every card row")
 
     # search (raw retrieval for debugging)
     p_search = subparsers.add_parser("search", help="Raw retrieval (debug)")
@@ -2403,13 +2661,30 @@ if __name__ == "__main__":
     # list_textbooks
     subparsers.add_parser("list_textbooks", help="Show database inventory")
 
+    # warmup: preload embedding/reranker/NER models in-process (one-shot, no daemon)
+    p_warmup = subparsers.add_parser("warmup",
+                                     help="Preload models so HuggingFace cache is verified and ready (one-shot, no daemon)")
+    p_warmup.add_argument("--quiet", action="store_true",
+                          help="Suppress per-stage logging (print final timings only)")
+
     args = parser.parse_args()
 
     if args.command == "compare":
         compare(args.query, output_file=args.output,
                 visual=args.visual, no_distill=args.no_distill,
                 no_frontier=args.no_frontier,
-                stdout=args.stdout)
+                stdout=args.stdout,
+                card_json=args.card_json,
+                card_output=args.card_output,
+                coverage_blocks=args.coverage_block,
+                max_passages=args.max_passages,
+                frontier_max_chars=args.frontier_max_chars,
+                card_prefix=args.card_prefix,
+                max_takeaways=args.max_takeaways,
+                verbose_cards=args.verbose_cards)
+
+    elif args.command == "warmup":
+        _warm_models(verbose=not args.quiet)
 
     elif args.command == "search":
         result = retrieve(args.query, reranker_key=args.reranker,

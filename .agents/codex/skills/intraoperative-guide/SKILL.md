@@ -1,6 +1,6 @@
 ---
 name: intraoperative-guide
-description: Use when Gabriel asks for /intraoperative-guide, intraoperative guide, operative guide, or the related workflow; follows the shared agent-agnostic command contract. Deep-research operative rehearsal guide with procedure decomposition, serial RAG, operative knowledge map, verified Obsidian wikilinks, expert review, gap repair, readable formatting, and Mastery Objectives.
+description: Use when Gabriel asks for /intraoperative-guide, intraoperative guide, operative guide, or the related workflow; follows the shared agent-agnostic command contract. Deep-research operative rehearsal guide with procedure decomposition, structured source-card RAG, coverage ledger, budgeted operative knowledge map, verified Obsidian wikilinks, expert review, targeted gap repair, readable formatting, and Mastery Objectives.
 ---
 
 # Intraoperative Guide
@@ -12,7 +12,7 @@ This Codex skill is a thin adapter. The source of truth is:
 When this skill triggers:
 
 1. Read `.agents/shared/commands/intraoperative-guide.md`.
-2. Treat the shared contract as a modular deep-research orchestrator. Reload its referenced decomposition, crosslink, research, operative knowledge-map, synthesis, expert review, gap-repair, and finalization modules when each checkpoint is reached.
+2. Treat the shared contract as a modular deep-research orchestrator with context-budget controls and structured artifact handoffs. Reload its referenced decomposition, crosslink, research, operative knowledge-map, synthesis, expert review, gap-repair, and finalization modules when each checkpoint is reached.
 3. Do not write a real vault guide until the operative knowledge map has been reviewed and expert completeness review approves the draft.
 4. Follow the shared contract for workflow, behavior, artifacts, and capture.
 5. Do not duplicate or reinterpret the canonical command here.

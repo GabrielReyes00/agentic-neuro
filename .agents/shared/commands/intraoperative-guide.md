@@ -8,22 +8,73 @@ Follow `.agents/shared/commands/learning-session-contract.md` for shared memory,
 
 The deterministic validator is necessary but never sufficient. A guide may pass validation and still fail this workflow if expert completeness review does not approve it as a standalone operative reference.
 
+## Depth Target: 85% Resident Mastery
+
+Every guide must contain enough material that a neurosurgery resident studying *only* this document achieves roughly **85% of the deep understanding** needed to perform and defend the procedure. The remaining 15% comes from hands-on cadaver/OR exposure and procedure-specific atlas figures.
+
+This target is operationalized by the **Coverage Matrix** built during decomposition. Every Coverage Matrix block must be addressable in the final draft. Compact treatment is acceptable when a block is genuinely simple for the procedure; silent omission is a workflow failure.
+
 ---
 
 ## Modular Workflow Authority
 
 This file is the public command contract and orchestrator. Detailed checkpoint instructions live in focused modules. Read the relevant module freshly when reaching each checkpoint so the workflow does not drift in long contexts:
 
-- `.agents/shared/commands/intraoperative-guide-decomposition.md` — procedure-specific topic decomposition, research blueprint, phase skeleton, and attending-defense questions.
-- `.agents/shared/commands/intraoperative-guide-crosslinks.md` — real Obsidian vault target, verified wikilink discovery, and related-note placement.
-- `.agents/shared/commands/intraoperative-guide-research.md` — serial RAG and source-pack extraction.
-- `.agents/shared/commands/intraoperative-guide-knowledge-map.md` — operative mental model, anatomy-risk map, failure-mode map, and map review gate.
-- `.agents/shared/commands/intraoperative-guide-synthesis.md` — draft and revision writing standards.
-- `.agents/shared/commands/intraoperative-guide-review.md` — expert semantic completeness gate.
-- `.agents/shared/commands/intraoperative-guide-gap-repair.md` — targeted repair after expert review.
-- `.agents/shared/commands/intraoperative-guide-finalize.md` — vault/dry-run write, validation, index, concepts, memory, and Anki.
+- `.agents/shared/commands/intraoperative-guide-decomposition.md` — procedure-specific topic decomposition, **Coverage Matrix**, retrieval plan, pre/intra/post-OR phase skeleton, attending-defense questions.
+- `.agents/shared/commands/intraoperative-guide-crosslinks.md` — real Obsidian vault target, verified wikilink discovery, related-note placement.
+- `.agents/shared/commands/intraoperative-guide-research.md` — serial RAG, per-domain retrieval matrix, source-pack extraction.
+- `.agents/shared/commands/intraoperative-guide-knowledge-map.md` — operative mental model, first-principle map blocks, step-rationale chains, anatomy-risk with neurophysiologic consequence, anesthesia, neuromonitoring, hemostasis, endpoint criteria, outcomes, patient modifiers, OR team choreography.
+- `.agents/shared/commands/intraoperative-guide-map-review.md` — **dedicated map-completeness reviewer subagent**, separate from the writer; required gate before synthesis.
+- `.agents/shared/commands/intraoperative-guide-synthesis.md` — draft and revision writing standards aligned to the Coverage Matrix.
+- `.agents/shared/commands/intraoperative-guide-review.md` — **dedicated expert completeness reviewer subagent**, separate from the writer; required gate before finalization.
+- `.agents/shared/commands/intraoperative-guide-gap-repair.md` — targeted repair with cycle budget and escalation ladder.
+- `.agents/shared/commands/intraoperative-guide-finalize.md` — verdict-chain enforcement, vault/dry-run write, validation, index, concepts, memory, and Anki.
+- `.agents/shared/commands/intraoperative-guide-attending-bank.md` — curated procedure-family pimping question bank used by the expert reviewer as an independent cross-check floor.
 
 Do not inline or duplicate those module instructions into wrappers. Codex, Claude, and Gemini should all enter through this file and then load modules at the checkpoints.
+
+## Mandatory Subagent Separation
+
+Two checkpoints **require** a subagent different from the writer for intermediate and complex procedures:
+
+- **Map-completeness review** (`intraoperative-guide-map-review.md`).
+- **Expert completeness review** (`intraoperative-guide-review.md`).
+
+If no subagent is available, the workflow halts and the limitation is surfaced to the user. Silent fall-back to self-review is a workflow failure for intermediate/complex procedures. Simple bedside procedures may use self-review against the same rubric, but the verdict JSON must record the justification.
+
+## Verdict Chain (machine-readable audit trail)
+
+Each checkpoint produces a verdict JSON under:
+
+```text
+data/Sessions/<Title>/verdicts/
+```
+
+Required files by the end of the workflow:
+
+- `decomposition.json`
+- `research.json`
+- `map-review-cycle-<N>.json` (most recent must be `MAP_APPROVED`)
+- `expert-review-cycle-<N>.json` (most recent must be `APPROVED`)
+- `gap-repair-cycle-<N>.json` for every cycle where expert review returned `REVISION REQUIRED`
+
+The finalize module reads this chain and refuses to write to the real vault unless the chain is complete and approving. Agent honesty is not the audit mechanism — the verdict files are. Retain the verdict directory after real runs by default; Gabriel may delete it explicitly when no longer needed.
+
+## Context Budget and Compression
+
+This workflow must not treat "deep research" as permission to keep every raw retrieval passage in the model context. Raw retrieval dumps may be retained on disk for audit, but downstream checkpoints should receive compressed artifacts unless a specific unresolved gap requires the raw text.
+
+Default context budgets for a single-procedure run:
+
+- **Research brief:** target 1,200-2,000 words. Include only conduct-changing extracts and compact source cards. Do not paste full RAG output into later prompts.
+- **Structured source layer:** `source_cards.jsonl` and `coverage_ledger.json` are canonical. A markdown research brief is optional and should be a generated debug view, not the ordinary handoff.
+- **Operative knowledge map:** prefer `knowledge_map.json` with stable block IDs and source-card pointers. Target 1,200-2,200 words equivalent for intermediate procedures and 2,200-3,800 for complex procedures. Expand only blocks that change conduct, rescue, interpretation, or attending defense.
+- **Reviewer handoffs:** give reviewers the current draft or structured map plus `coverage_ledger.json`, relevant source-card rows, and the latest compact verdict summary. Do not give every raw RAG file, every source card, or every prior verdict JSON unless the reviewer asks for a narrow item.
+- **Verdict handoff:** later stages consume a verdict summary (verdict, blocking gaps, repair paths, fresh questions, rationale) rather than full bank-question arrays. The full JSON remains on disk for audit.
+- **Attending-bank references:** verdict JSON stores stable bank question IDs, not full question text. The bank file is canonical.
+- **Gap repair:** run additional RAG/PubMed only for named blocking gaps or mandatory escalation rules. Do not run broad "make it better" retrieval after the initial research floor is met.
+
+If a procedure would exceed these budgets, prefer a compact but complete guide plus an `Unresolved or Weak Areas` entry that triggers targeted repair. Completeness is still required, but raw context volume is not a quality metric.
 
 ---
 
@@ -33,25 +84,29 @@ You are a senior neurosurgical fellow teaching operative mental rehearsal. Prior
 
 Success means the resident can:
 
-- Explain why this operation is indicated and why this approach is chosen.
+- Explain the disease, its biomechanics or pathophysiology, and how natural history forces surgery.
+- Interpret the relevant imaging and adjunct studies to decide on surgery.
+- Defend approach selection against alternatives with outcomes evidence.
 - Set up the room, patient, imaging, monitoring, equipment, and exposure plan.
-- Walk through the operation step by step with landmarks and danger zones.
+- Coordinate the anesthetic, physiologic, and neuromonitoring strategy.
+- Walk through the operation step by step with landmarks, danger zones, and **why each step occurs**.
 - Name the critical technical moments and the consequence of getting each wrong.
+- Execute a hemostasis strategy through every phase.
 - Recover from common intraoperative problems using specific bail-outs.
+- Confirm endpoint/completion criteria intraoperatively before closure.
 - Recognize early postoperative complications and connect them to the operative step that caused them.
-- Defend the guide against attending-level questions about approach selection, anatomy, complications, alternatives, and failure recovery.
+- Adapt the plan to patient-specific modifiers (host factors, anatomic variants, prior surgery).
+- Defend the guide against attending-level questions about approach selection, anatomy, complications, alternatives, outcomes, and failure recovery.
 
 ---
 
 ## Complexity Routing
 
-After resolving the procedure, classify complexity to scale the workflow without lowering standards:
+After resolving the procedure, classify complexity. Complexity scales retrieval floors and cycle budgets but never lowers the 85% depth target.
 
-- **Simple bedside or minor procedure:** EVD, lumbar drain, burr-hole subdural evacuation, basic wound washout. Usually one expert review cycle is enough if approved.
-- **Intermediate procedure:** ACDF, VP shunt, laminectomy, cranioplasty, routine tumor exposure. Requires decomposition, research, knowledge mapping, expert review, and at least one revision if the reviewer identifies blocking gaps.
-- **Complex cranial, skull base, vascular, deformity, or endoscopic procedure:** aneurysm clipping, AVM resection, far lateral/transcondylar approach, petrosectomy, bypass, endonasal skull base approach, deformity correction. Expect iterative review and gap-directed retrieval until approval.
-
-Complexity never permits superficial output. It only determines how much retrieval and iteration is usually required.
+- **Simple bedside or minor procedure:** EVD, lumbar drain, burr-hole subdural evacuation, basic wound washout. Research floor 3 queries. Maximum 2 expert review cycles. Map-review and expert-review may be self-review with recorded justification.
+- **Intermediate procedure:** ACDF, VP shunt, laminectomy, cranioplasty, routine tumor exposure. Research floor 6 queries with ≥1 frontier query. Maximum 3 expert review cycles. Map-review and expert-review subagents required.
+- **Complex cranial, skull base, vascular, deformity, or endoscopic procedure:** aneurysm clipping, AVM resection, far lateral/transcondylar, petrosectomy, bypass, endonasal skull base, deformity correction. Research floor 10 queries with ≥2 frontier queries. Maximum 5 expert review cycles with escalation-ladder rules. Map-review and expert-review subagents required.
 
 ---
 
@@ -62,6 +117,13 @@ Complexity never permits superficial output. It only determines how much retriev
 Derive a Title Case procedure title from the user's request. If the procedure is genuinely ambiguous, ask one clarifying question. Otherwise infer the likely procedure and proceed.
 
 If `Operative Guides/<Title>.md` already exists, treat the request as regeneration: overwrite the file in place, refresh `Operative Guides/INDEX.md`, and replace stale concept stubs only when needed. Do not create `_v2`, `(updated)`, or date-stamped variants.
+
+Create the verdict directory at the start of the run:
+
+```bash
+cd /Users/gabrielreyes/agentic-neuro && \
+mkdir -p "data/Sessions/<Title>/verdicts"
+```
 
 ### Step 1: Related-memory discovery (silent)
 
@@ -98,107 +160,100 @@ Identify real wikilink targets relevant to this operation. Use only verified fil
 
 Create or maintain a scratch workflow ledger outside the final guide. For dry runs or explicit debugging, place it in `data/Sessions/<Title> Workflow Ledger.md`. For real runs, keep it in session scratch space and delete it before completion unless the user asks to preserve it. The ledger is not an Obsidian guide and must not be copied into the final artifact.
 
-Record:
+The verdict JSONs under `data/Sessions/<Title>/verdicts/` are the durable audit trail; the human-readable ledger summarizes them. Record:
 
 - Procedure title and complexity.
-- Decomposition summary and attending-defense questions.
+- Decomposition summary, Coverage Matrix blocks planned, attending-defense questions.
 - Verified wikilink candidates and selected related notes.
-- Retrieval query list and source mix.
+- Retrieval query list and per-domain coverage.
 - Research limitations.
-- Knowledge-map review verdict and map gaps.
-- Expert review verdicts by cycle.
-- Blocking gaps and repair paths.
-- Targeted RAG/PubMed queries added during gap repair.
+- Map-review subagent identity, cycle verdicts, and fresh attending questions used.
+- Expert-review subagent identity, cycle verdicts, and fresh attending questions used.
+- Blocking gaps, repair paths, escalation rules triggered.
 - Final approval rationale.
 - Deterministic validator result.
 - Write targets and confirmation of dry-run versus real writes.
-
-The ledger exists to prevent silent skipping of checkpoints. If the agent cannot produce a credible ledger, the workflow should be treated as incomplete even if a guide draft exists.
+- Path to verdict directory.
 
 ### Checkpoint 1: Procedure Decomposition
 
 Read `.agents/shared/commands/intraoperative-guide-decomposition.md`.
 
-Build a procedure-specific decomposition before retrieval. This decomposition defines what the guide must learn, what source types are needed, what RAG/PubMed queries should be run, and what attending-defense questions the final guide must answer.
+Build a procedure-specific decomposition before retrieval. This decomposition produces the **Coverage Matrix** that anchors the 85% depth target, the pre/intra/post-OR phase skeleton, and the per-domain retrieval plan. It also generates the writer's attending-defense questions (the reviewers will add their own fresh questions later).
 
-The decomposition is a scratch artifact. It may be recorded in the workflow ledger, but it must not be copied into the final guide.
+Write `decomposition.json` to the verdict directory.
 
 ### Checkpoint 2: Research
 
 Read `.agents/shared/commands/intraoperative-guide-research.md`.
 
-Run serial domain-specific RAG retrieval according to the decomposition and produce a compact research brief. The research brief should extract conduct-changing operative knowledge, not full retrieval dumps.
+Run serial domain-specific RAG retrieval according to the decomposition's per-domain retrieval matrix and produce structured source cards plus a coverage ledger. Hit the complexity-tier query floor or record an internal-knowledge justification for any unfilled block.
 
 Subagents may be used for research extraction when available, especially to prevent context bloat. If a subagent is used:
 
 - Give it only the procedure, complexity, decomposition, and research module.
 - Let it run or specify serial retrieval only.
-- Require a compact research brief and exact query list.
+- Require `source_cards.jsonl`, `coverage_ledger.json`, the exact query list, and the verdict JSON. A markdown research brief is optional.
 - Do not ask multiple subagents to run heavy RAG simultaneously.
 
 If RAG retrieval fails during a real artifact request, retry conservatively. If it still fails, surface a concise warning and ask whether to proceed without RAG. Dry-run workflow tests may proceed without RAG only if clearly marked as dry runs.
+
+Write `research.json` to the verdict directory.
 
 ### Checkpoint 3: Operative Knowledge Map
 
 Read `.agents/shared/commands/intraoperative-guide-knowledge-map.md`.
 
-Build the operative knowledge map from the decomposition, research brief, and internal expert knowledge. This is the deep-research reasoning artifact that turns source material into a complete operative model.
+Build the operative knowledge map from the decomposition, `source_cards.jsonl`, `coverage_ledger.json`, and internal expert knowledge. The map must cover every Coverage Matrix block. Self-triage the map before handoff.
 
-Adversarially review the map before drafting. If the map has weak areas, repair the map with existing context, internal expert knowledge, targeted serial RAG, or PubMed/literature search. Do not draft from a weak map.
+### Checkpoint 4: Map-Completeness Review (dedicated subagent)
 
-The map is a scratch artifact. It may be recorded in the ledger while the workflow is running, but it must not appear in the final guide.
+Read `.agents/shared/commands/intraoperative-guide-map-review.md`.
 
-### Checkpoint 4: First Synthesis
+A **separate map-completeness reviewer subagent** stress-tests the map. Give the reviewer the decomposition, `coverage_ledger.json`, the structured map, relevant source-card rows, and a short verdict-chain summary; do not give raw RAG dumps by default. The reviewer surfaces ≥3 candidate gaps on cycle 1 and generates ≥3 fresh attending questions of its own. The map cannot proceed to drafting unless the reviewer writes `MAP_APPROVED`. Iterate on the map (cheap) rather than the prose (expensive).
+
+For simple procedures, self-review against this rubric is acceptable with recorded justification in the verdict.
+
+Write `map-review-cycle-<N>.json` to the verdict directory for each cycle.
+
+### Checkpoint 5: First Synthesis
 
 Read `.agents/shared/commands/intraoperative-guide-synthesis.md`.
 
-Draft the guide from the reviewed operative knowledge map, not directly from raw RAG. Do not write to the real vault yet. The draft must be coherent and source-grounded, not a stitched research log or a serialized map.
+Draft the guide from the approved operative knowledge map, not directly from raw RAG. Do not write to the real vault yet. The draft must cover every Coverage Matrix block, carry step-rationale chains in every phase, and include the consolidated Pre-Scrub Mental Rehearsal section.
 
-### Checkpoint 5: Expert Completeness Review
+### Checkpoint 6: Expert Completeness Review (dedicated subagent)
 
 Read `.agents/shared/commands/intraoperative-guide-review.md`.
 
-Run an expert semantic review before any real vault write. Prefer a subagent for this checkpoint when available because independent review is stronger than writer self-approval. The reviewer should receive:
+A **separate expert completeness reviewer subagent**, different from the writer and ideally different from the map reviewer, runs the post-draft semantic gate. Give the reviewer the draft, decomposition, approved map, compact research brief/source cards, and the latest verdict summary. The reviewer should write a full verdict JSON for audit, but return only the delta summary to the orchestrator unless a blocker requires more detail. The reviewer surfaces ≥3 candidate gaps on cycle 1 and generates ≥3 fresh attending questions of its own. Approval requires every rubric block satisfied, every Coverage Matrix block addressable, every fresh attending question answered, and the 85% depth target reached.
 
-- The current draft.
-- The procedure title and complexity.
-- The decomposition, operative knowledge map, research brief, or compact source mix.
-- The review module.
+Write `expert-review-cycle-<N>.json` to the verdict directory.
 
-The reviewer returns either `APPROVED` or `REVISION REQUIRED`. The guide cannot proceed to finalization unless expert review returns `APPROVED`. Approval should mean the guide answers the attending-defense questions generated during decomposition.
-
-### Checkpoint 6: Gap Repair Loop
+### Checkpoint 7: Gap Repair Loop
 
 If expert review returns `REVISION REQUIRED`, read `.agents/shared/commands/intraoperative-guide-gap-repair.md`.
 
-Repair each blocking gap according to the reviewer-assigned path:
+Repair each blocking gap according to the reviewer-assigned path. Apply the **escalation ladder** when a gap repeats across cycles: cycle 2→3 forces a PubMed query; cycle 3→4 (complex only) requires map revision plus map-review rerun; cycle 4→5 escalates to the user. Cycle budgets are 2 (simple), 3 (intermediate), and 5 (complex). If budget is exhausted, escalate to user — do not write a known-incomplete real guide with a disclaimer.
 
-- existing context
-- internal knowledge
-- targeted serial RAG
-- PubMed/literature search
+Write `gap-repair-cycle-<N>.json` to the verdict directory.
 
-Then reread the synthesis module, revise the draft, and return to expert review.
+For batch dry-run stress tests involving multiple procedures in one turn, explicitly label the run as a stress test in the ledger. Batch dry runs are useful for exposing workflow failure modes but should not be treated as the maximum quality expected from a real one-procedure generation.
 
-Repair may require updating the operative knowledge map before rewriting prose. If a gap reveals a missing anatomy-risk relationship, failure mode, approach-selection branch, or attending-defense answer, update the map first, then revise the guide.
-
-Repeat until expert review returns `APPROVED`, or until a genuine blocker prevents completion. Do not write a known-incomplete real guide with a disclaimer.
-
-For batch dry-run stress tests involving multiple procedures in one turn, explicitly label the run as a stress test in the ledger. Batch dry runs are useful for exposing workflow failure modes, but they should not be treated as the maximum quality expected from a real one-procedure generation.
-
-### Checkpoint 7: Finalization
+### Checkpoint 8: Finalization
 
 Read `.agents/shared/commands/intraoperative-guide-finalize.md`.
 
 Before final write, reread `.agents/shared/commands/intraoperative-guide-crosslinks.md` and verify every `[[wikilink]]` in the guide still matches a scanned vault filename.
 
-Only after expert approval:
+Finalize must:
 
-1. Write the approved guide to the real vault, or to `data/Sessions/<Title> Dry Run.md` for dry runs.
-2. Run `src/operative_guide_validator.py`.
-3. Fix deterministic validation failures and rerun.
-4. For real runs, update the index, extract concepts, log memory, and queue Anki cards when appropriate.
-5. For dry runs, do not write vault files, memory, concepts, or Anki cards.
+1. Verify the verdict chain is complete and approving. Halt if any required verdict JSON is missing or non-approving.
+2. Write the approved guide to the real vault, or to `data/Sessions/<Title> Dry Run.md` for dry runs.
+3. Run `src/operative_guide_validator.py`.
+4. Fix deterministic validation failures and rerun.
+5. For real runs, update the index, extract concepts, log memory, and queue Anki cards when appropriate.
+6. For dry runs, do not write vault files, memory, concepts, or Anki cards.
 
 Operative-guide Anki cards are a deck-routing exception to the usual domain taxonomy. Every card generated from this guide must use:
 
@@ -213,16 +268,17 @@ where `<Title>` is the operative guide filename without `.md`.
 ## Non-Negotiable Quality Principles
 
 - No arbitrary numerical quotas for operative steps, danger zones, instruments, anatomy expansions, or citations.
-- Completeness is judged by conduct-changing knowledge, not length.
-- The guide is written from a reviewed operative knowledge map, not directly from search results.
-- The expert reviewer is the semantic quality gate; the validator is only the structural guard.
-- Major maneuvers should explain purpose, landmark, danger, decision point, novice error, and recovery move.
-- Anatomy should expand into operative consequences: vascular supply, nerve function, fascial plane, venous drainage, bony limit, corridor boundary, postoperative deficit, or bail-out option.
+- Completeness is judged by Coverage Matrix block satisfaction and conduct-changing knowledge, not length.
+- The 85% resident-mastery depth target governs every block; silent omission is a workflow failure.
+- The guide is written from an approved operative knowledge map, not directly from search results.
+- Map-completeness review and expert completeness review must be performed by subagents different from the writer for intermediate/complex procedures.
+- Each operative step must carry an explicit step-rationale chain (mechanical/anatomic goal → why this technique → consequence if skipped → downstream step).
+- Anatomy must expand into operative consequences with neurophysiologic role: vascular supply, nerve function, fascial plane, venous drainage, bony limit, corridor boundary, postoperative deficit, or bail-out option.
 - Pitfalls must be mechanism-linked. "Avoid retraction" is inadequate unless the guide states what is being retracted, why it is vulnerable, what injury looks like, and what to do instead.
 - Bail-outs must be executable. "Get help" may be correct but is incomplete unless paired with what to do while help arrives.
 - Postoperative management must connect complications to the operative step that caused them.
 - Source retrieval supplements expert synthesis. Do not parrot retrieved passages or structure the guide around retrieval order.
-- Do not pad short procedures with irrelevant detail.
+- Do not pad short procedures with irrelevant detail. Compact treatment is fine when the block is genuinely simple.
 
 ---
 
@@ -247,10 +303,11 @@ where `<Title>` is the operative guide filename without `.md`.
   - `> [!danger] Bail-Out` for executable rescue plans.
   - `> [!note] Attending Question` for oral-defense prompts when a separate section would interrupt flow.
 - Use tables only for compact comparison or causality maps, such as approach selection, complication signatures, or phase-by-phase failure modes. Do not turn the whole guide into tables.
-- Mermaid flowcharts are encouraged for decision branches, but they are not a substitute for prose.
+- Mermaid flowcharts are encouraged for decision branches and causality flows when they aid rehearsal; they are not a substitute for prose and are not yet mandated.
+- Include a `## Pre-Scrub Mental Rehearsal` section near the end of the guide for intermediate and complex procedures.
 - Write like an operative reference, not a generic explanation.
 - Avoid false precision. If a step varies by attending preference or institution, say what varies and what principle remains fixed.
-- Do not include "Generation Mode," "STATUS: COMPLETE," citation registries, review memos, gap repair memos, or scaffolding commentary in the final guide.
+- Do not include "Generation Mode," "STATUS: COMPLETE," citation registries, review memos, gap repair memos, verdict JSON contents, or scaffolding commentary in the final guide.
 - Do not add Anki deck-routing metadata as a body section in the guide.
 
 ---
@@ -260,12 +317,17 @@ where `<Title>` is the operative guide filename without `.md`.
 Surface a concise summary:
 
 - File path or dry-run path.
-- Source mix.
+- Source mix and per-domain retrieval counts.
+- Source-card path and whether raw retrieval dumps were only retained for audit.
+- Whether context budgets were followed or intentionally exceeded, with the reason.
 - Procedure complexity.
-- Whether decomposition and operative knowledge-map review completed.
-- Number of expert review cycles.
-- Whether targeted RAG or PubMed gap repair was needed.
+- Whether decomposition, map-completeness review, and expert completeness review subagents were used (and which checkpoints fell back to self-review with justification).
+- Number of map-review cycles and final verdict.
+- Number of expert-review cycles and final verdict.
+- Whether targeted RAG or PubMed gap repair was needed, and which escalation rules fired.
 - Validator result.
+- Coverage Matrix blocks satisfied / total.
 - Important wikilinks added.
 - Anki card count and deck, if real cards were created.
+- Path to the verdict-chain directory.
 - Confirmation that dry runs did not write real vault, memory, or Anki artifacts when applicable.
