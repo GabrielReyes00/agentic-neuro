@@ -143,7 +143,13 @@ Atomic, glossary-level. Only create concepts useful as wikilink targets.
 
 **DB:** `data/study_memory.db` | **CLI:** `src/study_memory.py`
 
-The active memory layer is the claim-centered learner model.
+The memory layer has two surfaces:
+
+1. **Active claim-centered model** (`exchanges`, `claim_results`, `claim_state`, `retrieval_cards`) — per-claim status: "this exact claim is open / repaired / durable right now." Read via `summary --topic` `cards`. Always available.
+
+2. **Curated cross-session layer** (`memory_summaries`, `concept_relationships`) — agent-authored synthesis: "this pattern recurs across sessions" + `confused_with` graph edges with strength scores. Read via `--include-curated` returning `curated_summaries` and `graph_signals`. Written conditionally after every ~5 ended sessions via `curate-candidates` → agent payload → `apply-curation`. Governed by the Curation Doctrine in `.agents/shared/commands/learning-session-contract.md`.
+
+Skills always read both surfaces at session start (use `--include-curated`). Skills never write directly to the curated layer; that's the post-flush curation pass managed by the shared contract.
 
 #### Session Start (silent, agent-only — never echo to user)
 
@@ -153,18 +159,20 @@ Context-pulling is **mode-conditional** to prevent topic drift.
 
 ```bash
 cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
-python3 src/study_memory.py summary --topic "<topic>" --limit 8 --scaffold-limit 2
+python3 src/study_memory.py summary --topic "<topic>" --limit 8 --scaffold-limit 2 --include-curated
 ```
 
 **Do NOT run global summary in topic-anchored mode.** A user studying EVD management does not want drift to spine surgery or pediatric tumors just because errors are open in those domains. If a relevant open error lives within today's topic, `summary` will surface it; retest inline. If it lives outside today's topic, it stays invisible — that is the point.
 
+`--include-curated` is the default for all skill-driven retrieval. It adds two top-level keys (`curated_summaries`, `graph_signals`) to the JSON without changing existing `cards` semantics. Empty arrays when nothing is curated; the cross-session intelligence layer when there is.
+
 **Memory-driven custom review only** — user asked "what should I review", "drill my weak spots", "build me a custom session", "go after my open errors" with no named topic. Run global summary to compose the queue from global state:
 
 ```bash
-python3 src/study_memory.py summary --limit 12 --scaffold-limit 0
+python3 src/study_memory.py summary --limit 12 --scaffold-limit 0 --include-curated
 ```
 
-Global summary surfaces active retest cards, recent repairs, and session handoff state. Agent-only context — never echoed, never narrated as a menu.
+Global summary surfaces active retest cards, recent repairs, session handoff state, curated cross-session summaries, and graph signals. Agent-only context — never echoed, never narrated as a menu.
 
 #### After Every Q&A (silent)
 
@@ -188,8 +196,11 @@ cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
 python3 src/study_memory.py end-session \
   --session "$SESSION_TS" \
   --summary "<1-3 sentence recap>" \
-  --next-strategy "<specific directive for next session>"
+  --next-strategy "<specific directive for next session>" \
+  --json
 ```
+
+Read the JSON output silently. If `curation.recommended` is `true`, follow the Optional Curation Pass in the shared learning contract after Anki flush.
 
 The `--next-strategy` is the most important field. Write actionable:
 GOOD: "Retest hunt-hess vs mfs distinction, then advance to refractory ICP algorithm"
@@ -199,7 +210,7 @@ BAD: "Continue studying", "Review more"
 
 When the topic changes mid-session, run recall for the new topic before asking questions on it:
 ```bash
-python3 src/study_memory.py summary --topic "<new topic>" --limit 8 --scaffold-limit 2
+python3 src/study_memory.py summary --topic "<new topic>" --limit 8 --scaffold-limit 2 --include-curated
 ```
 
 #### Entry Formatting Contract
@@ -232,7 +243,7 @@ python3 src/study_memory.py summary --topic "<new topic>" --limit 8 --scaffold-l
 |---|---|
 | "inbox", "triage emails", "check my mail" | `inbox-workflow` |
 | "what should I study", "what should I review", "drill my weak spots", "go after my open errors", "build me a custom session", "board-style case" | `study-review` (memory-driven mode) |
-| "gaps", "dashboard", "ACGME readiness" | Use `python3 src/study_memory.py summary --limit 12 --scaffold-limit 0` for active learner state. |
+| "gaps", "dashboard", "ACGME readiness" | Use `python3 src/study_memory.py summary --limit 12 --scaffold-limit 0 --include-curated` for active learner state. |
 | "what books", "list textbooks", "what's loaded" | recipe: `python3 src/lance_retriever.py list_textbooks` |
 | Calendar/scheduling/events | GCal MCP tools |
 
@@ -278,18 +289,21 @@ Follow `.agents/shared/commands/study-review.md` for the full workflow and `.age
 | Anki card queue (per-session) | `data/Sessions/anki_queue.jsonl` |
 | Reports, guides, study docs, concepts, consults | Obsidian vault |
 | ACGME curriculum catalog (265 topics) | `data/acgme_curriculum.json` |
-| Learner memory interface | `python3 src/study_memory.py summary --limit 12 --scaffold-limit 0` |
+| Learner memory interface | `python3 src/study_memory.py summary --limit 12 --scaffold-limit 0 --include-curated` |
 
 ## §12 Command Reference
 
 ```bash
 # study_memory.py — active session memory (see §7d for full usage)
-summary --topic "T" --limit 8 --scaffold-limit 2                    # topic-specific retrieval
-summary --limit 12 --scaffold-limit 0                               # MEMORY-DRIVEN CUSTOM REVIEW ONLY
+summary --topic "T" --limit 8 --scaffold-limit 2 --include-curated  # topic-specific retrieval (skills always pass --include-curated)
+summary --limit 12 --scaffold-limit 0 --include-curated             # MEMORY-DRIVEN CUSTOM REVIEW ONLY
 log-answer --session "TS" --topic "T" --concept "C" --question "Q" --answer "A" --correct 0|1|2 [--correction "..."] [--error-type "..."] [--misconception "..."] [--doc "..."] [--skill "..."]
-end-session --session "TS" --summary "..." --next-strategy "..."
+end-session --session "TS" --summary "..." --next-strategy "..." --json   # --json surfaces curation.recommended for the optional post-flush curation pass
 status
 resolve-topic --topic "T" [--doc "<folder>/X.md"]
+curation-status                                                       # current rolling-session counter and last curation version
+curate-candidates [--mode compact|detailed] [--topic "T"] [--recent-sessions N] [--limit N]
+apply-curation --input path.json | --stdin                            # agent-authored summaries + confused_with edges (governed by Curation Doctrine)
 
 
 # anki_queue.py — per-session card queue (see shared contract for full workflow)

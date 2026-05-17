@@ -37,17 +37,17 @@ When invoked without a document, compose the session from memory state.
 
 ```bash
 cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
-python3 src/study_memory.py summary --limit 12 --scaffold-limit 0
+python3 src/study_memory.py summary --limit 12 --scaffold-limit 0 --include-curated
 ```
 
-Read the global picture: active `must_retest` cards, session handoffs, recent repairs, and `retrieval_guidance`.
+Read the global picture: active `must_retest` cards, session handoffs, recent repairs, curated cross-session summaries, graph signals, and `retrieval_guidance`.
 
 ### Step 1: Per-candidate summary
 
 For each candidate topic the status output surfaces (top weak concepts, recent open errors, stale-but-PGY-relevant areas, anything the learner named):
 
 ```bash
-python3 src/study_memory.py summary --topic "<candidate topic>" --limit 8 --scaffold-limit 2
+python3 src/study_memory.py summary --topic "<candidate topic>" --limit 8 --scaffold-limit 2 --include-curated
 ```
 
 Read each summary output per the **Agent as Memory Intelligence Layer** section of the shared contract. Note session handoff, active retest cards, recent repairs, and scaffold premises per topic.
@@ -94,7 +94,7 @@ If the document contains `## Mastery Objectives`, extract them only after readin
 
 ```bash
 cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
-python3 src/study_memory.py summary --topic "<doc topic>" --limit 8 --scaffold-limit 2
+python3 src/study_memory.py summary --topic "<doc topic>" --limit 8 --scaffold-limit 2 --include-curated
 ```
 
 Follow the **Pre-Session Context Verification** protocol from the shared contract before proceeding. `SESSION_TS` is set per the shared contract at the first learner-facing question.
@@ -227,8 +227,11 @@ cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
 python3 src/study_memory.py end-session \
   --session "$SESSION_TS" \
   --summary "<1-3 sentence recap>" \
-  --next-strategy "<specific directive for next session>"
+  --next-strategy "<specific directive for next session>" \
+  --json
 ```
+Read the JSON output silently. If `curation.recommended` is `true`, follow the Optional Curation Pass in the shared learning contract after Anki flush.
+
 `--next-strategy` must be actionable: name the concept, the error type, and the teaching move.
 GOOD: "Retest EVD waveform troubleshooting with a new bedside vignette — partial on previous attempt. Then advance to aSAH grading scale distinctions."
 BAD: "Continue reviewing EVD management."

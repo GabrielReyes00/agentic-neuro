@@ -37,10 +37,10 @@ If `Reports/<Title>.md` already exists, treat the request as a regeneration: ove
 
 ```bash
 cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
-python3 src/study_memory.py summary --topic "<topic>" --limit 8 --scaffold-limit 2
+python3 src/study_memory.py summary --topic "<topic>" --limit 8 --scaffold-limit 2 --include-curated
 ```
 
-The sole purpose of memory summary here is to surface existing related memory/report anchors on overlapping subject matter so the new report can reference them via wikilink rather than duplicate their coverage. Do not use summary to assess what the learner knows or to compress depth — these reports are not learner-tailored.
+The sole purpose of memory summary here is to surface existing related memory/report anchors on overlapping subject matter so the new report can reference them via wikilink rather than duplicate their coverage. `--include-curated` lets curated cross-session summaries also surface — useful for noticing if a thematic pattern (e.g., "stroke BP thresholds remain a fault line") suggests the new report should foreground that material. Do not use summary to assess what the learner knows or to compress depth — these reports are not learner-tailored.
 
 ### Step 2: Vault scan for cross-citation targets (silent)
 
@@ -174,8 +174,11 @@ python3 src/study_memory.py log-answer \
 python3 src/study_memory.py end-session \
   --session "$SESSION_TS" \
   --summary "<1-3 sentence description of what the report covers>" \
-  --next-strategy "<actionable hint for downstream review/study tools>"
+  --next-strategy "<actionable hint for downstream review/study tools>" \
+  --json
 ```
+
+Read the JSON output silently. If `curation.recommended` is `true`, follow the Optional Curation Pass in the shared learning contract.
 
 The `--next-strategy` should name what is most worth studying from this report next. Examples:
 GOOD: "Quiz on AChA cisternal subdivisions and perforator-vs-AChA-origin discrimination; oral-board defense on contemporary clipping vs coiling outcomes."

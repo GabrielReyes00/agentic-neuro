@@ -25,15 +25,17 @@ Context-pulling is **mode-conditional**. The wrong commands at the wrong time ca
 **Topic-anchored sessions** (the user named a topic, document, or clinical question — e.g., "let's review EVD management", `/consult` on hydrocephalus, `/study-material` from a file):
 
 ```bash
-python3 src/study_memory.py summary --topic "<topic>" --limit 8 --scaffold-limit 2
+python3 src/study_memory.py summary --topic "<topic>" --limit 8 --scaffold-limit 2 --include-curated
 ```
 
 This command is inherently topic-scoped. **Do NOT run global retrieval in this mode.** Open errors, stale knowledge, or next-strategy hints from unrelated topics must not influence the session. Stay on the user's chosen topic. If a prior open error happens to live within today's topic, `summary` will surface it; retest as part of the natural arc. If it lives outside today's topic, it is invisible to the agent — that is the point.
 
+`--include-curated` is the default for all skills. It adds two top-level keys (`curated_summaries`, `graph_signals`) without changing existing `cards` semantics. When the topic has no curated content yet, those keys are empty arrays at trivial cost; when it does, the curated layer is exactly the cross-session intelligence the agent needs. See **Agent as Memory Intelligence Layer** below for how to read the new fields.
+
 **Memory-driven custom review only** (the user asked "what should I study", "drill my weak spots", "build me a custom session", "go after my open errors", or a similar memory-first request with no named topic):
 
 ```bash
-python3 src/study_memory.py summary --limit 12 --scaffold-limit 0
+python3 src/study_memory.py summary --limit 12 --scaffold-limit 0 --include-curated
 ```
 
 Global `summary` surfaces high-signal active retest cards and recent session handoff state while suppressing scaffolds by default. **This is agent-only context — never echoed to the learner.** Use it to compose the review queue. This is the one mode where global state is the input. Use `--include-global-scaffolds` only if no stronger due gaps dominate and you need broad target selection.
@@ -125,8 +127,11 @@ For QA cards: `--front "<text>" --back "<text>"` instead of `--cloze`.
 python3 src/study_memory.py end-session \
   --session "$SESSION_TS" \
   --summary "<1-3 sentence recap>" \
-  --next-strategy "<specific directive for next session>"
+  --next-strategy "<specific directive for next session>" \
+  --json
 ```
+
+Always pass `--json`. The JSON output is silent agent context — read the returned `curation.recommended` flag to decide whether the Optional Curation Pass below should run. The default text output is preserved for ad-hoc CLI use but skills should always use `--json` so the curation hook is visible.
 
 ### Post-Session Integrity Verification
 
@@ -135,6 +140,63 @@ After running end-session, verify the session persisted correctly:
 1. **Exchange count**: Run `python3 src/study_memory.py status` or inspect the session rows if needed. Count how many questions you asked and the learner answered during this session. If the count is lower, some log-answer calls were missed or failed. Re-run the missing log-answer calls before proceeding.
 2. **Summary cross-check**: Run `python3 src/study_memory.py summary --topic "<topic>" --limit 8 --scaffold-limit 2` and verify the `session_handoff` card reflects the summary and next-strategy you just wrote. If it does not appear, end-session failed or topic assignment is wrong — investigate and retry.
 3. **Next-strategy quality**: Re-read the next-strategy you wrote. It must name specific concepts, error types, and teaching moves. If it reads as generic ("continue reviewing", "keep studying"), rewrite it with the specific gaps and errors from this session and re-run end-session.
+
+### Optional Curation Pass (silent, after Anki flush)
+
+The agent-curated cross-session synthesis layer runs *after* the Anki queue flush, never before. It is bookkeeping, not a teaching step.
+
+Trigger detection — run `end-session` with `--json`:
+
+```bash
+python3 src/study_memory.py end-session \
+  --session "$SESSION_TS" \
+  --summary "..." \
+  --next-strategy "..." \
+  --json
+```
+
+The JSON output includes a `curation` block. If `curation.recommended` is `false`, you are done — proceed to the Anki flush block and stop. If `curation.recommended` is `true` (the threshold of unique ended sessions since the last curation has been reached), continue the curation pass below *after* Anki flush completes.
+
+Curation steps:
+
+1. Build the compact candidate packet:
+   ```bash
+   python3 src/study_memory.py curate-candidates --mode compact --recent-sessions 5 --limit 80
+   ```
+   Use `--topic "<slug>"` to narrow when the recent sessions cluster around one topic. Use `--mode detailed` only if compact evidence is genuinely insufficient — it is the expensive mode.
+
+2. Read the packet and author an apply payload that obeys the Curation Doctrine below. Stamp the packet's `built_at_version` into the payload unchanged.
+
+3. Apply via stdin or file:
+   ```bash
+   python3 src/study_memory.py apply-curation --stdin < payload.json
+   # or
+   python3 src/study_memory.py apply-curation --input data/Sessions/curation_payload.json
+   ```
+
+4. Clean up the curation payload file from `data/Sessions/` if you wrote one.
+
+If `apply-curation` rejects the payload with a stale-version error, another session committed curation between your build and apply — rebuild candidates and retry.
+
+### Curation Doctrine
+
+The summaries and graph edges produced here are durable, cross-session memory. Hold them to a higher bar than per-session handoffs.
+
+- **Evidence floor.** Every summary must cite at least 2 `claim_result_id`s. Single-claim observations belong in `claim_state`, not curated summaries. Every relationship must cite evidence — either `claim_result_id`s, an `evidence_summary_client_id`, or both.
+
+- **Confused-with criterion.** Only assert `confused_with` between two concepts when the evidence shows cross-contamination errors between them, or repeated misses on one whose corrections name the other. Surface similarity is not enough.
+
+- **`prerequisite` is deferred.** The schema accepts `prerequisite` edges but the first implementation must not write them. Leave prerequisite reasoning to future passes.
+
+- **Prefer supersede over duplicate.** The candidate packet exposes `existing_summaries` so you can replace stale or near-duplicate synthesis. Add the prior summary's `id` to `supersede_summary_ids` rather than writing a parallel summary.
+
+- **Per-pass budget.** Cap each curation pass at roughly 5 summaries and 5 relationships. If you think more are warranted, the topic is too broad — narrow `--topic` and run a second pass instead of flooding.
+
+- **Strength is required for visibility.** Set `strength` on every relationship. The retrieval surface (`summary --include-curated`) filters `graph_signals` at `strength >= 0.6`, so a relationship with the default 0.5 is correctly persisted but invisible at recall. Use 0.6-0.7 for "evidence shows real confusion, repair will benefit", 0.8-0.9 for "this is the dominant fault line on these concepts". Set `importance_score` on summaries with the same intent — the retrieval surface orders curated summaries by importance.
+
+- **Compactness.** Summary `content` should be 1-3 sentences naming the pattern, not a recap. The pattern is what a future agent needs to recognize on the next session.
+
+- **Scope discipline.** Set exactly one of `topic_slug` or `concept_id` per summary, or neither if the synthesis is genuinely global. The schema enforces this; the doctrine reminds you that "global" should be rare.
 
 ### Anki Queue Validation and Flush (silent, after end-session)
 
@@ -170,7 +232,7 @@ The database stores facts. You supply the judgment. Every summary output and eve
 
 Interpret summary metadata through the Adaptive Teaching Doctrine below. Memory is evidence for judgment, not a rigid routing table.
 
-Use a staged agent-facing read path. First use `python3 src/study_memory.py summary --topic "<topic>"` for compact claim-state retrieval cards. Treat this as a triage layer, not a full dump. Always read `counts`, `omitted`, and `retrieval_guidance` before teaching:
+Use a staged agent-facing read path. First use `python3 src/study_memory.py summary --topic "<topic>" --include-curated` for compact claim-state retrieval cards plus the curated cross-session layer. Treat this as a triage layer, not a full dump. Always read `counts`, `omitted`, and `retrieval_guidance` before teaching:
 
 - If `retrieval_guidance.omitted_high_signal` is non-empty, run one of the suggested expansion commands before designing the session.
 - If scaffold cards were omitted, expand `--scaffold-limit` only when you need a coverage map or transfer-question premises. Scaffolds are confirmed knowledge, not primary drill targets.
@@ -181,12 +243,30 @@ The goal is not to dump every remembered sentence into the agent; it is to expos
 
 **On read — building a teaching plan from summary**:
 
-1. Read `Next strategy` first. This is the highest-signal field: a direct handoff from the previous session's agent naming exact concepts to retest, error types to target, and teaching moves to try. Open your session from it unless the learner requests otherwise.
-2. Map each `OPEN ERROR` to a question design before asking anything. The misconception text tells you what the learner believed wrong — design a question that forces confrontation with that exact belief from a new angle. Do not just revisit the same neighborhood; probe the specific fault line.
-3. For each `GAP`, consider its error_type and how many times it has been missed. If a concept has been missed multiple times, the previous teaching approach failed — use a fundamentally different one. Use your judgment about what teaching strategy best addresses the specific type of failure.
-4. `KNOWN CONCEPTS` are scaffolding, not drill targets. Use them as premises in transfer questions: "You know X — a patient now presents with Y, what changes?"
-5. `RECENT EXCHANGES` are an anti-repetition index. Never reuse the same question wording or follow the same question sequence. Use them to identify which angles have been covered so you can find uncovered ones.
-6. If summary output contains data that doesn't relate to the topic (wrong concepts, unrelated sessions), your topic string matched too broadly — investigate and re-run before proceeding.
+The retrieval JSON has three operational surfaces. Read them in this order:
+
+1. **`cards`** — per-claim_state retrieval cards (`must_retest`, `recent_repair`, `scaffold`, `session_handoff`). The triage surface: "this exact claim is open right now." Highest signal for question selection.
+   - Open from the most recent `session_handoff` `next_action`: it is the previous agent's directive naming exact concepts to retest and teaching moves to try.
+   - Map each `must_retest` card to a question design before asking anything. The card's `summary` and the linked claim's `missing_edge`/`corrected_rule` tell you the specific fault line — design a question that forces confrontation with that exact belief from a new angle.
+   - For each `must_retest`, judge its `gap_type` and how many times the concept has been missed. Repeated misses on the same concept mean the previous teaching approach failed; use a fundamentally different one.
+   - `scaffold` cards are durable knowledge — premises for transfer questions ("you know X; patient now presents with Y, what changes?"), not drill targets.
+   - `recent_repair` cards are repairs that should be retested at a new distance before they are treated as durable.
+
+2. **`curated_summaries`** — agent-authored cross-session synthesis (the curation layer). Each summary is 1-3 sentences naming a *pattern* that recurs across multiple sessions: "stroke BP thresholds are a persistent cross-contamination fault line", "EVD waveform troubleshooting recurringly skips the stopcock-first sequence". This is your strategic layer.
+   - Use them to **shape the arc of the session**, not to pick the next question. A `curated_summary` tells you "this pattern keeps coming back — design a session that confronts it from a new angle", which is different from "this claim is open right now."
+   - Read `importance_score` — higher means more durable / more dominant fault line.
+   - Read `evidence_claim_result_ids` only if you need to inspect the source evidence.
+   - When a `curated_summary` and a `must_retest` card point to the same fault line, the summary is the *why* (pattern across sessions) and the card is the *what* (specific claim now open). Use both — design the question from the card, set the difficulty/framing from the summary.
+
+3. **`graph_signals`** — adjacent concepts the agent has asserted are confused with concepts in your current `must_retest` set. Each signal is a `confused_with` neighbor with a strength score.
+   - Treat as a probe list: when you finish drilling concept A, the highest-strength `confused_with` neighbor (B) is a high-value next probe — discrimination questions on the A/B pair are exactly what closes the fault line the graph captured.
+   - Strength ≥0.6 is the visibility floor. Higher strengths (0.8-0.9) name dominant fault lines worth designing the session around.
+
+Always also read `counts`, `omitted`, and `retrieval_guidance`. If `retrieval_guidance.omitted_high_signal` is non-empty, run one of the suggested expansion commands before designing the session.
+
+If summary output contains data that doesn't relate to the topic (wrong concepts, unrelated sessions), your topic string matched too broadly — investigate and re-run before proceeding.
+
+**Invisibility rule applies to all three surfaces.** Do not echo summary content, paste curated summary text, or telegraph graph signals to the learner. "You've been confusing X and Y" is the agent's design input, not a teaching opening. The data shapes your questioning; it does not shape your narration.
 
 **On write — making each log-answer entry a complete teaching record**:
 

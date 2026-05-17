@@ -578,5 +578,522 @@ class StudyMemoryTests(unittest.TestCase):
         finally:
             conn.close()
 
+
+class CurationLayerTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.memory_path = Path(self.tmp.name) / "study_memory.db"
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def _conn(self) -> sqlite3.Connection:
+        return study_memory._get_db(self.memory_path)
+
+    _SEED_FIXTURES: list[dict[str, str]] = [
+        {
+            "concept": "norepinephrine starting dose neuro icu",
+            "tested_claim": "Norepinephrine starts at 0.05 mcg/kg/min in SAH DCI.",
+            "corrected_rule": "Begin norepinephrine at 0.05 mcg/kg/min titrated to MAP.",
+            "missing_edge": "norepinephrine unit mcg/kg/min not mcg/kg/hr",
+        },
+        {
+            "concept": "nicardipine infusion ceiling acute ich",
+            "tested_claim": "Nicardipine infusions in acute ICH ceiling at 15 mg/hr.",
+            "corrected_rule": "Cap nicardipine at 15 mg/hr; switch agent if higher needed.",
+            "missing_edge": "nicardipine maximum infusion rate 15 mg/hr",
+        },
+        {
+            "concept": "labetalol bolus dose hypertensive emergency",
+            "tested_claim": "Labetalol bolus is 10-20 mg IV for hypertensive emergency.",
+            "corrected_rule": "Push labetalol 10-20 mg IV, may repeat to 80 mg total.",
+            "missing_edge": "labetalol bolus 10-20 mg IV",
+        },
+        {
+            "concept": "clevidipine onset duration acute bp",
+            "tested_claim": "Clevidipine has 1-2 minute onset and lasts 5-15 minutes after stop.",
+            "corrected_rule": "Use clevidipine for fine titration: onset 1-2 min, half-life ~1 min.",
+            "missing_edge": "clevidipine pharmacokinetics onset half-life",
+        },
+        {
+            "concept": "hydralazine pitfall raised icp",
+            "tested_claim": "Hydralazine raises ICP via cerebral vasodilation in TBI.",
+            "corrected_rule": "Avoid hydralazine in elevated ICP; pick titratable alternatives.",
+            "missing_edge": "hydralazine cerebral vasodilator ICP risk",
+        },
+        {
+            "concept": "esmolol indication aortic dissection neuro",
+            "tested_claim": "Esmolol controls shear stress in aortic dissection with neuro injury.",
+            "corrected_rule": "Use esmolol or labetalol first in dissection: target SBP <120 and HR <60.",
+            "missing_edge": "esmolol dissection target SBP <120 HR <60",
+        },
+    ]
+
+    def _seed_session(self, conn: sqlite3.Connection, session_id: str, *, score: int = 0, fixture_idx: int | None = None) -> int:
+        idx = fixture_idx if fixture_idx is not None else (abs(hash(session_id)) % len(self._SEED_FIXTURES))
+        fx = self._SEED_FIXTURES[idx]
+        study_memory.log_answer(
+            conn,
+            session_id=session_id,
+            topic="hypertension management",
+            concept=fx["concept"],
+            question=f"Probe {session_id}: {fx['concept']}?",
+            answer="learner placeholder answer",
+            correct=score,
+            correction=fx["corrected_rule"],
+            error_type="numerical_recall" if score == 0 else "",
+            tested_claim=fx["tested_claim"],
+            corrected_rule=fx["corrected_rule"],
+            missing_edge=fx["missing_edge"],
+        )
+        return int(
+            conn.execute(
+                "SELECT id FROM claim_results WHERE created_at = (SELECT MAX(created_at) FROM claim_results)"
+            ).fetchone()[0]
+        )
+
+    def _end(self, conn: sqlite3.Connection, session_id: str) -> dict:
+        return study_memory.end_session(
+            conn,
+            session_id=session_id,
+            summary="Session recap.",
+            next_strategy="Retest the missing threshold next session.",
+        )
+
+    def test_end_session_returns_curation_status_and_counts_unique_only(self) -> None:
+        conn = self._conn()
+        try:
+            self._seed_session(conn, "session-a")
+            result_a = self._end(conn, "session-a")
+            self.assertTrue(result_a["newly_counted"])
+            self.assertEqual(result_a["curation"]["sessions_since_last_curation"], 1)
+            self.assertFalse(result_a["curation"]["recommended"])
+
+            # Re-ending the same session must not increment the counter.
+            result_a_again = self._end(conn, "session-a")
+            self.assertFalse(result_a_again["newly_counted"])
+            self.assertEqual(result_a_again["curation"]["sessions_since_last_curation"], 1)
+        finally:
+            conn.close()
+
+    def test_threshold_trips_after_five_unique_sessions(self) -> None:
+        conn = self._conn()
+        try:
+            last = None
+            for i in range(5):
+                sid = f"session-{i}"
+                self._seed_session(conn, sid, fixture_idx=i)
+                last = self._end(conn, sid)
+            assert last is not None
+            self.assertTrue(last["curation"]["recommended"])
+            self.assertEqual(last["curation"]["sessions_since_last_curation"], 5)
+        finally:
+            conn.close()
+
+    def test_curate_candidates_includes_built_at_version_and_compact_rows(self) -> None:
+        from memory_operations import build_curation_candidates
+
+        conn = self._conn()
+        try:
+            self._seed_session(conn, "session-cand-1")
+            self._end(conn, "session-cand-1")
+            packet = build_curation_candidates(conn, mode="compact")
+            self.assertIn("built_at_version", packet)
+            self.assertEqual(packet["built_at_version"], 0)
+            self.assertEqual(packet["mode"], "compact")
+            self.assertGreaterEqual(packet["token_budget_estimate"], 1)
+            for row in packet["recent_claim_results"]:
+                self.assertNotIn("raw_question", row)
+                self.assertNotIn("raw_answer", row)
+                self.assertNotIn("corrected_rule", row)
+            self.assertIn("instructions", packet)
+        finally:
+            conn.close()
+
+    def test_curate_candidates_detailed_mode_adds_corrected_rule(self) -> None:
+        from memory_operations import build_curation_candidates
+
+        conn = self._conn()
+        try:
+            self._seed_session(conn, "session-det-1")
+            self._end(conn, "session-det-1")
+            packet = build_curation_candidates(conn, mode="detailed")
+            self.assertTrue(packet["recent_claim_results"])
+            self.assertIn("corrected_rule", packet["recent_claim_results"][0])
+        finally:
+            conn.close()
+
+    def test_apply_curation_rejects_stale_version(self) -> None:
+        from memory_operations import CurationError, apply_curation_payload
+
+        conn = self._conn()
+        try:
+            cr_id_a = self._seed_session(conn, "session-stale-1", fixture_idx=0)
+            cr_id_b = self._seed_session(conn, "session-stale-2", fixture_idx=1)
+            self._end(conn, "session-stale-1")
+            self._end(conn, "session-stale-2")
+            payload = {
+                "built_at_version": 99,
+                "summaries": [
+                    {
+                        "client_id": "s1",
+                        "summary_type": "thematic",
+                        "topic_slug": "hypertension-management-neuro-emergencies",
+                        "content": "Pressor unit confusion recurs across SAH DCI vignettes.",
+                        "importance_score": 0.8,
+                        "evidence_claim_result_ids": [cr_id_a, cr_id_b],
+                    }
+                ],
+            }
+            with self.assertRaises(CurationError) as ctx:
+                apply_curation_payload(conn, payload)
+            self.assertIn("stale built_at_version", str(ctx.exception))
+        finally:
+            conn.close()
+
+    def test_apply_curation_rejects_invalid_evidence_ids(self) -> None:
+        from memory_operations import CurationError, apply_curation_payload
+
+        conn = self._conn()
+        try:
+            cr_id = self._seed_session(conn, "session-bad-evidence")
+            self._end(conn, "session-bad-evidence")
+            payload = {
+                "built_at_version": 0,
+                "summaries": [
+                    {
+                        "client_id": "s1",
+                        "summary_type": "thematic",
+                        "topic_slug": "hypertension-management-neuro-emergencies",
+                        "content": "Synthesis content.",
+                        "importance_score": 0.6,
+                        "evidence_claim_result_ids": [cr_id, 999_999],
+                    }
+                ],
+            }
+            with self.assertRaises(CurationError) as ctx:
+                apply_curation_payload(conn, payload)
+            self.assertIn("unknown claim_result_ids", str(ctx.exception))
+        finally:
+            conn.close()
+
+    def test_apply_curation_writes_evidence_joins_and_increments_version(self) -> None:
+        from memory_operations import apply_curation_payload
+
+        conn = self._conn()
+        try:
+            cr_id_a = self._seed_session(conn, "session-apply-1", fixture_idx=0)
+            cr_id_b = self._seed_session(conn, "session-apply-2", fixture_idx=1)
+            self._end(conn, "session-apply-1")
+            self._end(conn, "session-apply-2")
+            payload = {
+                "built_at_version": 0,
+                "summaries": [
+                    {
+                        "client_id": "s1",
+                        "summary_type": "thematic",
+                        "topic_slug": "hypertension-management-neuro-emergencies",
+                        "content": "Pressor unit confusion recurs.",
+                        "importance_score": 0.85,
+                        "evidence_claim_result_ids": [cr_id_a, cr_id_b],
+                    }
+                ],
+            }
+            result = apply_curation_payload(conn, payload)
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["new_version"], 1)
+            summary_id = result["summaries_created"][0]
+            joins = conn.execute(
+                "SELECT claim_result_id FROM memory_summary_evidence WHERE summary_id = ? ORDER BY claim_result_id",
+                (summary_id,),
+            ).fetchall()
+            self.assertEqual(
+                sorted(int(r["claim_result_id"]) for r in joins),
+                sorted([cr_id_a, cr_id_b]),
+            )
+            state = conn.execute("SELECT * FROM curation_state WHERE id = 1").fetchone()
+            self.assertEqual(int(state["sessions_since_last_curation"]), 0)
+            self.assertEqual(int(state["last_curation_version"]), 1)
+        finally:
+            conn.close()
+
+    def test_supersede_marks_old_summary_superseded(self) -> None:
+        from memory_operations import apply_curation_payload
+
+        conn = self._conn()
+        try:
+            cr_id_a = self._seed_session(conn, "session-supersede-1", fixture_idx=0)
+            cr_id_b = self._seed_session(conn, "session-supersede-2", fixture_idx=1)
+            self._end(conn, "session-supersede-1")
+            self._end(conn, "session-supersede-2")
+            first = apply_curation_payload(
+                conn,
+                {
+                    "built_at_version": 0,
+                    "summaries": [
+                        {
+                            "client_id": "s1",
+                            "summary_type": "thematic",
+                            "topic_slug": "hypertension-management-neuro-emergencies",
+                            "content": "Old synthesis.",
+                            "importance_score": 0.7,
+                            "evidence_claim_result_ids": [cr_id_a, cr_id_b],
+                        }
+                    ],
+                },
+            )
+            old_id = first["summaries_created"][0]
+            second = apply_curation_payload(
+                conn,
+                {
+                    "built_at_version": 1,
+                    "summaries": [
+                        {
+                            "client_id": "s2",
+                            "summary_type": "thematic",
+                            "topic_slug": "hypertension-management-neuro-emergencies",
+                            "content": "Updated synthesis.",
+                            "importance_score": 0.8,
+                            "evidence_claim_result_ids": [cr_id_a, cr_id_b],
+                        }
+                    ],
+                    "supersede_summary_ids": [old_id],
+                },
+            )
+            self.assertIn(old_id, second["superseded"])
+            status_old = conn.execute("SELECT status FROM memory_summaries WHERE id = ?", (old_id,)).fetchone()
+            self.assertEqual(status_old["status"], "superseded")
+        finally:
+            conn.close()
+
+    def test_invalid_relation_type_rejected(self) -> None:
+        from memory_operations import CurationError, apply_curation_payload
+
+        conn = self._conn()
+        try:
+            cr_id_a = self._seed_session(conn, "session-rel-bad-1", fixture_idx=0)
+            cr_id_b = self._seed_session(conn, "session-rel-bad-2", fixture_idx=1)
+            self._end(conn, "session-rel-bad-1")
+            self._end(conn, "session-rel-bad-2")
+            concept_ids = [int(r["concept_id"]) for r in conn.execute("SELECT DISTINCT concept_id FROM claim_results").fetchall()]
+            payload = {
+                "built_at_version": 0,
+                "relationships": [
+                    {
+                        "source_concept_id": concept_ids[0],
+                        "target_concept_id": concept_ids[1],
+                        "relation_type": "related_by_topic",
+                        "strength": 0.7,
+                        "evidence_claim_result_ids": [cr_id_a],
+                    }
+                ],
+            }
+            with self.assertRaises(CurationError) as ctx:
+                apply_curation_payload(conn, payload)
+            self.assertIn("relation_type", str(ctx.exception))
+        finally:
+            conn.close()
+
+    def test_self_edge_rejected(self) -> None:
+        from memory_operations import CurationError, apply_curation_payload
+
+        conn = self._conn()
+        try:
+            cr_id = self._seed_session(conn, "session-self-edge")
+            self._end(conn, "session-self-edge")
+            concept_id = int(conn.execute("SELECT concept_id FROM claim_results LIMIT 1").fetchone()["concept_id"])
+            payload = {
+                "built_at_version": 0,
+                "relationships": [
+                    {
+                        "source_concept_id": concept_id,
+                        "target_concept_id": concept_id,
+                        "relation_type": "confused_with",
+                        "strength": 0.7,
+                        "evidence_claim_result_ids": [cr_id],
+                    }
+                ],
+            }
+            with self.assertRaises(CurationError) as ctx:
+                apply_curation_payload(conn, payload)
+            self.assertIn("self-edge", str(ctx.exception))
+        finally:
+            conn.close()
+
+    def test_single_evidence_summary_rejected(self) -> None:
+        from memory_operations import CurationError, apply_curation_payload
+
+        conn = self._conn()
+        try:
+            cr_id = self._seed_session(conn, "session-evidence-floor")
+            self._end(conn, "session-evidence-floor")
+            payload = {
+                "built_at_version": 0,
+                "summaries": [
+                    {
+                        "client_id": "s1",
+                        "summary_type": "thematic",
+                        "topic_slug": "hypertension-management-neuro-emergencies",
+                        "content": "Solo claim summary.",
+                        "importance_score": 0.5,
+                        "evidence_claim_result_ids": [cr_id],
+                    }
+                ],
+            }
+            with self.assertRaises(CurationError) as ctx:
+                apply_curation_payload(conn, payload)
+            self.assertIn("evidence floor", str(ctx.exception))
+        finally:
+            conn.close()
+
+    def test_summary_include_curated_returns_curated_block(self) -> None:
+        from memory_operations import apply_curation_payload
+
+        conn = self._conn()
+        try:
+            cr_id_a = self._seed_session(conn, "session-incl-1", fixture_idx=0)
+            cr_id_b = self._seed_session(conn, "session-incl-2", fixture_idx=1)
+            self._end(conn, "session-incl-1")
+            self._end(conn, "session-incl-2")
+            apply_curation_payload(
+                conn,
+                {
+                    "built_at_version": 0,
+                    "summaries": [
+                        {
+                            "client_id": "s1",
+                            "summary_type": "thematic",
+                            "topic_slug": "hypertension-management-neuro-emergencies",
+                            "content": "Cross-session pressor pattern.",
+                            "importance_score": 0.9,
+                            "evidence_claim_result_ids": [cr_id_a, cr_id_b],
+                        }
+                    ],
+                },
+            )
+            raw = study_memory.retrieval_summary(
+                conn,
+                topic="hypertension management",
+                limit=8,
+                include_curated=True,
+            )
+            payload = json.loads(raw)
+            self.assertIn("curated_summaries", payload)
+            self.assertIn("graph_signals", payload)
+            self.assertEqual(len(payload["curated_summaries"]), 1)
+            self.assertEqual(payload["curated_summaries"][0]["summary_type"], "thematic")
+        finally:
+            conn.close()
+
+    def test_concept_scoped_summary_does_not_leak_into_other_topic_retrieval(self) -> None:
+        from memory_operations import apply_curation_payload
+
+        conn = self._conn()
+        try:
+            cr_id_a = self._seed_session(conn, "session-leak-a", fixture_idx=0)
+            cr_id_b = self._seed_session(conn, "session-leak-b", fixture_idx=1)
+            self._end(conn, "session-leak-a")
+            self._end(conn, "session-leak-b")
+            concept_id = int(conn.execute("SELECT concept_id FROM claim_results LIMIT 1").fetchone()["concept_id"])
+            apply_curation_payload(
+                conn,
+                {
+                    "built_at_version": 0,
+                    "summaries": [
+                        {
+                            "client_id": "concept_only",
+                            "summary_type": "proficiency_map",
+                            "concept_id": concept_id,
+                            "content": "Concept-scoped synthesis attached only to this concept.",
+                            "importance_score": 0.7,
+                            "evidence_claim_result_ids": [cr_id_a, cr_id_b],
+                        }
+                    ],
+                },
+            )
+            raw = study_memory.retrieval_summary(
+                conn,
+                topic="tbi management",
+                limit=4,
+                include_curated=True,
+            )
+            payload = json.loads(raw)
+            self.assertEqual(
+                payload["curated_summaries"],
+                [],
+                f"concept-scoped summary leaked into unrelated topic retrieval: {payload['curated_summaries']!r}",
+            )
+        finally:
+            conn.close()
+
+    def test_default_summary_output_unchanged_when_curated_flag_absent(self) -> None:
+        conn = self._conn()
+        try:
+            self._seed_session(conn, "session-default-summary")
+            self._end(conn, "session-default-summary")
+            raw = study_memory.retrieval_summary(
+                conn,
+                topic="hypertension management",
+                limit=8,
+            )
+            payload = json.loads(raw)
+            self.assertNotIn("curated_summaries", payload)
+            self.assertNotIn("graph_signals", payload)
+        finally:
+            conn.close()
+
+    def test_graph_signal_emitted_for_confused_with_above_floor(self) -> None:
+        from memory_operations import apply_curation_payload
+
+        conn = self._conn()
+        try:
+            cr_id_a = self._seed_session(conn, "session-graph-1", fixture_idx=0)
+            cr_id_b = self._seed_session(conn, "session-graph-2", fixture_idx=1)
+            self._end(conn, "session-graph-1")
+            self._end(conn, "session-graph-2")
+            rows = conn.execute("SELECT DISTINCT concept_id FROM claim_results ORDER BY concept_id").fetchall()
+            concept_ids = [int(r["concept_id"]) for r in rows]
+            self.assertGreaterEqual(len(concept_ids), 2)
+            apply_curation_payload(
+                conn,
+                {
+                    "built_at_version": 0,
+                    "summaries": [
+                        {
+                            "client_id": "s1",
+                            "summary_type": "thematic",
+                            "topic_slug": "hypertension-management-neuro-emergencies",
+                            "content": "Cross-confusion observed.",
+                            "importance_score": 0.9,
+                            "evidence_claim_result_ids": [cr_id_a, cr_id_b],
+                        }
+                    ],
+                    "relationships": [
+                        {
+                            "source_concept_id": concept_ids[0],
+                            "target_concept_id": concept_ids[1],
+                            "relation_type": "confused_with",
+                            "strength": 0.8,
+                            "evidence_summary_client_id": "s1",
+                            "evidence_claim_result_ids": [cr_id_a, cr_id_b],
+                        }
+                    ],
+                },
+            )
+            raw = study_memory.retrieval_summary(
+                conn,
+                topic="hypertension management",
+                limit=8,
+                include_curated=True,
+            )
+            payload = json.loads(raw)
+            self.assertTrue(
+                any(g["relation_type"] == "confused_with" for g in payload["graph_signals"]),
+                f"expected at least one confused_with graph signal, got {payload['graph_signals']!r}",
+            )
+        finally:
+            conn.close()
+
+
 if __name__ == "__main__":
     unittest.main()

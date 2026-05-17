@@ -22,6 +22,16 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from memory_operations import (
+    CurationError,
+    apply_curation_payload,
+    build_curation_candidates,
+    curated_summaries_for_summary,
+    curation_status,
+    graph_signals_for_summary,
+    mark_session_counted,
+)
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
 DB_PATH = DATA_DIR / "study_memory.db"
@@ -209,6 +219,80 @@ CREATE TABLE IF NOT EXISTS retrieval_cards (
 CREATE INDEX IF NOT EXISTS idx_memory_retrieval_topic ON retrieval_cards(topic_id);
 CREATE INDEX IF NOT EXISTS idx_memory_retrieval_priority ON retrieval_cards(priority);
 CREATE INDEX IF NOT EXISTS idx_memory_retrieval_status ON retrieval_cards(status);
+
+CREATE TABLE IF NOT EXISTS curation_state (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    sessions_since_last_curation INTEGER NOT NULL DEFAULT 0,
+    last_curation_ts TEXT NOT NULL DEFAULT '',
+    last_curation_version INTEGER NOT NULL DEFAULT 0
+);
+
+INSERT OR IGNORE INTO curation_state (id) VALUES (1);
+
+CREATE TABLE IF NOT EXISTS curation_counted_sessions (
+    session_id TEXT PRIMARY KEY,
+    counted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(session_id) REFERENCES sessions(session_id)
+);
+
+CREATE TABLE IF NOT EXISTS memory_summaries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_id TEXT NOT NULL DEFAULT '',
+    summary_type TEXT NOT NULL CHECK(summary_type IN ('thematic', 'proficiency_map')),
+    topic_id INTEGER,
+    concept_id INTEGER,
+    content TEXT NOT NULL,
+    importance_score REAL NOT NULL DEFAULT 0.5 CHECK(importance_score >= 0 AND importance_score <= 1),
+    generated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    version INTEGER NOT NULL DEFAULT 1,
+    status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'superseded', 'deprecated')),
+    CHECK (
+        (topic_id IS NOT NULL AND concept_id IS NULL) OR
+        (topic_id IS NULL AND concept_id IS NOT NULL) OR
+        (topic_id IS NULL AND concept_id IS NULL)
+    ),
+    FOREIGN KEY(topic_id) REFERENCES topics(id),
+    FOREIGN KEY(concept_id) REFERENCES concepts(id)
+);
+CREATE INDEX IF NOT EXISTS idx_memory_summaries_status ON memory_summaries(status);
+CREATE INDEX IF NOT EXISTS idx_memory_summaries_topic ON memory_summaries(topic_id);
+CREATE INDEX IF NOT EXISTS idx_memory_summaries_concept ON memory_summaries(concept_id);
+CREATE INDEX IF NOT EXISTS idx_memory_summaries_importance ON memory_summaries(importance_score DESC);
+
+CREATE TABLE IF NOT EXISTS memory_summary_evidence (
+    summary_id INTEGER NOT NULL,
+    claim_result_id INTEGER NOT NULL,
+    PRIMARY KEY(summary_id, claim_result_id),
+    FOREIGN KEY(summary_id) REFERENCES memory_summaries(id),
+    FOREIGN KEY(claim_result_id) REFERENCES claim_results(id)
+);
+
+CREATE TABLE IF NOT EXISTS concept_relationships (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_concept_id INTEGER NOT NULL,
+    target_concept_id INTEGER NOT NULL,
+    relation_type TEXT NOT NULL CHECK(relation_type IN ('confused_with', 'prerequisite')),
+    strength REAL NOT NULL DEFAULT 0.5 CHECK(strength >= 0 AND strength <= 1),
+    evidence_summary_id INTEGER,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CHECK(source_concept_id != target_concept_id),
+    UNIQUE(source_concept_id, target_concept_id, relation_type),
+    FOREIGN KEY(source_concept_id) REFERENCES concepts(id),
+    FOREIGN KEY(target_concept_id) REFERENCES concepts(id),
+    FOREIGN KEY(evidence_summary_id) REFERENCES memory_summaries(id)
+);
+CREATE INDEX IF NOT EXISTS idx_concept_relationships_source ON concept_relationships(source_concept_id);
+CREATE INDEX IF NOT EXISTS idx_concept_relationships_target ON concept_relationships(target_concept_id);
+CREATE INDEX IF NOT EXISTS idx_concept_relationships_type ON concept_relationships(relation_type);
+
+CREATE TABLE IF NOT EXISTS concept_relationship_evidence (
+    relationship_id INTEGER NOT NULL,
+    claim_result_id INTEGER NOT NULL,
+    PRIMARY KEY(relationship_id, claim_result_id),
+    FOREIGN KEY(relationship_id) REFERENCES concept_relationships(id),
+    FOREIGN KEY(claim_result_id) REFERENCES claim_results(id)
+);
 """
 
 
@@ -1034,7 +1118,7 @@ def log_exchange_claims(
     return exchange_id
 
 
-def end_session(conn: sqlite3.Connection, *, session_id: str, summary: str, next_strategy: str, ended: str | None = None, stats_json: str = "{}") -> None:
+def end_session(conn: sqlite3.Connection, *, session_id: str, summary: str, next_strategy: str, ended: str | None = None, stats_json: str = "{}") -> dict[str, object]:
     now = ended or datetime.now(timezone.utc).isoformat()
     conn.execute(
         """INSERT OR IGNORE INTO sessions
@@ -1049,7 +1133,15 @@ def end_session(conn: sqlite3.Connection, *, session_id: str, summary: str, next
     topic_row = conn.execute("SELECT primary_topic_id FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
     if topic_row and topic_row["primary_topic_id"]:
         _upsert_session_card(conn, int(topic_row["primary_topic_id"]), session_id, summary, next_strategy, now)
+    newly_counted = mark_session_counted(conn, session_id, now)
     conn.commit()
+    status_payload = curation_status(conn)
+    return {
+        "ok": True,
+        "session_id": session_id,
+        "newly_counted": newly_counted,
+        "curation": status_payload,
+    }
 
 
 def _upsert_session_card(conn: sqlite3.Connection, topic_id: int, session_id: str, summary: str, next_strategy: str, now: str) -> None:
@@ -1171,33 +1263,37 @@ def retrieval_summary(
     scaffold_limit: int = 2,
     include_scaffolds: bool = True,
     include_global_scaffolds: bool = False,
+    include_curated: bool = False,
 ) -> str:
     limit = max(0, limit)
     scaffold_limit = max(0, scaffold_limit)
     topic_filter = ""
     params: list[str | int] = []
+    resolved_topic_id: int | None = None
     if topic:
         resolution = resolve_topic(conn, topic)
         topic_row = conn.execute("SELECT id FROM topics WHERE canonical_slug = ?", (resolution.slug,)).fetchone()
         if not topic_row:
-            return json.dumps(
-                {
-                    "cards": [],
-                    "counts": {},
-                    "omitted": {},
-                    "retrieval_guidance": {
-                        "scope": "topic",
-                        "is_truncated": False,
-                        "omitted_high_signal": {},
-                        "default_policy": "No resolved topic matched this query.",
-                        "expand_when": ["Re-run with a more specific topic string or inspect topic aliases."],
-                        "suggested_commands": [],
-                    },
+            base: dict[str, object] = {
+                "cards": [],
+                "counts": {},
+                "omitted": {},
+                "retrieval_guidance": {
+                    "scope": "topic",
+                    "is_truncated": False,
+                    "omitted_high_signal": {},
+                    "default_policy": "No resolved topic matched this query.",
+                    "expand_when": ["Re-run with a more specific topic string or inspect topic aliases."],
+                    "suggested_commands": [],
                 },
-                indent=2,
-            )
+            }
+            if include_curated:
+                base["curated_summaries"] = []
+                base["graph_signals"] = []
+            return json.dumps(base, indent=2)
+        resolved_topic_id = int(topic_row["id"])
         topic_filter = "AND rc.topic_id = ?"
-        params.append(int(topic_row["id"]))
+        params.append(resolved_topic_id)
 
     counts = {
         row["card_type"]: int(row["n"])
@@ -1211,6 +1307,7 @@ def retrieval_summary(
     }
 
     select_sql = f"""SELECT rc.card_type, rc.priority, rc.summary, rc.next_action,
+                  rc.claim_state_id,
                   t.canonical_slug AS topic, cs.claim_text, cs.state
            FROM retrieval_cards rc
            JOIN topics t ON t.id = rc.topic_id
@@ -1258,22 +1355,43 @@ def retrieval_summary(
         if count > returned_counts.get(card_type, 0)
     }
 
-    return json.dumps(
-        {
-            "cards": [_retrieval_card_payload(row) for row in rows],
-            "counts": counts,
-            "omitted": omitted,
-            "retrieval_guidance": _retrieval_guidance(
-                topic=topic,
-                limit=limit,
-                scaffold_limit=scaffold_limit,
-                counts=counts,
-                omitted=omitted,
-                include_global_scaffolds=include_global_scaffolds,
-            ),
-        },
-        indent=2,
-    )
+    payload: dict[str, object] = {
+        "cards": [_retrieval_card_payload(row) for row in rows],
+        "counts": counts,
+        "omitted": omitted,
+        "retrieval_guidance": _retrieval_guidance(
+            topic=topic,
+            limit=limit,
+            scaffold_limit=scaffold_limit,
+            counts=counts,
+            omitted=omitted,
+            include_global_scaffolds=include_global_scaffolds,
+        ),
+    }
+
+    if include_curated:
+        curated_limit = max(4, limit)
+        payload["curated_summaries"] = curated_summaries_for_summary(
+            conn,
+            topic_id=resolved_topic_id,
+            limit=curated_limit,
+        )
+        must_retest_concept_ids: list[int] = []
+        for row in rows:
+            if row["card_type"] != "must_retest" or row["claim_state_id"] is None:
+                continue
+            concept_row = conn.execute(
+                "SELECT concept_id FROM claim_state WHERE id = ?",
+                (int(row["claim_state_id"]),),
+            ).fetchone()
+            if concept_row and concept_row["concept_id"] is not None:
+                must_retest_concept_ids.append(int(concept_row["concept_id"]))
+        payload["graph_signals"] = graph_signals_for_summary(
+            conn,
+            must_retest_concept_ids=must_retest_concept_ids,
+        )
+
+    return json.dumps(payload, indent=2)
 
 
 def status(conn: sqlite3.Connection) -> str:
@@ -1331,6 +1449,7 @@ def main() -> None:
     p_end.add_argument("--summary", required=True)
     p_end.add_argument("--next-strategy", required=True)
     p_end.add_argument("--stats-json", default="{}")
+    p_end.add_argument("--json", dest="as_json", action="store_true")
 
     p_summary = sub.add_parser("summary")
     p_summary.add_argument("--topic", default="")
@@ -1338,8 +1457,21 @@ def main() -> None:
     p_summary.add_argument("--scaffold-limit", type=int, default=2)
     p_summary.add_argument("--no-scaffolds", action="store_true")
     p_summary.add_argument("--include-global-scaffolds", action="store_true")
+    p_summary.add_argument("--include-curated", action="store_true")
 
     sub.add_parser("status")
+    sub.add_parser("curation-status")
+
+    p_candidates = sub.add_parser("curate-candidates")
+    p_candidates.add_argument("--mode", choices=["compact", "detailed"], default="compact")
+    p_candidates.add_argument("--topic", default="")
+    p_candidates.add_argument("--recent-sessions", type=int, default=5)
+    p_candidates.add_argument("--limit", type=int, default=80)
+
+    p_apply = sub.add_parser("apply-curation")
+    p_apply_src = p_apply.add_mutually_exclusive_group(required=True)
+    p_apply_src.add_argument("--input", dest="input_path", default=None, help="Path to apply payload JSON file")
+    p_apply_src.add_argument("--stdin", action="store_true", help="Read apply payload from stdin")
 
     args = parser.parse_args()
     if not args.command:
@@ -1382,8 +1514,11 @@ def main() -> None:
             )
             print(f"OK exchange_id={exchange_id}")
         elif args.command == "end-session":
-            end_session(conn, session_id=args.session, summary=args.summary, next_strategy=args.next_strategy, stats_json=args.stats_json)
-            print("OK session closed")
+            result = end_session(conn, session_id=args.session, summary=args.summary, next_strategy=args.next_strategy, stats_json=args.stats_json)
+            if args.as_json:
+                print(json.dumps(result, indent=2))
+            else:
+                print("OK session closed")
         elif args.command == "summary":
             print(
                 retrieval_summary(
@@ -1393,10 +1528,42 @@ def main() -> None:
                     scaffold_limit=args.scaffold_limit,
                     include_scaffolds=not args.no_scaffolds,
                     include_global_scaffolds=args.include_global_scaffolds,
+                    include_curated=args.include_curated,
                 )
             )
         elif args.command == "status":
             print(status(conn))
+        elif args.command == "curation-status":
+            print(json.dumps(curation_status(conn), indent=2))
+        elif args.command == "curate-candidates":
+            try:
+                packet = build_curation_candidates(
+                    conn,
+                    mode=args.mode,
+                    topic=args.topic,
+                    recent_sessions=args.recent_sessions,
+                    limit=args.limit,
+                )
+            except CurationError as exc:
+                print(json.dumps({"ok": False, "error": str(exc)}, indent=2), file=sys.stderr)
+                sys.exit(2)
+            print(json.dumps(packet, indent=2))
+        elif args.command == "apply-curation":
+            if args.stdin:
+                raw = sys.stdin.read()
+            else:
+                raw = Path(args.input_path).read_text()
+            try:
+                payload = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                print(json.dumps({"ok": False, "error": f"invalid JSON: {exc}"}, indent=2), file=sys.stderr)
+                sys.exit(2)
+            try:
+                result = apply_curation_payload(conn, payload)
+            except CurationError as exc:
+                print(json.dumps({"ok": False, "error": str(exc)}, indent=2), file=sys.stderr)
+                sys.exit(2)
+            print(json.dumps(result, indent=2))
     finally:
         conn.close()
 

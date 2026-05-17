@@ -61,14 +61,16 @@ The active long-term memory system is the claim-centered learner model at `data/
 
 Context-pulling is mode-conditional. **Topic-anchored** sessions (user named a topic or document) use only topic-scoped memory summary; **memory-driven custom review** sessions (no named topic) use global memory summary.
 
+Skills always pass `--include-curated` at session start. The flag adds two top-level keys (`curated_summaries`, `graph_signals`) — agent-authored cross-session synthesis and `confused_with` graph edges — without changing existing `cards` semantics. Empty arrays when nothing is curated.
+
 ```bash
 # Topic-anchored session start (agent-only -- do not echo to user)
-python3 src/study_memory.py summary --topic "<topic>" --limit 8 --scaffold-limit 2
+python3 src/study_memory.py summary --topic "<topic>" --limit 8 --scaffold-limit 2 --include-curated
 # Do NOT run global summary here -- global state would tempt drift off the chosen topic.
 
 # Memory-driven custom review session start (no named topic, user asked
 # "what should I review" / "drill my weak spots" / similar)
-python3 src/study_memory.py summary --limit 12 --scaffold-limit 0
+python3 src/study_memory.py summary --limit 12 --scaffold-limit 0 --include-curated
 
 # After every Q&A — log the exchange
 python3 src/study_memory.py log-answer \
@@ -80,9 +82,9 @@ python3 src/study_memory.py log-answer \
   [--corrected-rule "..."] [--clinical-consequence "..."] \
   [--retest-prompt-shape "..."] [--learning-operation "..."]
 
-# Session end
+# Session end (always pass --json so the curation hook is visible)
 python3 src/study_memory.py end-session \
-  --session "$SESSION_TS" --summary "..." --next-strategy "..."
+  --session "$SESSION_TS" --summary "..." --next-strategy "..." --json
 ```
 
 Global memory summary is the only retrieval mode that surfaces unrelated topics; it must only run when the user has explicitly opted into a memory-driven custom session. Read silently; never echo; never narrate as a menu of options.
@@ -104,7 +106,7 @@ Default: answer clinical questions directly from model knowledge. Use tools/skil
 Always intercept:
 - Inbox/email -> `inbox-workflow`
 - "What should I study/review", "drill my weak spots", "go after my open errors", "build me a custom session", "board-style case" -> `study-review` (memory-driven mode)
-- Gaps/dashboard/ACGME readiness -> use `python3 src/study_memory.py summary --limit 12 --scaffold-limit 0` for active learner state.
+- Gaps/dashboard/ACGME readiness -> use `python3 src/study_memory.py summary --limit 12 --scaffold-limit 0 --include-curated` for active learner state.
 - Textbook inventory -> recipe: `python3 src/lance_retriever.py list_textbooks`
 - Calendar/scheduling/events -> GCal MCP
 

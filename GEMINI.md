@@ -121,18 +121,20 @@ Context-pulling is **mode-conditional** to prevent topic drift.
 
 ```bash
 cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
-python3 src/study_memory.py summary --topic "<topic>" --limit 8 --scaffold-limit 2
+python3 src/study_memory.py summary --topic "<topic>" --limit 8 --scaffold-limit 2 --include-curated
 ```
 
 **Do NOT run global summary in topic-anchored mode.** A user studying EVD management does not want drift to spine surgery or pediatric tumors because errors are open there. If a relevant open error lives within today's topic, `summary` surfaces it; retest inline. Otherwise it stays invisible -- that is the point.
 
+`--include-curated` is the default for all skill-driven retrieval. It adds two top-level keys (`curated_summaries`, `graph_signals`) -- agent-authored cross-session synthesis and `confused_with` graph edges -- without changing existing `cards` semantics. Empty arrays when nothing is curated.
+
 **Memory-driven custom review only** -- user asked "what should I review", "drill my weak spots", "build me a custom session" with no named topic. Run global summary:
 
 ```bash
-python3 src/study_memory.py summary --limit 12 --scaffold-limit 0
+python3 src/study_memory.py summary --limit 12 --scaffold-limit 0 --include-curated
 ```
 
-Global summary surfaces active retest cards, recent repairs, and session handoff state. Agent-only context -- never echoed, never narrated as a menu.
+Global summary surfaces active retest cards, recent repairs, session handoff state, curated cross-session summaries, and graph signals. Agent-only context -- never echoed, never narrated as a menu.
 
 ### After Every Q&A (silent)
 
@@ -177,8 +179,11 @@ cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
 python3 src/study_memory.py end-session \
   --session "$SESSION_TS" \
   --summary "<1-3 sentence recap>" \
-  --next-strategy "<specific directive for next session>"
+  --next-strategy "<specific directive for next session>" \
+  --json
 ```
+
+Read the JSON output silently. If `curation.recommended` is `true`, follow the Optional Curation Pass in the shared learning contract.
 
 The `--next-strategy` is the most important field. Write actionable:
 GOOD: "Retest hunt-hess vs mfs distinction, then advance to refractory ICP algorithm"
@@ -188,7 +193,7 @@ BAD: "Continue studying", "Review more"
 
 When the topic changes mid-session, run recall for the new topic before asking questions on it:
 ```bash
-python3 src/study_memory.py summary --topic "<new topic>" --limit 8 --scaffold-limit 2
+python3 src/study_memory.py summary --topic "<new topic>" --limit 8 --scaffold-limit 2 --include-curated
 ```
 
 ### Entry Formatting Contract
@@ -231,7 +236,7 @@ Default: answer directly from model knowledge. Skills are opt-in -- never auto-t
 |---|---|
 | "inbox", "triage emails", "check my mail" | `inbox-workflow` |
 | "what should I study", "what should I review", "drill my weak spots", "go after my open errors", "build me a custom session", "board-style case" | `study-review` (memory-driven mode) |
-| "gaps", "dashboard", "ACGME readiness" | Use `python3 src/study_memory.py summary --limit 12 --scaffold-limit 0` for active learner state. |
+| "gaps", "dashboard", "ACGME readiness" | Use `python3 src/study_memory.py summary --limit 12 --scaffold-limit 0 --include-curated` for active learner state. |
 | "what books", "list textbooks", "what's loaded" | recipe: `python3 src/lance_retriever.py list_textbooks` |
 | Calendar/scheduling/events | GCal MCP tools |
 
@@ -277,7 +282,7 @@ Clinical questions, explanations, comparisons, coding: model knowledge. Offer RA
 | Anki card queue (per-session) | `data/Sessions/anki_queue.jsonl` |
 | Reports, guides, study docs, reviews, concepts | Obsidian vault |
 | ACGME curriculum catalog (265 topics) | `data/acgme_curriculum.json` |
-| Learner memory interface | `python3 src/study_memory.py summary --limit 12 --scaffold-limit 0` |
+| Learner memory interface | `python3 src/study_memory.py summary --limit 12 --scaffold-limit 0 --include-curated` |
 
 ## §10 Command Reference
 
@@ -286,10 +291,13 @@ Clinical questions, explanations, comparisons, coding: model knowledge. Offer RA
 cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate &&
 
 # study_memory.py — active session memory (see §6 for full usage)
-summary --topic "T" --limit 8 --scaffold-limit 2
-summary --limit 12 --scaffold-limit 0
+summary --topic "T" --limit 8 --scaffold-limit 2 --include-curated
+summary --limit 12 --scaffold-limit 0 --include-curated
 log-answer --session "TS" --topic "T" --concept "C" --question "Q" --answer "A" --correct 0|1|2 [--correction "..."] [--error-type "..."] [--misconception "..."] [--doc "..."] [--skill "..."]
-end-session --session "TS" --summary "..." --next-strategy "..."
+end-session --session "TS" --summary "..." --next-strategy "..." --json
+curation-status
+curate-candidates [--mode compact|detailed] [--topic "T"] [--recent-sessions N] [--limit N]
+apply-curation --input path.json | --stdin
 status
 resolve-topic --topic "T" [--doc "<folder>/X.md"]
 

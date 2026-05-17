@@ -29,7 +29,7 @@ Parse the user's input into a topic slug. Freeform input is expected — the use
 ```bash
 cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
 SESSION_TS=$(date -u +%Y-%m-%dT%H:%M:%S+00:00) && \
-python3 src/study_memory.py summary --topic "<topic>" --limit 8 --scaffold-limit 2
+python3 src/study_memory.py summary --topic "<topic>" --limit 8 --scaffold-limit 2 --include-curated
 ```
 
 Read the output, including `counts`, `omitted`, and `retrieval_guidance`. Use it to shape verification questions and lecture framing — NOT to omit content. If prior errors exist, note them for targeted verification and natural correction within the lecture. If no prior data, this is a new topic.
@@ -152,8 +152,11 @@ cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
 python3 src/study_memory.py end-session \
   --session "$SESSION_TS" \
   --summary "<1-3 sentence description of what was covered>" \
-  --next-strategy "<specific directive for future sessions>"
+  --next-strategy "<specific directive for future sessions>" \
+  --json
 ```
+
+Read the JSON output silently. If `curation.recommended` is `true`, follow the Optional Curation Pass in the shared learning contract after Anki flush.
 
 The `--next-strategy` should name what's worth studying deeper. Examples:
 GOOD: "Drill vasospasm protocol details and triple-H therapy parameters; verify sodium correction rate safety limits in a clinical vignette."

@@ -129,7 +129,7 @@ mkdir -p "data/Sessions/<Title>/verdicts"
 
 ```bash
 cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
-python3 src/study_memory.py summary --topic "<procedure/topic>" --limit 8 --scaffold-limit 2
+python3 src/study_memory.py summary --topic "<procedure/topic>" --limit 8 --scaffold-limit 2 --include-curated
 ```
 
 Use memory only to discover related anchors and prior weaknesses worth supporting in the guide. Do not compress or omit content because the learner may already know it.
