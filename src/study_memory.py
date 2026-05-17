@@ -1371,21 +1371,31 @@ def retrieval_summary(
 
     if include_curated:
         curated_limit = max(4, limit)
-        payload["curated_summaries"] = curated_summaries_for_summary(
-            conn,
-            topic_id=resolved_topic_id,
-            limit=curated_limit,
-        )
+        returned_concept_ids: list[int] = []
         must_retest_concept_ids: list[int] = []
+        MUST_RETEST_GRAPH_CAP = 3
         for row in rows:
-            if row["card_type"] != "must_retest" or row["claim_state_id"] is None:
+            if row["claim_state_id"] is None:
                 continue
             concept_row = conn.execute(
                 "SELECT concept_id FROM claim_state WHERE id = ?",
                 (int(row["claim_state_id"]),),
             ).fetchone()
-            if concept_row and concept_row["concept_id"] is not None:
-                must_retest_concept_ids.append(int(concept_row["concept_id"]))
+            if not concept_row or concept_row["concept_id"] is None:
+                continue
+            cid = int(concept_row["concept_id"])
+            returned_concept_ids.append(cid)
+            if (
+                row["card_type"] == "must_retest"
+                and len(must_retest_concept_ids) < MUST_RETEST_GRAPH_CAP
+            ):
+                must_retest_concept_ids.append(cid)
+        payload["curated_summaries"] = curated_summaries_for_summary(
+            conn,
+            topic_id=resolved_topic_id,
+            limit=curated_limit,
+            relevant_concept_ids=returned_concept_ids,
+        )
         payload["graph_signals"] = graph_signals_for_summary(
             conn,
             must_retest_concept_ids=must_retest_concept_ids,

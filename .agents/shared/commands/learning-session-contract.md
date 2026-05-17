@@ -257,10 +257,12 @@ The retrieval JSON has three operational surfaces. Read them in this order:
    - Read `importance_score` — higher means more durable / more dominant fault line.
    - Read `evidence_claim_result_ids` only if you need to inspect the source evidence.
    - When a `curated_summary` and a `must_retest` card point to the same fault line, the summary is the *why* (pattern across sessions) and the card is the *what* (specific claim now open). Use both — design the question from the card, set the difficulty/framing from the summary.
+   - **Selection policy**: the retrieval surface returns the top 2 summaries by importance regardless of overlap (the dominant patterns you should always see), plus summaries whose evidence overlaps with concepts in today's returned cards. Non-anchor summaries that don't relate to today's cards are deliberately filtered out — if you need them, narrow `--topic` or run a follow-up retrieval.
 
 3. **`graph_signals`** — adjacent concepts the agent has asserted are confused with concepts in your current `must_retest` set. Each signal is a `confused_with` neighbor with a strength score.
    - Treat as a probe list: when you finish drilling concept A, the highest-strength `confused_with` neighbor (B) is a high-value next probe — discrimination questions on the A/B pair are exactly what closes the fault line the graph captured.
    - Strength ≥0.6 is the visibility floor. Higher strengths (0.8-0.9) name dominant fault lines worth designing the session around.
+   - **Selection policy**: signals only fire from the top 3 `must_retest` concepts by priority, not from every returned card. Today's drill targets get the graph context; lower-priority cards do not.
 
 Always also read `counts`, `omitted`, and `retrieval_guidance`. If `retrieval_guidance.omitted_high_signal` is non-empty, run one of the suggested expansion commands before designing the session.
 

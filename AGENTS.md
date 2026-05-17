@@ -61,7 +61,7 @@ The active long-term memory system is the claim-centered learner model at `data/
 
 Context-pulling is mode-conditional. **Topic-anchored** sessions (user named a topic or document) use only topic-scoped memory summary; **memory-driven custom review** sessions (no named topic) use global memory summary.
 
-Skills always pass `--include-curated` at session start. The flag adds two top-level keys (`curated_summaries`, `graph_signals`) — agent-authored cross-session synthesis and `confused_with` graph edges — without changing existing `cards` semantics. Empty arrays when nothing is curated.
+Skills always pass `--include-curated` at session start. The flag adds two top-level keys (`curated_summaries`, `graph_signals`) — agent-authored cross-session synthesis and `confused_with` graph edges — without changing existing `cards` semantics. Both are focus-filtered: `curated_summaries` returns the top 2 by importance plus summaries citing concepts in today's returned cards; `graph_signals` only fire from the top 3 `must_retest` concepts by priority. Empty arrays when nothing is curated. Selection policy is detailed in `.agents/shared/commands/learning-session-contract.md`.
 
 ```bash
 # Topic-anchored session start (agent-only -- do not echo to user)

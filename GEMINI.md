@@ -126,7 +126,7 @@ python3 src/study_memory.py summary --topic "<topic>" --limit 8 --scaffold-limit
 
 **Do NOT run global summary in topic-anchored mode.** A user studying EVD management does not want drift to spine surgery or pediatric tumors because errors are open there. If a relevant open error lives within today's topic, `summary` surfaces it; retest inline. Otherwise it stays invisible -- that is the point.
 
-`--include-curated` is the default for all skill-driven retrieval. It adds two top-level keys (`curated_summaries`, `graph_signals`) -- agent-authored cross-session synthesis and `confused_with` graph edges -- without changing existing `cards` semantics. Empty arrays when nothing is curated.
+`--include-curated` is the default for all skill-driven retrieval. It adds two top-level keys (`curated_summaries`, `graph_signals`) -- agent-authored cross-session synthesis and `confused_with` graph edges -- without changing existing `cards` semantics. Both are focus-filtered: `curated_summaries` returns the top 2 by importance plus summaries citing concepts in today's returned cards; `graph_signals` fire only from the top 3 `must_retest` concepts by priority. Empty arrays when nothing is curated. Selection policy is detailed in `.agents/shared/commands/learning-session-contract.md`.
 
 **Memory-driven custom review only** -- user asked "what should I review", "drill my weak spots", "build me a custom session" with no named topic. Run global summary:
 

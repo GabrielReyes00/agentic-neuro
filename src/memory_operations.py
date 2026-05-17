@@ -762,7 +762,24 @@ def curated_summaries_for_summary(
     *,
     topic_id: int | None,
     limit: int = 8,
+    relevant_concept_ids: Iterable[int] = (),
+    anchor_count: int = 2,
 ) -> list[dict[str, Any]]:
+    """Return curated summaries for the topic, focus-filtered to today's cards.
+
+    Selection policy:
+    - First, take the top ``anchor_count`` summaries by importance (regardless of
+      whether they overlap with today's cards). These are the dominant patterns
+      the agent should always see.
+    - Then, fill remaining slots up to ``limit`` from summaries that cite at
+      least one ``relevant_concept_ids`` via their evidence joins. Order by
+      importance DESC, generated_at DESC.
+    - Non-anchor summaries that do not cite any relevant concept are dropped.
+    - When ``relevant_concept_ids`` is empty, falls back to top N by importance
+      (the original behavior).
+    """
+    relevant_ids = sorted({int(c) for c in relevant_concept_ids})
+
     where = "WHERE ms.status = 'active'"
     params: list[Any] = []
     if topic_id is not None:
@@ -776,16 +793,54 @@ def curated_summaries_for_summary(
             ")"
         )
         params.extend([topic_id, topic_id])
-    rows = conn.execute(
-        f"""SELECT ms.id, ms.summary_type, ms.content, ms.importance_score, ms.generated_at,
-                   ms.concept_id, t.canonical_slug AS topic
-              FROM memory_summaries ms
-              LEFT JOIN topics t ON t.id = ms.topic_id
-              {where}
-              ORDER BY ms.importance_score DESC, ms.generated_at DESC
-              LIMIT ?""",
-        [*params, limit],
-    ).fetchall()
+
+    if relevant_ids:
+        rel_placeholders = ",".join("?" * len(relevant_ids))
+        relevance_expr = (
+            f"EXISTS (SELECT 1 FROM memory_summary_evidence mse "
+            f"JOIN claim_results cr ON cr.id = mse.claim_result_id "
+            f"WHERE mse.summary_id = ms.id AND cr.concept_id IN ({rel_placeholders})) AS is_relevant"
+        )
+        rows = conn.execute(
+            f"""SELECT ms.id, ms.summary_type, ms.content, ms.importance_score, ms.generated_at,
+                       ms.concept_id, t.canonical_slug AS topic,
+                       {relevance_expr}
+                  FROM memory_summaries ms
+                  LEFT JOIN topics t ON t.id = ms.topic_id
+                  {where}
+                  ORDER BY ms.importance_score DESC, ms.generated_at DESC""",
+            [*relevant_ids, *params],
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            f"""SELECT ms.id, ms.summary_type, ms.content, ms.importance_score, ms.generated_at,
+                       ms.concept_id, t.canonical_slug AS topic,
+                       1 AS is_relevant
+                  FROM memory_summaries ms
+                  LEFT JOIN topics t ON t.id = ms.topic_id
+                  {where}
+                  ORDER BY ms.importance_score DESC, ms.generated_at DESC""",
+            params,
+        ).fetchall()
+
+    if not rows:
+        return []
+
+    take = min(limit, len(rows))
+    anchors = rows[: min(anchor_count, take)]
+    anchor_ids = {int(r["id"]) for r in anchors}
+    remaining_slots = take - len(anchors)
+    picked = list(anchors)
+    if remaining_slots > 0:
+        for r in rows[len(anchors):]:
+            if int(r["id"]) in anchor_ids:
+                continue
+            if not int(r["is_relevant"]):
+                continue
+            picked.append(r)
+            if len(picked) >= take:
+                break
+
     return [
         {
             "summary_id": int(r["id"]),
@@ -796,7 +851,7 @@ def curated_summaries_for_summary(
             "importance_score": float(r["importance_score"]),
             "generated_at": r["generated_at"],
         }
-        for r in rows
+        for r in picked
     ]
 
 

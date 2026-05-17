@@ -629,13 +629,13 @@ class CurationLayerTests(unittest.TestCase):
         },
     ]
 
-    def _seed_session(self, conn: sqlite3.Connection, session_id: str, *, score: int = 0, fixture_idx: int | None = None) -> int:
+    def _seed_session(self, conn: sqlite3.Connection, session_id: str, *, score: int = 0, fixture_idx: int | None = None, topic: str = "hypertension management") -> int:
         idx = fixture_idx if fixture_idx is not None else (abs(hash(session_id)) % len(self._SEED_FIXTURES))
         fx = self._SEED_FIXTURES[idx]
         study_memory.log_answer(
             conn,
             session_id=session_id,
-            topic="hypertension management",
+            topic=topic,
             concept=fx["concept"],
             question=f"Probe {session_id}: {fx['concept']}?",
             answer="learner placeholder answer",
@@ -1039,6 +1039,164 @@ class CurationLayerTests(unittest.TestCase):
             payload = json.loads(raw)
             self.assertNotIn("curated_summaries", payload)
             self.assertNotIn("graph_signals", payload)
+        finally:
+            conn.close()
+
+    def test_focus_filter_drops_non_relevant_curated_summaries(self) -> None:
+        """Curated summaries that cite no concept in returned cards are dropped,
+        except for the top `anchor_count` summaries by importance."""
+        from memory_operations import apply_curation_payload
+
+        conn = self._conn()
+        try:
+            # Seed two distinct concepts under the hypertension topic with low
+            # scores so they produce must_retest cards when we query that topic.
+            cr_id_a = self._seed_session(conn, "session-focus-a", fixture_idx=0)
+            self._end(conn, "session-focus-a")
+            cr_id_a2 = self._seed_session(conn, "session-focus-a2", fixture_idx=0)
+            self._end(conn, "session-focus-a2")
+
+            # Seed claim_results under a DIFFERENT topic so their concept_ids are
+            # not in the returned cards for a hypertension query. These will back
+            # the anchor and non-relevant summaries that are topic-scoped to
+            # hypertension but cite TBI-domain evidence.
+            cr_id_c = self._seed_session(conn, "session-focus-c", fixture_idx=2, topic="tbi management")
+            self._end(conn, "session-focus-c")
+            cr_id_c2 = self._seed_session(conn, "session-focus-c2", fixture_idx=2, topic="tbi management")
+            self._end(conn, "session-focus-c2")
+            apply_curation_payload(
+                conn,
+                {
+                    "built_at_version": 0,
+                    "summaries": [
+                        {
+                            "client_id": "anchor_high_imp",
+                            "summary_type": "thematic",
+                            "topic_slug": "hypertension-management-neuro-emergencies",
+                            "content": "Dominant fault line on labetalol indications and dose.",
+                            "importance_score": 0.95,
+                            "evidence_claim_result_ids": [cr_id_c, cr_id_c2],
+                        },
+                        {
+                            "client_id": "relevant_to_returned",
+                            "summary_type": "thematic",
+                            "topic_slug": "hypertension-management-neuro-emergencies",
+                            "content": "Norepinephrine dosing units recur as a fault line.",
+                            "importance_score": 0.7,
+                            "evidence_claim_result_ids": [cr_id_a, cr_id_a2],
+                        },
+                        {
+                            "client_id": "not_relevant",
+                            "summary_type": "thematic",
+                            "topic_slug": "hypertension-management-neuro-emergencies",
+                            "content": "Labetalol PK details, low-priority context.",
+                            "importance_score": 0.4,
+                            "evidence_claim_result_ids": [cr_id_c, cr_id_c2],
+                        },
+                    ],
+                },
+            )
+
+            # Retrieve with the topic limited so only fixtures 0+1 concepts appear
+            # in cards (anchor's cited concept does not appear in must_retest).
+            raw = study_memory.retrieval_summary(
+                conn,
+                topic="hypertension management",
+                limit=4,
+                include_curated=True,
+            )
+            payload = json.loads(raw)
+            contents = [s["content"] for s in payload["curated_summaries"]]
+
+            # Anchor (highest importance) is always present even though it cites a
+            # non-returned concept.
+            self.assertTrue(
+                any("Dominant fault line on labetalol" in c for c in contents),
+                f"high-importance anchor was dropped: {contents}",
+            )
+            # Relevant summary (cites fixture-0 concept, in must_retest set) is kept.
+            self.assertTrue(
+                any("Norepinephrine dosing units" in c for c in contents),
+                f"relevant summary was dropped: {contents}",
+            )
+            # Non-relevant low-importance summary is dropped.
+            self.assertFalse(
+                any("Labetalol PK details" in c for c in contents),
+                f"non-relevant low-importance summary leaked through filter: {contents}",
+            )
+        finally:
+            conn.close()
+
+    def test_graph_signals_capped_to_top_three_must_retest(self) -> None:
+        """Graph signals only traverse from the top 3 must_retest concepts by priority,
+        regardless of how many must_retest cards are returned."""
+        from memory_operations import apply_curation_payload
+
+        conn = self._conn()
+        try:
+            # Seed 5 distinct concepts under the same topic with low scores.
+            cr_ids = []
+            for i in range(5):
+                cr_ids.append(self._seed_session(conn, f"session-cap-{i}", fixture_idx=i))
+                self._end(conn, f"session-cap-{i}")
+
+            # Pull concept_ids in card-return order (priority/recency).
+            concept_rows = conn.execute(
+                """SELECT DISTINCT cs.concept_id FROM claim_state cs
+                   WHERE cs.state IN ('missed','partially_repaired','regressed')
+                   ORDER BY cs.last_seen_ts DESC""",
+            ).fetchall()
+            concept_ids = [int(r["concept_id"]) for r in concept_rows]
+            self.assertGreaterEqual(len(concept_ids), 5)
+
+            # Pair concept 0 with concept 4 by a confused_with edge of strength 0.8
+            # (above the visibility floor). If the cap is enforced, this edge will
+            # NOT appear because concept 4 is the 5th must_retest, beyond the cap.
+            # First author a multi-evidence summary so the relationship has anchor.
+            apply_curation_payload(
+                conn,
+                {
+                    "built_at_version": 0,
+                    "summaries": [
+                        {
+                            "client_id": "anchor",
+                            "summary_type": "thematic",
+                            "topic_slug": "hypertension-management-neuro-emergencies",
+                            "content": "Anchor summary for the cap test.",
+                            "importance_score": 0.8,
+                            "evidence_claim_result_ids": [cr_ids[0], cr_ids[4]],
+                        }
+                    ],
+                    "relationships": [
+                        {
+                            "source_concept_id": concept_ids[0],
+                            "target_concept_id": concept_ids[4],
+                            "relation_type": "confused_with",
+                            "strength": 0.8,
+                            "evidence_summary_client_id": "anchor",
+                            "evidence_claim_result_ids": [cr_ids[0], cr_ids[4]],
+                        }
+                    ],
+                },
+            )
+
+            raw = study_memory.retrieval_summary(
+                conn,
+                topic="hypertension management",
+                limit=10,
+                include_curated=True,
+            )
+            payload = json.loads(raw)
+            # graph_signals should be empty: concept[0] and concept[4] don't both
+            # fit in the top-3 must_retest window in any ordering of 5 cards.
+            # (At minimum, concept 4 is outside the cap.)
+            from_concepts = {int(g["from_concept_id"]) for g in payload["graph_signals"]}
+            to_concepts = {int(g["to_concept_id"]) for g in payload["graph_signals"]}
+            # The cap means at most 3 distinct from_concept ids appear.
+            self.assertLessEqual(
+                len(from_concepts), 3,
+                f"graph_signals fired from more than 3 must_retest concepts: {from_concepts}",
+            )
         finally:
             conn.close()
 
