@@ -46,6 +46,7 @@ DEFAULT_LANCE_TABLE = os.environ.get("NEURO_LANCE_TABLE", "neurosurgery_v4")
 # Retrieval parameters
 DEFAULT_MIN_SIMILARITY = 0.35
 DEFAULT_N_RESULTS = 35
+PRE_RERANK_MAX_CANDIDATES = 55
 RERANKER_SCORE_FLOOR = float(os.environ.get("NEURO_RERANKER_SCORE_FLOOR", "0.15"))
 
 # Context limits
@@ -79,6 +80,55 @@ _LANCE_DB = None
 _LANCE_TABLE = None
 _EMBEDDING_MODEL = None
 _RERANKER_CACHE: Dict[str, Any] = {}
+
+
+class _ClonedCrossEncoder:
+    """Cross-encoder wrapper that avoids mmap-backed safetensors at inference.
+
+    On this local macOS/Python/Torch stack, the normal SentenceTransformers
+    CrossEncoder path can bus-error inside BLAS when running from cached
+    safetensors. Cloning the weights into regular contiguous CPU tensors avoids
+    that uncatchable process crash while preserving the same model.
+    """
+
+    def __init__(self, model_id: str):
+        from huggingface_hub import snapshot_download
+        from safetensors.torch import load_file
+        from transformers import AutoConfig, AutoModelForSequenceClassification, AutoTokenizer
+        import torch
+
+        local_path = Path(snapshot_download(model_id, local_files_only=True))
+        model_file = local_path / "model.safetensors"
+        if not model_file.exists():
+            raise FileNotFoundError(f"No local safetensors file for {model_id}")
+
+        self.tokenizer = AutoTokenizer.from_pretrained(local_path, local_files_only=True)
+        config = AutoConfig.from_pretrained(local_path, local_files_only=True)
+        self.model = AutoModelForSequenceClassification.from_config(config)
+        state = load_file(str(model_file), device="cpu")
+        state = {k: v.clone().contiguous() for k, v in state.items()}
+        self.model.load_state_dict(state, strict=False)
+        self.model.eval()
+        self._torch = torch
+
+    def predict(self, pairs: list, batch_size: int = 32):
+        scores = []
+        with self._torch.no_grad():
+            for i in range(0, len(pairs), batch_size):
+                batch = pairs[i:i + batch_size]
+                queries = [p[0] for p in batch]
+                docs = [p[1] for p in batch]
+                inputs = self.tokenizer(
+                    queries,
+                    docs,
+                    return_tensors="pt",
+                    padding=True,
+                    truncation=True,
+                    max_length=512,
+                )
+                logits = self.model(**inputs).logits.reshape(-1)
+                scores.extend(float(x) for x in logits)
+        return scores
 
 
 def _list_lancedb_tables(db) -> list[str]:
@@ -120,6 +170,14 @@ def _get_reranker(model_key: str = DEFAULT_RERANKER):
 
     model_id = RERANKER_MODELS.get(model_key, model_key)
     try:
+        ce = _ClonedCrossEncoder(model_id)
+        ce.predict([["warmup", "warmup"]], batch_size=1)
+        _RERANKER_CACHE[model_key] = ce
+        return ce, model_key
+    except Exception as cloned_exc:
+        cloned_error = cloned_exc
+
+    try:
         from sentence_transformers import CrossEncoder
         import torch
         device = "mps" if torch.backends.mps.is_available() else "cpu"
@@ -128,7 +186,7 @@ def _get_reranker(model_key: str = DEFAULT_RERANKER):
         _RERANKER_CACHE[model_key] = ce
         return ce, model_key
     except Exception as e:
-        print(f"[WARN] Failed to load reranker '{model_id}': {e}")
+        print(f"[WARN] Failed to load reranker '{model_id}': {e}; cloned loader also failed: {cloned_error}")
         _RERANKER_CACHE[model_key] = None
         return None, model_key
 
@@ -148,38 +206,81 @@ def _content_hash(text: str) -> str:
     return (text or "").strip().lower()[:220]
 
 
+def _reference_signal_counts(text: str) -> dict:
+    text_lower = (text or "").lower()
+    total_chars = max(1, len(text or ""))
+    et_al_count = text_lower.count("et al")
+    return {
+        "et_al_count": et_al_count,
+        "et_al_density": et_al_count / (total_chars / 1000.0),
+        "numbered_refs": len(re.findall(r'(?:^|\n)\s*\d{1,3}\.\s+[A-Z][a-z]', text or "")),
+        "journal_patterns": (
+            len(re.findall(r'\d{4};\s*\d+', text or ""))
+            + len(re.findall(r'\d+:\d+-\d+', text or ""))
+        ),
+        "semicolons": (text or "").count(';'),
+    }
+
+
 def _is_reference_chunk(text: str) -> bool:
     """Detect bibliography/citation-list chunks."""
     if not text or len(text) < 100:
         return False
-    text_lower = text.lower()
-    total_chars = len(text)
-
-    et_al_count = text_lower.count("et al")
-    et_al_density = et_al_count / (total_chars / 1000.0)
-    numbered_refs = len(re.findall(r'(?:^|\n)\s*\d{1,3}\.\s+[A-Z][a-z]', text))
-    journal_patterns = len(re.findall(r'\d{4};\s*\d+', text))
-    journal_patterns += len(re.findall(r'\d+:\d+-\d+', text))
-    semicolons = text.count(';')
+    counts = _reference_signal_counts(text)
 
     score = 0
-    if et_al_density > 3.0:
+    if counts["et_al_density"] > 3.0:
         score += 3
-    elif et_al_density > 1.5:
+    elif counts["et_al_density"] > 1.5:
         score += 2
-    elif et_al_density > 0.5:
+    elif counts["et_al_density"] > 0.5:
         score += 1
-    if numbered_refs >= 5:
+    if counts["numbered_refs"] >= 5:
         score += 3
-    elif numbered_refs >= 3:
+    elif counts["numbered_refs"] >= 3:
         score += 2
-    if journal_patterns >= 6:
+    if counts["journal_patterns"] >= 6:
         score += 2
-    elif journal_patterns >= 3:
+    elif counts["journal_patterns"] >= 3:
         score += 1
-    if semicolons > 10 and et_al_count > 2:
+    if counts["semicolons"] > 10 and counts["et_al_count"] > 2:
         score += 1
     return score >= 4
+
+
+def _is_low_value_retrieval_hit(hit: dict) -> bool:
+    """Detect reference/index/navigation hits before they consume passage slots."""
+    text = hit.get("distilled_text") or hit.get("text") or hit.get("parent_text") or ""
+    if _is_reference_chunk(text):
+        return True
+
+    citation = (hit.get("citation") or "").lower()
+    heading = (hit.get("metadata", {}).get("heading") or "").lower()
+    section_path = (hit.get("metadata", {}).get("section_path") or "").lower()
+    joined_meta = f" {citation} {heading} {section_path} "
+    counts = _reference_signal_counts(text)
+
+    if " ch: index " in joined_meta or " index " == f" {heading.strip()} ":
+        return True
+
+    is_reference_section = (
+        " ch: references " in joined_meta
+        or heading.strip() in {"references", "bibliography"}
+        or section_path.strip().endswith("references")
+    )
+    if is_reference_section and counts["et_al_count"] >= 1 and counts["journal_patterns"] >= 1:
+        return True
+
+    nav_markers = len(re.findall(
+        r"\.{3,}\s*\d+|(?:\.\s*){6,}\d+|,\s*[123]\s*=",
+        text or "",
+    ))
+    if nav_markers >= 4 and ("imaging and diagnostics" in joined_meta or "contents" in joined_meta):
+        return True
+    if nav_markers >= 8 and counts["et_al_count"] == 0:
+        return True
+
+    return False
 
 
 # ── Medical NER (SciSpacy) — lazy loaded ─────────────────────────────────────
@@ -1216,12 +1317,13 @@ def _expand_with_parent_text(hits: list, query: str = "") -> list:
 
         enriched = dict(anchor)
         enriched["text_original"] = anchor["text"]
-        # Heading-aware trimming: remove off-topic sections from parent text
-        if query and len(parent_text) >= 600:
-            parent_text = _trim_to_relevant_sections(parent_text, query)
+        # Defer expensive heading-aware trimming until after the final passage
+        # selection below. Reranked parent groups commonly exceed the context
+        # cap, so trimming here wastes BGE section-encoding work on passages
+        # that will be discarded.
+        enriched["_untrimmed_parent_text"] = parent_text
         enriched["text"] = parent_text
         enriched["context_expanded"] = True
-        enriched["passage_tokens"] = _approx_tokens(parent_text)
         enriched["passage_chunks"] = len(children)
         enriched["cluster_hits"] = len(children)
         enriched["cluster_score"] = round(
@@ -1261,7 +1363,38 @@ def _expand_with_parent_text(hits: list, query: str = "") -> list:
                     source_set.add(unselected_new[0].get("source_key", ""))
                     break
 
-    return selected
+    def _finalize_expanded_hit(hit: dict) -> dict:
+        parent_text = hit.pop("_untrimmed_parent_text", hit.get("text", ""))
+        # Heading-aware trimming: remove off-topic sections from selected
+        # parent text only.
+        if query and len(parent_text) >= 600:
+            parent_text = _trim_to_relevant_sections(parent_text, query)
+        hit["text"] = parent_text
+        hit["passage_tokens"] = _approx_tokens(parent_text)
+        return hit
+
+    finalized = []
+    selected_keys = set()
+    for hit in selected:
+        finalized_hit = _finalize_expanded_hit(hit)
+        selected_keys.add(finalized_hit.get("child_id") or _content_hash(finalized_hit.get("text", "")))
+        if not _is_low_value_retrieval_hit(finalized_hit):
+            finalized.append(finalized_hit)
+
+    if len(finalized) < CONTEXT_MAX_PASSAGES:
+        for hit in expanded:
+            key = hit.get("child_id") or _content_hash(hit.get("text", ""))
+            if key in selected_keys:
+                continue
+            candidate = _finalize_expanded_hit(dict(hit))
+            selected_keys.add(key)
+            if _is_low_value_retrieval_hit(candidate):
+                continue
+            finalized.append(candidate)
+            if len(finalized) >= CONTEXT_MAX_PASSAGES:
+                break
+
+    return finalized
 
 
 # ── Adaptive Context Distillation ────────────────────────────────────────────
@@ -1808,6 +1941,9 @@ def retrieve(
 
     t0 = time.perf_counter()
     query_dense = _encode_query(query)
+    # Reuse the exact dense query vector for runtime semantic trimming. Without
+    # this, parent-section trimming encodes the same query a second time.
+    _QUERY_EMBED_CACHE[query] = np.asarray(query_dense, dtype=np.float32)
     encode_ms = round((time.perf_counter() - t0) * 1000, 2)
 
     dense_hits, dense_ms = _dense_search(table, query_dense, n_results)
@@ -1823,13 +1959,16 @@ def retrieve(
         candidates = fused[:10]
 
     pre_ref_count = len(candidates)
-    candidates = [h for h in candidates if not _is_reference_chunk(h.get("text", ""))]
+    candidates = [h for h in candidates if not _is_low_value_retrieval_hit(h)]
     refs_dropped = pre_ref_count - len(candidates)
+    candidates_before_cap = len(candidates)
+    if PRE_RERANK_MAX_CANDIDATES > 0:
+        candidates = candidates[:PRE_RERANK_MAX_CANDIDATES]
 
     reranked, rerank_ms = _rerank_hits(query, candidates, reranker_key)
     reranked = [
         h for h in reranked
-        if not h.get("is_reference_chunk") and not _is_reference_chunk(h.get("text", ""))
+        if not h.get("is_reference_chunk") and not _is_low_value_retrieval_hit(h)
     ]
 
     # Entity-aware filtering: penalize/remove cross-entity false positives
@@ -1883,6 +2022,9 @@ def retrieve(
             "fused_candidates": len(fused),
             "below_threshold": below_threshold,
             "refs_dropped": refs_dropped,
+            "pre_rerank_candidates": candidates_before_cap,
+            "pre_rerank_cap": PRE_RERANK_MAX_CANDIDATES,
+            "pre_rerank_capped": max(0, candidates_before_cap - len(candidates)),
             "after_rerank": len(reranked),
             "final_passages": len(final_hits),
             "unique_sources": len(unique_sources),
@@ -1988,7 +2130,7 @@ def _format_hit_block(hit: dict, passage_id: str = "") -> Optional[str]:
     # otherwise fall back to raw text
     text = hit.get("distilled_text") or hit.get("text", "")
     text = _collapse_repeated_prefixes(text)
-    if _is_reference_chunk(text):
+    if _is_low_value_retrieval_hit({**hit, "text": text}):
         return None
 
     citation = hit.get("citation", "uncited")
@@ -2194,7 +2336,7 @@ def build_source_cards_jsonl(
     for idx, hit in enumerate(result.get("hits", []), 1):
         text = hit.get("distilled_text") or hit.get("text", "")
         text = _collapse_repeated_prefixes(text)
-        if not text or _is_reference_chunk(text):
+        if not text or _is_low_value_retrieval_hit({**hit, "text": text}):
             continue
         if _is_low_value_source_card(hit, text):
             continue
