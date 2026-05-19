@@ -53,6 +53,22 @@ RERANKER_SCORE_FLOOR = float(os.environ.get("NEURO_RERANKER_SCORE_FLOOR", "0.15"
 CONTEXT_MAX_PASSAGES = int(os.environ.get("NEURO_CONTEXT_MAX_PASSAGES", "8"))
 CONTEXT_MIN_SOURCES = int(os.environ.get("NEURO_CONTEXT_MIN_SOURCES", "3"))
 
+# Quality-aware augmentation (AUG-CE)
+# Non-destructive: appends up to AUG_MAX_EXTRA passages to the post-distill
+# context when the candidate pool contains a passage with a meaningful quality
+# gain over the current weakest baseline passage AND a cross-encoder score at
+# or above the floor. Gated on three axes (Δ-quality, CE floor, token budget)
+# to avoid the QA-full failure mode where term-coverage sorting overrides CE.
+AUG_MAX_EXTRA = int(os.environ.get("NEURO_AUG_MAX_EXTRA", "2"))
+AUG_TOKEN_BUDGET = int(os.environ.get("NEURO_AUG_TOKEN_BUDGET", "8000"))
+AUG_MIN_Q_DELTA = float(os.environ.get("NEURO_AUG_MIN_Q_DELTA", "0.05"))
+AUG_CE_ABS_FLOOR = float(os.environ.get("NEURO_AUG_CE_ABS_FLOOR", "0.85"))
+AUG_CE_REL_FRAC = float(os.environ.get("NEURO_AUG_CE_REL_FRAC", "0.92"))
+AUG_TERM_STOP_EXTRA = {
+    "surgical", "operative", "management", "treatment", "approach",
+    "patient", "patients", "clinical", "disease", "syndrome", "imaging",
+}
+
 # Reranker model registry
 RERANKER_MODELS = {
     "bge-reranker-base": "BAAI/bge-reranker-base",
@@ -1786,6 +1802,171 @@ def _select_text_level(hit: dict) -> str:
     return text
 
 
+# ── Quality-aware augmentation (AUG-CE) ──────────────────────────────────────
+
+def _aug_query_terms(query: str) -> List[str]:
+    """Auto-derive a term list for AUG-CE quality scoring.
+
+    Uses _extract_keywords (already excludes generic English stopwords) plus
+    AUG_TERM_STOP_EXTRA to drop generic clinical noise that would otherwise
+    inflate term-coverage scores across nearly every passage.
+    """
+    kws = _extract_keywords(query)
+    return sorted(k for k in kws if k not in AUG_TERM_STOP_EXTRA and len(k) >= 3)
+
+
+def _aug_hit_text(hit: dict) -> str:
+    """Best available text for a hit when scoring augmentation quality.
+
+    Prefers distilled_text (set by _distill_by_axes / _select_text_level) so
+    augmentation candidates that have already passed distill are scored on the
+    same text the consumer will read. Falls back to text and text_original.
+    """
+    return hit.get("distilled_text") or hit.get("text") or hit.get("text_original") or ""
+
+
+def _aug_hit_ce(hit: dict) -> float:
+    """Cross-encoder relevance for a hit, falling back through rerank variants."""
+    for key in ("sigmoid_ce", "rank_score", "rerank_score", "similarity"):
+        v = hit.get(key)
+        if v is not None:
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                continue
+    return 0.0
+
+
+def _aug_term_coverage(text: str, terms: List[str]) -> float:
+    if not terms:
+        return 0.0
+    low = (text or "").lower()
+    return sum(1 for t in terms if t.lower() in low) / len(terms)
+
+
+def _aug_quality(hit: dict, terms: List[str]) -> float:
+    """Weighted blend of term coverage, keyword presence, and CE relevance.
+
+    Mirrors the dry-run scoring (0.45 term + 0.25 keyword + 0.25 CE − junk)
+    that AUG-CE was validated against. AUG-CE only USES this to RANK
+    candidates and gate them, not to grade them — the production
+    relevance signal (CE) is the floor enforced separately.
+    """
+    text = _aug_hit_text(hit)
+    term_cov = _aug_term_coverage(text, terms)
+    # kw_cov uses the same terms list so it's not double-counted; this matches
+    # how the dry-run code used the auto-derived keyword set as both.
+    kw_cov = term_cov
+    ce = _aug_hit_ce(hit)
+    junk = 0.2 if _is_low_value_retrieval_hit(hit) else 0.0
+    return round((0.45 * term_cov) + (0.25 * kw_cov) + (0.25 * ce) - junk, 4)
+
+
+def _quality_augment(query: str,
+                     current_hits: List[dict],
+                     candidate_pool: List[dict],
+                     max_extra: int = AUG_MAX_EXTRA,
+                     token_budget: int = AUG_TOKEN_BUDGET,
+                     min_q_delta: float = AUG_MIN_Q_DELTA,
+                     ce_abs_floor: float = AUG_CE_ABS_FLOOR,
+                     ce_rel_frac: float = AUG_CE_REL_FRAC) -> tuple:
+    """Append up to ``max_extra`` quality-aware passages to ``current_hits``.
+
+    Non-destructive: current_hits are preserved in order. Candidates must
+    clear three gates: (a) quality score exceeds the weakest current passage
+    by at least ``min_q_delta``; (b) cross-encoder score at or above
+    ``max(ce_abs_floor, ce_rel_frac * mean_current_CE)``; (c) appending does
+    not push combined token estimate past ``token_budget``.
+
+    No second cross-encoder pass — candidate CE is reused from the rerank step
+    already attached to each hit. ``_select_text_level`` shapes each appended
+    candidate so downstream formatters see the same distilled_text shape as
+    the baseline hits.
+
+    Returns ``(augmented_hits, meta)`` where meta is a dict with appended ids,
+    gate reasons, and elapsed_ms — useful for the retrieve() metadata block.
+    """
+    t0 = time.perf_counter()
+    meta = {
+        "added_ids": [],
+        "rejected": {"in_baseline": 0, "low_quality": 0, "low_ce": 0, "over_budget": 0, "junk": 0},
+        "considered": 0,
+        "terms_count": 0,
+        "ce_floor": 0.0,
+    }
+
+    if not current_hits or not candidate_pool:
+        meta["elapsed_ms"] = round((time.perf_counter() - t0) * 1000, 2)
+        return current_hits, meta
+
+    terms = _aug_query_terms(query)
+    meta["terms_count"] = len(terms)
+    if not terms:
+        meta["elapsed_ms"] = round((time.perf_counter() - t0) * 1000, 2)
+        return current_hits, meta
+
+    base_qualities = [_aug_quality(h, terms) for h in current_hits]
+    base_ces = [_aug_hit_ce(h) for h in current_hits]
+    if not base_qualities or not base_ces:
+        meta["elapsed_ms"] = round((time.perf_counter() - t0) * 1000, 2)
+        return current_hits, meta
+
+    base_tokens = sum(_approx_tokens(_aug_hit_text(h)) for h in current_hits)
+    if base_tokens >= token_budget:
+        meta["elapsed_ms"] = round((time.perf_counter() - t0) * 1000, 2)
+        return current_hits, meta
+
+    lowest_base_q = min(base_qualities)
+    mean_base_ce = sum(base_ces) / len(base_ces)
+    ce_floor = max(ce_abs_floor, mean_base_ce * ce_rel_frac)
+    meta["ce_floor"] = round(ce_floor, 4)
+
+    current_ids = {str(h.get("child_id")) for h in current_hits if h.get("child_id") is not None}
+    current_hashes = {_content_hash(_aug_hit_text(h)) for h in current_hits}
+
+    scored_candidates = []
+    for cand in candidate_pool:
+        meta["considered"] += 1
+        cid = str(cand.get("child_id"))
+        if cid in current_ids or _content_hash(_aug_hit_text(cand)) in current_hashes:
+            meta["rejected"]["in_baseline"] += 1
+            continue
+        if _is_low_value_retrieval_hit(cand):
+            meta["rejected"]["junk"] += 1
+            continue
+        cq = _aug_quality(cand, terms)
+        if cq < lowest_base_q + min_q_delta:
+            meta["rejected"]["low_quality"] += 1
+            continue
+        if _aug_hit_ce(cand) < ce_floor:
+            meta["rejected"]["low_ce"] += 1
+            continue
+        scored_candidates.append((cand, cq))
+
+    scored_candidates.sort(key=lambda kv: kv[1], reverse=True)
+
+    augmented = list(current_hits)
+    running_tokens = base_tokens
+    for cand, cq in scored_candidates:
+        if len(meta["added_ids"]) >= max_extra:
+            break
+        cand_copy = dict(cand)
+        if not cand_copy.get("distilled_text"):
+            cand_copy["distilled_text"] = _select_text_level(cand_copy)
+        cand_copy["augmented_by_quality"] = True
+        cand_copy["augment_quality"] = cq
+        cand_tokens = _approx_tokens(_aug_hit_text(cand_copy))
+        if running_tokens + cand_tokens > token_budget:
+            meta["rejected"]["over_budget"] += 1
+            continue
+        augmented.append(cand_copy)
+        running_tokens += cand_tokens
+        meta["added_ids"].append(str(cand_copy.get("child_id")))
+
+    meta["elapsed_ms"] = round((time.perf_counter() - t0) * 1000, 2)
+    return augmented, meta
+
+
 def _keyword_axis_coverage(hits: list, axes: List[str]) -> Dict[str, int]:
     """Quick keyword-based axis coverage check (no model inference).
 
@@ -1978,6 +2159,11 @@ def retrieve(
         reranked = _apply_entity_aware_filtering(reranked, query, entities)
     post_entity_count = len(reranked)
 
+    # Snapshot the post-entity-filter reranked pool. The expansion step caps
+    # final_hits to CONTEXT_MAX_PASSAGES; AUG-CE augmentation downstream needs
+    # the wider pool to consider candidates that didn't make the initial cut.
+    reranked_pool_snapshot = list(reranked)
+
     t0 = time.perf_counter()
     if use_parent_expansion and reranked:
         final_hits = _expand_with_parent_text(reranked, query)
@@ -2011,6 +2197,7 @@ def retrieve(
         "query": query,
         "reranker": reranker_key,
         "hits": final_hits,
+        "_reranked_pool": reranked_pool_snapshot,
         "latency": {
             "encode_ms": encode_ms, "dense_ms": dense_ms, "fts_ms": fts_ms,
             "rrf_ms": rrf_ms, "rerank_ms": rerank_ms, "expand_ms": expand_ms,
@@ -2628,6 +2815,15 @@ def compare(query: str, output_file: str = "",
                         gap_fill_added += added
                         print(f"  gap-fill: +{added} passages for axis '{gap_axis[:50]}'",
                               file=sys.stderr)
+
+    # Quality-aware augmentation (AUG-CE): append up to AUG_MAX_EXTRA passages
+    # from the reranked pool when the candidate clears the Δ-quality + CE-floor
+    # + token-budget gates. Non-destructive — preserves all existing hits.
+    aug_candidates = result.get("_reranked_pool") or []
+    if aug_candidates and result.get("hits"):
+        augmented_hits, aug_meta = _quality_augment(query, result["hits"], aug_candidates)
+        result["hits"] = augmented_hits
+        result["augment_ce"] = aug_meta
 
     frontier_text = _finish_frontier_search(
         frontier_thread,
