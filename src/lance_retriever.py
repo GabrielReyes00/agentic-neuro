@@ -304,7 +304,6 @@ def _is_low_value_retrieval_hit(hit: dict) -> bool:
 _NER_NLP = None  # lazy singleton
 _ENTITY_CACHE: Dict[str, List[str]] = {}  # query → entities (avoids repeated NER calls)
 _NER_DOC_CACHE: Dict[str, Any] = {}  # query → spacy Doc (avoids re-running NER for drug/disease)
-_QUERY_EMBED_CACHE: Dict[str, Any] = {}  # query → dense vector (avoids re-encoding in trim)
 
 def _get_ner_nlp():
     """Lazily load SciSpacy NER model (en_ner_bc5cdr_md).
@@ -1119,102 +1118,6 @@ def _rerank_hits_lexical(query: str, hits: list) -> list:
     return reranked
 
 
-# ── Heading-aware passage trimming ────────────────────────────────────────────
-
-# Pattern to detect section boundaries within a passage
-_SECTION_BOUNDARY_RE = re.compile(
-    r"(?:\n\s*\n)"              # double newline (paragraph break)
-    r"(?="                       # lookahead for heading-like start
-    r"(?:[A-Z][A-Z][A-Z]"       # ALL CAPS word start (≥3 chars)
-    r"|Fig(?:ure)?\.?\s*\d"     # Figure reference
-    r"|TABLE\s+\d"              # Table reference
-    r"|#{1,3}\s"                # Markdown heading
-    r"|(?:Acquired|Idiopathic|Traumatic|Clinical|Surgical|Treatment"
-    r"|Pathology|Diagnosis|Management|Epidemiology|Etiology"
-    r"|Complications|Prognosis|Outcome)\s)"  # Common section starters
-    r")",
-    re.MULTILINE,
-)
-
-
-def _get_query_embedding(query: str):
-    """Get cached dense embedding vector for a query string.
-
-    Avoids re-encoding the same query in multiple _trim_to_relevant_sections
-    calls (one per expanded passage). ~50ms first call, then instant.
-    """
-    if query in _QUERY_EMBED_CACHE:
-        return _QUERY_EMBED_CACHE[query]
-    model = _get_embedding_model()
-    out = model.encode(
-        [query], batch_size=1, max_length=256,
-        return_dense=True, return_sparse=False,
-    )
-    vec = out["dense_vecs"][0]
-    _QUERY_EMBED_CACHE[query] = vec
-    return vec
-
-
-def _trim_to_relevant_sections(text: str, query: str,
-                                min_sim: float = 0.42) -> str:
-    """Trim parent passage to sections semantically relevant to the query.
-
-    Splits passage on heading-like boundaries (all-caps lines, figure markers,
-    common section starters), encodes each section with BGE-M3, and keeps only
-    sections whose embedding cosine similarity to the (cached) query vector
-    exceeds min_sim. This is runtime "virtual rechunking" — no DB changes needed.
-
-    Cost: one BGE-M3 encode call per expanded passage for sections only (~30ms).
-    Query vector is cached across all passages in _QUERY_EMBED_CACHE.
-    """
-    if not text or len(text) < 600:
-        return text  # Too short to benefit from splitting
-
-    # Split into sections
-    sections = _SECTION_BOUNDARY_RE.split(text)
-    sections = [s.strip() for s in sections if s.strip() and len(s.strip()) > 80]
-
-    if len(sections) <= 1:
-        return text  # Can't split further
-
-    try:
-        # Use cached query vector — avoids re-encoding query for each passage
-        q_vec = _get_query_embedding(query)
-        q_norm = np.linalg.norm(q_vec)
-        if q_norm == 0:
-            return text
-
-        # Encode sections only (query already cached)
-        model = _get_embedding_model()
-        out = model.encode(
-            sections, batch_size=len(sections), max_length=256,
-            return_dense=True, return_sparse=False,
-        )
-        sec_vecs = out["dense_vecs"]
-
-        kept = []
-        for i, sec in enumerate(sections):
-            s_vec = sec_vecs[i]
-            s_norm = np.linalg.norm(s_vec)
-            if s_norm == 0:
-                continue
-            sim = float(np.dot(q_vec, s_vec) / (q_norm * s_norm))
-            if sim >= min_sim:
-                kept.append(sec)
-
-        if not kept:
-            return text  # Nothing passed — keep original
-
-        trimmed = "\n\n".join(kept)
-        # Only trim if we actually removed something substantial
-        if len(trimmed) < len(text) * 0.3:
-            return text  # Trimmed too aggressively — keep original
-        return trimmed
-
-    except Exception:
-        return text  # Graceful fallback
-
-
 # ── Maximal Marginal Relevance (MMR) ─────────────────────────────────────────
 # Carbonell & Goldstein 1998 — selects passages that maximize relevance to
 # the query while minimizing redundancy with already-selected passages.
@@ -1333,12 +1236,8 @@ def _expand_with_parent_text(hits: list, query: str = "") -> list:
 
         enriched = dict(anchor)
         enriched["text_original"] = anchor["text"]
-        # Defer expensive heading-aware trimming until after the final passage
-        # selection below. Reranked parent groups commonly exceed the context
-        # cap, so trimming here wastes BGE section-encoding work on passages
-        # that will be discarded.
-        enriched["_untrimmed_parent_text"] = parent_text
         enriched["text"] = parent_text
+        enriched["passage_tokens"] = _approx_tokens(parent_text)
         enriched["context_expanded"] = True
         enriched["passage_chunks"] = len(children)
         enriched["cluster_hits"] = len(children)
@@ -1379,30 +1278,19 @@ def _expand_with_parent_text(hits: list, query: str = "") -> list:
                     source_set.add(unselected_new[0].get("source_key", ""))
                     break
 
-    def _finalize_expanded_hit(hit: dict) -> dict:
-        parent_text = hit.pop("_untrimmed_parent_text", hit.get("text", ""))
-        # Heading-aware trimming: remove off-topic sections from selected
-        # parent text only.
-        if query and len(parent_text) >= 600:
-            parent_text = _trim_to_relevant_sections(parent_text, query)
-        hit["text"] = parent_text
-        hit["passage_tokens"] = _approx_tokens(parent_text)
-        return hit
-
     finalized = []
     selected_keys = set()
     for hit in selected:
-        finalized_hit = _finalize_expanded_hit(hit)
-        selected_keys.add(finalized_hit.get("child_id") or _content_hash(finalized_hit.get("text", "")))
-        if not _is_low_value_retrieval_hit(finalized_hit):
-            finalized.append(finalized_hit)
+        selected_keys.add(hit.get("child_id") or _content_hash(hit.get("text", "")))
+        if not _is_low_value_retrieval_hit(hit):
+            finalized.append(hit)
 
     if len(finalized) < CONTEXT_MAX_PASSAGES:
         for hit in expanded:
             key = hit.get("child_id") or _content_hash(hit.get("text", ""))
             if key in selected_keys:
                 continue
-            candidate = _finalize_expanded_hit(dict(hit))
+            candidate = dict(hit)
             selected_keys.add(key)
             if _is_low_value_retrieval_hit(candidate):
                 continue
@@ -2122,9 +2010,6 @@ def retrieve(
 
     t0 = time.perf_counter()
     query_dense = _encode_query(query)
-    # Reuse the exact dense query vector for runtime semantic trimming. Without
-    # this, parent-section trimming encodes the same query a second time.
-    _QUERY_EMBED_CACHE[query] = np.asarray(query_dense, dtype=np.float32)
     encode_ms = round((time.perf_counter() - t0) * 1000, 2)
 
     dense_hits, dense_ms = _dense_search(table, query_dense, n_results)
