@@ -35,6 +35,8 @@ from memory_operations import (
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
 DB_PATH = DATA_DIR / "study_memory.db"
+LOW_STAKES_REFERENCE_SKILLS = frozenset({"quick-answer"})
+LOW_STAKES_TEACHING_INTENTS = frozenset({"quick_answer_reference"})
 
 VALID_GAP_TYPES = frozenset({
     "conceptual_confusion",
@@ -797,6 +799,8 @@ def _log_claim_result(
     )
     result_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
     teaching_intent = _normalize(agent_signal.get("teaching_intent", "")).replace(" ", "_")
+    if teaching_intent in LOW_STAKES_TEACHING_INTENTS:
+        return result_id
     state, event = _claim_state_for_score(score, existing["state"] if existing else None, teaching_intent)
     priority = _priority(topic_slug, claim_text, gap_type, score)
     if state == "repaired_same_session" and priority == "low":
@@ -1130,16 +1134,21 @@ def end_session(conn: sqlite3.Connection, *, session_id: str, summary: str, next
         "UPDATE sessions SET ended = ?, summary = ?, next_strategy = ?, stats_json = ? WHERE session_id = ?",
         (now, summary, next_strategy, stats_json, session_id),
     )
-    topic_row = conn.execute("SELECT primary_topic_id FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
-    if topic_row and topic_row["primary_topic_id"]:
-        _upsert_session_card(conn, int(topic_row["primary_topic_id"]), session_id, summary, next_strategy, now)
-    newly_counted = mark_session_counted(conn, session_id, now)
+    session_row = conn.execute(
+        "SELECT primary_topic_id, skill FROM sessions WHERE session_id = ?",
+        (session_id,),
+    ).fetchone()
+    is_low_stakes_reference = bool(session_row and session_row["skill"] in LOW_STAKES_REFERENCE_SKILLS)
+    if session_row and session_row["primary_topic_id"] and not is_low_stakes_reference:
+        _upsert_session_card(conn, int(session_row["primary_topic_id"]), session_id, summary, next_strategy, now)
+    newly_counted = False if is_low_stakes_reference else mark_session_counted(conn, session_id, now)
     conn.commit()
     status_payload = curation_status(conn)
     return {
         "ok": True,
         "session_id": session_id,
         "newly_counted": newly_counted,
+        "excluded_from_curation_count": is_low_stakes_reference,
         "curation": status_payload,
     }
 

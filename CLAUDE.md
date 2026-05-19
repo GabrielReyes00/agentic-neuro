@@ -13,6 +13,7 @@ Key shared contracts:
 - `.agents/shared/commands/anki-deck-maintenance.md` — separate live Anki deck rewrite/reorganization workflow; Anki is ground truth and Chroma is rebuilt from Anki.
 - `.agents/shared/commands/study-review.md` — doc-anchored and memory-driven review.
 - `.agents/shared/commands/consult.md` — lecture-first clinical consult, verification, Anki, pocket-card write.
+- `.agents/shared/commands/quick-answer.md` — brief direct answers with lightweight memory logging, no startup recall, and optional Anki.
 - `.agents/shared/commands/generate-report.md` — citation-dense report generation, Mastery Objectives, report validation.
 - `.agents/shared/commands/intraoperative-guide.md` — deep-research operative rehearsal guides with procedure decomposition, serial RAG, operative knowledge maps, verified Obsidian wikilinks, restrained readable formatting, adversarial expert review, gap repair, structural validation, procedure-specific Anki decks, and Mastery Objectives.
 
@@ -84,7 +85,7 @@ After Gabriel commits to an answer, reveal progressively. Grade the answer brief
 
 **Concept File Schema**: Concept files in `Concepts/` follow the extraction protocol in §7c. The bottom YAML block is retained only for tags/aliases.
 
-**Tags**: `skill/{report,guide,study-material,study-review,rag,consult,grand-rounds}` | `domain/{vascular,spine,tumor,trauma,functional,pediatric,peripheral-nerve,general,anatomy}` | `type/{reference,session,case,article,concept}` | `source/{agent,user}`
+**Tags**: `skill/{report,guide,study-material,study-review,rag,consult,quick-answer,grand-rounds}` | `domain/{vascular,spine,tumor,trauma,functional,pediatric,peripheral-nerve,general,anatomy}` | `type/{reference,session,case,article,concept}` | `source/{agent,user}`
 
 ## §5 Skill → Vault Write Rules
 
@@ -148,6 +149,8 @@ The memory layer has two surfaces:
 1. **Active claim-centered model** (`exchanges`, `claim_results`, `claim_state`, `retrieval_cards`) — per-claim status: "this exact claim is open / repaired / durable right now." Read via `summary --topic` `cards`. Always available.
 
 2. **Curated cross-session layer** (`memory_summaries`, `concept_relationships`) — agent-authored synthesis: "this pattern recurs across sessions" + `confused_with` graph edges with strength scores. Read via `--include-curated` returning `curated_summaries` and `graph_signals`. Both are focus-filtered at retrieval: `curated_summaries` returns the top 2 by importance as anchors plus summaries whose evidence cites concepts in today's returned cards; `graph_signals` only traverse from the top 3 `must_retest` concepts by priority. Selection policy is detailed in the shared learning contract. Written conditionally after every ~5 ended sessions via `curate-candidates` → agent payload → `apply-curation`. Governed by the Curation Doctrine in `.agents/shared/commands/learning-session-contract.md`.
+
+`skill = quick-answer` is a low-stakes reference capture: it means Gabriel asked about a concept and received an explanation. It is not evidence of durable mastery, an open error, or a full learning-session handoff. Use it as topic/concept context or weak curation support only; tested sessions dominate learner-state judgments.
 
 Skills always read both surfaces at session start (use `--include-curated`). Skills never write directly to the curated layer; that's the post-flush curation pass managed by the shared contract.
 
@@ -251,10 +254,11 @@ python3 src/study_memory.py summary --topic "<new topic>" --limit 8 --scaffold-l
 | Trigger | Route |
 |---|---|
 | `/study-review`, "let's review [X]", "quiz me on [doc]", "continue our session on [doc]" | `study-review` (doc-anchored mode) |
+| `/quick-answer`, "quick answer", brief isolated neurosurgery/neuroanatomy/neurocritical care/radiology questions | `quick-answer` |
 | `/intraoperative-guide`, "walk me through the surgery for" | `intraoperative-guide` |
 | `/study-material`, "make study material from [file]" | `study-material` |
 | `/generate-report`, "generate a report on" | `generate-report` |
-| `/consult`, "consult on", "quick question about", "how do I manage", "what should I know about" | `consult` |
+| `/consult`, "consult on", "how do I manage", "what should I know about" | `consult` |
 | `/grand-rounds`, "build my grand rounds", "put together a case presentation", "journal club presentation" | `grand-rounds` |
 
 ### Anki

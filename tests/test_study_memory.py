@@ -73,6 +73,42 @@ class StudyMemoryTests(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_quick_answer_logs_evidence_without_claim_state_or_curation_count(self) -> None:
+        conn = self._memory_conn()
+        try:
+            study_memory.log_answer(
+                conn,
+                session_id="quick-1",
+                topic="induced hypertension vasospasm",
+                concept="pressor choice for induced hypertension",
+                question="Which pressor is best for induced hypertension and why?",
+                answer="Norepinephrine is usually preferred because it raises MAP with predictable alpha effect and less tachycardia than dopamine.",
+                correct=2,
+                skill="quick-answer",
+                tested_claim="Norepinephrine is the default pressor for induced hypertension in DCI when cardiac profile allows.",
+                learner_claim="Question-only exchange; no learner performance assessed.",
+                learning_operation="mechanism",
+                teaching_intent="quick_answer_reference",
+                coverage_role="synthesis",
+                answer_mode="after_teaching",
+            )
+            result = study_memory.end_session(
+                conn,
+                session_id="quick-1",
+                summary="Answered a quick reference question about pressor selection for induced hypertension.",
+                next_strategy="If revisited, test norepinephrine versus phenylephrine and dopamine in DCI vignettes.",
+            )
+
+            self.assertFalse(result["newly_counted"])
+            self.assertTrue(result["excluded_from_curation_count"])
+            self.assertEqual(result["curation"]["sessions_since_last_curation"], 0)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM exchanges").fetchone()[0], 1)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM claim_results").fetchone()[0], 1)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM claim_state").fetchone()[0], 0)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM retrieval_cards").fetchone()[0], 0)
+        finally:
+            conn.close()
+
     def test_correct_after_gap_marks_repaired_same_session(self) -> None:
         conn = self._memory_conn()
         try:
@@ -707,6 +743,45 @@ class CurationLayerTests(unittest.TestCase):
                 self.assertNotIn("raw_answer", row)
                 self.assertNotIn("corrected_rule", row)
             self.assertIn("instructions", packet)
+        finally:
+            conn.close()
+
+    def test_quick_answer_claim_results_can_inform_curation_without_recent_session_weight(self) -> None:
+        from memory_operations import build_curation_candidates
+
+        conn = self._conn()
+        try:
+            study_memory.log_answer(
+                conn,
+                session_id="quick-curation-1",
+                topic="pupillary pathways",
+                concept="edinger westphal pathway",
+                question="How does the Edinger-Westphal pathway work?",
+                answer="The preganglionic parasympathetic fibers travel with CN III to the ciliary ganglion, then short ciliary nerves constrict the pupil.",
+                correct=2,
+                skill="quick-answer",
+                tested_claim="Edinger-Westphal parasympathetic output reaches the sphincter pupillae through CN III, ciliary ganglion, and short ciliary nerves.",
+                learner_claim="Question-only exchange; no learner performance assessed.",
+                teaching_intent="quick_answer_reference",
+                learning_operation="sequencing",
+                coverage_role="synthesis",
+                answer_mode="after_teaching",
+            )
+            study_memory.end_session(
+                conn,
+                session_id="quick-curation-1",
+                summary="Answered a quick reference question about the Edinger-Westphal pathway.",
+                next_strategy="If revisited, ask for the afferent and efferent limbs of the pupillary light reflex.",
+            )
+
+            packet = build_curation_candidates(conn, mode="compact")
+            self.assertEqual(packet["recent_sessions"], [])
+            self.assertEqual(packet["curation_state"]["sessions_since_last_curation"], 0)
+            self.assertEqual(len(packet["recent_claim_results"]), 1)
+            self.assertEqual(packet["recent_claim_results"][0]["skill"], "quick-answer")
+            self.assertEqual(packet["recent_claim_results"][0]["topic"], "pupillary-pathways")
+            self.assertIn("quick-answer", packet["instructions"]["skill_weighting"])
+            self.assertIn("Low-stakes reference capture", packet["instructions"]["skill_weighting"]["quick-answer"])
         finally:
             conn.close()
 

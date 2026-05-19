@@ -140,7 +140,7 @@ def _recent_sessions(
     limit: int,
     topic_id: int | None,
 ) -> list[dict[str, Any]]:
-    where = "WHERE ended != ''"
+    where = "WHERE ended != '' AND COALESCE(s.skill, '') != 'quick-answer'"
     params: list[Any] = []
     if topic_id is not None:
         where += " AND (s.primary_topic_id = ? OR EXISTS (SELECT 1 FROM session_topics st WHERE st.session_id = s.session_id AND st.topic_id = ?))"
@@ -220,7 +220,7 @@ def _recent_claim_results(
     rows = conn.execute(
         f"""SELECT cr.id, cr.topic_id, cr.concept_id, cr.claim_text, cr.score, cr.gap_type,
                    cr.missing_edge, cr.corrected_rule, cr.created_at,
-                   ex.session_id, t.canonical_slug AS topic, c.display_name AS concept
+                   ex.session_id, ex.skill, t.canonical_slug AS topic, c.display_name AS concept
               FROM claim_results cr
               JOIN exchanges ex ON ex.id = cr.exchange_id
               JOIN topics t ON t.id = cr.topic_id
@@ -235,6 +235,7 @@ def _recent_claim_results(
         record = {
             "claim_result_id": int(r["id"]),
             "session_id": r["session_id"],
+            "skill": r["skill"] or "",
             "topic": r["topic"],
             "concept_id": int(r["concept_id"]),
             "concept": r["concept"],
@@ -434,6 +435,16 @@ def build_curation_candidates(
                 "summaries authored in the same payload. Prefer supersede_summary_ids over duplicates. "
                 "Cap each pass at ~5 summaries and ~5 relationships."
             ),
+            "skill_weighting": {
+                "quick-answer": (
+                    "Low-stakes reference capture. It records what the user asked and what was explained, "
+                    "not demonstrated learner mastery or an active miss. Do not treat quick-answer evidence "
+                    "as proof of durable knowledge, an open error, or a session-level pattern by itself. "
+                    "Use it as topic/concept context, weak supporting evidence, or a clue for adjacent future probes. "
+                    "Require independent non-quick-answer evidence before creating high-importance summaries "
+                    "or confused_with graph edges from it."
+                )
+            },
             "doctrine_ref": ".agents/shared/commands/learning-session-contract.md#curation-doctrine",
         },
     }

@@ -184,6 +184,8 @@ The summaries and graph edges produced here are durable, cross-session memory. H
 
 - **Evidence floor.** Every summary must cite at least 2 `claim_result_id`s. Single-claim observations belong in `claim_state`, not curated summaries. Every relationship must cite evidence — either `claim_result_id`s, an `evidence_summary_client_id`, or both.
 
+- **Skill weighting.** Treat `skill = quick-answer` claim results as low-stakes reference captures: they record what Gabriel asked about and what the agent explained, not demonstrated learner mastery, not an active miss, and not a full learning session. Quick-answer evidence may support topic/context awareness or a low-importance synthesis when paired with stronger evidence, but it should not by itself create a high-importance `memory_summary`, a `confused_with` edge, or a learner-state conclusion. Require independent non-quick-answer evidence before asserting a durable cross-session pattern.
+
 - **Confused-with criterion.** Only assert `confused_with` between two concepts when the evidence shows cross-contamination errors between them, or repeated misses on one whose corrections name the other. Surface similarity is not enough.
 
 - **`prerequisite` is deferred.** The schema accepts `prerequisite` edges but the first implementation must not write them. Leave prerequisite reasoning to future passes.
@@ -263,6 +265,8 @@ The retrieval JSON has three operational surfaces. Read them in this order:
    - Treat as a probe list: when you finish drilling concept A, the highest-strength `confused_with` neighbor (B) is a high-value next probe — discrimination questions on the A/B pair are exactly what closes the fault line the graph captured.
    - Strength ≥0.6 is the visibility floor. Higher strengths (0.8-0.9) name dominant fault lines worth designing the session around.
    - **Selection policy**: signals only fire from the top 3 `must_retest` concepts by priority, not from every returned card. Today's drill targets get the graph context; lower-priority cards do not.
+
+**Quick-answer memory interpretation:** quick-answer entries normally do not appear as `cards` because they do not create `claim_state` or `retrieval_cards`. If encountered in curation packets or raw `claim_results`, interpret `skill = quick-answer` as "the user asked about this concept and received an explanation." It is useful for topic adjacency and future context, but it is not evidence that the learner knew, missed, repaired, or mastered the concept.
 
 Always also read `counts`, `omitted`, and `retrieval_guidance`. If `retrieval_guidance.omitted_high_signal` is non-empty, run one of the suggested expansion commands before designing the session.
 

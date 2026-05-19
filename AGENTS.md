@@ -15,6 +15,7 @@ Key shared contracts:
 - `.agents/shared/commands/anki-deck-maintenance.md` — separate live Anki deck rewrite/reorganization workflow; Anki is ground truth and Chroma is rebuilt from Anki.
 - `.agents/shared/commands/study-review.md` — doc-anchored and memory-driven review.
 - `.agents/shared/commands/consult.md` — lecture-first clinical consult, verification, Anki, pocket-card write.
+- `.agents/shared/commands/quick-answer.md` — brief direct answers with lightweight memory logging, no startup recall, and optional Anki.
 - `.agents/shared/commands/generate-report.md` — citation-dense report generation, Mastery Objectives, report validation.
 - `.agents/shared/commands/intraoperative-guide.md` — deep-research operative rehearsal guides with procedure decomposition, serial RAG, operative knowledge maps, verified Obsidian wikilinks, restrained readable formatting, adversarial expert review, gap repair, structural validation, procedure-specific Anki decks, and Mastery Objectives.
 
@@ -89,7 +90,9 @@ python3 src/study_memory.py end-session \
 
 Global memory summary is the only retrieval mode that surfaces unrelated topics; it must only run when the user has explicitly opted into a memory-driven custom session. Read silently; never echo; never narrate as a menu of options.
 
-Memory writes are allowed only when the user explicitly asks to save/capture memory or when they intentionally start a memory-enabled learning workflow such as `/study-review`, `/study-material`, or `/consult`. Outside those workflows, answer directly unless the user asks to save.
+Memory writes are allowed only when the user explicitly asks to save/capture memory or when they intentionally start a memory-enabled learning workflow such as `/quick-answer`, `/study-review`, `/study-material`, or `/consult`. Outside those workflows, answer directly unless the user asks to save.
+
+Quick-answer memory entries are low-stakes reference captures. If `skill = quick-answer` appears in memory output, interpret it as "Gabriel asked about this concept and received an explanation," not as demonstrated learner mastery, an open error, or a full session handoff. These entries are topic/concept evidence for context and weak support for curation only; higher-signal tested sessions dominate.
 
 For active-answer memory, preserve the actual educational exchange:
 - Set `SESSION_TS` once per session (`date -u +%Y-%m-%dT%H:%M:%S+00:00`). Reuse that exact timestamp; do not regenerate it per turn.
@@ -112,10 +115,11 @@ Always intercept:
 
 Explicit invocation only:
 - `/study-review`, "let's review [X]", "quiz me on [doc]", "continue our session on [doc]" -> `study-review` (doc-anchored mode)
+- `/quick-answer`, brief isolated neurosurgery/neuroanatomy/neurocritical care/radiology questions, or "quick answer" -> `quick-answer` (direct answer, no startup memory recall, memory write at end, Anki optional)
 - Operative rehearsal guide / operative walkthrough -> `intraoperative-guide`
 - Study material or quiz from a file -> `study-material`
 - Research report, comprehensive review, deep-dive on a topic -> `generate-report` (produces an encyclopedic, citation-dense reference document; not learner-tailored)
-- Focused clinical question, ward knowledge gap, curbside consult -> `consult` (brief expert lecture + verification questions + pocket-card vault note; not encyclopedic)
+- Focused clinical question, ward knowledge gap, curbside consult, or management question that should produce a reusable pocket card -> `consult` (brief expert lecture + verification questions + pocket-card vault note; not encyclopedic)
 - Grand rounds, case presentation, or journal club deck -> `grand-rounds`
 
 Anki: card creation is inline in every learning skill via `anki_queue.py enqueue/check/flush` and follows the Anki Card Doctrine in `.agents/shared/commands/learning-session-contract.md` plus the focused quality rules in `.agents/shared/commands/anki-card-quality.md`. There is no separate Anki runtime skill.
