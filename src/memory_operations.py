@@ -513,6 +513,15 @@ def _validate_relationship(rel: dict[str, Any], idx: int) -> None:
         relation_type in ALLOWED_RELATION_TYPES,
         f"relationships[{idx}].relation_type must be one of {sorted(ALLOWED_RELATION_TYPES)}, got {relation_type!r}",
     )
+    # prerequisite is accepted by the schema for forward-compatibility but the
+    # retrieval surface (graph_signals) only traverses confused_with, so a
+    # prerequisite edge would persist invisibly. Reject it at the boundary until
+    # retrieval supports it, so the doctrine deferral is enforced, not just hoped.
+    _require(
+        relation_type != "prerequisite",
+        f"relationships[{idx}]: prerequisite edges are deferred — retrieval does not surface them yet, "
+        "so writing one is silently invisible. Use confused_with or omit.",
+    )
     src = _validate_int(rel.get("source_concept_id"), f"relationships[{idx}].source_concept_id")
     tgt = _validate_int(rel.get("target_concept_id"), f"relationships[{idx}].target_concept_id")
     _require(src != tgt, f"relationships[{idx}]: self-edge forbidden (source == target == {src})")

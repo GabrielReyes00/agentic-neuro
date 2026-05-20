@@ -38,6 +38,26 @@ DB_PATH = DATA_DIR / "study_memory.db"
 LOW_STAKES_REFERENCE_SKILLS = frozenset({"quick-answer"})
 LOW_STAKES_TEACHING_INTENTS = frozenset({"quick_answer_reference"})
 
+# Skills that produce a vault artifact rather than testing the learner. Their
+# log-answer call is a discoverability anchor only: it records that the file
+# exists and when, but must NOT create durable claim_state (the learner has not
+# reviewed the content yet — that happens later via /study-review pointed at the
+# file). They never count toward the curation threshold and are not curation
+# evidence (no learner performance to synthesize).
+ARTIFACT_ANCHOR_SKILLS = frozenset({"generate-report", "intraoperative-guide"})
+
+# Skills whose ended sessions must NOT advance the rolling curation counter.
+# quick-answer is low-stakes reference; study-material/grand-rounds are
+# generative skills (drill/rehearsal are incidental, not the purpose);
+# artifact-anchor skills never represent a review session at all. Study-material
+# and grand-rounds drill answers remain eligible curation *evidence* — only the
+# trigger counter is suppressed.
+CURATION_EXCLUDED_SKILLS = (
+    LOW_STAKES_REFERENCE_SKILLS
+    | ARTIFACT_ANCHOR_SKILLS
+    | frozenset({"study-material", "grand-rounds"})
+)
+
 VALID_GAP_TYPES = frozenset({
     "conceptual_confusion",
     "numerical_recall",
@@ -82,8 +102,6 @@ CREATE TABLE IF NOT EXISTS concepts (
     topic_id INTEGER NOT NULL,
     canonical_slug TEXT NOT NULL,
     display_name TEXT NOT NULL,
-    concept_type TEXT NOT NULL DEFAULT 'clinical_rule',
-    safety_critical INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT '',
     UNIQUE(topic_id, canonical_slug),
     FOREIGN KEY(topic_id) REFERENCES topics(id)
@@ -345,74 +363,80 @@ def _doc_alias(doc_path: str) -> str:
     return _normalize(Path(doc_path).stem.replace("_", " ")) if doc_path else ""
 
 
+CURRICULUM_CATALOG_PATH = DATA_DIR / "acgme_curriculum.json"
+# Token-containment floor for accepting a catalog title as the canonical topic.
+# Below this we return None and let resolve_topic fall back to a low-confidence
+# generic slug — the explicit signal that the agent should disambiguate.
+CATALOG_MATCH_FLOOR = 0.6
+_CATALOG_CACHE: list[tuple[str, str, set[str]]] | None = None
+
+
+def _domain_from_catalog(domain_name: str) -> str:
+    """Map a verbose catalog domain string to a compact §4 domain tag."""
+    hay = _normalize(domain_name)
+    table = (
+        ("vascular", "vascular"), ("spine", "spine"), ("tumor", "tumor"),
+        ("trauma", "trauma"), ("functional", "functional"), ("pediatric", "pediatric"),
+        ("peripheral nerve", "peripheral-nerve"), ("anatomy", "anatomy"),
+        ("neuroimaging", "imaging"), ("imaging", "imaging"), ("critical care", "critical-care"),
+    )
+    for needle, tag in table:
+        if needle in hay:
+            return tag
+    return "general"
+
+
+def _load_curriculum_catalog() -> list[tuple[str, str, set[str]]]:
+    """Return cached [(title, domain_tag, title_tokens)] from the ACGME catalog."""
+    global _CATALOG_CACHE
+    if _CATALOG_CACHE is not None:
+        return _CATALOG_CACHE
+    out: list[tuple[str, str, set[str]]] = []
+    try:
+        data = json.loads(CURRICULUM_CATALOG_PATH.read_text())
+        for milestone in data.get("milestones", {}).values():
+            for topic in milestone.get("topics", []):
+                title = str(topic.get("title") or "").strip()
+                if not title:
+                    continue
+                out.append((title, _domain_from_catalog(str(topic.get("domain") or "")), _tokens(title)))
+    except (OSError, json.JSONDecodeError):
+        out = []
+    _CATALOG_CACHE = out
+    return out
+
+
 def _resolve_topic_patterns(hay: str) -> TopicResolution | None:
-    hay = _normalize(hay)
-    if not hay:
+    """Resolve a topic hint against the ACGME curriculum catalog.
+
+    Replaces the previous hardcoded if/elif chain. The catalog is data, not
+    judgment — when a hint clearly overlaps a curriculum title we canonicalize to
+    it; when overlap is weak we return None so the agent is asked to disambiguate
+    rather than silently accepting a guess.
+    """
+    hint_tokens = _tokens(hay)
+    if not hint_tokens:
         return None
-    if "hypertension" in hay or "blood pressure" in hay or re.search(r"\bbp\b", hay):
-        return TopicResolution(
-            "hypertension-management-neuro-emergencies",
-            "Hypertension Management in Neuro Emergencies",
-            "vascular",
-            (
-                "hypertension management",
-                "neuro icu hypertension",
-                "bp management neuro icu",
-                "htn neuro icu",
-                "hypertension management in neuro emergencies",
-                "hypertension management in the neuro icu and emergency department",
-            ),
-            0.95,
-        )
-    if "tbi" in hay or "traumatic brain injury" in hay:
-        return TopicResolution(
-            "tbi-management",
-            "TBI Management",
-            "trauma",
-            ("tbi management", "traumatic brain injury management", "severe tbi"),
-            0.95,
-        )
-    if "evd" in hay or "external ventricular" in hay:
-        return TopicResolution(
-            "evd-management-icu",
-            "EVD Management in ICU",
-            "critical-care",
-            ("evd management in icu", "external ventricular drain management", "evd management"),
-            0.95,
-        )
-    if "vasospasm" in hay or "dci" in hay:
-        return TopicResolution(
-            "sah-vasospasm-management",
-            "SAH Vasospasm Management",
-            "vascular",
-            ("vasospasm after sah", "subarachnoid hemorrhage vasospasm", "dci management"),
-            0.9,
-        )
-    if "sah" in hay or "subarachnoid" in hay:
-        return TopicResolution(
-            "sah-management",
-            "SAH Management",
-            "vascular",
-            ("sah management", "subarachnoid hemorrhage management", "aneurysmal subarachnoid hemorrhage"),
-            0.85,
-        )
-    if "long tract" in hay or "dcml" in hay or "spinothalamic" in hay or "corticospinal" in hay:
-        return TopicResolution(
-            "long-tracts",
-            "Long Tracts",
-            "anatomy",
-            ("long tracts", "dcml", "spinothalamic tract", "corticospinal tract"),
-            0.9,
-        )
-    if "neuroimaging" in hay or "traumatic tap" in hay or "xanthochromia" in hay:
-        return TopicResolution(
-            "neuroimaging-sah-hemorrhage",
-            "Neuroimaging SAH and Hemorrhage",
-            "imaging",
-            ("neuroimaging lab 2", "traumatic tap vs sah", "sah stroke imaging vascular"),
-            0.85,
-        )
-    return None
+    best: tuple[float, str, str] | None = None
+    for title, domain_tag, title_tokens in _load_curriculum_catalog():
+        if not title_tokens:
+            continue
+        overlap = len(hint_tokens & title_tokens)
+        if not overlap:
+            continue
+        containment = overlap / len(hint_tokens)
+        if containment >= CATALOG_MATCH_FLOOR and (best is None or containment > best[0]):
+            best = (containment, title, domain_tag)
+    if best is None:
+        return None
+    containment, title, domain_tag = best
+    return TopicResolution(
+        _slug(title),
+        _display(title),
+        domain_tag,
+        (_normalize(title),),
+        round(min(0.9, 0.6 + containment * 0.3), 3),
+    )
 
 
 def resolve_topic(conn: sqlite3.Connection, topic_hint: str, doc_path: str = "") -> TopicResolution:
@@ -474,38 +498,14 @@ def _ensure_topic(conn: sqlite3.Connection, resolution: TopicResolution, doc_pat
     return topic_id
 
 
-def _concept_type(text: str) -> str:
-    hay = _normalize(text)
-    if any(x in hay for x in ("dose", "target", "threshold", " map ", "sbp", "cpp", "icp", "mg", "mmhg", "mcg")):
-        return "threshold"
-    if any(x in hay for x in (" vs ", "distinction", "different", "discriminator", "distinguish", "contrast")):
-        return "discriminator"
-    if any(x in hay for x in ("sequence", "order", "workflow", "first", "next")):
-        return "algorithm_step"
-    if any(x in hay for x in ("mechanism", "pathophysiology", "physiology", "why")):
-        return "mechanism_consequence"
-    return "clinical_rule"
-
-
-def _is_safety_critical(topic_slug: str, text: str) -> int:
-    hay = _normalize(f"{topic_slug} {text}")
-    triggers = (
-        "herniation", "cushing", "blood pressure", "hypertension", "cpp", "icp",
-        "vasospasm", "dci", "antiplatelet", "hemorrhage", "stroke", "airway",
-        "nicardipine", "norepinephrine", "seizure", "infection", "ventriculitis",
-    )
-    return int(any(t in hay for t in triggers))
-
-
 def _ensure_concept(conn: sqlite3.Connection, topic_id: int, topic_slug: str, concept: str, question: str = "", correction: str = "") -> int:
     now = datetime.now(timezone.utc).isoformat()
     slug = _slug(concept)
-    text = f"{concept} {question} {correction}"
     conn.execute(
         """INSERT OR IGNORE INTO concepts
-           (topic_id, canonical_slug, display_name, concept_type, safety_critical, created_at)
-           VALUES (?, ?, ?, ?, ?, ?)""",
-        (topic_id, slug, _normalize(concept), _concept_type(text), _is_safety_critical(topic_slug, text), now),
+           (topic_id, canonical_slug, display_name, created_at)
+           VALUES (?, ?, ?, ?)""",
+        (topic_id, slug, _normalize(concept), now),
     )
     concept_id = int(conn.execute(
         "SELECT id FROM concepts WHERE topic_id = ? AND canonical_slug = ?",
@@ -550,6 +550,15 @@ def _learning_operation(concept: str, question: str, explicit: str = "") -> str:
     if any(x in hay for x in ("why", "equation", "physiologic", "mechanism")):
         return "mechanism"
     return "transfer"
+
+
+VALID_PRIORITIES = frozenset({"urgent", "high", "medium", "low"})
+
+
+def _normalize_priority(value: str) -> str:
+    """Return a valid agent-asserted priority, or '' to defer to the heuristic."""
+    v = _normalize(value).replace(" ", "").replace("-", "")
+    return v if v in VALID_PRIORITIES else ""
 
 
 def _priority(topic_slug: str, claim_text: str, gap_type: str, score: int) -> str:
@@ -750,6 +759,10 @@ def _log_claim_result(
     learning_operation: str,
     agent_signal: dict[str, str],
     now: str,
+    agent_priority: str = "",
+    match_claim_state_id: int | None = None,
+    force_new_claim: bool = False,
+    repairs_claim_state_ids: tuple[int, ...] = (),
 ) -> int:
     claim_text = _derive_claim(concept=concept, tested_claim=tested_claim, corrected_rule=corrected_rule, correction=correction)
     claim_slug = _slug(claim_text)
@@ -763,14 +776,33 @@ def _log_claim_result(
     if score < 2 and not consequence:
         consequence = "Future review should target this missing edge because it changes management or discrimination."
     gap_type = _normalize_gap_type(error_type, score, missing)
-    existing = _find_matching_claim_state(
-        conn,
-        topic_id=topic_id,
-        claim_slug=claim_slug,
-        claim_text=claim_text,
-        corrected_rule=fixed_rule,
-        agent_signal=agent_signal,
-    )
+    # Claim identity is the agent's call when it knows. The agent assesses whether
+    # this answer revisits a tracked claim or opens a new one — token overlap
+    # cannot reliably make that distinction. Resolution order:
+    #   1. force_new_claim  -> always a new claim_state (agent says "this is new")
+    #   2. match_claim_state_id -> bind to the exact claim the agent named
+    #   3. neither asserted -> fall back to the token matcher (legacy heuristic)
+    if force_new_claim:
+        existing = None
+    elif match_claim_state_id is not None:
+        existing = conn.execute(
+            """SELECT id, claim_slug, claim_text, state, reason
+               FROM claim_state WHERE id = ? AND topic_id = ?""",
+            (int(match_claim_state_id), topic_id),
+        ).fetchone()
+        if existing is None:
+            raise ValueError(
+                f"match_claim_state_id={match_claim_state_id} not found under topic_id={topic_id}"
+            )
+    else:
+        existing = _find_matching_claim_state(
+            conn,
+            topic_id=topic_id,
+            claim_slug=claim_slug,
+            claim_text=claim_text,
+            corrected_rule=fixed_rule,
+            agent_signal=agent_signal,
+        )
     if existing and existing["claim_slug"] != claim_slug:
         claim_slug = existing["claim_slug"]
     conn.execute(
@@ -802,7 +834,10 @@ def _log_claim_result(
     if teaching_intent in LOW_STAKES_TEACHING_INTENTS:
         return result_id
     state, event = _claim_state_for_score(score, existing["state"] if existing else None, teaching_intent)
-    priority = _priority(topic_slug, claim_text, gap_type, score)
+    # Priority decides what the next session sees first. The agent, having just
+    # judged the clinical stakes of this exact miss in context, sets it directly.
+    # The keyword heuristic is only a fallback for when the agent does not assert.
+    priority = _normalize_priority(agent_priority) or _priority(topic_slug, claim_text, gap_type, score)
     if state == "repaired_same_session" and priority == "low":
         priority = "medium"
     reason = missing or fixed_rule or learner
@@ -848,13 +883,11 @@ def _log_claim_result(
         )
     elif state == "durable":
         _deactivate_other_cards(conn, state_id, "scaffold")
-        _mark_related_repairs(
+        _apply_asserted_repairs(
             conn,
             topic_id=topic_id,
             result_id=result_id,
-            claim_text=claim_text,
-            corrected_rule=fixed_rule,
-            learner_claim=learner,
+            repairs_claim_state_ids=repairs_claim_state_ids,
             now=now,
         )
         _upsert_retrieval_card(
@@ -872,36 +905,34 @@ def _log_claim_result(
     return result_id
 
 
-def _related_repair_score(open_state: sqlite3.Row, claim_text: str, corrected_rule: str, learner_claim: str) -> float:
-    target = _tokens(" ".join((open_state["reason"] or "", open_state["claim_text"] or "")))
-    if not target:
-        return 0.0
-    repair = _tokens(" ".join((claim_text, corrected_rule, learner_claim)))
-    return len(target & repair) / max(1, len(target))
-
-
-def _mark_related_repairs(
+def _apply_asserted_repairs(
     conn: sqlite3.Connection,
     *,
     topic_id: int,
     result_id: int,
-    claim_text: str,
-    corrected_rule: str,
-    learner_claim: str,
+    repairs_claim_state_ids: tuple[int, ...],
     now: str,
 ) -> None:
-    rows = conn.execute(
-        """SELECT id, claim_text, reason
-           FROM claim_state
-           WHERE topic_id = ?
-             AND state IN ('missed', 'partially_repaired', 'regressed')""",
-        (topic_id,),
-    ).fetchall()
-    for row in rows:
-        score = _related_repair_score(row, claim_text, corrected_rule, learner_claim)
-        if score < 0.35:
+    """Flip the open claims the agent explicitly named as repaired by this answer.
+
+    Previously this was inferred from token overlap (>=0.35), which silently
+    marked unrelated claims repaired just because they shared words. Repair is a
+    judgment about whether *this* correct answer actually demonstrates mastery of
+    *that* open claim — only the agent, having seen the answer, can assert it. The
+    agent passes the specific claim_state ids; we flip only those, and only when
+    they are genuinely open under this topic.
+    """
+    for raw_id in repairs_claim_state_ids:
+        row = conn.execute(
+            """SELECT id, claim_text FROM claim_state
+               WHERE id = ? AND topic_id = ?
+                 AND state IN ('missed', 'partially_repaired', 'regressed')""",
+            (int(raw_id), topic_id),
+        ).fetchone()
+        if row is None:
+            # Not open (or wrong topic): ignore rather than fabricate a transition.
             continue
-        rationale = f"Related correct claim repaired prior state by overlap score {score:.2f}."
+        rationale = "Agent asserted this open claim was repaired by a related correct answer."
         conn.execute(
             """UPDATE claim_state
                SET state = 'repaired_same_session', priority = 'medium',
@@ -912,7 +943,7 @@ def _mark_related_repairs(
         _deactivate_other_cards(conn, row["id"], "recent_repair")
         conn.execute(
             "INSERT INTO state_events (claim_state_id, event_type, result_id, ts, detail) VALUES (?, ?, ?, ?, ?)",
-            (row["id"], "related_repair", result_id, now, rationale),
+            (row["id"], "asserted_repair", result_id, now, rationale),
         )
         _upsert_retrieval_card(
             conn,
@@ -924,7 +955,7 @@ def _mark_related_repairs(
             next_action="Run a delayed retention check before treating this repair as durable.",
             evidence_result_id=result_id,
             updated_ts=now,
-            detail={"repair_confidence": round(score, 3), "rationale": rationale},
+            detail={"rationale": rationale},
         )
 
 
@@ -959,6 +990,10 @@ def log_answer(
     curriculum_unit: str = "",
     answer_mode: str = "",
     confidence_observed: str = "",
+    agent_priority: str = "",
+    match_claim_state_id: int | None = None,
+    force_new_claim: bool = False,
+    repairs_claim_state_ids: tuple[int, ...] = (),
 ) -> int:
     now = ts or datetime.now(timezone.utc).isoformat()
     resolution = resolve_topic(conn, topic, doc_path)
@@ -996,28 +1031,36 @@ def log_answer(
         ),
     )
     exchange_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
-    _log_claim_result(
-        conn,
-        exchange_id=exchange_id,
-        topic_id=topic_id,
-        concept_id=concept_id,
-        topic_slug=resolution.slug,
-        concept=concept,
-        score=correct,
-        error_type=error_type,
-        answer=answer,
-        correction=correction,
-        misconception=misconception,
-        tested_claim=tested_claim,
-        learner_claim=learner_claim,
-        missing_edge=missing_edge,
-        corrected_rule=corrected_rule,
-        clinical_consequence=clinical_consequence,
-        retest_prompt_shape=retest_prompt_shape,
-        learning_operation=learning_operation,
-        agent_signal={k: v for k, v in source.items() if v},
-        now=now,
-    )
+    # Artifact-anchor skills record the exchange (for provenance/discoverability)
+    # but do not create a claim_result/claim_state — the learner has not been
+    # tested on this content, so it must not register as known or as an open gap.
+    if skill not in ARTIFACT_ANCHOR_SKILLS:
+        _log_claim_result(
+            conn,
+            exchange_id=exchange_id,
+            topic_id=topic_id,
+            concept_id=concept_id,
+            topic_slug=resolution.slug,
+            concept=concept,
+            score=correct,
+            error_type=error_type,
+            answer=answer,
+            correction=correction,
+            misconception=misconception,
+            tested_claim=tested_claim,
+            learner_claim=learner_claim,
+            missing_edge=missing_edge,
+            corrected_rule=corrected_rule,
+            clinical_consequence=clinical_consequence,
+            retest_prompt_shape=retest_prompt_shape,
+            learning_operation=learning_operation,
+            agent_priority=agent_priority,
+            match_claim_state_id=match_claim_state_id,
+            force_new_claim=force_new_claim,
+            repairs_claim_state_ids=repairs_claim_state_ids,
+            agent_signal={k: v for k, v in source.items() if v},
+            now=now,
+        )
     conn.commit()
     return exchange_id
 
@@ -1085,6 +1128,10 @@ def log_exchange_claims(
         ),
     )
     exchange_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+    # Artifact-anchor skills record the exchange only; no learner claim state.
+    if skill in ARTIFACT_ANCHOR_SKILLS:
+        conn.commit()
+        return exchange_id
     for claim in claims:
         concept = str(claim.get("concept") or first_concept)
         correction = str(claim.get("correction") or "")
@@ -1096,6 +1143,9 @@ def log_exchange_claims(
             for k in ("teaching_intent", "expected_answer_edge", "coverage_role", "source_section", "source_anchor", "curriculum_unit", "answer_mode", "confidence_observed")
             if k in claim and claim[k]
         })
+        repairs = claim.get("repairs_claim_state_ids") or ()
+        repairs_tuple = tuple(int(x) for x in repairs) if isinstance(repairs, (list, tuple)) else ()
+        match_id = claim.get("match_claim_state_id")
         _log_claim_result(
             conn,
             exchange_id=exchange_id,
@@ -1117,6 +1167,10 @@ def log_exchange_claims(
             learning_operation=str(claim.get("learning_operation") or ""),
             agent_signal=claim_signal,
             now=now,
+            agent_priority=str(claim.get("priority") or ""),
+            match_claim_state_id=int(match_id) if match_id is not None else None,
+            force_new_claim=bool(claim.get("force_new_claim", False)),
+            repairs_claim_state_ids=repairs_tuple,
         )
     conn.commit()
     return exchange_id
@@ -1138,17 +1192,24 @@ def end_session(conn: sqlite3.Connection, *, session_id: str, summary: str, next
         "SELECT primary_topic_id, skill FROM sessions WHERE session_id = ?",
         (session_id,),
     ).fetchone()
-    is_low_stakes_reference = bool(session_row and session_row["skill"] in LOW_STAKES_REFERENCE_SKILLS)
+    session_skill = session_row["skill"] if session_row else ""
+    is_low_stakes_reference = session_skill in LOW_STAKES_REFERENCE_SKILLS
+    is_artifact_anchor = session_skill in ARTIFACT_ANCHOR_SKILLS
+    excluded_from_count = session_skill in CURATION_EXCLUDED_SKILLS
+    # Artifact-anchor skills still get a session_handoff card so /study-review can
+    # discover the file; the card's text (agent-authored) states it is generated
+    # and not yet reviewed. Only quick-answer suppresses the card entirely.
     if session_row and session_row["primary_topic_id"] and not is_low_stakes_reference:
         _upsert_session_card(conn, int(session_row["primary_topic_id"]), session_id, summary, next_strategy, now)
-    newly_counted = False if is_low_stakes_reference else mark_session_counted(conn, session_id, now)
+    newly_counted = False if excluded_from_count else mark_session_counted(conn, session_id, now)
     conn.commit()
     status_payload = curation_status(conn)
     return {
         "ok": True,
         "session_id": session_id,
         "newly_counted": newly_counted,
-        "excluded_from_curation_count": is_low_stakes_reference,
+        "excluded_from_curation_count": excluded_from_count,
+        "artifact_anchor": is_artifact_anchor,
         "curation": status_payload,
     }
 
@@ -1185,6 +1246,8 @@ def _retrieval_card_payload(row: sqlite3.Row) -> dict[str, str | None]:
         "type": row["card_type"],
         "priority": row["priority"],
         "state": row["state"],
+        "concept_id": row["concept_id"],
+        "concept": row["concept"],
         "claim": row["claim_text"],
         "summary": row["summary"],
         "next_action": row["next_action"],
@@ -1317,10 +1380,12 @@ def retrieval_summary(
 
     select_sql = f"""SELECT rc.card_type, rc.priority, rc.summary, rc.next_action,
                   rc.claim_state_id,
-                  t.canonical_slug AS topic, cs.claim_text, cs.state
+                  t.canonical_slug AS topic, cs.claim_text, cs.state,
+                  cs.concept_id, c.display_name AS concept
            FROM retrieval_cards rc
            JOIN topics t ON t.id = rc.topic_id
            LEFT JOIN claim_state cs ON cs.id = rc.claim_state_id
+           LEFT JOIN concepts c ON c.id = cs.concept_id
            WHERE rc.status = 'active' {topic_filter}"""
     order_sql = """ORDER BY CASE rc.priority
                WHEN 'urgent' THEN 0
@@ -1384,15 +1449,9 @@ def retrieval_summary(
         must_retest_concept_ids: list[int] = []
         MUST_RETEST_GRAPH_CAP = 3
         for row in rows:
-            if row["claim_state_id"] is None:
+            if row["claim_state_id"] is None or row["concept_id"] is None:
                 continue
-            concept_row = conn.execute(
-                "SELECT concept_id FROM claim_state WHERE id = ?",
-                (int(row["claim_state_id"]),),
-            ).fetchone()
-            if not concept_row or concept_row["concept_id"] is None:
-                continue
-            cid = int(concept_row["concept_id"])
+            cid = int(row["concept_id"])
             returned_concept_ids.append(cid)
             if (
                 row["card_type"] == "must_retest"
@@ -1462,6 +1521,10 @@ def main() -> None:
     p_log.add_argument("--curriculum-unit", default="")
     p_log.add_argument("--answer-mode", default="")
     p_log.add_argument("--confidence-observed", default="")
+    p_log.add_argument("--priority", default="", help="Agent-asserted priority: urgent|high|medium|low (overrides heuristic)")
+    p_log.add_argument("--match-claim-state-id", type=int, default=None, help="Bind this answer to an existing open claim (agent-asserted recurrence)")
+    p_log.add_argument("--new-claim", action="store_true", help="Force a new claim_state even if a similar one exists")
+    p_log.add_argument("--repairs-claim-state-ids", default="", help="Comma-separated open claim_state ids this correct answer repairs")
 
     p_end = sub.add_parser("end-session")
     p_end.add_argument("--session", required=True)
@@ -1530,6 +1593,12 @@ def main() -> None:
                 curriculum_unit=args.curriculum_unit,
                 answer_mode=args.answer_mode,
                 confidence_observed=args.confidence_observed,
+                agent_priority=args.priority,
+                match_claim_state_id=args.match_claim_state_id,
+                force_new_claim=args.new_claim,
+                repairs_claim_state_ids=tuple(
+                    int(x) for x in args.repairs_claim_state_ids.split(",") if x.strip()
+                ),
             )
             print(f"OK exchange_id={exchange_id}")
         elif args.command == "end-session":
