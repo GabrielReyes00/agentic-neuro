@@ -364,11 +364,72 @@ def _doc_alias(doc_path: str) -> str:
 
 
 CURRICULUM_CATALOG_PATH = DATA_DIR / "acgme_curriculum.json"
-# Token-containment floor for accepting a catalog title as the canonical topic.
-# Below this we return None and let resolve_topic fall back to a low-confidence
-# generic slug — the explicit signal that the agent should disambiguate.
-CATALOG_MATCH_FLOOR = 0.6
+# F1 floor for accepting a catalog title as the canonical topic. Below this (or
+# with fewer than CATALOG_MIN_OVERLAP shared tokens) we return None and let
+# resolve_topic fall back to a low-confidence generic slug — the explicit signal
+# that the agent should disambiguate rather than accept a weak guess.
+CATALOG_MATCH_FLOOR = 0.5
+CATALOG_MIN_OVERLAP = 2
 _CATALOG_CACHE: list[tuple[str, str, set[str]]] | None = None
+
+# Topic matching keeps clinically meaningful words (management, grading, etc.)
+# that the global STOPWORDS set strips — those words are exactly what
+# distinguishes "tbi management" from "tbi imaging". Only true function words are
+# removed here.
+TOPIC_STOPWORDS = frozenset(
+    "the a an of in for with and or to on by is at as it its from that this "
+    "after before per via vs versus during over under into onto".split()
+)
+
+
+def _topic_tokens(text: str) -> set[str]:
+    normalized = _normalize(text).replace("-", " ").replace("/", " ")
+    return {w for w in normalized.split() if w not in TOPIC_STOPWORDS and len(w) > 1}
+
+
+# Migration path: study topics that existed under the previous hardcoded resolver
+# keep resolving to their established canonical slugs so historical learner state
+# is never fragmented. This is a small compatibility seed consulted before the
+# catalog; the catalog handles the long tail of new topics. Production already
+# stores these as topic_aliases, so this also covers fresh-DB / novel-phrasing.
+LEGACY_TOPIC_SEED: tuple[tuple[tuple[str, ...], TopicResolution], ...] = (
+    (("hypertension", "blood pressure", "bp"), TopicResolution(
+        "hypertension-management-neuro-emergencies", "Hypertension Management in Neuro Emergencies",
+        "vascular", ("hypertension management", "neuro icu hypertension", "bp management neuro icu",
+                     "htn neuro icu", "hypertension management in neuro emergencies"), 0.95)),
+    (("tbi", "traumatic brain injury"), TopicResolution(
+        "tbi-management", "TBI Management", "trauma",
+        ("tbi management", "traumatic brain injury management", "severe tbi"), 0.95)),
+    (("evd", "external ventricular"), TopicResolution(
+        "evd-management-icu", "EVD Management in ICU", "critical-care",
+        ("evd management in icu", "external ventricular drain management", "evd management"), 0.95)),
+    (("vasospasm", "dci"), TopicResolution(
+        "sah-vasospasm-management", "SAH Vasospasm Management", "vascular",
+        ("vasospasm after sah", "subarachnoid hemorrhage vasospasm", "dci management"), 0.9)),
+    (("sah", "subarachnoid"), TopicResolution(
+        "sah-management", "SAH Management", "vascular",
+        ("sah management", "subarachnoid hemorrhage management", "aneurysmal subarachnoid hemorrhage"), 0.85)),
+    (("long tract", "dcml", "spinothalamic", "corticospinal"), TopicResolution(
+        "long-tracts", "Long Tracts", "anatomy",
+        ("long tracts", "dcml", "spinothalamic tract", "corticospinal tract"), 0.9)),
+    (("neuroimaging", "traumatic tap", "xanthochromia"), TopicResolution(
+        "neuroimaging-sah-hemorrhage", "Neuroimaging SAH and Hemorrhage", "imaging",
+        ("neuroimaging lab 2", "traumatic tap vs sah", "sah stroke imaging vascular"), 0.85)),
+)
+
+
+def _resolve_legacy_seed(hay: str) -> TopicResolution | None:
+    """Migration path: map historical study-topic phrasings to established slugs."""
+    normalized = _normalize(hay)
+    hay_tokens = _topic_tokens(hay)
+    for triggers, resolution in LEGACY_TOPIC_SEED:
+        for trig in triggers:
+            if " " in trig:
+                if trig in normalized:
+                    return resolution
+            elif trig in hay_tokens:
+                return resolution
+    return None
 
 
 def _domain_from_catalog(domain_name: str) -> str:
@@ -399,7 +460,7 @@ def _load_curriculum_catalog() -> list[tuple[str, str, set[str]]]:
                 title = str(topic.get("title") or "").strip()
                 if not title:
                     continue
-                out.append((title, _domain_from_catalog(str(topic.get("domain") or "")), _tokens(title)))
+                out.append((title, _domain_from_catalog(str(topic.get("domain") or "")), _topic_tokens(title)))
     except (OSError, json.JSONDecodeError):
         out = []
     _CATALOG_CACHE = out
@@ -407,35 +468,45 @@ def _load_curriculum_catalog() -> list[tuple[str, str, set[str]]]:
 
 
 def _resolve_topic_patterns(hay: str) -> TopicResolution | None:
-    """Resolve a topic hint against the ACGME curriculum catalog.
+    """Resolve a topic hint: legacy migration seed first, then ACGME catalog.
 
-    Replaces the previous hardcoded if/elif chain. The catalog is data, not
-    judgment — when a hint clearly overlaps a curriculum title we canonicalize to
-    it; when overlap is weak we return None so the agent is asked to disambiguate
-    rather than silently accepting a guess.
+    Replaces the previous hardcoded if/elif chain. Resolution order:
+      1. Legacy seed — established study topics keep their canonical slugs so
+         historical learner state never fragments (migration path).
+      2. Catalog — data-driven match against curriculum titles, requiring both a
+         minimum shared-token count and an F1 floor so a single generic token
+         cannot over-match a long, unrelated title. Title coverage is scored too,
+         not just hint containment, which kills the "{tbi} -> long CT title" bug.
+    A weak match returns None so resolve_topic falls back to a low-confidence
+    generic slug — the explicit signal that the agent should disambiguate.
     """
-    hint_tokens = _tokens(hay)
-    if not hint_tokens:
+    seeded = _resolve_legacy_seed(hay)
+    if seeded:
+        return seeded
+    hint_tokens = _topic_tokens(hay)
+    if len(hint_tokens) < CATALOG_MIN_OVERLAP:
         return None
     best: tuple[float, str, str] | None = None
     for title, domain_tag, title_tokens in _load_curriculum_catalog():
         if not title_tokens:
             continue
         overlap = len(hint_tokens & title_tokens)
-        if not overlap:
+        if overlap < CATALOG_MIN_OVERLAP:
             continue
         containment = overlap / len(hint_tokens)
-        if containment >= CATALOG_MATCH_FLOOR and (best is None or containment > best[0]):
-            best = (containment, title, domain_tag)
+        coverage = overlap / len(title_tokens)
+        f1 = 2 * containment * coverage / (containment + coverage)
+        if f1 >= CATALOG_MATCH_FLOOR and (best is None or f1 > best[0]):
+            best = (f1, title, domain_tag)
     if best is None:
         return None
-    containment, title, domain_tag = best
+    f1, title, domain_tag = best
     return TopicResolution(
         _slug(title),
         _display(title),
         domain_tag,
         (_normalize(title),),
-        round(min(0.9, 0.6 + containment * 0.3), 3),
+        round(min(0.9, 0.6 + f1 * 0.3), 3),
     )
 
 

@@ -435,6 +435,20 @@ def build_curation_candidates(
                 "summaries authored in the same payload. Prefer supersede_summary_ids over duplicates. "
                 "Cap each pass at ~5 summaries and ~5 relationships."
             ),
+            "relationship_types": {
+                "confused_with": (
+                    "Symmetric. Assert only when evidence shows cross-contamination between the two "
+                    "concepts (the learner swaps them) or repeated misses on one whose corrections name "
+                    "the other. Surfaced at recall as a discrimination probe."
+                ),
+                "prerequisite": (
+                    "Directed: source must be mastered before target. Assert only when evidence shows the "
+                    "learner repeatedly fails the target AND the corrections point to an unmastered "
+                    "foundational concept (the source) — i.e. the surface miss is really an upstream gap. "
+                    "Set source = the foundation, target = the dependent concept; order is meaningful. "
+                    "Surfaced at recall so the agent can shore up the prerequisite before re-drilling the target."
+                ),
+            },
             "skill_weighting": {
                 "quick-answer": (
                     "Low-stakes reference capture. It records what the user asked and what was explained, "
@@ -513,15 +527,10 @@ def _validate_relationship(rel: dict[str, Any], idx: int) -> None:
         relation_type in ALLOWED_RELATION_TYPES,
         f"relationships[{idx}].relation_type must be one of {sorted(ALLOWED_RELATION_TYPES)}, got {relation_type!r}",
     )
-    # prerequisite is accepted by the schema for forward-compatibility but the
-    # retrieval surface (graph_signals) only traverses confused_with, so a
-    # prerequisite edge would persist invisibly. Reject it at the boundary until
-    # retrieval supports it, so the doctrine deferral is enforced, not just hoped.
-    _require(
-        relation_type != "prerequisite",
-        f"relationships[{idx}]: prerequisite edges are deferred — retrieval does not surface them yet, "
-        "so writing one is silently invisible. Use confused_with or omit.",
-    )
+    # prerequisite is directed: source is the foundational concept that must be
+    # mastered before target. confused_with is symmetric. Both are surfaced at
+    # retrieval (graph_signals), so both are writable. Directionality matters for
+    # prerequisite, so source/target order is meaningful and must not be swapped.
     src = _validate_int(rel.get("source_concept_id"), f"relationships[{idx}].source_concept_id")
     tgt = _validate_int(rel.get("target_concept_id"), f"relationships[{idx}].target_concept_id")
     _require(src != tgt, f"relationships[{idx}]: self-edge forbidden (source == target == {src})")
@@ -882,20 +891,35 @@ def graph_signals_for_summary(
     per_concept_cap: int = 3,
     strength_floor: float = 0.6,
 ) -> list[dict[str, Any]]:
+    """Surface graph neighbors of the top must_retest concepts.
+
+    Two edge types are surfaced, each carrying a ``direction`` the agent uses to
+    interpret it:
+
+    - ``confused_with`` (symmetric): the neighbor is a discrimination probe — when
+      you finish drilling the current concept, contrast it against this neighbor.
+      direction is always ``bidirectional``.
+    - ``prerequisite`` (directed): source must be mastered before target. When the
+      current must_retest concept is the *target*, the neighbor is an upstream
+      foundation (``prerequisite_of_current``) — a repeated miss here may really be
+      an unmastered prerequisite, so check it first. When the current concept is
+      the *source*, the neighbor is downstream (``depends_on_current``) — mastering
+      the current concept unblocks it.
+    """
     concept_ids = list(dict.fromkeys(int(c) for c in must_retest_concept_ids))
     if not concept_ids:
         return []
     signals: list[dict[str, Any]] = []
     for cid in concept_ids:
         rows = conn.execute(
-            """SELECT cr.id, cr.source_concept_id, cr.target_concept_id, cr.strength,
-                      cr.evidence_summary_id, cr.updated_at,
+            """SELECT cr.id, cr.relation_type, cr.source_concept_id, cr.target_concept_id,
+                      cr.strength, cr.evidence_summary_id, cr.updated_at,
                       cs.display_name AS source_name,
                       ct.display_name AS target_name
                  FROM concept_relationships cr
                  JOIN concepts cs ON cs.id = cr.source_concept_id
                  JOIN concepts ct ON ct.id = cr.target_concept_id
-                 WHERE cr.relation_type = 'confused_with'
+                 WHERE cr.relation_type IN ('confused_with', 'prerequisite')
                    AND cr.strength >= ?
                    AND (cr.source_concept_id = ? OR cr.target_concept_id = ?)
                  ORDER BY cr.strength DESC, cr.updated_at DESC
@@ -903,14 +927,20 @@ def graph_signals_for_summary(
             (strength_floor, cid, cid, per_concept_cap),
         ).fetchall()
         for r in rows:
-            other_id = int(r["target_concept_id"]) if int(r["source_concept_id"]) == cid else int(r["source_concept_id"])
-            other_name = r["target_name"] if int(r["source_concept_id"]) == cid else r["source_name"]
+            is_source = int(r["source_concept_id"]) == cid
+            other_id = int(r["target_concept_id"]) if is_source else int(r["source_concept_id"])
+            other_name = r["target_name"] if is_source else r["source_name"]
+            if r["relation_type"] == "prerequisite":
+                direction = "depends_on_current" if is_source else "prerequisite_of_current"
+            else:
+                direction = "bidirectional"
             signals.append({
                 "relationship_id": int(r["id"]),
                 "from_concept_id": cid,
                 "to_concept_id": other_id,
                 "to_concept": other_name,
-                "relation_type": "confused_with",
+                "relation_type": r["relation_type"],
+                "direction": direction,
                 "strength": float(r["strength"]),
                 "evidence_summary_id": int(r["evidence_summary_id"]) if r["evidence_summary_id"] is not None else None,
             })
