@@ -47,7 +47,13 @@ cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
 python3 src/lance_retriever.py compare "<focused clinical query>" --stdout [--no-frontier]
 ```
 
-Read the retrieved passages. Use them to enrich the lecture with specific textbook citations, thresholds, and operative details. Cite sources inline when they add authority (e.g., "per Youmans Ch. 37"). RAG supplements your clinical knowledge — do not parrot passages verbatim or let retrieval artifacts shape the lecture structure.
+Read the retrieved passages. Use them to enrich the lecture with specific textbook citations, thresholds, and operative details. RAG supplements your clinical knowledge — do not parrot passages verbatim or let retrieval artifacts shape the lecture structure.
+
+**Provenance tiering — confident, but honest about what to verify.** Distinguish, inline, what the retrieved passages support from what is your clinical knowledge:
+- **Source-grounded** — supported by a retrieved passage. Cite it inline (e.g., "per Youmans Ch. 37"). Confirm the passage is actually about *this* condition before borrowing its numbers — do not transfer a related condition's statistic and attach a real citation to it.
+- **Clinical knowledge — verify** — standard practice not located in the retrieved passages. State it confidently (a senior at the workstation does not hedge), but mark it as clinical knowledge and never attach "per Youmans" to it. Flag high-stakes specifics with `⚠` so the resident double-checks before acting: drug/dose/route, physiologic thresholds, correction-rate ceilings, time windows.
+
+"No hedging" means no vague "it depends" — it does **not** mean hiding provenance. Give the answer with authority, then label whether it is textbook-grounded or clinical-knowledge-to-verify. This is professional accuracy, not equivocation.
 
 ### Step 3: Vault scan for merge targets and wikilinks (silent)
 
@@ -107,6 +113,8 @@ Two independent sources of Anki cards, both using `anki_queue.py enqueue` per th
 
 **Source 1: Lecture content cards (3-8 cards).** Generated after the lecture, targeting clinically important content regardless of user testing: thresholds, drug names/doses/routes, imaging sequences and findings, physical exam maneuvers, classifications, time windows, monitoring parameters. These facts need to survive beyond the single consult exposure. Use `--exchange-id 0` for lecture content cards (they are not tied to a specific Q&A exchange).
 
+Respect provenance when carding: prefer source-grounded facts for Anki. If a clinically important specific is in the **clinical knowledge — verify** tier (a `⚠`-flagged dose, threshold, or time window not found in the retrieved passages), do not encode it as a settled authoritative answer — either omit it, or phrase the card so the verify caveat survives (e.g., the answer states the commonly-taught value and that it should be confirmed against a primary source). Never let a card assert an unverified number as established fact.
+
 **Source 2: Verification question cards (1-3 per miss).** Generated after each `log-answer` where `correct < 2` or where the correct answer missed a critical nuance. These cards encode the misconception-correction pair.
 
 Card quality follows `.agents/shared/commands/anki-card-quality.md` plus the shared Anki Card Doctrine. Flush at session end.
@@ -126,6 +134,8 @@ Content (agent selects what applies — no fixed scaffold):
 - Mastery Objectives (3-7 testable objectives that define what the resident should be able to do after the consult)
 - Related in This Vault (wikilinks verified against Step 2 scan)
 - YAML at bottom
+
+Carry the same provenance tiering into the pocket card: source-grounded points cite their source; clinical-knowledge points are labelled and high-stakes specifics carry a `⚠` verify flag. Never attach a textbook citation to a number that did not come from the retrieved passages. Add `internal_knowledge_used: true|false` and a one-line `provenance:` summary to the bottom YAML.
 
 **Merge semantics:** If `Consults/<Topic>.md` already exists, read the file and append an `## Encounter — YYYY-MM-DD` section with the new teaching points. Do not overwrite existing content.
 
