@@ -386,11 +386,11 @@
 
 <!-- ── ROW 4: Memory Layer ── -->
 <div class="node theme-memory" style="left:60px;top:460px;width:300px;"
-  data-tip="study_memory.py — 6 SQLite tables: sessions, exchanges, concepts, errors, doc_progress, aliases. CLI: recall, prep, log-answer, confusions, end-session, status, add-alias. Abbreviation-aware (EVD→external ventricular drain). Mode-conditional context pull prevents topic drift.">
+  data-tip="study_memory.py — Claim-centered learner memory. Core tables include topics, concepts, sessions, exchanges, claim_results, claim_state, retrieval_cards, memory_summaries, and concept_relationships. CLI: summary, resolve-topic, log-answer, end-session, curate-candidates, apply-curation, status. Supports topic-scoped vs memory-driven retrieval, artifact anchors, explicit claim repair flags, and confused_with/prerequisite graph signals.">
   <div class="node-title">study_memory.py</div>
   <div class="node-body">
-    recall · prep · log-answer · confusions · end-session<br>
-    6 tables: sessions, exchanges, concepts, errors, doc_progress, aliases<br>
+    summary · resolve-topic · log-answer · end-session · curation<br>
+    claim_state · retrieval_cards · curated_summaries · graph_signals<br>
     Mode-conditional: topic-anchored vs memory-driven
   </div>
   <span class="node-badge badge-sqlite">sqlite</span>
@@ -399,9 +399,9 @@
 
 <!-- ── Data: study_memory.db ── -->
 <div class="node theme-data" style="left:80px;top:720px;width:180px;"
-  data-tip="data/study_memory.db — SQLite database. Stores session metadata, every Q&A exchange (with correctness 0/1/2), concept mastery state, open errors, doc progress, and medical abbreviation aliases.">
+  data-tip="data/study_memory.db — SQLite database. Stores sessions, every Q&A exchange, assessed claim results, compact claim_state, retrieval cards, curated summaries, and confused_with/prerequisite concept relationships. Artifact-generation anchors are discoverability records, not learner mastery.">
   <div class="node-title">study_memory.db</div>
-  <div class="node-body">sessions · exchanges · concepts · errors · doc_progress · aliases</div>
+  <div class="node-body">sessions · exchanges · claims · cards · summaries · graph</div>
   <span class="node-badge badge-sqlite">sqlite</span>
 </div>
 
@@ -410,7 +410,7 @@
   style="left:400px;top:720px;width:200px;"
   data-tip="study_memory.py summary — Claim-centered learner-memory CLI. Reads study_memory.db and returns topic-scoped or global retrieval summaries for agents.">
   <div class="node-title">study_memory.py summary</div>
-  <div class="node-body">Dashboard.md · ACGME Readiness.md · Canvases · Concepts/INDEX.md<br>Fires on every end-session. Pure I/O.</div>
+  <div class="node-body">cards · counts · omitted · retrieval_guidance<br>optional curated_summaries + graph_signals</div>
   <span class="node-badge badge-python">python</span>
 </div>
 

@@ -304,7 +304,7 @@ cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate &&
 # study_memory.py — active session memory (see §6 for full usage)
 summary --topic "T" --limit 8 --scaffold-limit 2 --include-curated
 summary --limit 12 --scaffold-limit 0 --include-curated
-log-answer --session "TS" --topic "T" --concept "C" --question "Q" --answer "A" --correct 0|1|2 [--correction "..."] [--error-type "..."] [--misconception "..."] [--doc "..."] [--skill "..."]
+log-answer --session "TS" --topic "T" --concept "C" --question "Q" --answer "A" --correct 0|1|2 [--correction "..."] [--error-type "..."] [--misconception "..."] [--doc "..."] [--skill "..."] [--tested-claim "..."] [--learner-claim "..."] [--missing-edge "..."] [--corrected-rule "..."] [--clinical-consequence "..."] [--retest-prompt-shape "..."] [--priority urgent|high|medium|low] [--match-claim-state-id ID|--new-claim] [--repairs-claim-state-ids "ID,ID"]
 end-session --session "TS" --summary "..." --next-strategy "..." --json
 curation-status
 curate-candidates [--mode compact|detailed] [--topic "T"] [--recent-sessions N] [--limit N]

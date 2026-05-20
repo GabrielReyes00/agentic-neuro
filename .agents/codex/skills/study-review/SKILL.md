@@ -16,4 +16,4 @@ When this skill triggers:
 3. Do not duplicate or reinterpret the canonical command here.
 4. If the shared command conflicts with general agent posture, the shared command wins for `/study-review`.
 
-Codex-specific note: Codex does not use the Gemini `BeforeAgent`/`AfterAgent` hook pair. This repo provides `src/codex_memory_after.py` as a Codex after-turn bridge: it reads Codex rollout transcripts, logs hook-parseable graded replies, queues study-review Anki candidates, and captures repaired transfer when detectable. Pre-session semantic planning still comes from `src/study_review_workflow.py start`; until Codex exposes a supported before-turn `additionalContext` hook, Codex agents must explicitly use the emitted plan/context at session start.
+Codex-specific note: there is no Gemini/Claude autologging hook in this runtime unless one is explicitly configured. Follow the shared contract directly: run memory summary at session start, log every evaluated answer with the current claim-state judgment flags, enqueue Anki cards per turn when warranted, and close with `end-session --json`.

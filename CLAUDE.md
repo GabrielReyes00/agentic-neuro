@@ -308,7 +308,7 @@ Follow `.agents/shared/commands/study-review.md` for the full workflow and `.age
 # study_memory.py — active session memory (see §7d for full usage)
 summary --topic "T" --limit 8 --scaffold-limit 2 --include-curated  # topic-specific retrieval (skills always pass --include-curated)
 summary --limit 12 --scaffold-limit 0 --include-curated             # MEMORY-DRIVEN CUSTOM REVIEW ONLY
-log-answer --session "TS" --topic "T" --concept "C" --question "Q" --answer "A" --correct 0|1|2 [--correction "..."] [--error-type "..."] [--misconception "..."] [--doc "..."] [--skill "..."]
+log-answer --session "TS" --topic "T" --concept "C" --question "Q" --answer "A" --correct 0|1|2 [--correction "..."] [--error-type "..."] [--misconception "..."] [--doc "..."] [--skill "..."] [--tested-claim "..."] [--learner-claim "..."] [--missing-edge "..."] [--corrected-rule "..."] [--clinical-consequence "..."] [--retest-prompt-shape "..."] [--priority urgent|high|medium|low] [--match-claim-state-id ID|--new-claim] [--repairs-claim-state-ids "ID,ID"]
 end-session --session "TS" --summary "..." --next-strategy "..." --json   # --json surfaces curation.recommended for the optional post-flush curation pass
 status
 resolve-topic --topic "T" [--doc "<folder>/X.md"]

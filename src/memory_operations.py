@@ -456,7 +456,7 @@ def build_curation_candidates(
                     "as proof of durable knowledge, an open error, or a session-level pattern by itself. "
                     "Use it as topic/concept context, weak supporting evidence, or a clue for adjacent future probes. "
                     "Require independent non-quick-answer evidence before creating high-importance summaries "
-                    "or confused_with graph edges from it."
+                    "or confused_with/prerequisite graph edges from it."
                 )
             },
             "doctrine_ref": ".agents/shared/commands/learning-session-contract.md#curation-doctrine",
