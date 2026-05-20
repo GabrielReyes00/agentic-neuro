@@ -294,6 +294,7 @@ where `<Title>` is the operative guide filename without `.md`.
 ```
 
 - Cite sources inline where they add specificity, especially textbook chapter/page references and any journal evidence that changes indications or outcomes.
+- Provenance tiering is mandatory (see `intraoperative-guide-synthesis.md`): every clinical claim is **RAG-grounded** (cited), **model knowledge — verified** (confirming source located, cited), or **model knowledge — verify** (labelled inline, high-stakes specifics flagged with `⚠`). Never attach a textbook/PMID citation to model-knowledge content. The expert reviewer enforces this with a provenance-integrity check.
 - Use wikilinks only to files verified in the vault scan.
 - Use restrained Obsidian-native formatting for readability: callouts, compact tables, and short phase labels are encouraged when they make a long guide easier to rehearse. Do not add decorative formatting that distracts from operative content.
 - Prefer callouts for high-signal material:

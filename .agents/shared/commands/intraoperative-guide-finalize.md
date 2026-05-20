@@ -28,12 +28,21 @@ ls "data/Sessions/<Title>/verdicts/" 2>/dev/null
 
 If any required verdict file is missing, the workflow is incomplete. Do **not** write the real vault, memory, concepts, or Anki artifacts. Surface the missing verdict to the user and return to the appropriate checkpoint.
 
+## Bottom YAML Parsing (robust)
+
+When locating and parsing the bottom YAML block, scan upward from the **last**
+`---` line to the preceding `---` (right-split), rather than splitting on the
+first `---` encountered. Guides may legitimately contain `---`-like sequences or
+callout rules in the body; a right-split scan is immune to those and prevents
+YAML mangling on long guides. Confirm the recovered block contains
+`internal_knowledge_used` and the one-line `provenance:` summary before writing.
+
 ## Preconditions
 
 - The verdict chain above is complete.
 - Every wikilink in the guide was verified against the real vault scan.
 - The guide has no H1 and no top YAML.
-- Bottom YAML metadata is present.
+- Bottom YAML metadata is present, including `internal_knowledge_used` and a one-line `provenance:` summary.
 - `## Mastery Objectives` and `## Related in This Vault` are present before bottom YAML.
 - `## Pre-Scrub Mental Rehearsal` is present near the end of the guide for intermediate and complex procedures.
 

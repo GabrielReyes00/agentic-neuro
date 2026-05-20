@@ -55,10 +55,40 @@ WEAK_OBJECTIVE_VERB_RE = re.compile(
     r"^(?:\*\*)?(?:know|understand|appreciate|be familiar with|review|learn)\b",
     re.IGNORECASE,
 )
-SOURCE_CITE_RE = re.compile(
-    r"\((?:[^)]*(?:Youmans|Greenberg|Rhoton|Atlas|Operative Neurosurgical Techniques|Handbook|PMID|DOI)[^)]*)\)",
-    re.IGNORECASE,
-)
+# Citation source allowlist. Populated from the live RAG corpus by
+# scripts that write data/rag_textbook_sources.json (regenerate when the corpus
+# changes). Falls back to a built-in keyset if the file is absent so the
+# validator never hard-fails on a fresh checkout.
+_SOURCE_ALLOWLIST_PATH = REPO_ROOT / "data" / "rag_textbook_sources.json"
+_FALLBACK_CITATION_KEYS = [
+    "Youmans", "Greenberg", "Rhoton", "Atlas Neurosurgical", "Atlas Emergency",
+    "Operative Neurosurgical", "Fundamentals", "Essential Neurosurgery",
+    "Comprehensive Neurosurgical", "Cranial Anatomy", "Brain Anatomy",
+    "Imaging Anatomy", "Neuroanatomy Clinical", "Neuro ICU", "Neurosurgery Rounds",
+    "Neurosurgery Board", "Intensive Neurosurgery", "Peripheral Nerve",
+    "Handbook", "PMID", "DOI",
+]
+
+
+def _load_citation_keys() -> list[str]:
+    try:
+        data = json.loads(_SOURCE_ALLOWLIST_PATH.read_text(encoding="utf-8"))
+        keys = data.get("citation_keys") or []
+        return keys or _FALLBACK_CITATION_KEYS
+    except (OSError, ValueError):
+        return _FALLBACK_CITATION_KEYS
+
+
+def _build_source_cite_re(keys: list[str]) -> re.Pattern[str]:
+    # Accept both parenthetical "(...)" and bracketed "[...]" citations whose
+    # delimited span names any known RAG source key. [^)\]] keeps the match
+    # inside a single delimiter pair.
+    alternation = "|".join(re.escape(k) for k in keys)
+    return re.compile(rf"[\(\[](?:[^)\]]*(?:{alternation})[^)\]]*)[\)\]]", re.IGNORECASE)
+
+
+CITATION_KEYS = _load_citation_keys()
+SOURCE_CITE_RE = _build_source_cite_re(CITATION_KEYS)
 WIKILINK_RE = re.compile(r"\[\[([^\]]+)\]\]")
 YAML_COMPLEXITY_RE = re.compile(r"^\s*complexity\s*:\s*([a-zA-Z_-]+)\s*$", re.MULTILINE)
 

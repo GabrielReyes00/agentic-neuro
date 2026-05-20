@@ -123,6 +123,14 @@ Approve only if the draft satisfies every block below. Each block is a first-pri
 - Retrieved textbooks or literature support claims where specificity, controversy, outcomes, approach selection, or modern technique matters.
 - At least one outcomes citation reflects modern frontier literature for intermediate or complex procedures.
 
+### Provenance Integrity (cited claims must be source-backed)
+This is the semantic check that makes provenance tiering trustworthy; agent honesty is not the mechanism. Run it as a deliberate pass over the draft, not a glance. Catch three failure classes, all blocking:
+- **Cited but unsupported.** For every claim tagged **RAG-grounded** or carrying a textbook/PMID citation, confirm the cited source card actually supports it. If not, it is a mislabel — repair path "downgrade to model knowledge — verify, or locate a real source."
+- **Citation on model knowledge.** Confirm model-knowledge content carries **no** textbook/PMID citation, and that high-stakes specifics in the **model knowledge — verify** tier (doses, physiologic thresholds, resection-extent measurements, hardware sizes, quantitative outcomes) are flagged with `⚠`.
+- **Untiered substantive claim.** Every substantive clinical claim must carry a tier — either a source citation or an inline model-knowledge label. A confident, unlabelled clinical assertion that is not in the retrieved sources (e.g., a stated nerve's motor-supply list, a positioning angle, a dosing range presented as plain fact) is a mislabel: it reads with sourced authority but is unverified. Require it to be cited if a source exists, or labelled **model knowledge — verify** (with `⚠` if high-stakes).
+- Spot-check at minimum every quantitative claim (numbers, thresholds, percentages, doses) and every claim in the operative-walkthrough, anatomy, and anesthetic sections, since those are where mislabeled or untiered specifics do the most harm.
+- Record the result in the verdict JSON `provenance_check` block. Any of the three classes is a blocking gap.
+
 ### Coverage Matrix Completeness (85% target)
 - Every Coverage Matrix block from decomposition is addressable in the draft. Compact treatment is fine when the block is genuinely simple for the procedure; silent omission is a blocking gap.
 
@@ -214,6 +222,13 @@ Format:
   "candidate_gaps_surfaced": <integer, ≥3 on cycle 1>,
   "coverage_matrix_blocks_satisfied": <integer>,
   "coverage_matrix_blocks_total": <integer>,
+  "provenance_check": {
+    "cited_claims_verified": <integer>,
+    "mislabels_found": <integer>,
+    "mislabels": [
+      {"claim": "...", "issue": "cited but unsupported | citation on model knowledge | unflagged high-stakes specific | untiered substantive claim", "required_fix": "downgrade to model knowledge — verify | locate source | add ⚠ flag | assign a provenance tier"}
+    ]
+  },
   "blocking_gaps": [
     {
       "gap": "...",

@@ -116,6 +116,21 @@ If RAG was used, include this exact callout immediately above the first H2:
 > Textbook retrieval was used to ground operative sequence, anatomy, equipment, pitfalls, and bail-outs.
 ```
 
+## Provenance Tiering (reader-facing)
+
+The reader must be able to tell which claims are grounded in retrieved sources and which are expert synthesis the reader should confirm before trusting operatively. The verdict chain records provenance for audit; this surfaces it inside the guide. Every clinical claim carries one of three provenance tiers:
+
+- **RAG-grounded** — supported by a retrieved source card. Cite the source inline (textbook chapter/page or PMID) exactly as before.
+- **Model knowledge — verified** — not in the retrieved RAG, but a confirming source was located during gap-fill. Cite that source.
+- **Model knowledge — verify** — not in retrieved RAG and no source located. Label it inline as model knowledge, and flag high-stakes specifics with a `⚠` so the reader verifies before relying on them: drug doses, MAP/CPP/PaCO2 or other physiologic thresholds, resection-extent measurements, hardware sizes, and quantitative outcomes/percentages.
+
+Hard rules:
+
+- **Never attach a textbook or PMID citation to model-knowledge content.** False provenance is a synthesis failure, not a stylistic choice — it makes unverified content indistinguishable from sourced content, which is exactly the trust the reader relies on.
+- Tier per claim, not per section. A paragraph may mix a grounded fact and a labelled model-knowledge specific; use a compact inline tag (e.g., a leading "(model knowledge — verify)" clause or a section-level label when an entire block is model knowledge). Do not bloat the prose to label it.
+- Tiering does **not** reduce depth. Step-rationale chains, mechanism-linked pitfalls, and executable bail-outs remain mandatory; the tier labels the provenance of that same content. Labelling a section "model knowledge — verify" is never an excuse to make it thin.
+- Set `internal_knowledge_used: true|false` in the bottom YAML and include a one-line `provenance:` summary mirroring the coverage ledger.
+
 ## Writing Rules
 
 - No H1 title; the filename is the title.
