@@ -2,7 +2,7 @@
 
 Focused, expert-level clinical teaching triggered by a knowledge gap on the wards. The interaction model is a curbside consult with a senior resident or attending — a brief, dense lecture on a specific topic followed by verification questions, not a Socratic teaching session.
 
-Follow `.agents/shared/commands/learning-session-contract.md` for memory bookkeeping (memory summary, log-answer, end-session, Anki queue) and entry formatting. The teaching principles below are specific to `/consult` and override the shared contract's Socratic teaching principles where they conflict.
+Follow `.agents/shared/commands/learning-session-contract.md` for the module map. Use `memory-operations.md` for memory bookkeeping and entry formatting, `memory-retrieval.md` for summary interpretation, `anki-session-workflow.md` plus `anki-card-quality.md` for Anki, and `memory-curation.md` for optional post-flush curation. The teaching principles below are specific to `/consult` and override Socratic teaching defaults where they conflict.
 
 ---
 
@@ -69,7 +69,7 @@ If a `Consults/<Topic>.md` already exists, plan to append an encounter section r
 
 ## Teaching Principles (specific to /consult)
 
-These override the shared contract's Socratic defaults:
+These override `adaptive-teaching-doctrine.md` Socratic defaults:
 
 1. **Lecture-first, verify-second.** Deliver the information clearly and completely, then verify understanding. Do not withhold information behind questions.
 2. **No calibration questions.** Do not open with "what do you know about X?" The resident is asking because they need the answer. For new topics, provide 1-2 sentences of foundational framing. For returning topics, skip to operational details. Start teaching immediately.
@@ -78,7 +78,7 @@ These override the shared contract's Socratic defaults:
 5. **Complete content regardless of memory state.** Memory shapes how you teach, never what you teach. Every consult delivers the full applicable knowledge.
 6. **Speak like a senior at the workstation.** Direct, confident, specific. No hedging. No "it depends" without then saying what it depends on and what to do in each case.
 
-The shared Adaptive Teaching Doctrine applies to verification questions and the future-study handoff, not to the initial consult lecture. Do not turn the consult into a Socratic session before delivering the answer.
+`adaptive-teaching-doctrine.md` applies to verification questions and the future-study handoff, not to the initial consult lecture. Do not turn the consult into a Socratic session before delivering the answer.
 
 ---
 
@@ -109,7 +109,7 @@ After the lecture, test the critical decision points. Application-oriented, not 
 
 ## Anki Card Generation — Dual Source
 
-Two independent sources of Anki cards, both using `anki_queue.py enqueue` per the shared contract:
+Two independent sources of Anki cards, both using `anki_queue.py enqueue` per `anki-session-workflow.md`:
 
 **Source 1: Lecture content cards (3-8 cards).** Generated after the lecture, targeting clinically important content regardless of user testing: thresholds, drug names/doses/routes, imaging sequences and findings, physical exam maneuvers, classifications, time windows, monitoring parameters. These facts need to survive beyond the single consult exposure. Use `--exchange-id 0` for lecture content cards (they are not tied to a specific Q&A exchange).
 
@@ -117,7 +117,7 @@ Respect provenance when carding: prefer source-grounded facts for Anki. If a cli
 
 **Source 2: Verification question cards (1-3 per miss).** Generated after each `log-answer` where `correct < 2` or where the correct answer missed a critical nuance. These cards encode the misconception-correction pair.
 
-Card quality follows `.agents/shared/commands/anki-card-quality.md` plus the shared Anki Card Doctrine. Flush at session end.
+Card quality follows `.agents/shared/commands/anki-card-quality.md`; queue behavior follows `.agents/shared/commands/anki-session-workflow.md`. Queue review/check/flush happens after `end-session --json` in the Finish order below.
 
 ---
 
@@ -153,9 +153,7 @@ Carry the same provenance tiering into the pocket card: source-grounded points c
 
 1. **Write the pocket card** to `Consults/<Topic Title>.md` (or append if merge target exists). No H1, YAML at bottom.
 
-2. **Flush Anki queue** — review, advisory quality/overlap check, flush per shared contract.
-
-3. **End session** with a specific `--next-strategy`:
+2. **End session** with a specific `--next-strategy`:
 
 ```bash
 cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
@@ -166,15 +164,19 @@ python3 src/study_memory.py end-session \
   --json
 ```
 
-Read the JSON output silently. If `curation.recommended` is `true`, follow the Optional Curation Pass in the shared learning contract after Anki flush.
-
 The `--next-strategy` should name what's worth studying deeper. Examples:
 GOOD: "Drill vasospasm protocol details and triple-H therapy parameters; verify sodium correction rate safety limits in a clinical vignette."
 BAD: "Continue studying this topic."
 
-4. **Unknown-unknowns** — surface 2-3 adjacent topics the resident should know about but didn't ask about. One line each, no expansion unless requested. These become future `/consult` or `/study-review` candidates.
+Read the JSON output silently and remember whether `curation.recommended` is `true`.
 
-5. **Surface to user**: one-line summary, vault file path, Anki card count, unknown-unknowns list.
+3. **Flush Anki queue** — review, advisory quality/overlap check, flush per `anki-session-workflow.md`.
+
+4. **Optional curation** — if the remembered `curation.recommended` flag is `true`, follow `memory-curation.md` after Anki flush.
+
+5. **Unknown-unknowns** — surface 2-3 adjacent topics the resident should know about but didn't ask about. One line each, no expansion unless requested. These become future `/consult` or `/study-review` candidates.
+
+6. **Surface to user**: one-line summary, vault file path, Anki card count, unknown-unknowns list.
 
 ---
 

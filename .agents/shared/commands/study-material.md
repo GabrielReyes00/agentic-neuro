@@ -2,7 +2,7 @@
 
 Use for explicit file-based study requests from PDF, PPTX, or vault markdown. Do not use this for general questions or intern simulation.
 
-Follow `.agents/shared/commands/learning-session-contract.md`.
+Follow `.agents/shared/commands/learning-session-contract.md` for the module map. Use `memory-operations.md`, `memory-retrieval.md`, `adaptive-teaching-doctrine.md`, `anki-session-workflow.md`, and `anki-card-quality.md` as the focused sources of truth.
 
 ## Phase 1: Generate Material
 
@@ -175,7 +175,7 @@ Escalate out of Rapid Review only when earned:
 - Gabriel asks to go deeper
 - schema-level mismatch, not just a missing isolated fact
 
-When escalating, name the reason briefly and keep the repair bounded. Choose the specific repair move needed for the miss type. Memory logging captures the outcome via the shared contract's `log-answer` with `--correct`, `--error-type`, `--misconception`, and `--correction` — these fields are the durable record of what happened and why.
+When escalating, name the reason briefly and keep the repair bounded. Choose the specific repair move needed for the miss type. Memory logging captures the outcome via `memory-operations.md` `log-answer` fields: `--correct`, `--error-type`, `--misconception`, and `--correction`. These fields are the durable record of what happened and why.
 
 ### Deep Understanding Mode
 
@@ -193,9 +193,9 @@ Log answers via the shared memory logging contract. The `--correct`, `--error-ty
 
 Drill one question at a time:
 
-Follow the Cognitive Friction Protocol from the shared learning contract. In interactive drill mode, show only the question stem and the immediate task. Do not print the answer, `<details>` content, explanation, named finding, or source context until after Gabriel answers or explicitly asks to reveal it.
+Follow `adaptive-teaching-doctrine.md`. In interactive drill mode, show only the question stem and the immediate task. Do not print the answer, `<details>` content, explanation, named finding, or source context until after Gabriel answers or explicitly asks to reveal it.
 
-After Gabriel answers, choose the post-answer behavior from the selected study mode. In Deep Understanding mode, follow the teaching principles in the shared contract: reveal progressively, correct with minimum effective explanation, pull deeper with follow-ups. In Rapid Review mode, reveal only enough to grade the answer and maintain momentum unless an escalation trigger fires. Do not dump all nearby essential material from the Study Material note after a shallow correct answer. Save the broader map for a natural boundary, a miss requiring teaching, an explicit reveal request, or a Deep Understanding session.
+After Gabriel answers, choose the post-answer behavior from the selected study mode. In Deep Understanding mode, follow `adaptive-teaching-doctrine.md`: reveal progressively, correct with minimum effective explanation, pull deeper with follow-ups. In Rapid Review mode, reveal only enough to grade the answer and maintain momentum unless an escalation trigger fires. Do not dump all nearby essential material from the Study Material note after a shallow correct answer. Save the broader map for a natural boundary, a miss requiring teaching, an explicit reveal request, or a Deep Understanding session.
 
 | Outcome | Response |
 |---|---|
@@ -215,4 +215,4 @@ At section boundaries, use the compression card if it fits the source: one-breat
 
 ## Finish
 
-Run `study_memory.py end-session` with a specific `--next-strategy` for the next drill on this document. Follow the **Post-Session Integrity Verification** protocol from the shared contract. Then follow the **Anki Queue Validation and Flush** protocol — generate cards for incorrect, partial, and high-yield exchanges using `.agents/shared/commands/anki-card-quality.md`, then flush. Clean up `data/Sessions/` temps.
+Run `study_memory.py end-session` with a specific `--next-strategy` for the next drill on this document. Follow post-session integrity verification from `memory-operations.md`. Then follow queue validation and flush from `anki-session-workflow.md`; generate cards for incorrect, partial, and high-yield exchanges using `.agents/shared/commands/anki-card-quality.md`. Clean up `data/Sessions/` temps.

@@ -10,7 +10,12 @@ The canonical workflow contracts live in `.agents/shared/commands/`. Codex skill
 Codex CLI slash commands are exposed through the repo-local plugin at `plugins/agentic-neuro/commands/`, registered by `.agents/plugins/marketplace.json`. The command files are thin wrappers around the shared contracts; do not duplicate workflow logic there. Codex skills are still useful for natural-language triggering, but they are not slash commands by themselves.
 
 Key shared contracts:
-- `.agents/shared/commands/learning-session-contract.md` — memory operations, Adaptive Teaching Doctrine, Anki Card Doctrine, session-end integrity, and shared teaching behavior.
+- `.agents/shared/commands/learning-session-contract.md` — thin orchestration index for learning workflows.
+- `.agents/shared/commands/memory-operations.md` — learner-memory reads/writes, session start/end, integrity checks, entry formatting.
+- `.agents/shared/commands/memory-retrieval.md` — how to interpret `cards`, `curated_summaries`, `graph_signals`, `counts`, `omitted`, and `retrieval_guidance`.
+- `.agents/shared/commands/memory-curation.md` — optional post-flush curated summaries and concept graph edges.
+- `.agents/shared/commands/adaptive-teaching-doctrine.md` — cognitive-friction teaching behavior, repair/retest logic, and learner posture.
+- `.agents/shared/commands/anki-session-workflow.md` — per-answer Anki decisions, queue review/check/flush.
 - `.agents/shared/commands/anki-card-quality.md` — short card-quality, cloze, deck taxonomy, and duplicate-judgment rules for all Anki creation/review.
 - `.agents/shared/commands/anki-deck-maintenance.md` — separate live Anki deck rewrite/reorganization workflow; Anki is ground truth and Chroma is rebuilt from Anki.
 - `.agents/shared/commands/study-review.md` — doc-anchored and memory-driven review.
@@ -56,55 +61,14 @@ cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && <command>
 
 ## Memory Contract
 
-The active long-term memory system is the claim-centered learner model at `data/study_memory.db`, accessed only through `src/study_memory.py`. The claim-centered memory database is the only active learner-memory store. There is no dual-write workflow.
+The active long-term memory system is the claim-centered learner model at `data/study_memory.db`, accessed only through `src/study_memory.py`; there is no dual-write workflow.
 
-`study_memory.py summary` is a staged retrieval interface, not a full dump. Agents must read `counts`, `omitted`, and `retrieval_guidance`; if high-signal cards were omitted, run the suggested expansion before teaching. Expand scaffold cards only when needed for coverage mapping or transfer-question premises.
+Detailed memory mechanics now live in focused modules:
+- Use `.agents/shared/commands/memory-operations.md` for session start, `summary`, `log-answer`, `end-session`, integrity checks, and entry formatting.
+- Use `.agents/shared/commands/memory-retrieval.md` for interpreting `cards`, `curated_summaries`, `graph_signals`, `counts`, `omitted`, and `retrieval_guidance`.
+- Use `.agents/shared/commands/memory-curation.md` for the optional post-Anki curation pass.
 
-Context-pulling is mode-conditional. **Topic-anchored** sessions (user named a topic or document) use only topic-scoped memory summary; **memory-driven custom review** sessions (no named topic) use global memory summary.
-
-Skills always pass `--include-curated` at session start. The flag adds two top-level keys (`curated_summaries`, `graph_signals`) — agent-authored cross-session synthesis plus `confused_with` and directed `prerequisite` graph edges — without changing existing `cards` semantics. Both are focus-filtered: `curated_summaries` returns the top 2 by importance plus summaries citing concepts in today's returned cards; `graph_signals` only fire from the top 3 `must_retest` concepts by priority. Empty arrays when nothing is curated. Selection policy is detailed in `.agents/shared/commands/learning-session-contract.md`.
-
-```bash
-# Topic-anchored session start (agent-only -- do not echo to user)
-python3 src/study_memory.py summary --topic "<topic>" --limit 8 --scaffold-limit 2 --include-curated
-# Do NOT run global summary here -- global state would tempt drift off the chosen topic.
-
-# Memory-driven custom review session start (no named topic, user asked
-# "what should I review" / "drill my weak spots" / similar)
-python3 src/study_memory.py summary --limit 12 --scaffold-limit 0 --include-curated
-
-# After every Q&A — log the exchange
-python3 src/study_memory.py log-answer \
-  --session "$SESSION_TS" --topic "<topic>" --concept "<concept>" \
-  --question "<question>" --answer "<answer>" --correct <0|1|2> \
-  [--correction "..."] [--error-type "..."] [--misconception "..."] \
-  [--doc "..."] [--skill "..."] \
-  [--tested-claim "..."] [--learner-claim "..."] [--missing-edge "..."] \
-  [--corrected-rule "..."] [--clinical-consequence "..."] \
-  [--retest-prompt-shape "..."] [--learning-operation "..."] \
-  [--priority "urgent|high|medium|low"] \
-  [--match-claim-state-id <id>] [--new-claim] \
-  [--repairs-claim-state-ids "id,id,..."]
-
-# Session end (always pass --json so the curation hook is visible)
-python3 src/study_memory.py end-session \
-  --session "$SESSION_TS" --summary "..." --next-strategy "..." --json
-```
-
-Global memory summary is the only retrieval mode that surfaces unrelated topics; it must only run when the user has explicitly opted into a memory-driven custom session. Read silently; never echo; never narrate as a menu of options.
-
-Memory writes are allowed only when the user explicitly asks to save/capture memory or when they intentionally start a memory-enabled learning workflow such as `/quick-answer`, `/study-review`, `/study-material`, or `/consult`. Outside those workflows, answer directly unless the user asks to save.
-
-Quick-answer memory entries are low-stakes reference captures. If `skill = quick-answer` appears in memory output, interpret it as "Gabriel asked about this concept and received an explanation," not as demonstrated learner mastery, an open error, or a full session handoff. These entries are topic/concept evidence for context and weak support for curation only; higher-signal tested sessions dominate.
-
-For active-answer memory, preserve the actual educational exchange:
-- Set `SESSION_TS` once per session (`date -u +%Y-%m-%dT%H:%M:%S+00:00`). Reuse that exact timestamp; do not regenerate it per turn.
-- Log every agent question plus the user's answer after evaluation.
-- Use `--correct 2` for correct with no hints, `--correct 1` for partial, and `--correct 0` for wrong/misconception.
-- For partial/wrong answers, include `--error-type`, `--misconception`, and `--correction`.
-- Add structured signal fields whenever an evaluated answer is logged so the claim-centered learner model is useful: `--tested-claim` names the cognitive target, `--learner-claim` summarizes the committed answer, `--missing-edge` names the absent discriminator/threshold/step when partial/wrong, `--corrected-rule` states the replacement rule, `--clinical-consequence` explains why it matters, and `--retest-prompt-shape` tells the next agent how to probe it. If a field is unavailable under time pressure, the memory layer derives a conservative fallback, but the agent should supply these fields whenever feasible.
-- Use agent judgment flags when applicable: `--priority` overrides weak keyword heuristics; `--match-claim-state-id` binds an answer to a specific existing claim; `--new-claim` prevents false merging of a distinct overlapping claim; `--repairs-claim-state-ids` marks only explicitly repaired open claims. Do not depend on token overlap to infer repair.
-- Write a specific, actionable `--next-strategy` at session end.
+Invariant summary: topic-anchored sessions use only topic-scoped `summary --include-curated`; memory-driven custom review is the only mode that uses global summary. Memory writes occur only inside explicit memory-enabled workflows or when the user asks to save/capture memory. Quick-answer entries are low-stakes reference captures, not demonstrated mastery.
 
 ## Capability Router
 
@@ -117,7 +81,7 @@ Always intercept:
 - Textbook inventory -> recipe: `python3 src/lance_retriever.py list_textbooks`
 - Calendar/scheduling/events -> GCal MCP
 
-Explicit invocation only:
+Explicit or obvious workflow trigger:
 - `/study-review`, "let's review [X]", "quiz me on [doc]", "continue our session on [doc]" -> `study-review` (doc-anchored mode)
 - `/quick-answer`, brief isolated neurosurgery/neuroanatomy/neurocritical care/radiology questions, or "quick answer" -> `quick-answer` (direct answer, no startup memory recall, memory write at end, Anki optional)
 - Operative rehearsal guide / operative walkthrough -> `intraoperative-guide`
@@ -126,7 +90,7 @@ Explicit invocation only:
 - Focused clinical question, ward knowledge gap, curbside consult, or management question that should produce a reusable pocket card -> `consult` (brief expert lecture + verification questions + pocket-card vault note; not encyclopedic)
 - Grand rounds, case presentation, or journal club deck -> `grand-rounds`
 
-Anki: card creation is inline in every learning skill via `anki_queue.py enqueue/check/flush` and follows the Anki Card Doctrine in `.agents/shared/commands/learning-session-contract.md` plus the focused quality rules in `.agents/shared/commands/anki-card-quality.md`. There is no separate Anki runtime skill.
+Anki: card creation is inline in every learning skill via `anki_queue.py enqueue/check/flush` and follows `.agents/shared/commands/anki-session-workflow.md` plus `.agents/shared/commands/anki-card-quality.md`. There is no separate Anki runtime skill.
 
 Current-deck cleanup, card rewriting, taxonomy reorganization, and Chroma rebuilds use the separate `.agents/shared/commands/anki-deck-maintenance.md` workflow. Do not let Chroma suppress cards as ground truth; rebuild it from live Anki after approved deck edits.
 

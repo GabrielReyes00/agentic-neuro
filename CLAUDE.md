@@ -8,7 +8,12 @@
 The canonical workflow contracts live in `.agents/shared/commands/`. Claude/Codex/Gemini command or skill wrappers are thin adapters that must read and follow the corresponding shared command file. If this root file conflicts with a shared command, the shared command wins for that workflow.
 
 Key shared contracts:
-- `.agents/shared/commands/learning-session-contract.md` — memory operations, Adaptive Teaching Doctrine, Anki Card Doctrine, session-end integrity, and shared teaching behavior.
+- `.agents/shared/commands/learning-session-contract.md` — thin orchestration index for learning workflows.
+- `.agents/shared/commands/memory-operations.md` — learner-memory reads/writes, session start/end, integrity checks, entry formatting.
+- `.agents/shared/commands/memory-retrieval.md` — interpretation of `cards`, `curated_summaries`, `graph_signals`, `counts`, `omitted`, and `retrieval_guidance`.
+- `.agents/shared/commands/memory-curation.md` — optional post-flush curated summaries and concept graph edges.
+- `.agents/shared/commands/adaptive-teaching-doctrine.md` — cognitive-friction teaching behavior, repair/retest logic, learner posture.
+- `.agents/shared/commands/anki-session-workflow.md` — per-answer Anki decisions, queue review/check/flush.
 - `.agents/shared/commands/anki-card-quality.md` — short card-quality, cloze, deck taxonomy, and duplicate-judgment rules for all Anki creation/review.
 - `.agents/shared/commands/anki-deck-maintenance.md` — separate live Anki deck rewrite/reorganization workflow; Anki is ground truth and Chroma is rebuilt from Anki.
 - `.agents/shared/commands/study-review.md` — doc-anchored and memory-driven review.
@@ -93,7 +98,7 @@ After Gabriel commits to an answer, reveal progressively. Grade the answer brief
 - **intraoperative-guide**: `Operative Guides/<Title>.md` + INDEX. Deep-research operative rehearsal manual with procedure decomposition, serial multi-query textbook RAG, operative knowledge map, verified inline wikilinks, restrained Obsidian callouts/tables for readability, setup/equipment, stepwise sequence, anatomy expansion, critical moments, pitfalls, bail-outs, complications, `## Mastery Objectives`, and `## Related in This Vault`. Knowledge-map review, expert completeness review, and gap repair are required before any real vault write; validate with `src/operative_guide_validator.py` after approval. Any Anki cards from the guide must route to `Neurosurgery::Procedures::<Title>`.
 - **study-material**: `Study Material/<Title>.md` + INDEX. Title Case from source doc name.
 - **grand-rounds**: `Presentations/Cases/<Title>.md` or `Presentations/Articles/<Title>.md` via `src/grand_rounds_writer.py`, plus `Presentations/INDEX.md` and `data/Sessions/grand_rounds_<slug>_manifest.json`. Generated `.pptx` lives on Desktop. No H1, bottom YAML. Scrub PHI before case writes. Run the deck quality gate with `--require-quality-gate`. Rehearsal is optional; memory logging begins only if rehearsal starts.
-- **consult**: `Consults/<Topic Title>.md`. Focused pocket-card vault note for ward reference — brief lecture model, not encyclopedic. Agent writes the pocket card directly (no dedicated writer script). If a prior consult on the same topic exists, append an `## Encounter — YYYY-MM-DD` section rather than creating a duplicate. Provenance tiering applies: source-grounded points are cited, clinical-knowledge points are labelled and high-stakes specifics carry a `⚠` verify flag (never fake-cited); pocket-card YAML records `internal_knowledge_used` + `provenance`. Dual-source Anki cards follow the shared Anki Card Doctrine: lecture content + verification question misses; do not card `⚠` verify-tier specifics as settled fact. Memory recall informs teaching approach, never content omission. Include compact `## Mastery Objectives`. No H1, YAML at bottom.
+- **consult**: `Consults/<Topic Title>.md`. Focused pocket-card vault note for ward reference — brief lecture model, not encyclopedic. Agent writes the pocket card directly (no dedicated writer script). If a prior consult on the same topic exists, append an `## Encounter — YYYY-MM-DD` section rather than creating a duplicate. Provenance tiering applies: source-grounded points are cited, clinical-knowledge points are labelled and high-stakes specifics carry a `⚠` verify flag (never fake-cited); pocket-card YAML records `internal_knowledge_used` + `provenance`. Dual-source Anki cards follow `anki-session-workflow.md` and `anki-card-quality.md`: lecture content + verification question misses; do not card `⚠` verify-tier specifics as settled fact. Memory recall informs teaching approach, never content omission. Include compact `## Mastery Objectives`. No H1, YAML at bottom.
 - **study-review**: No vault artifact in either invocation mode — the memory layer (`study_memory.py`) is the durable record. Doc-anchored mode reads from `Reports/` or `Study Material/`; memory-driven mode composes the session from memory summary output. Use `log-answer` after each answer; `end-session` at close.
 
 ## §6 Naming Conventions
@@ -142,107 +147,15 @@ Atomic, glossary-level. Only create concepts useful as wikilink targets.
 
 ### §7d Memory Layer
 
-**DB:** `data/study_memory.db` | **CLI:** `src/study_memory.py`
+The active memory layer is `data/study_memory.db` via `src/study_memory.py`. The detailed rules are intentionally modular:
 
-The memory layer has two surfaces:
+- `.agents/shared/commands/memory-operations.md` controls session start, topic/global retrieval selection, `log-answer`, `end-session`, integrity checks, invisible bookkeeping, and entry formatting.
+- `.agents/shared/commands/memory-retrieval.md` controls interpretation of `cards`, `curated_summaries`, `graph_signals`, and truncation metadata.
+- `.agents/shared/commands/memory-curation.md` controls the optional post-Anki curation pass.
+- `.agents/shared/commands/adaptive-teaching-doctrine.md` controls teaching behavior.
+- `.agents/shared/commands/anki-session-workflow.md` and `.agents/shared/commands/anki-card-quality.md` control routine Anki generation and flush.
 
-1. **Active claim-centered model** (`exchanges`, `claim_results`, `claim_state`, `retrieval_cards`) — per-claim status: "this exact claim is open / repaired / durable right now." Read via `summary --topic` `cards`. Always available.
-
-2. **Curated cross-session layer** (`memory_summaries`, `concept_relationships`) — agent-authored synthesis: "this pattern recurs across sessions" + `confused_with` and directed `prerequisite` graph edges with strength scores. Read via `--include-curated` returning `curated_summaries` and `graph_signals`. Both are focus-filtered at retrieval: `curated_summaries` returns the top 2 by importance as anchors plus summaries whose evidence cites concepts in today's returned cards; `graph_signals` only traverse from the top 3 `must_retest` concepts by priority. Selection policy is detailed in the shared learning contract. Written conditionally after every ~5 ended sessions via `curate-candidates` → agent payload → `apply-curation`. Governed by the Curation Doctrine in `.agents/shared/commands/learning-session-contract.md`.
-
-`skill = quick-answer` is a low-stakes reference capture: it means Gabriel asked about a concept and received an explanation. It is not evidence of durable mastery, an open error, or a full learning-session handoff. Use it as topic/concept context or weak curation support only; tested sessions dominate learner-state judgments.
-
-Skills always read both surfaces at session start (use `--include-curated`). Skills never write directly to the curated layer; that's the post-flush curation pass managed by the shared contract.
-
-#### Session Start (silent, agent-only — never echo to user)
-
-Context-pulling is **mode-conditional** to prevent topic drift.
-
-**Topic-anchored sessions** — user named a topic, document, or clinical question. Run only the topic-scoped commands:
-
-```bash
-cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
-python3 src/study_memory.py summary --topic "<topic>" --limit 8 --scaffold-limit 2 --include-curated
-```
-
-**Do NOT run global summary in topic-anchored mode.** A user studying EVD management does not want drift to spine surgery or pediatric tumors just because errors are open in those domains. If a relevant open error lives within today's topic, `summary` will surface it; retest inline. If it lives outside today's topic, it stays invisible — that is the point.
-
-`--include-curated` is the default for all skill-driven retrieval. It adds two top-level keys (`curated_summaries`, `graph_signals`) to the JSON without changing existing `cards` semantics. Both keys are focus-filtered: `curated_summaries` returns the top 2 by importance plus summaries citing concepts in today's returned cards; `graph_signals` fire only from the top 3 `must_retest` concepts and may include `confused_with` or directed `prerequisite` edges. Empty arrays when nothing is curated.
-
-**Memory-driven custom review only** — user asked "what should I review", "drill my weak spots", "build me a custom session", "go after my open errors" with no named topic. Run global summary to compose the queue from global state:
-
-```bash
-python3 src/study_memory.py summary --limit 12 --scaffold-limit 0 --include-curated
-```
-
-Global summary surfaces active retest cards, recent repairs, session handoff state, curated cross-session summaries, and graph signals. Agent-only context — never echoed, never narrated as a menu.
-
-#### After Every Q&A (silent)
-
-```bash
-cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
-python3 src/study_memory.py log-answer \
-  --session "$SESSION_TS" --topic "<topic>" --concept "<concept>" \
-  --question "<your question, verbatim>" --answer "<user's answer, verbatim>" \
-  --correct <0|1|2> \
-  [--correction "<text>"] [--error-type "<type>"] [--misconception "<text>"] \
-  [--doc "<path>"] [--skill "<skill>"] \
-  [--tested-claim "..."] [--learner-claim "..."] [--missing-edge "..."] \
-  [--corrected-rule "..."] [--clinical-consequence "..."] \
-  [--retest-prompt-shape "..."] [--learning-operation "..."] \
-  [--priority "urgent|high|medium|low"] \
-  [--match-claim-state-id <id>] [--new-claim] \
-  [--repairs-claim-state-ids "id,id,..."]
-```
-
-Correctness: `2` = correct with no hints | `1` = right direction, missing details | `0` = wrong or misconception.
-Use `--match-claim-state-id` when retesting a known card, `--new-claim` for distinct overlapping targets, and `--repairs-claim-state-ids` only for open claims the current correct answer truly repaired. Use `--priority` when agent judgment should override heuristic priority.
-Set `SESSION_TS` once per session: `SESSION_TS=$(date -u +%Y-%m-%dT%H:%M:%S+00:00)`
-
-#### Session End (silent)
-
-```bash
-cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
-python3 src/study_memory.py end-session \
-  --session "$SESSION_TS" \
-  --summary "<1-3 sentence recap>" \
-  --next-strategy "<specific directive for next session>" \
-  --json
-```
-
-Read the JSON output silently. If `curation.recommended` is `true`, follow the Optional Curation Pass in the shared learning contract after Anki flush.
-
-The `--next-strategy` is the most important field. Write actionable:
-GOOD: "Retest hunt-hess vs mfs distinction, then advance to refractory ICP algorithm"
-BAD: "Continue studying", "Review more"
-
-#### Mid-Session Topic Switch
-
-When the topic changes mid-session, run recall for the new topic before asking questions on it:
-```bash
-python3 src/study_memory.py summary --topic "<new topic>" --limit 8 --scaffold-limit 2 --include-curated
-```
-
-#### Entry Formatting Contract
-
-**TOPIC**: lowercase, 3-8 words, condition + context.
-  GOOD: "evd management in icu", "icp monitoring in tbi", "vasospasm after sah"
-  BAD: "ICP", "EVD Management in the ICU for External Ventricular Drain Patients"
-
-**CONCEPT**: lowercase, the specific testable fact or distinction.
-  GOOD: "cpp target 60-70 mmhg", "lundberg a vs b wave distinction", "evd infection rate"
-  BAD: "CPP", "waves", "the concept of infection"
-
-**ERROR_TYPE**: one of: `conceptual_confusion` | `numerical_recall` | `cross_contamination` | `application_failure` | `reasoning_gap` | `omission`
-
-**MISCONCEPTION**: state the specific wrong belief, never "user was unsure".
-  GOOD: "believed barbiturate coma is first-line for refractory icp"
-  BAD: "incorrect", "unsure", "user was unsure about treatment"
-
-#### Scope Rules
-- Active testing (you asked, user answered) -> `log-answer`
-- 5+ exchanges or natural session end -> `end-session`
-- Topic switch mid-session -> `recall` the new topic first
+Invariant summary: topic-anchored sessions use only topic-scoped `summary --include-curated`; memory-driven custom review is the only mode that uses global summary. Skills never write directly to the curated layer; curation is post-flush bookkeeping.
 
 ## §9 Capability Router
 
@@ -257,7 +170,7 @@ python3 src/study_memory.py summary --topic "<new topic>" --limit 8 --scaffold-l
 | "what books", "list textbooks", "what's loaded" | recipe: `python3 src/lance_retriever.py list_textbooks` |
 | Calendar/scheduling/events | GCal MCP tools |
 
-### Tier 2 — Explicit Invocation Only
+### Tier 2 — Explicit or Obvious Workflow Trigger
 | Trigger | Route |
 |---|---|
 | `/study-review`, "let's review [X]", "quiz me on [doc]", "continue our session on [doc]" | `study-review` (doc-anchored mode) |
@@ -270,7 +183,7 @@ python3 src/study_memory.py summary --topic "<new topic>" --limit 8 --scaffold-l
 
 ### Anki
 
-Card creation is inline in every learning skill via `anki_queue.py enqueue/check/flush` per the shared Anki Card Doctrine. Before drafting or validating cards, read `.agents/shared/commands/anki-card-quality.md` for focused card-quality, cloze, taxonomy, and duplicate rules. There is no separate Anki runtime skill — when the user asks to "save to Anki" or "make cards", do it inline from the current session context.
+Card creation is inline in every learning skill via `anki_queue.py enqueue/check/flush` per `.agents/shared/commands/anki-session-workflow.md`. Before drafting or validating cards, read `.agents/shared/commands/anki-card-quality.md` for focused card-quality, cloze, taxonomy, and duplicate rules. There is no separate Anki runtime skill — when the user asks to "save to Anki" or "make cards", do it inline from the current session context.
 
 For current-deck cleanup, rewriting, taxonomy reorganization, or Chroma rebuilds, use `.agents/shared/commands/anki-deck-maintenance.md`. Anki is ground truth; Chroma is only rebuilt from live Anki.
 
@@ -288,7 +201,7 @@ Clinical questions, explanations, comparisons, coding: model knowledge. Offer RA
 
 Persona-shaped sessions (intern-style firefight, oral-board staged cases, ward consult drills) run inside the memory-driven mode; the agent adjusts question shape and tone based on what the learner asks for. The reference topic bank at `Reference/Oral Boards Topic Bank.md` is a curated pool for board-style case selection.
 
-Follow `.agents/shared/commands/study-review.md` for the full workflow and `.agents/shared/commands/learning-session-contract.md` for shared teaching principles, Adaptive Teaching Doctrine, Anki Card Doctrine, and memory operations. The memory layer is the durable record — no vault artifact is written. For document-anchored review, read the full document and use `## Mastery Objectives` only as a coverage checksum when present.
+Follow `.agents/shared/commands/study-review.md` for the full workflow and `.agents/shared/commands/learning-session-contract.md` for the module map. The memory layer is the durable record — no vault artifact is written. For document-anchored review, read the full document and use `## Mastery Objectives` only as a coverage checksum when present.
 
 ## §11 Data Locations
 
@@ -314,10 +227,10 @@ status
 resolve-topic --topic "T" [--doc "<folder>/X.md"]
 curation-status                                                       # current rolling-session counter and last curation version
 curate-candidates [--mode compact|detailed] [--topic "T"] [--recent-sessions N] [--limit N]
-apply-curation --input path.json | --stdin                            # agent-authored summaries + confused_with/prerequisite edges (governed by Curation Doctrine)
+apply-curation --input path.json | --stdin                            # governed by memory-curation.md
 
 
-# anki_queue.py — per-session card queue (see shared contract for full workflow)
+# anki_queue.py — per-session card queue (see anki-session-workflow.md)
 enqueue --session "TS" --exchange-id N --deck "D" --card-type cloze|qa --topic "T" --concept "C" [--cloze or --front/--back] [--tags "t1,t2"]
 review [--session "TS"]
 check [--session "TS"]           # mandatory quality/overlap report for agent review

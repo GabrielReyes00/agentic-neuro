@@ -9,7 +9,7 @@ The user invoked `/intraoperative-guide` with: $ARGUMENTS
 
 Read and follow `.agents/shared/commands/intraoperative-guide.md`. That file is the orchestrator for a modular deep-research workflow with context-budget controls and structured artifact handoffs; reload the referenced decomposition, crosslink, research, knowledge-map, **map-completeness review (separate subagent)**, synthesis, **expert completeness review (separate subagent)**, gap-repair, and finalization modules at their checkpoints instead of trying to hold the whole workflow in context from the start.
 
-Use `.agents/shared/commands/learning-session-contract.md` for shared memory and artifact rules.
+Use `.agents/shared/commands/learning-session-contract.md` for the module map. Use `memory-operations.md`, `memory-retrieval.md`, `review-artifacts.md`, `anki-session-workflow.md`, and `anki-card-quality.md` for shared memory, artifact, and Anki rules.
 
 Do not write the real guide until:
 

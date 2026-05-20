@@ -459,7 +459,7 @@ def build_curation_candidates(
                     "or confused_with/prerequisite graph edges from it."
                 )
             },
-            "doctrine_ref": ".agents/shared/commands/learning-session-contract.md#curation-doctrine",
+            "doctrine_ref": ".agents/shared/commands/memory-curation.md#doctrine",
         },
     }
     packet["token_budget_estimate"] = _estimate_tokens(packet)

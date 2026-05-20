@@ -1374,6 +1374,7 @@ def _summary_command(
     limit: int,
     scaffold_limit: int,
     include_global_scaffolds: bool = False,
+    include_curated: bool = False,
 ) -> str:
     parts = ["python3 src/study_memory.py summary"]
     if topic:
@@ -1382,6 +1383,8 @@ def _summary_command(
     parts.append(f"--scaffold-limit {scaffold_limit}")
     if include_global_scaffolds:
         parts.append("--include-global-scaffolds")
+    if include_curated:
+        parts.append("--include-curated")
     return " ".join(parts)
 
 
@@ -1393,6 +1396,7 @@ def _retrieval_guidance(
     counts: dict[str, int],
     omitted: dict[str, int],
     include_global_scaffolds: bool,
+    include_curated: bool,
 ) -> dict[str, object]:
     high_signal_types = ("must_retest", "session_handoff", "recent_repair")
     omitted_high_signal = {k: omitted[k] for k in high_signal_types if omitted.get(k, 0)}
@@ -1405,6 +1409,7 @@ def _retrieval_guidance(
                 limit=limit + sum(omitted_high_signal.values()),
                 scaffold_limit=scaffold_limit,
                 include_global_scaffolds=include_global_scaffolds,
+                include_curated=include_curated,
             )
         )
     if topic and omitted.get("scaffold", 0):
@@ -1413,6 +1418,7 @@ def _retrieval_guidance(
                 topic=topic,
                 limit=limit,
                 scaffold_limit=min(counts.get("scaffold", scaffold_limit), max(scaffold_limit * 2, 4)),
+                include_curated=include_curated,
             )
         )
     if not topic and omitted.get("scaffold", 0) and not include_global_scaffolds:
@@ -1422,6 +1428,7 @@ def _retrieval_guidance(
                 limit=limit,
                 scaffold_limit=scaffold_limit,
                 include_global_scaffolds=True,
+                include_curated=include_curated,
             )
         )
 
@@ -1554,6 +1561,7 @@ def retrieval_summary(
             counts=counts,
             omitted=omitted,
             include_global_scaffolds=include_global_scaffolds,
+            include_curated=include_curated,
         ),
     }
 

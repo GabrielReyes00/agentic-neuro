@@ -5,7 +5,7 @@ Adaptive Socratic study session. Two invocation modes:
 - **Doc-anchored**: review an existing vault document — either a `Reports/<file>.md` (narrative with reasoning and citations) or a `Study Material/<file>.md` (structured question bank).
 - **Memory-driven custom review**: no document supplied — agent composes the session from the learner's memory state (open errors, weak concepts, stale knowledge, cross-topic gaps, learner-requested focus).
 
-Follow `.agents/shared/commands/learning-session-contract.md` for all shared pedagogy and memory operations.
+Follow `.agents/shared/commands/learning-session-contract.md` for the module map. In particular, use `memory-operations.md` for memory writes, `memory-retrieval.md` for summary interpretation, `adaptive-teaching-doctrine.md` for teaching behavior, and `anki-session-workflow.md` plus `anki-card-quality.md` for cards.
 
 ---
 
@@ -50,7 +50,7 @@ For each candidate topic the status output surfaces (top weak concepts, recent o
 python3 src/study_memory.py summary --topic "<candidate topic>" --limit 8 --scaffold-limit 2 --include-curated
 ```
 
-Read each summary output per the **Agent as Memory Intelligence Layer** section of the shared contract. Note session handoff, active retest cards, recent repairs, and scaffold premises per topic.
+Read each summary output per `.agents/shared/commands/memory-retrieval.md`. Note session handoff, active retest cards, recent repairs, and scaffold premises per topic.
 
 ### Step 2: Compose the review queue
 
@@ -68,7 +68,7 @@ Show the proposed composition to the learner in 5–10 lines: what concepts will
 
 ### Step 4: Execute
 
-Run the session under the shared learning contract — Cognitive Friction Protocol, log-answer after each evaluated answer (omit `--doc`, set `--skill "study-review"`, use the canonical topic for the concept being tested), Anki enqueue inline, end-session with a specific next-strategy. The teaching loop is identical to doc-anchored mode; only the curriculum source differs.
+Run the session under the shared learning modules: cognitive friction and teaching moves from `adaptive-teaching-doctrine.md`, `log-answer` and `end-session` from `memory-operations.md`, Anki enqueue/flush from `anki-session-workflow.md`, and card quality from `anki-card-quality.md`. The teaching loop is identical to doc-anchored mode; only the curriculum source differs.
 
 No vault artifact is written. The memory layer is the durable record.
 
@@ -97,9 +97,9 @@ cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
 python3 src/study_memory.py summary --topic "<doc topic>" --limit 8 --scaffold-limit 2 --include-curated
 ```
 
-Follow the **Pre-Session Context Verification** protocol from the shared contract before proceeding. `SESSION_TS` is set per the shared contract at the first learner-facing question.
+Follow the pre-session verification protocol from `memory-operations.md` before proceeding. `SESSION_TS` is set per `memory-operations.md` at the first learner-facing question.
 
-Use the memory summary output to build your teaching plan per the **Agent as Memory Intelligence Layer** section of the shared contract. If this is a returning session, open with a one-sentence recap and move directly to questioning — do not re-explain known material. If this is a new topic, start at the beginning of the document.
+Use the memory summary output to build your teaching plan per `memory-retrieval.md`. If this is a returning session, open with a one-sentence recap and move directly to questioning — do not re-explain known material. If this is a new topic, start at the beginning of the document.
 
 **Requested-Document Priority**: The requested document is the primary curriculum. Related-topic context and prior memory should inform your question design and probe strategy, but never displace forward progress through the document's material.
 
@@ -137,7 +137,7 @@ Regardless of document type or teaching approach, every study-review session mus
 
 1. **The session tests, it does not lecture.** The majority of session time is spent on the learner answering questions, not the agent explaining material. Teaching happens through corrections and follow-ups after the learner commits, not before.
 
-2. **Questions span multiple mastery operations within the session.** A session that stays at pure recall is too shallow. Within a single session, the agent should probe 2-3 of the Adaptive Teaching Doctrine operations as performance supports: discrimination, quantification, sequencing, mechanistic explanation, and transfer. The mix is driven by real-time performance and prior memory, not by a fixed template.
+2. **Questions span multiple mastery operations within the session.** A session that stays at pure recall is too shallow. Within a single session, the agent should probe 2-3 of the operations in `adaptive-teaching-doctrine.md` as performance supports: discrimination, quantification, sequencing, mechanistic explanation, and transfer. The mix is driven by real-time performance and prior memory, not by a fixed template.
 
 3. **Prior errors are addressed before new territory.** Open errors and persistent gaps from recall and scouting are the highest-value targets. A session that ignores known misconceptions to cover new ground is leaving dangerous gaps unfixed.
 
@@ -161,7 +161,7 @@ In both cases, the document is the curriculum boundary — the agent's questions
 
 ### Question Design
 
-Use the document's structure as a scaffold, not a script. The shared contract defines what your questions should achieve: every question has a purpose, targets a specific mastery operation, and prioritizes the edge of the learner's competence.
+Use the document's structure as a scaffold, not a script. `adaptive-teaching-doctrine.md` defines what questions should achieve: every question has a purpose, targets a specific mastery operation, and prioritizes the edge of the learner's competence.
 
 Your recall output, scouting notes, and medical knowledge should drive question selection. Prior errors and gaps from this and related topics are high-priority targets. New document sections should be covered. Known concepts should be used as building blocks for deeper questions, not re-drilled.
 
@@ -169,11 +169,11 @@ Ask one question per turn, then stop. Start with active recall or a clinical dec
 
 ### Post-Answer Flow
 
-After each answer: grade it, then choose the next teaching move using the shared contract's Adaptive Teaching Doctrine. Cognitive friction, progressive reveal, minimum effective explanation, and correct-but-shallow-as-partial govern how much to reveal and when. Keep responses concise — the goal is to spend session time on the learner's thinking, not the agent's explanations.
+After each answer: grade it, then choose the next teaching move using `adaptive-teaching-doctrine.md`. Cognitive friction, progressive reveal, minimum effective explanation, and correct-but-shallow-as-partial govern how much to reveal and when. Keep responses concise — the goal is to spend session time on the learner's thinking, not the agent's explanations.
 
 ### Adaptive Pacing
 
-Let real-time performance compress or expand time-on-concept, but do not create a second local decision tree here. Use the Adaptive Teaching Doctrine for wrong, partial, shallow-correct, repaired-miss, and repeated-error behavior.
+Let real-time performance compress or expand time-on-concept, but do not create a second local decision tree here. Use `adaptive-teaching-doctrine.md` for wrong, partial, shallow-correct, repaired-miss, and repeated-error behavior.
 
 The goal is to spend the maximum proportion of session time at the learner's frontier — the boundary between what they can and cannot do. Questions below the frontier waste time; questions far above it produce noise instead of learning. Strong performance should move quickly toward harder transfer or uncovered material; unrepaired misses should narrow the session until the false rule is removed.
 
@@ -224,7 +224,7 @@ When a question is designed from a `must_retest` or `recent_repair` card, pass t
 
 Correctness: `2` = correct | `1` = partial (right direction, missing key detail) | `0` = wrong or misconception
 
-Follow the Anki Card Generation protocol from the shared learning contract after each log-answer call. Use `.agents/shared/commands/anki-card-quality.md` when drafting and validating cards.
+Follow `.agents/shared/commands/anki-session-workflow.md` after each `log-answer` call. Use `.agents/shared/commands/anki-card-quality.md` when drafting and validating cards.
 
 ---
 
@@ -245,14 +245,14 @@ python3 src/study_memory.py end-session \
   --next-strategy "<specific directive for next session>" \
   --json
 ```
-Read the JSON output silently. If `curation.recommended` is `true`, follow the Optional Curation Pass in the shared learning contract after Anki flush.
+Read the JSON output silently. If `curation.recommended` is `true`, follow `.agents/shared/commands/memory-curation.md` after Anki flush.
 
 `--next-strategy` must be actionable: name the concept, the error type, and the teaching move.
 GOOD: "Retest EVD waveform troubleshooting with a new bedside vignette — partial on previous attempt. Then advance to aSAH grading scale distinctions."
 BAD: "Continue reviewing EVD management."
 
-4. Follow the **Post-Session Integrity Verification** protocol from the shared contract before proceeding to Anki flush.
+4. Follow the post-session integrity verification protocol from `memory-operations.md` before proceeding to Anki flush.
 
-5. Follow the **Anki Queue Validation and Flush** protocol from the shared learning contract.
+5. Follow `.agents/shared/commands/anki-session-workflow.md` for queue validation and flush.
 
 6. Clean up `data/Sessions/` temps.

@@ -606,6 +606,25 @@ class StudyMemoryTests(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_retrieval_expansion_commands_preserve_include_curated(self) -> None:
+        conn = self._memory_conn()
+        try:
+            self._log_scaffolds(conn, "hypertension management", 5)
+            payload = json.loads(
+                study_memory.retrieval_summary(
+                    conn,
+                    topic="hypertension management",
+                    limit=8,
+                    scaffold_limit=2,
+                    include_curated=True,
+                )
+            )
+            commands = payload["retrieval_guidance"]["suggested_commands"]
+            self.assertTrue(commands)
+            self.assertTrue(all("--include-curated" in command for command in commands))
+        finally:
+            conn.close()
+
     def test_retrieval_scaffold_only_topic_still_uses_compact_payload(self) -> None:
         conn = self._memory_conn()
         try:
