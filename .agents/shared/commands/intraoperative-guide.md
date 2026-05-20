@@ -134,6 +134,8 @@ python3 src/study_memory.py summary --topic "<procedure/topic>" --limit 8 --scaf
 
 Use memory only to discover related anchors and prior weaknesses worth supporting in the guide. Do not compress or omit content because the learner may already know it.
 
+When a real guide is logged at completion, `skill="intraoperative-guide"` is an artifact anchor only. It should create discoverability/session handoff context, not learner claim_state, durable mastery, open gaps, or curation evidence.
+
 Skip memory writes and reads for explicit dry runs unless the user asks for memory-enabled generation.
 
 ### Step 2: Vault scan for cross-citation targets (silent)

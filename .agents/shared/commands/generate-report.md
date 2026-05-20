@@ -164,7 +164,7 @@ This is not a checklist gate. If the draft fails the contract on any axis, re-re
 
 3. **Concept extraction** per CLAUDE.md §7c — identify 2–5 atomic concepts not already in `Concepts/` and write each as its own concept stub.
 
-4. **Log to memory** so downstream `/study-review` and future `/generate-report` runs can discover this report. Two calls in sequence — `log-answer` creates a topic-indexed memory anchor entry, then `end-session` records the summary and next-strategy directive:
+4. **Log to memory** so downstream `/study-review` and future `/generate-report` runs can discover this report. Two calls in sequence — `log-answer` creates a topic-indexed artifact anchor entry, then `end-session` records the summary and next-strategy directive. This is discoverability/provenance only: `skill="generate-report"` must not be interpreted as learner mastery, an open gap, or curation evidence.
 
 ```bash
 cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
@@ -185,7 +185,7 @@ python3 src/study_memory.py end-session \
   --json
 ```
 
-Read the JSON output silently. If `curation.recommended` is `true`, follow the Optional Curation Pass in the shared learning contract.
+Read the JSON output silently. `generate-report` sessions are excluded from curation counting; if the JSON ever reports otherwise, treat it as a memory-layer warning and investigate before running curation.
 
 The `--next-strategy` should name what is most worth studying from this report next. Examples:
 GOOD: "Quiz on AChA cisternal subdivisions and perforator-vs-AChA-origin discrimination; oral-board defense on contemporary clipping vs coiling outcomes."

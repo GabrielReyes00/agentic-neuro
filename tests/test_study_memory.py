@@ -109,6 +109,40 @@ class StudyMemoryTests(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_artifact_anchor_logs_discovery_without_claim_state_or_curation_count(self) -> None:
+        conn = self._memory_conn()
+        try:
+            study_memory.log_answer(
+                conn,
+                session_id="report-1",
+                topic="cerebral vasospasm management",
+                concept="report coverage anchor",
+                question="What is covered in the Cerebral Vasospasm report?",
+                answer="Diagnosis, monitoring, nimodipine, induced hypertension, and endovascular rescue.",
+                correct=2,
+                skill="generate-report",
+                doc_path="Reports/Cerebral Vasospasm Management.md",
+            )
+            result = study_memory.end_session(
+                conn,
+                session_id="report-1",
+                summary="Cerebral vasospasm report written.",
+                next_strategy="Use study-review to test vasospasm diagnosis and treatment sequencing.",
+            )
+
+            self.assertTrue(result["artifact_anchor"])
+            self.assertTrue(result["excluded_from_curation_count"])
+            self.assertFalse(result["newly_counted"])
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM exchanges").fetchone()[0], 1)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM claim_results").fetchone()[0], 0)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM claim_state").fetchone()[0], 0)
+            rows = conn.execute("SELECT card_type, summary FROM retrieval_cards").fetchall()
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["card_type"], "session_handoff")
+            self.assertIn("report written", rows[0]["summary"])
+        finally:
+            conn.close()
+
     def test_correct_after_gap_marks_repaired_same_session(self) -> None:
         conn = self._memory_conn()
         try:
@@ -219,6 +253,66 @@ class StudyMemoryTests(unittest.TestCase):
             self.assertEqual(states[0]["state"], "durable")
             slugs = [row["claim_slug"] for row in conn.execute("SELECT claim_slug FROM claim_results")]
             self.assertEqual(len(set(slugs)), 1)
+        finally:
+            conn.close()
+
+    def test_agent_claim_state_controls_override_heuristics_when_asserted(self) -> None:
+        conn = self._memory_conn()
+        try:
+            study_memory.log_answer(
+                conn,
+                session_id="session-agent-controls",
+                topic="seizure prophylaxis in tbi",
+                concept="levetiracetam prophylaxis duration",
+                question="How long should post-TBI seizure prophylaxis continue?",
+                answer="Indefinitely.",
+                correct=0,
+                error_type="numerical_recall",
+                corrected_rule="Use 7 days of early post-traumatic seizure prophylaxis when indicated.",
+                agent_priority="urgent",
+            )
+            first = conn.execute("SELECT id, priority FROM claim_state").fetchone()
+            self.assertEqual(first["priority"], "urgent")
+
+            study_memory.log_answer(
+                conn,
+                session_id="session-agent-controls",
+                topic="seizure prophylaxis in tbi",
+                concept="levetiracetam dosing duration",
+                question="Retest the duration.",
+                answer="Still unsure.",
+                correct=0,
+                corrected_rule="Use 7 days, not an indefinite course.",
+                match_claim_state_id=int(first["id"]),
+            )
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM claim_state").fetchone()[0], 1)
+
+            study_memory.log_answer(
+                conn,
+                session_id="session-agent-controls",
+                topic="seizure prophylaxis in tbi",
+                concept="levetiracetam adverse effects counseling",
+                question="Different target: what adverse effect matters?",
+                answer="Irritability.",
+                correct=2,
+                tested_claim="Levetiracetam can cause irritability or mood effects relevant to counseling.",
+                force_new_claim=True,
+            )
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM claim_state").fetchone()[0], 2)
+
+            study_memory.log_answer(
+                conn,
+                session_id="session-agent-controls",
+                topic="seizure prophylaxis in tbi",
+                concept="levetiracetam prophylaxis duration",
+                question="Final repair: duration?",
+                answer="Seven days.",
+                correct=2,
+                tested_claim="Use 7 days of early post-traumatic seizure prophylaxis when indicated.",
+                repairs_claim_state_ids=(int(first["id"]),),
+            )
+            repaired = conn.execute("SELECT state FROM claim_state WHERE id = ?", (int(first["id"]),)).fetchone()
+            self.assertEqual(repaired["state"], "repaired_same_session")
         finally:
             conn.close()
 
@@ -611,6 +705,39 @@ class StudyMemoryTests(unittest.TestCase):
                 )
             ]
             self.assertEqual(topics, ["hypertension-management-neuro-emergencies", "tbi-management"])
+        finally:
+            conn.close()
+
+    def test_topic_resolver_preserves_exact_legacy_topics(self) -> None:
+        conn = self._memory_conn()
+        try:
+            expected = {
+                "tbi": "tbi-management",
+                "tbi management": "tbi-management",
+                "severe tbi": "tbi-management",
+                "evd management in icu": "evd-management-icu",
+                "hypertension management": "hypertension-management-neuro-emergencies",
+                "cerebral vasospasm management": "sah-vasospasm-management",
+            }
+            for hint, slug in expected.items():
+                with self.subTest(hint=hint):
+                    self.assertEqual(study_memory.resolve_topic(conn, hint).slug, slug)
+        finally:
+            conn.close()
+
+    def test_topic_resolver_lets_specific_catalog_queries_override_broad_legacy_seed(self) -> None:
+        conn = self._memory_conn()
+        try:
+            probes = {
+                "tbi ct": "emergency-ct-head-interpretation-in-tbi-blood-herniation-midline-shift",
+                "emergency ct head tbi": "emergency-ct-head-interpretation-in-tbi-blood-herniation-midline-shift",
+                "tbi classification": "tbi-classification-mild-moderate-severe-gcs-and-marshall-or-rotterdam-ct-score",
+                "hunt hess grading": "sah-grading-scales-hunt-hess-wfns-and-fisher-or-modified-fisher",
+                "subdural hematoma management": "chronic-subdural-hematoma-burr-hole-drainage-and-recurrence-management",
+            }
+            for hint, slug in probes.items():
+                with self.subTest(hint=hint):
+                    self.assertEqual(study_memory.resolve_topic(conn, hint).slug, slug)
         finally:
             conn.close()
 
@@ -1324,6 +1451,71 @@ class CurationLayerTests(unittest.TestCase):
                 any(g["relation_type"] == "confused_with" for g in payload["graph_signals"]),
                 f"expected at least one confused_with graph signal, got {payload['graph_signals']!r}",
             )
+        finally:
+            conn.close()
+
+    def test_prerequisite_graph_signal_preserves_direction(self) -> None:
+        from memory_operations import apply_curation_payload
+
+        conn = self._conn()
+        try:
+            cr_foundation = self._seed_session(
+                conn,
+                "session-prereq-foundation",
+                topic="evd management in icu",
+                fixture_idx=0,
+            )
+            cr_dependent = self._seed_session(
+                conn,
+                "session-prereq-dependent",
+                topic="evd management in icu",
+                fixture_idx=1,
+            )
+            concept_ids = [
+                int(r["concept_id"])
+                for r in conn.execute("SELECT DISTINCT concept_id FROM claim_results ORDER BY concept_id").fetchall()
+            ]
+            self.assertGreaterEqual(len(concept_ids), 2)
+            apply_curation_payload(
+                conn,
+                {
+                    "built_at_version": 0,
+                    "summaries": [
+                        {
+                            "client_id": "prereq-summary",
+                            "summary_type": "thematic",
+                            "topic_slug": "evd-management-icu",
+                            "content": "A dependent EVD management miss appears downstream of a shaky prerequisite.",
+                            "importance_score": 0.9,
+                            "evidence_claim_result_ids": [cr_foundation, cr_dependent],
+                        }
+                    ],
+                    "relationships": [
+                        {
+                            "source_concept_id": concept_ids[0],
+                            "target_concept_id": concept_ids[1],
+                            "relation_type": "prerequisite",
+                            "strength": 0.9,
+                            "evidence_summary_client_id": "prereq-summary",
+                            "evidence_claim_result_ids": [cr_foundation, cr_dependent],
+                        }
+                    ],
+                },
+            )
+
+            payload = json.loads(
+                study_memory.retrieval_summary(
+                    conn,
+                    topic="evd management in icu",
+                    limit=8,
+                    include_curated=True,
+                )
+            )
+            signals = payload["graph_signals"]
+            self.assertTrue(any(g["relation_type"] == "prerequisite" for g in signals), signals)
+            directions = {g["direction"] for g in signals if g["relation_type"] == "prerequisite"}
+            self.assertIn("prerequisite_of_current", directions)
+            self.assertIn("depends_on_current", directions)
         finally:
             conn.close()
 

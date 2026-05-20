@@ -62,7 +62,7 @@ The active long-term memory system is the claim-centered learner model at `data/
 
 Context-pulling is mode-conditional. **Topic-anchored** sessions (user named a topic or document) use only topic-scoped memory summary; **memory-driven custom review** sessions (no named topic) use global memory summary.
 
-Skills always pass `--include-curated` at session start. The flag adds two top-level keys (`curated_summaries`, `graph_signals`) — agent-authored cross-session synthesis and `confused_with` graph edges — without changing existing `cards` semantics. Both are focus-filtered: `curated_summaries` returns the top 2 by importance plus summaries citing concepts in today's returned cards; `graph_signals` only fire from the top 3 `must_retest` concepts by priority. Empty arrays when nothing is curated. Selection policy is detailed in `.agents/shared/commands/learning-session-contract.md`.
+Skills always pass `--include-curated` at session start. The flag adds two top-level keys (`curated_summaries`, `graph_signals`) — agent-authored cross-session synthesis plus `confused_with` and directed `prerequisite` graph edges — without changing existing `cards` semantics. Both are focus-filtered: `curated_summaries` returns the top 2 by importance plus summaries citing concepts in today's returned cards; `graph_signals` only fire from the top 3 `must_retest` concepts by priority. Empty arrays when nothing is curated. Selection policy is detailed in `.agents/shared/commands/learning-session-contract.md`.
 
 ```bash
 # Topic-anchored session start (agent-only -- do not echo to user)
@@ -81,7 +81,10 @@ python3 src/study_memory.py log-answer \
   [--doc "..."] [--skill "..."] \
   [--tested-claim "..."] [--learner-claim "..."] [--missing-edge "..."] \
   [--corrected-rule "..."] [--clinical-consequence "..."] \
-  [--retest-prompt-shape "..."] [--learning-operation "..."]
+  [--retest-prompt-shape "..."] [--learning-operation "..."] \
+  [--priority "urgent|high|medium|low"] \
+  [--match-claim-state-id <id>] [--new-claim] \
+  [--repairs-claim-state-ids "id,id,..."]
 
 # Session end (always pass --json so the curation hook is visible)
 python3 src/study_memory.py end-session \
@@ -100,6 +103,7 @@ For active-answer memory, preserve the actual educational exchange:
 - Use `--correct 2` for correct with no hints, `--correct 1` for partial, and `--correct 0` for wrong/misconception.
 - For partial/wrong answers, include `--error-type`, `--misconception`, and `--correction`.
 - Add structured signal fields whenever an evaluated answer is logged so the claim-centered learner model is useful: `--tested-claim` names the cognitive target, `--learner-claim` summarizes the committed answer, `--missing-edge` names the absent discriminator/threshold/step when partial/wrong, `--corrected-rule` states the replacement rule, `--clinical-consequence` explains why it matters, and `--retest-prompt-shape` tells the next agent how to probe it. If a field is unavailable under time pressure, the memory layer derives a conservative fallback, but the agent should supply these fields whenever feasible.
+- Use agent judgment flags when applicable: `--priority` overrides weak keyword heuristics; `--match-claim-state-id` binds an answer to a specific existing claim; `--new-claim` prevents false merging of a distinct overlapping claim; `--repairs-claim-state-ids` marks only explicitly repaired open claims. Do not depend on token overlap to infer repair.
 - Write a specific, actionable `--next-strategy` at session end.
 
 ## Capability Router

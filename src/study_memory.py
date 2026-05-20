@@ -370,6 +370,8 @@ CURRICULUM_CATALOG_PATH = DATA_DIR / "acgme_curriculum.json"
 # that the agent should disambiguate rather than accept a weak guess.
 CATALOG_MATCH_FLOOR = 0.5
 CATALOG_MIN_OVERLAP = 2
+CATALOG_SHORT_HINT_CONTAINMENT_FLOOR = 0.75
+CATALOG_SHORT_HINT_COVERAGE_FLOOR = 0.2
 _CATALOG_CACHE: list[tuple[str, str, set[str]]] | None = None
 
 # Topic matching keeps clinically meaningful words (management, grading, etc.)
@@ -405,7 +407,8 @@ LEGACY_TOPIC_SEED: tuple[tuple[tuple[str, ...], TopicResolution], ...] = (
         ("evd management in icu", "external ventricular drain management", "evd management"), 0.95)),
     (("vasospasm", "dci"), TopicResolution(
         "sah-vasospasm-management", "SAH Vasospasm Management", "vascular",
-        ("vasospasm after sah", "subarachnoid hemorrhage vasospasm", "dci management"), 0.9)),
+        ("vasospasm after sah", "subarachnoid hemorrhage vasospasm", "dci management",
+         "cerebral vasospasm management", "sah vasospasm management"), 0.9)),
     (("sah", "subarachnoid"), TopicResolution(
         "sah-management", "SAH Management", "vascular",
         ("sah management", "subarachnoid hemorrhage management", "aneurysmal subarachnoid hemorrhage"), 0.85)),
@@ -428,6 +431,27 @@ def _resolve_legacy_seed(hay: str) -> TopicResolution | None:
                 if trig in normalized:
                     return resolution
             elif trig in hay_tokens:
+                return resolution
+    return None
+
+
+def _resolve_exact_legacy_seed(hay: str) -> TopicResolution | None:
+    """Preserve established slugs for exact legacy topic names and aliases only."""
+    normalized = _normalize(hay)
+    hay_tokens = _topic_tokens(hay)
+    for _triggers, resolution in LEGACY_TOPIC_SEED:
+        candidates = {
+            _normalize(resolution.display_name),
+            _normalize(resolution.slug.replace("-", " ")),
+            *(_normalize(alias) for alias in resolution.aliases),
+        }
+        for candidate in candidates:
+            if not candidate:
+                continue
+            candidate_tokens = _topic_tokens(candidate)
+            if normalized == candidate:
+                return resolution
+            if hay_tokens and (hay_tokens == candidate_tokens or hay_tokens <= candidate_tokens):
                 return resolution
     return None
 
@@ -467,26 +491,11 @@ def _load_curriculum_catalog() -> list[tuple[str, str, set[str]]]:
     return out
 
 
-def _resolve_topic_patterns(hay: str) -> TopicResolution | None:
-    """Resolve a topic hint: legacy migration seed first, then ACGME catalog.
-
-    Replaces the previous hardcoded if/elif chain. Resolution order:
-      1. Legacy seed — established study topics keep their canonical slugs so
-         historical learner state never fragments (migration path).
-      2. Catalog — data-driven match against curriculum titles, requiring both a
-         minimum shared-token count and an F1 floor so a single generic token
-         cannot over-match a long, unrelated title. Title coverage is scored too,
-         not just hint containment, which kills the "{tbi} -> long CT title" bug.
-    A weak match returns None so resolve_topic falls back to a low-confidence
-    generic slug — the explicit signal that the agent should disambiguate.
-    """
-    seeded = _resolve_legacy_seed(hay)
-    if seeded:
-        return seeded
-    hint_tokens = _topic_tokens(hay)
+def _catalog_match(hint_tokens: set[str]) -> tuple[float, str, str] | None:
+    """Return best catalog match as (confidence, title, domain_tag), if reliable."""
     if len(hint_tokens) < CATALOG_MIN_OVERLAP:
         return None
-    best: tuple[float, str, str] | None = None
+    best: tuple[float, float, int, str, str] | None = None
     for title, domain_tag, title_tokens in _load_curriculum_catalog():
         if not title_tokens:
             continue
@@ -496,18 +505,52 @@ def _resolve_topic_patterns(hay: str) -> TopicResolution | None:
         containment = overlap / len(hint_tokens)
         coverage = overlap / len(title_tokens)
         f1 = 2 * containment * coverage / (containment + coverage)
-        if f1 >= CATALOG_MATCH_FLOOR and (best is None or f1 > best[0]):
-            best = (f1, title, domain_tag)
+        reliable = f1 >= CATALOG_MATCH_FLOOR or (
+            containment >= CATALOG_SHORT_HINT_CONTAINMENT_FLOOR
+            and coverage >= CATALOG_SHORT_HINT_COVERAGE_FLOOR
+        )
+        if not reliable:
+            continue
+        confidence = min(0.9, 0.55 + (f1 * 0.3) + (coverage * 0.1))
+        candidate = (confidence, f1, overlap, title, domain_tag)
+        if best is None or candidate[:3] > best[:3]:
+            best = candidate
     if best is None:
         return None
-    f1, title, domain_tag = best
-    return TopicResolution(
-        _slug(title),
-        _display(title),
-        domain_tag,
-        (_normalize(title),),
-        round(min(0.9, 0.6 + f1 * 0.3), 3),
-    )
+    confidence, _f1, _overlap, title, domain_tag = best
+    return (round(confidence, 3), title, domain_tag)
+
+
+def _resolve_topic_patterns(hay: str) -> TopicResolution | None:
+    """Resolve a topic hint through legacy aliases, then ACGME catalog.
+
+    Replaces the previous hardcoded if/elif chain. Resolution order:
+      1. Exact legacy seed — established study topics keep their canonical slugs
+         when the hint is the old topic name/alias.
+      2. Catalog — data-driven match against curriculum titles, requiring both a
+         minimum shared-token count and an F1 floor so a single generic token
+         cannot over-match a long, unrelated title. Title coverage is scored too,
+         not just hint containment, which kills the "{tbi} -> long CT title" bug.
+      3. Broad legacy fallback — only after the catalog declines the hint, so
+         "tbi ct" can resolve to a TBI imaging title instead of generic TBI.
+    A weak match returns None so resolve_topic falls back to a low-confidence
+    generic slug — the explicit signal that the agent should disambiguate.
+    """
+    seeded = _resolve_exact_legacy_seed(hay)
+    if seeded:
+        return seeded
+    hint_tokens = _topic_tokens(hay)
+    catalog = _catalog_match(hint_tokens)
+    if catalog:
+        confidence, title, domain_tag = catalog
+        return TopicResolution(
+            _slug(title),
+            _display(title),
+            domain_tag,
+            (_normalize(title),),
+            confidence,
+        )
+    return _resolve_legacy_seed(hay)
 
 
 def resolve_topic(conn: sqlite3.Connection, topic_hint: str, doc_path: str = "") -> TopicResolution:

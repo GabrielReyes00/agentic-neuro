@@ -80,10 +80,19 @@ python3 src/study_memory.py log-answer \
   [--source-anchor "<subheading, TU id, or local anchor when known>"] \
   [--curriculum-unit "<compact unit label when useful>"] \
   [--answer-mode "<unaided|prompted|after_hint|after_teaching|self_corrected>"] \
-  [--confidence-observed "<low|medium|high|hesitant|fluent>"]
+  [--confidence-observed "<low|medium|high|hesitant|fluent>"] \
+  [--priority "<urgent|high|medium|low>"] \
+  [--match-claim-state-id <id>] [--new-claim] \
+  [--repairs-claim-state-ids "<id,id,...>"]
 ```
 
 Correctness: `2` = correct without hints | `1` = right direction, missing details | `0` = wrong or misconception.
+
+Agent judgment fields are required when applicable:
+- Use `--priority` when the clinical/educational stakes are clearer than the fallback keyword heuristic. Default to `urgent` for safety-critical intern errors, `high` for active management-changing gaps, `medium` for partial or lower-stakes gaps, and `low` only for durable scaffolds or low-stakes context.
+- Use `--match-claim-state-id` when the current answer is an intentional retest of an existing `must_retest`/`recent_repair` card. This prevents duplicate claim states and makes the repair/regression path explicit.
+- Use `--new-claim` when wording overlaps an existing claim but the cognitive target is genuinely different.
+- Use `--repairs-claim-state-ids` only when a correct answer demonstrates repair of other currently open claim_state ids. Do not rely on token overlap; repair is an agent judgment.
 
 ### Anki Card Generation (silent, after each log-answer)
 
@@ -188,7 +197,7 @@ The summaries and graph edges produced here are durable, cross-session memory. H
 
 - **Confused-with criterion.** Only assert `confused_with` between two concepts when the evidence shows cross-contamination errors between them, or repeated misses on one whose corrections name the other. Surface similarity is not enough.
 
-- **`prerequisite` is deferred.** The schema accepts `prerequisite` edges but the first implementation must not write them. Leave prerequisite reasoning to future passes.
+- **Prerequisite criterion.** `prerequisite` is directed: `source_concept_id` is the foundation that must be mastered before `target_concept_id`. Write it only when evidence shows the learner repeatedly fails the target and corrections point to an unmastered upstream concept. Do not use it for loose adjacency or "helpful background." At retrieval, a signal with `direction = prerequisite_of_current` means check the upstream foundation before re-drilling the current card; `direction = depends_on_current` means mastering the current concept may unlock the downstream concept.
 
 - **Prefer supersede over duplicate.** The candidate packet exposes `existing_summaries` so you can replace stale or near-duplicate synthesis. Add the prior summary's `id` to `supersede_summary_ids` rather than writing a parallel summary.
 
@@ -261,8 +270,9 @@ The retrieval JSON has three operational surfaces. Read them in this order:
    - When a `curated_summary` and a `must_retest` card point to the same fault line, the summary is the *why* (pattern across sessions) and the card is the *what* (specific claim now open). Use both — design the question from the card, set the difficulty/framing from the summary.
    - **Selection policy**: the retrieval surface returns the top 2 summaries by importance regardless of overlap (the dominant patterns you should always see), plus summaries whose evidence overlaps with concepts in today's returned cards. Non-anchor summaries that don't relate to today's cards are deliberately filtered out — if you need them, narrow `--topic` or run a follow-up retrieval.
 
-3. **`graph_signals`** — adjacent concepts the agent has asserted are confused with concepts in your current `must_retest` set. Each signal is a `confused_with` neighbor with a strength score.
-   - Treat as a probe list: when you finish drilling concept A, the highest-strength `confused_with` neighbor (B) is a high-value next probe — discrimination questions on the A/B pair are exactly what closes the fault line the graph captured.
+3. **`graph_signals`** — adjacent concepts the agent has asserted are related to concepts in your current `must_retest` set. Each signal has a `relation_type`, `direction`, and strength score.
+   - For `confused_with`, treat the neighbor as a discrimination probe: when you finish drilling concept A, the highest-strength neighbor (B) is a high-value next probe. Discrimination questions on the A/B pair are exactly what closes the fault line the graph captured.
+   - For `prerequisite`, respect direction. `prerequisite_of_current` means the neighbor is an upstream foundation to check before re-drilling the current card. `depends_on_current` means the neighbor is downstream and may become easier after the current concept is repaired.
    - Strength ≥0.6 is the visibility floor. Higher strengths (0.8-0.9) name dominant fault lines worth designing the session around.
    - **Selection policy**: signals only fire from the top 3 `must_retest` concepts by priority, not from every returned card. Today's drill targets get the graph context; lower-priority cards do not.
 
@@ -284,6 +294,7 @@ Each entry must let a future agent reconstruct three things: what was tested, wh
 - **error_type**: categorizes the failure mode so teaching approach can be matched to it across sessions.
 - **structured signal fields**: add compact structured judgment whenever feasible. `tested_claim` names the cognitive target; `learner_claim` summarizes the committed answer; `missing_edge` is the absent number/discriminator/step/mechanism for partial/wrong answers; `corrected_rule` is the future retrieval target; `clinical_consequence` explains why it matters; `retest_prompt_shape` gives the next agent a concrete probe shape. These are not replacements for verbatim Q/A; they are the agent's memory intelligence layer.
 - **retrieval metadata**: use `teaching_intent`, `expected_answer_edge`, `coverage_role`, and source fields to make future retrieval concise. `expected_answer_edge` should be the scoring key in one phrase. `coverage_role` distinguishes primary document progress from repair probes or related-topic probes. `answer_mode` and `confidence_observed` should capture whether a correct answer was fluent and unaided versus prompted or hesitant.
+- **claim-state judgment**: when retesting or repairing known cards, use the claim ids surfaced by summary. Pass `--match-claim-state-id` for the primary card being tested, pass `--repairs-claim-state-ids` for other open cards the answer truly repaired, and pass `--new-claim` when overlap would otherwise collapse a distinct target. These flags are the safe replacement for deterministic token-overlap repair.
 
 ### Entry Formatting Contract
 

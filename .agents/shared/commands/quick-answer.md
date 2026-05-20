@@ -79,7 +79,7 @@ Quick-answer sessions are low-stakes reference captures. They should persist in 
 Memory-stack interpretation:
 - `skill = quick-answer` means "question asked and answer explained," not "learner demonstrated knowledge."
 - These entries are sorted under their resolved topic and concept so future agents can see that the topic has come up.
-- They are weak reference evidence for curation. Use them to enrich context or notice adjacency, but do not use quick-answer alone to assert a recurring weakness, durable mastery, or `confused_with` relationship.
+- They are weak reference evidence for curation. Use them to enrich context or notice adjacency, but do not use quick-answer alone to assert a recurring weakness, durable mastery, `confused_with` relationship, or directed `prerequisite` relationship.
 - If later `/study-review`, `/consult`, or `/study-material` sessions test the same concept, those higher-signal entries should dominate learner-state and curation judgment.
 
 ### 3. Optional Anki

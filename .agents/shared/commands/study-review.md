@@ -121,7 +121,10 @@ When you probe a related concept during the session, log it under the related to
 python3 src/study_memory.py log-answer \
   --session "$SESSION_TS" --topic "<related topic>" --concept "<concept>" \
   --question "..." --answer "..." --correct <0|1|2> \
-  --skill "study-review"
+  --skill "study-review" \
+  [--priority "urgent|high|medium|low"] \
+  [--match-claim-state-id <id>] [--new-claim] \
+  [--repairs-claim-state-ids "id,id,..."]
 ```
 
 This builds the cross-topic knowledge graph naturally: a future session on the related topic will find this data, and a future session on the primary topic will find it again through scouting.
@@ -202,10 +205,22 @@ python3 src/study_memory.py log-answer \
   --skill "study-review" \
   [--correction "<corrected fact>"] \
   [--error-type "<type>"] \
-  [--misconception "<specific wrong belief>"]
+  [--misconception "<specific wrong belief>"] \
+  [--tested-claim "<what was tested>"] \
+  [--learner-claim "<compact committed answer>"] \
+  [--missing-edge "<missing discriminator/threshold/step>"] \
+  [--corrected-rule "<replacement rule>"] \
+  [--clinical-consequence "<why it matters>"] \
+  [--retest-prompt-shape "<future probe shape>"] \
+  [--learning-operation "<recall|discrimination|quantification|sequencing|mechanism|transfer>"] \
+  [--priority "urgent|high|medium|low"] \
+  [--match-claim-state-id <id>] [--new-claim] \
+  [--repairs-claim-state-ids "id,id,..."]
 ```
 
 **Topic assignment**: use the primary doc topic for concepts native to the document. When probing a related concept surfaced through scouting, use the related topic's canonical name instead — this ensures the exchange is discoverable in future sessions on either topic.
+
+When a question is designed from a `must_retest` or `recent_repair` card, pass that card's `claim_state_id` via `--match-claim-state-id`. When an answer repairs other open claims, pass only those explicitly repaired ids via `--repairs-claim-state-ids`. Use `--new-claim` when similar wording is testing a distinct claim.
 
 Correctness: `2` = correct | `1` = partial (right direction, missing key detail) | `0` = wrong or misconception
 

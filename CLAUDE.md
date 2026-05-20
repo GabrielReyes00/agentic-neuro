@@ -148,7 +148,7 @@ The memory layer has two surfaces:
 
 1. **Active claim-centered model** (`exchanges`, `claim_results`, `claim_state`, `retrieval_cards`) — per-claim status: "this exact claim is open / repaired / durable right now." Read via `summary --topic` `cards`. Always available.
 
-2. **Curated cross-session layer** (`memory_summaries`, `concept_relationships`) — agent-authored synthesis: "this pattern recurs across sessions" + `confused_with` graph edges with strength scores. Read via `--include-curated` returning `curated_summaries` and `graph_signals`. Both are focus-filtered at retrieval: `curated_summaries` returns the top 2 by importance as anchors plus summaries whose evidence cites concepts in today's returned cards; `graph_signals` only traverse from the top 3 `must_retest` concepts by priority. Selection policy is detailed in the shared learning contract. Written conditionally after every ~5 ended sessions via `curate-candidates` → agent payload → `apply-curation`. Governed by the Curation Doctrine in `.agents/shared/commands/learning-session-contract.md`.
+2. **Curated cross-session layer** (`memory_summaries`, `concept_relationships`) — agent-authored synthesis: "this pattern recurs across sessions" + `confused_with` and directed `prerequisite` graph edges with strength scores. Read via `--include-curated` returning `curated_summaries` and `graph_signals`. Both are focus-filtered at retrieval: `curated_summaries` returns the top 2 by importance as anchors plus summaries whose evidence cites concepts in today's returned cards; `graph_signals` only traverse from the top 3 `must_retest` concepts by priority. Selection policy is detailed in the shared learning contract. Written conditionally after every ~5 ended sessions via `curate-candidates` → agent payload → `apply-curation`. Governed by the Curation Doctrine in `.agents/shared/commands/learning-session-contract.md`.
 
 `skill = quick-answer` is a low-stakes reference capture: it means Gabriel asked about a concept and received an explanation. It is not evidence of durable mastery, an open error, or a full learning-session handoff. Use it as topic/concept context or weak curation support only; tested sessions dominate learner-state judgments.
 
@@ -167,7 +167,7 @@ python3 src/study_memory.py summary --topic "<topic>" --limit 8 --scaffold-limit
 
 **Do NOT run global summary in topic-anchored mode.** A user studying EVD management does not want drift to spine surgery or pediatric tumors just because errors are open in those domains. If a relevant open error lives within today's topic, `summary` will surface it; retest inline. If it lives outside today's topic, it stays invisible — that is the point.
 
-`--include-curated` is the default for all skill-driven retrieval. It adds two top-level keys (`curated_summaries`, `graph_signals`) to the JSON without changing existing `cards` semantics. Both keys are focus-filtered: `curated_summaries` returns the top 2 by importance plus summaries citing concepts in today's returned cards; `graph_signals` fire only from the top 3 `must_retest` concepts. Empty arrays when nothing is curated.
+`--include-curated` is the default for all skill-driven retrieval. It adds two top-level keys (`curated_summaries`, `graph_signals`) to the JSON without changing existing `cards` semantics. Both keys are focus-filtered: `curated_summaries` returns the top 2 by importance plus summaries citing concepts in today's returned cards; `graph_signals` fire only from the top 3 `must_retest` concepts and may include `confused_with` or directed `prerequisite` edges. Empty arrays when nothing is curated.
 
 **Memory-driven custom review only** — user asked "what should I review", "drill my weak spots", "build me a custom session", "go after my open errors" with no named topic. Run global summary to compose the queue from global state:
 
@@ -186,10 +186,17 @@ python3 src/study_memory.py log-answer \
   --question "<your question, verbatim>" --answer "<user's answer, verbatim>" \
   --correct <0|1|2> \
   [--correction "<text>"] [--error-type "<type>"] [--misconception "<text>"] \
-  [--doc "<path>"] [--skill "<skill>"]
+  [--doc "<path>"] [--skill "<skill>"] \
+  [--tested-claim "..."] [--learner-claim "..."] [--missing-edge "..."] \
+  [--corrected-rule "..."] [--clinical-consequence "..."] \
+  [--retest-prompt-shape "..."] [--learning-operation "..."] \
+  [--priority "urgent|high|medium|low"] \
+  [--match-claim-state-id <id>] [--new-claim] \
+  [--repairs-claim-state-ids "id,id,..."]
 ```
 
 Correctness: `2` = correct with no hints | `1` = right direction, missing details | `0` = wrong or misconception.
+Use `--match-claim-state-id` when retesting a known card, `--new-claim` for distinct overlapping targets, and `--repairs-claim-state-ids` only for open claims the current correct answer truly repaired. Use `--priority` when agent judgment should override heuristic priority.
 Set `SESSION_TS` once per session: `SESSION_TS=$(date -u +%Y-%m-%dT%H:%M:%S+00:00)`
 
 #### Session End (silent)
@@ -307,7 +314,7 @@ status
 resolve-topic --topic "T" [--doc "<folder>/X.md"]
 curation-status                                                       # current rolling-session counter and last curation version
 curate-candidates [--mode compact|detailed] [--topic "T"] [--recent-sessions N] [--limit N]
-apply-curation --input path.json | --stdin                            # agent-authored summaries + confused_with edges (governed by Curation Doctrine)
+apply-curation --input path.json | --stdin                            # agent-authored summaries + confused_with/prerequisite edges (governed by Curation Doctrine)
 
 
 # anki_queue.py — per-session card queue (see shared contract for full workflow)

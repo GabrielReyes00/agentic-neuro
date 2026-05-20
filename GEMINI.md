@@ -127,7 +127,7 @@ python3 src/study_memory.py summary --topic "<topic>" --limit 8 --scaffold-limit
 
 **Do NOT run global summary in topic-anchored mode.** A user studying EVD management does not want drift to spine surgery or pediatric tumors because errors are open there. If a relevant open error lives within today's topic, `summary` surfaces it; retest inline. Otherwise it stays invisible -- that is the point.
 
-`--include-curated` is the default for all skill-driven retrieval. It adds two top-level keys (`curated_summaries`, `graph_signals`) -- agent-authored cross-session synthesis and `confused_with` graph edges -- without changing existing `cards` semantics. Both are focus-filtered: `curated_summaries` returns the top 2 by importance plus summaries citing concepts in today's returned cards; `graph_signals` fire only from the top 3 `must_retest` concepts by priority. Empty arrays when nothing is curated. Selection policy is detailed in `.agents/shared/commands/learning-session-contract.md`.
+`--include-curated` is the default for all skill-driven retrieval. It adds two top-level keys (`curated_summaries`, `graph_signals`) -- agent-authored cross-session synthesis plus `confused_with` and directed `prerequisite` graph edges -- without changing existing `cards` semantics. Both are focus-filtered: `curated_summaries` returns the top 2 by importance plus summaries citing concepts in today's returned cards; `graph_signals` fire only from the top 3 `must_retest` concepts by priority. Empty arrays when nothing is curated. Selection policy is detailed in `.agents/shared/commands/learning-session-contract.md`.
 
 `skill = quick-answer` is a low-stakes reference capture: it means Gabriel asked about a concept and received an explanation. It is not evidence of durable mastery, an open error, or a full learning-session handoff. Use it as topic/concept context or weak curation support only; tested sessions dominate learner-state judgments.
 
@@ -148,12 +148,19 @@ python3 src/study_memory.py log-answer \
   --question "<your question, verbatim>" --answer "<user's answer, verbatim>" \
   --correct <0|1|2> \
   [--correction "<text>"] [--error-type "<type>"] [--misconception "<text>"] \
-  [--doc "<path>"] [--skill "<skill>"]
+  [--doc "<path>"] [--skill "<skill>"] \
+  [--tested-claim "..."] [--learner-claim "..."] [--missing-edge "..."] \
+  [--corrected-rule "..."] [--clinical-consequence "..."] \
+  [--retest-prompt-shape "..."] [--learning-operation "..."] \
+  [--priority "urgent|high|medium|low"] \
+  [--match-claim-state-id <id>] [--new-claim] \
+  [--repairs-claim-state-ids "id,id,..."]
 ```
 
 Correctness: `2` = correct with no hints | `1` = right direction, missing details | `0` = wrong or misconception.
 
 The `log-answer` command prints `OK exchange_id=N` -- read this output and use that N for the Anki enqueue call below.
+Use `--match-claim-state-id` when retesting a known card, `--new-claim` for distinct overlapping targets, and `--repairs-claim-state-ids` only for open claims the current correct answer truly repaired. Use `--priority` when agent judgment should override heuristic priority.
 
 Set `SESSION_TS` once per session and reuse for every memory write. Run `date -u +%Y-%m-%dT%H:%M:%S+00:00` as a standalone command, then copy the output into a variable assignment `SESSION_TS="<output>"` to avoid shell substitution issues.
 
@@ -301,7 +308,7 @@ log-answer --session "TS" --topic "T" --concept "C" --question "Q" --answer "A" 
 end-session --session "TS" --summary "..." --next-strategy "..." --json
 curation-status
 curate-candidates [--mode compact|detailed] [--topic "T"] [--recent-sessions N] [--limit N]
-apply-curation --input path.json | --stdin
+apply-curation --input path.json | --stdin                            # summaries + confused_with/prerequisite edges
 status
 resolve-topic --topic "T" [--doc "<folder>/X.md"]
 
