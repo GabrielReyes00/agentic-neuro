@@ -18,16 +18,24 @@ Checks (per file):
   - YAML metadata appears at the bottom, not the top (no `---` on line 1).
   - If a RAG callout is present, it uses the exact sanctioned form
     `> [!info] RAG Supplemented` (case-sensitive, on its own line).
+  - Bottom YAML includes standard metadata along with provenance and internal knowledge tracking keys.
+  - Textbook-style labels are not paired with PubMed/DOI links.
+  - Optional coverage ledger gate: if `--coverage-ledger` is supplied, required
+    ledger blocks must not have gap-like statuses.
 
 Exit code: 0 if all reports pass, 1 if any fail.
 
 Usage:
     python3 src/report_validator.py
     python3 src/report_validator.py "/path/to/Reports/Topic.md"
+    python3 src/report_validator.py "/path/to/Reports/Topic.md" \
+      --coverage-ledger data/Sessions/Topic/coverage_ledger.json
 """
 
 from __future__ import annotations
 
+import argparse
+import json
 import re
 import sys
 from pathlib import Path
@@ -50,6 +58,7 @@ GEN_MODE_RE = re.compile(r"^Generation Mode\s*:", re.MULTILINE)
 H1_RE = re.compile(r"^#\s", re.MULTILINE)
 RAG_CALLOUT_RE = re.compile(r"^>\s*\[!info\]\s*RAG Supplemented\s*$", re.MULTILINE)
 ANY_RAG_CALLOUT_HINT_RE = re.compile(r"^>\s*\[!\w+\].*RAG", re.MULTILINE | re.IGNORECASE)
+FENCED_YAML_RE = re.compile(r"^```ya?ml\s*$", re.MULTILINE | re.IGNORECASE)
 H2_RE = re.compile(r"^##\s+(.+?)\s*$", re.MULTILINE)
 OBJECTIVE_LINE_RE = re.compile(r"^\s*(?:[-*]\s+|\d+[.)]\s+)(.+?)\s*$")
 WEAK_OBJECTIVE_VERB_RE = re.compile(
@@ -72,6 +81,12 @@ TEXTBOOK_HINT_RE = re.compile(
     r"\b(?:Youmans|Greenberg|Handbook|Atlas|Operative Neurosurgical Techniques|Rhoton|StatPearls|p\.\s*\d+|\d(?:st|nd|rd|th)\s+Ed\b|Cranial Anatomy|Comprehensive Neurosurgical)",
     re.IGNORECASE,
 )
+TEXTBOOK_LINK_CONTEXT_RE = re.compile(
+    r"(?:Youmans|Greenberg|Handbook|Atlas|Operative Neurosurgical Techniques|Rhoton|StatPearls|Comprehensive Neurosurgical|Neurosurgery Board Review|Neuro ICU)[^\n|]{0,80}\[[^\]]+\]\(https?://(?:pubmed\.ncbi\.nlm\.nih\.gov|doi\.org)/[^)]+\)",
+    re.IGNORECASE,
+)
+FORBIDDEN_YAML_KEY_RE = re.compile(r"^\s*(?:__banned_key_placeholder__)\s*:", re.IGNORECASE)
+GAP_STATUSES = {"gap", "gapped", "missing", "uncovered", "incomplete"}
 
 
 def _bottom_yaml_start_line(text: str) -> int | None:
@@ -106,6 +121,18 @@ def validate(path: Path) -> list[str]:
     # No YAML at top
     if lines and lines[0].strip() == "---":
         failures.append("line 1: YAML front matter at top is not allowed (YAML belongs at bottom)")
+    fenced_yaml = FENCED_YAML_RE.search(text)
+    if fenced_yaml:
+        line_no = text.count("\n", 0, fenced_yaml.start()) + 1
+        failures.append(f"line {line_no}: YAML metadata must use bottom `---` delimiters, not a fenced code block")
+
+    bottom_yaml_line = _bottom_yaml_start_line(text)
+    if bottom_yaml_line is not None:
+        for idx, line in enumerate(lines[bottom_yaml_line:], bottom_yaml_line + 1):
+            if FORBIDDEN_YAML_KEY_RE.match(line):
+                failures.append(
+                    f"line {idx}: `{line.split(':', 1)[0].strip()}` metadata is not allowed in Reports YAML"
+                )
 
     # Legacy generation-mode header
     m = GEN_MODE_RE.search(text)
@@ -173,7 +200,6 @@ def validate(path: Path) -> list[str]:
     # Mastery Objectives section: required after opening block and before bottom YAML.
     h2_positions = [(m.group(1).strip(), text.count("\n", 0, m.start()) + 1) for m in H2_RE.finditer(text)]
     mastery_positions = [(name, ln) for name, ln in h2_positions if name == "Mastery Objectives"]
-    bottom_yaml_line = _bottom_yaml_start_line(text)
     if not mastery_positions:
         failures.append("missing required H2 `## Mastery Objectives`")
     else:
@@ -264,12 +290,77 @@ def validate(path: Path) -> list[str]:
     if len(raw_dois) > 5:
         failures.append(f"... and {len(raw_dois) - 5} more raw DOI tokens")
 
+    for i, line in enumerate(lines, 1):
+        if TEXTBOOK_LINK_CONTEXT_RE.search(line):
+            failures.append(
+                f"line {i}: textbook-style citation is paired with a PubMed/DOI link; "
+                "cite the textbook as book/page or cite the actual article label"
+            )
+
     return failures
 
 
+def _ledger_blocks(payload: object) -> list[tuple[str, dict[str, object]]]:
+    if not isinstance(payload, dict):
+        return []
+    raw_blocks = payload.get("blocks")
+    if isinstance(raw_blocks, dict):
+        return [(str(name), block) for name, block in raw_blocks.items() if isinstance(block, dict)]
+    if isinstance(raw_blocks, list):
+        blocks: list[tuple[str, dict[str, object]]] = []
+        for idx, block in enumerate(raw_blocks, 1):
+            if not isinstance(block, dict):
+                continue
+            name = str(block.get("block_id") or block.get("domain") or block.get("name") or f"block_{idx}")
+            blocks.append((name, block))
+        return blocks
+    return []
+
+
+def validate_coverage_ledger(path: Path) -> list[str]:
+    failures: list[str] = []
+    if not path.exists():
+        return [f"coverage ledger does not exist: {path}"]
+    try:
+        payload = json.loads(path.read_text())
+    except json.JSONDecodeError as exc:
+        return [f"coverage ledger is not valid JSON: {exc}"]
+
+    blocks = _ledger_blocks(payload)
+    if not blocks:
+        return ["coverage ledger has no `blocks` object/list"]
+
+    for name, block in blocks:
+        required = block.get("required", True)
+        if required is False:
+            continue
+        status = str(block.get("status") or "").strip().lower()
+        review_status = str(block.get("review_status") or "").strip().lower()
+        if status in GAP_STATUSES or review_status in GAP_STATUSES:
+            failure_status = status if status in GAP_STATUSES else review_status
+            failures.append(f"coverage block `{name}` has gap status `{failure_status}`")
+    return failures
+
+
+def _parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Validate generated report structure and optional coverage ledger.")
+    parser.add_argument("files", nargs="*", type=Path, help="Report markdown file(s) to validate.")
+    parser.add_argument(
+        "--coverage-ledger",
+        type=Path,
+        help="Optional report coverage_ledger.json. Only valid when validating one report file.",
+    )
+    return parser.parse_args(argv)
+
+
 def main() -> int:
-    if len(sys.argv) > 1:
-        files = [Path(arg) for arg in sys.argv[1:]]
+    args = _parse_args(sys.argv[1:])
+    if args.coverage_ledger and len(args.files) != 1:
+        print("--coverage-ledger can only be used when validating exactly one report file.", file=sys.stderr)
+        return 1
+
+    if args.files:
+        files = args.files
     else:
         if not REPORTS_DIR.is_dir():
             print(f"Reports directory not found: {REPORTS_DIR}", file=sys.stderr)
@@ -288,6 +379,8 @@ def main() -> int:
             print("        - file does not exist")
             continue
         failures = validate(path)
+        if args.coverage_ledger:
+            failures.extend(validate_coverage_ledger(args.coverage_ledger))
         if failures:
             total_failures += 1
             print(f"FAIL  {path.name}")

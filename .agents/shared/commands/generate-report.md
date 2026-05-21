@@ -18,10 +18,36 @@ Do not address the learner. Do not mention PGY level or any individual's prior k
 - No `Generation Mode: [+RAG]` or `[-RAG]` header (legacy tag — banned). When RAG was actually used during generation, emit the sanctioned callout instead: `> [!info] RAG Supplemented` placed immediately above the opening H2, with a one-line description on the next blockquote line. Absence of the callout signals no RAG was used. No `STATUS: COMPLETE` markers. No "citation registry" appendix. No phase numbering in the file.
 - No H1 title at the top (filename is the title in Obsidian); no YAML at the top (YAML goes at the bottom).
 - No "you," "the learner," "the resident should know," PGY-level qualifiers, or assumed-knowledge skips.
+- No repo-workflow leakage: do not discuss source cards, query rewriting, coverage ledgers, gap repair, raw-source audits, validators, or RAG internals in the final report body. Those belong in `data/Sessions/<Title>/` artifacts and final user summaries, not in clinical reference prose.
 - No "studies suggest," "is known to," "recent evidence indicates," "research has shown," "in conclusion," "it is important to note." Replace each with a specific cited claim.
 - No bare wikilinks invented from intuition — every `[[Note Name]]` must appear in the Step 2 vault scan.
 - No PMID or DOI constructed from memory — copy from tool output verbatim.
 - No `_v2`, `(updated)`, or date-stamped filenames when regenerating an existing report — overwrite in place.
+
+---
+
+## Modular Workflow Authority
+
+This file is the public command contract and orchestrator. Detailed post-retrieval instructions live in focused modules. Read the relevant module freshly when reaching each checkpoint:
+
+- `.agents/shared/commands/generate-report-research-plan.md` — query best practices, topic-archetype classification, required/optional/not-applicable report domains, and planned retrieval queries.
+- `.agents/shared/commands/generate-report-research.md` — `source_cards.jsonl`, non-RAG source-card normalization, and `coverage_ledger.json`.
+- `.agents/shared/commands/generate-report-synthesis-map.md` — compact-but-dense `report_knowledge_map.json` built from source cards and the coverage ledger.
+- `.agents/shared/commands/generate-report-finalize.md` — write from the synthesis map, run `report_validator.py --coverage-ledger`, update INDEX, concepts, memory, and final user summary.
+
+Do not copy the full `/intraoperative-guide` workflow. Reports need structured coverage control, not mandatory reviewer subagents, operative verdict chains, or attending-question gates. Optional review is appropriate only for unusually large, high-stakes, or controversy-heavy reports.
+
+## Structured Artifact Rule
+
+The final report must be written from structured post-retrieval artifacts, not directly from raw RAG dumps. Raw retrieval output may be consulted for a narrow citation dispute, but ordinary synthesis flows through:
+
+1. `report_research_plan.json`
+2. `source_cards.jsonl`
+3. `coverage_ledger.json`
+4. `report_knowledge_map.json`
+5. final report prose
+
+If `coverage_ledger.json` contains any required block with `status: gap`, do not write the final report. Run targeted retrieval or explicitly repair scope until the ledger has no required gap statuses. `report_validator.py --coverage-ledger` enforces this as a final gate.
 
 ---
 
@@ -32,6 +58,13 @@ Do not address the learner. Do not mention PGY level or any individual's prior k
 Derive a Title Case slug from the user's request. If the topic is genuinely ambiguous (e.g., "report on aneurysms" with no localizer or context), ask one clarifying question. Otherwise infer scope and proceed.
 
 If `Reports/<Title>.md` already exists, treat the request as a regeneration: overwrite the file in place, refresh INDEX.md, and replace any concept stubs that are now stale. Do not create date-stamped variants or `_v2` files.
+
+Create the report session directory at the start of the run:
+
+```bash
+cd /Users/gabrielreyes/agentic-neuro && \
+mkdir -p "data/Sessions/<Title>"
+```
 
 ### Step 1: Related-report discovery (silent)
 
@@ -79,44 +112,78 @@ The report MUST contain the following content elements. The agent decides depth,
 
 If a Mandatory Element is genuinely not applicable to a specific topic (e.g., operative walkthrough on a pure pharmacology report, mechanism→consequence chains on a pure operative anatomy report), state the omission briefly in your self-audit reasoning and proceed.
 
-**Quality floors (hard minimums).** A report below any of these floors is incomplete — go research more before writing:
-- Key Numbers Table: **≥10 rows**, each with a citation.
-- Differentiator: **≥5 contrasted entities** (or ≥5 distinguishing axes for a non-pathology topic).
-- Operative walkthrough (when procedural): **≥3 phases** (e.g., setup → bone work → intradural → closure) with named maneuvers.
-- Failure modes: **≥6 specific named pitfalls**, each describing the error and its mechanism — not generic cautions.
-- Unique citations: **≥8 distinct sources**, mixing PubMed primary literature and textbook RAG.
-- Wikilinks: **≥3 inline cross-references** plus the final `## Related in This Vault` section, all verified to resolve.
-- Mastery Objectives: `## Mastery Objectives` present with **5-10** testable objectives using action verbs; weak verbs such as "know," "understand," "appreciate," "be familiar with," "review," and "learn" fail the contract.
-- Total length: **≥200 lines** of body content for a typical topic; encyclopedic ambition usually pushes 250–350. A short report is a red flag, not a feature.
+**Quality floors are content-driven, not count-driven.** A report is incomplete when it lacks the clinical density naturally required by its topic, even if it passes structural validation. Do not use arbitrary citation counts, row counts, line counts, or fixed numbers of pitfalls as a substitute for expert coverage.
 
-These are floors, not ceilings. The Sphenoid Wing Meningiomas reference exemplar exceeds every floor — use it as the calibration point.
+Use these topic-shaped floors during self-audit:
+
+- A clinical emergency or ICU topic is incomplete without management-changing thresholds, bedside monitoring parameters, escalation triggers, lesion-level physiology, predictable complications, and handoff-ready failure modes.
+- A procedural or operative topic is incomplete without approach logic, anatomy-risk relationships, key maneuvers, intraoperative tests of success, bailouts, and complication mechanisms.
+- A pathology or differential topic is incomplete without discriminators against close mimics, natural history, imaging patterns, management consequences, and common diagnostic traps.
+- A physiology, molecular, or anatomy topic is incomplete without mechanism-to-consequence chains that explain how the fact changes exam interpretation, imaging, treatment, prognosis, or complications.
+- A controversy or evidence-review topic is incomplete without evidence strength, population boundaries, effect size when available, and practical interpretation of conflicting sources.
+- Any report is incomplete if useful granular source detail was compressed into generic claims, if high-stakes numbers lack source verification, or if clinical physiology and operational bedside detail were replaced by workflow commentary.
+
+The Sphenoid Wing Meningiomas reference exemplar remains the calibration point: density comes from source-specific clinical substance, not padding.
 
 ---
 
 ## Research Principles
 
+### Checkpoint 1: Research Plan
+
+Read `.agents/shared/commands/generate-report-research-plan.md` before any retrieval. This module owns query rewriting: transform the user's request into focused search strings per domain rather than passing a vague topic or mixed keyword bag directly into RAG.
+
+Build `data/Sessions/<Title>/report_research_plan.json` before retrieval. The plan classifies the topic archetype and marks each report domain as required, optional, or not applicable. A tumor, vascular pathology, pharmacology topic, device, anatomy report, and trial/controversy review should not use the same required-domain shape.
+
+### Checkpoint 2: Structured Research
+
+Read `.agents/shared/commands/generate-report-research.md`.
+
+Run source retrieval according to the plan and produce:
+
+```text
+data/Sessions/<Title>/source_cards.jsonl
+data/Sessions/<Title>/coverage_ledger.json
+```
+
+The coverage ledger must track required domains such as epidemiology/natural history, pathophysiology/mechanism, anatomy, diagnosis/imaging, management, operative or procedural considerations when applicable, complications/failure modes, outcomes/evidence, controversies/guidelines, differentiators, key numbers, Mastery Objectives, and vault crosslinks. Domains may be marked `not_applicable`, but required domains may not remain `gap`.
+
+### Checkpoint 3: Synthesis Map
+
+Read `.agents/shared/commands/generate-report-synthesis-map.md`.
+
+Build `data/Sessions/<Title>/report_knowledge_map.json` from source cards and the coverage ledger. This map is the synthesis layer: integrated claims, source-card IDs, provenance tiers, key numbers, differentiators, pitfalls, controversies, and planned citations. If mapping exposes a required domain gap, update the ledger and return to research before drafting.
+
 **Two primary sources, agent picks weighting per section.** The local textbook corpus (`lance_retriever.py compare`) and PubMed/PMC are the two main evidence streams. Decide per section which produced more important or relevant material — anatomy and classical teaching often weigh toward textbook RAG, evidence base and trials toward PubMed. Web search is a supplementary source only for non-published information: society guidelines and consensus statements, FDA approvals and device specifications, ongoing trial registrations, recent position papers not yet indexed in PMC.
 
-**Textbook RAG — use `compare --stdout`.** Each query retrieves, reranks, and distills relevant textbook passages, printing them directly to stdout (no intermediate file). Run one focused query per research thread:
+**Textbook RAG — prefer `compare --card-json` for workflow runs.** Each planned query should emit compact-but-dense source cards with coverage-block labels:
 
 ```bash
 cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
-python3 src/lance_retriever.py compare "<focused concept query>" --stdout --no-frontier
+python3 src/lance_retriever.py compare "<focused concept query>" \
+  --card-json \
+  --card-output "data/Sessions/<Title>/source_cards_q<N>.jsonl" \
+  --coverage-block "<domain_id>" \
+  --card-prefix "Q<N>-CARD" \
+  [--no-frontier]
 ```
+
+Use `compare --stdout` only for ad-hoc narrow re-checking or citation disputes. The canonical handoff is `source_cards.jsonl`, not a raw RAG transcript.
 
 **Frontier decision — agent determines.** Use `--no-frontier` for established clinical knowledge (anatomy, classic management, standard surgical approaches). Omit the flag when the topic involves recent developments, novel techniques, or evolving evidence where PMC literature adds value.
 
-**Using retrieved passages.** Passages land directly in your context from the bash output. Extract specific facts, thresholds, citations, and operative details — then synthesize them into your own prose. Cite textbook sources inline at the point of claim (e.g., "Youmans 8th Ed., Ch. 37, p. 777"). Do not restructure report sections around passage order or parrot passage text verbatim. Run multiple focused queries across different research threads rather than one broad query.
+**Using retrieved sources.** Extract specific facts, thresholds, citations, and operative details into source cards, then synthesize them into `report_knowledge_map.json` before prose. Cite textbook sources inline at the point of claim (e.g., "Youmans 8th Ed., Ch. 37, p. 777"). Do not restructure report sections around passage order or parrot passage text verbatim. Run multiple focused queries across different research threads rather than one broad query.
 
 Use subtasks freely when the topic has independent research threads (e.g., separate evidence base for clipping vs. coiling, separate molecular vs. operative threads on a tumor). Subtasks are a tool, not a workflow — no temp-directory ceremony, no write-protocol micromanagement, no verify gate. Spawn them when parallel research is genuinely faster, integrate their output, and move on.
 
-**Density over coverage.** A paragraph integrating three sources beats three paragraphs each summarizing one source. Prefer specifics over generalities: thresholds, percentages, named maneuvers, page references, named trials, named series.
+**Density over coverage.** A paragraph integrating three sources beats three paragraphs each summarizing one source. Prefer specifics over generalities: thresholds, percentages, named maneuvers, page references, named trials, named series. Compression is for removing raw-passage bulk and redundancy, not for removing clinically useful numbers, physiology, anatomy, complications, or operative decision logic.
 
 **Citations always, at the point of claim.** Every quantitative claim, every recommendation, every mechanism, every "current understanding" assertion is cited inline with PMID, DOI, or textbook + page. Copy PMIDs and URLs from tools verbatim — never construct PubMed URLs from memory. Exclude Wikipedia, blogs, patient-facing sites, social media, and uncited AI summaries.
 
-**Provenance tiering — never launder a citation.** Every claim falls in one of two tiers, and the reader must be able to tell which:
-- **Source-grounded** — supported by a retrieved RAG passage, PubMed/PMC article, or textbook page. Cite it inline as above. The cited source must actually support the specific claim (semantic check, not string match) — confirm the retrieved passage is about *this* entity before borrowing its numbers. Misattributing a related condition's statistics (e.g., a cranial DAVF hemorrhage rate applied to a spinal dAVF, or a meningioma radiosurgery dose applied to a vestibular schwannoma) is a citation-laundering failure even though a real source name is attached.
-- **Model knowledge — verify** — clinically standard but not located in any retrieved source. Keep it (do not silently drop useful knowledge), but label it inline as model knowledge and never attach a textbook/PMID/DOI citation to it. Flag high-stakes specifics with `⚠`: doses, physiologic thresholds, correction-rate ceilings, resection extents, device specs, and quantitative outcome/percentage figures. In the `### Key Numbers at a Glance` table, a model-knowledge value carries `model est. — verify` in the Source cell, never a fabricated citation.
+**Provenance tiering — never launder a citation.** Every claim falls in one of three internal tiers, and the reader must be able to tell which claims are source-grounded versus unverified:
+- **Source-grounded** — supported by a retrieved RAG passage, PubMed/PMC article, guideline, device document, or textbook page. Cite it inline as above. The cited source must actually support the specific claim (semantic check, not string match) — confirm the retrieved passage is about *this* entity before borrowing its numbers. Misattributing a related condition's statistics (e.g., a cranial DAVF hemorrhage rate applied to a spinal dAVF, or a meningioma radiosurgery dose applied to a vestibular schwannoma) is a citation-laundering failure even though a real source name is attached.
+- **Model knowledge — verified** — initially supplied from clinical/model knowledge, then confirmed in a real source during gap-fill. Once verified, cite the confirming source and treat the final prose as source-grounded. The map may keep the `model_knowledge_verified` tier for audit, but the report body does not need an extra label if the citation is accurate.
+- **Model knowledge — verify** — clinically useful but not located in any retrieved or confirming source. Keep it only when it adds real value, label it inline as model knowledge, and never attach a textbook/PMID/DOI citation to it. Flag high-stakes specifics with `⚠`: doses, physiologic thresholds, correction-rate ceilings, resection extents, device specs, and quantitative outcome/percentage figures. In the `### Key Numbers at a Glance` table, a model-knowledge value carries `model est. — verify` in the Source cell, never a fabricated citation.
 
 This replaces the older binary "drop it or label expert consensus, unsourced" rule: keep the knowledge, tier it transparently, and flag the specifics worth verifying.
 
@@ -129,9 +196,19 @@ This replaces the older binary "drop it or label expert consensus, unsourced" ru
 
 Raw tokens like `PMID:26738503` or `DOI:10.1007/...` without a link wrapper are a formatting failure. The validator enforces this — `python3 src/report_validator.py` fails on (a) any raw PMID/DOI token outside a markdown link, and (b) any Key Numbers Source cell that has a journal-style `Author YEAR` or `Author et al., YEAR` citation but no hyperlink.
 
+**Do not attach PubMed links to textbook labels.** A RAG textbook citation is not a PubMed article. Cite it as book/chapter/page, e.g. `Youmans and Winn 8th Ed, Vol. 5, p. 588`. If the same fact is supported by a PubMed article, cite the actual article label separately, e.g. `[Author et al., 2024](https://pubmed.ncbi.nlm.nih.gov/...)`. Never write `Youmans 8th Ed [PMID: ...]` or `Greenberg [DOI: ...]`; that falsely implies the book passage is the linked online article.
+
 **Honest uncertainty.** Surface controversy and evolving consensus rather than averaging. If two large series disagree on an outcome rate, report both and identify the methodological difference. If a guideline lags the literature, say so.
 
 **Encyclopedic ambition.** If something material is missing from your draft, find it. The output is meant to be a one-stop reference — gaps in coverage are quality failures, not acceptable trade-offs.
+
+**Validation is invisible to the reader.** Query decomposition, source-card compression, coverage-ledger repair, and raw-source audit are how the agent earns trust; they are not topics in the report. Use them to make the clinical reference denser, better cited, and more precise. Never replace clinical physiology, ICU metrics, operative decision logic, or failure-mode detail with workflow commentary.
+
+**YAML metadata and Provenance tracking.** The bottom YAML block MUST contain standard vault metadata as well as explicit process and provenance keys to maintain absolute transparency. Specifically, you must include:
+- `internal_knowledge_used: true|false` (set to `true` if any section or claim relies on unverified model knowledge, i.e., `model knowledge — verify`; otherwise `false`).
+- `provenance: "<summary>"` (a 1-2 sentence description explaining the source distribution, e.g., "Textbook RAG supplemented with clinical model knowledge for specific management details").
+Do not add other process/workflow fields like source-card counts, query counts, or validator status. The validator expects and permits these keys.
+
 
 ---
 
@@ -139,7 +216,8 @@ Raw tokens like `PMID:26738503` or `DOI:10.1007/...` without a link wrapper are 
 
 This is the intelligence layer of this skill. Before committing the file, read your own draft end-to-end and validate:
 
-- **Opening block** — H2 `## Clinical Utility & Quick Reference` present with all four required children (blockquoted TL;DR, `### When to Reference This Report`, `### Key Numbers at a Glance` with the canonical `| Parameter | Value | Context | Source |` table header, `### Decision Framework` as numbered bolded steps), in that order. After writing, run `python3 src/report_validator.py "/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Reports/<Title Case Title>.md"` to confirm structural compliance for the target report — its exit code is binary.
+- **Opening block** — H2 `## Clinical Utility & Quick Reference` present with all four required children (blockquoted TL;DR, `### When to Reference This Report`, `### Key Numbers at a Glance` with the canonical `| Parameter | Value | Context | Source |` table header, `### Decision Framework` as numbered bolded steps), in that order. After writing, run `python3 src/report_validator.py "/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Reports/<Title Case Title>.md" --coverage-ledger "data/Sessions/<Title>/coverage_ledger.json"` to confirm structural and coverage-ledger compliance for the target report — its exit code is binary.
+- **Coverage ledger** — `coverage_ledger.json` contains no required block with `status: gap`. Optional or genuinely not-applicable domains are explicitly marked, not silently omitted.
 - **Comprehensiveness** — every Mandatory Element from the Quality Contract is present, or its absence is justified by the topic.
 - **Density** — the prose integrates sources rather than serial-summarizing them. No padding sections, no encyclopedic-history filler when operational depth is missing.
 - **Citation integrity** — every quantitative claim, every recommendation, every mechanism is cited. The cited source actually supports the claim made (semantic check, not string match), and is about the same entity (no related-condition misattribution). PMIDs and DOIs are verbatim from the source tool, not constructed.
@@ -152,19 +230,32 @@ This is the intelligence layer of this skill. Before committing the file, read y
 
 This is not a checklist gate. If the draft fails the contract on any axis, re-research and rewrite the deficient sections. The agent owns this judgment — there is no external verifier downstream.
 
-**Stop-and-research trigger.** If during self-audit you find the draft below any Quality Floor, do NOT write the file with a note like "more research needed." Run additional `lance_retriever.py compare --stdout` queries on the deficient topic, do additional PubMed searches, and rewrite the section to floor before committing.
+**Stop-and-research trigger.** If during self-audit you find the draft below any Quality Floor or the coverage ledger contains a required `gap`, do NOT write the file with a note like "more research needed." Run additional `lance_retriever.py compare --card-json` queries on the deficient topic, do additional PubMed searches, update source cards and the synthesis map, and rewrite the section to floor before committing.
 
 ---
 
 ## Finish
 
+Before executing the finish steps, read `.agents/shared/commands/generate-report-finalize.md`.
+
 1. **Write the file** to `Reports/<Title Case Title>.md`. No H1 header — the filename is the title in Obsidian. Start with the opening `## Clinical Utility & Quick Reference` block. End the body with topic sections, `## Mastery Objectives`, `## Related in This Vault`, and a YAML metadata block at the bottom (per CLAUDE.md §1).
 
-2. **Update `Reports/INDEX.md`** with the new entry per the standard table format.
+2. **Validate the report and coverage ledger**:
 
-3. **Concept extraction** per CLAUDE.md §7c — identify 2–5 atomic concepts not already in `Concepts/` and write each as its own concept stub.
+```bash
+cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
+python3 src/report_validator.py \
+  "/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Reports/<Title Case Title>.md" \
+  --coverage-ledger "data/Sessions/<Title>/coverage_ledger.json"
+```
 
-4. **Log to memory** so downstream `/study-review` and future `/generate-report` runs can discover this report. Two calls in sequence — `log-answer` creates a topic-indexed artifact anchor entry, then `end-session` records the summary and next-strategy directive. This is discoverability/provenance only: `skill="generate-report"` must not be interpreted as learner mastery, an open gap, or curation evidence.
+If validation fails, repair the report or coverage artifacts and rerun validation before claiming success.
+
+3. **Update `Reports/INDEX.md`** with the new entry per the standard table format.
+
+4. **Concept extraction** per CLAUDE.md §7c — identify 2–5 atomic concepts not already in `Concepts/` and write each as its own concept stub.
+
+5. **Log to memory** so downstream `/study-review` and future `/generate-report` runs can discover this report. Two calls in sequence — `log-answer` creates a topic-indexed artifact anchor entry, then `end-session` records the summary and next-strategy directive. This is discoverability/provenance only: `skill="generate-report"` must not be interpreted as learner mastery, an open gap, or curation evidence.
 
 ```bash
 cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
@@ -192,4 +283,4 @@ GOOD: "Quiz on AChA cisternal subdivisions and perforator-vs-AChA-origin discrim
 GOOD: "Drill EVD waveform troubleshooting algorithm; transfer to ICP refractoriness decision points."
 BAD: "Review this report."
 
-5. **Surface to user**: TL;DR, file path, source mix (textbook vs PubMed vs web, rough proportions), Quality Contract checklist result (which Mandatory Elements are present, which were intentionally omitted and why), wikilinks added. Do not dump the full report into chat.
+6. **Surface to user**: TL;DR, file path, source mix (textbook vs PubMed vs web, rough proportions), Quality Contract checklist result (which Mandatory Elements are present, which were intentionally omitted and why), coverage-ledger result, validator result, wikilinks added. Do not dump the full report into chat.
