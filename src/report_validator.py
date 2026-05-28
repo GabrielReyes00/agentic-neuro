@@ -18,7 +18,7 @@ Checks (per file):
   - YAML metadata appears at the bottom, not the top (no `---` on line 1).
   - If a RAG callout is present, it uses the exact sanctioned form
     `> [!info] RAG Supplemented` (case-sensitive, on its own line).
-  - Bottom YAML includes standard metadata along with provenance and internal knowledge tracking keys.
+  - Bottom YAML excludes workflow provenance and internal-knowledge tracking keys.
   - Textbook-style labels are not paired with PubMed/DOI links.
   - Optional coverage ledger gate: if `--coverage-ledger` is supplied, required
     ledger blocks must not have gap-like statuses.
@@ -85,7 +85,7 @@ TEXTBOOK_LINK_CONTEXT_RE = re.compile(
     r"(?:Youmans|Greenberg|Handbook|Atlas|Operative Neurosurgical Techniques|Rhoton|StatPearls|Comprehensive Neurosurgical|Neurosurgery Board Review|Neuro ICU)[^\n|]{0,80}\[[^\]]+\]\(https?://(?:pubmed\.ncbi\.nlm\.nih\.gov|doi\.org)/[^)]+\)",
     re.IGNORECASE,
 )
-FORBIDDEN_YAML_KEY_RE = re.compile(r"^\s*(?:__banned_key_placeholder__)\s*:", re.IGNORECASE)
+FORBIDDEN_YAML_KEY_RE = re.compile(r"^\s*(?:provenance|internal_knowledge_used)\s*:", re.IGNORECASE)
 GAP_STATUSES = {"gap", "gapped", "missing", "uncovered", "incomplete"}
 
 

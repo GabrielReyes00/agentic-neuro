@@ -22,7 +22,7 @@ Every memory command in this contract must be executed, not simulated. Do not re
 
 Context-pulling is mode-conditional. The wrong command at the wrong time causes topic drift.
 
-**Topic-anchored sessions**: user named a topic, document, or clinical question, including `/consult`, `/study-material`, doc-anchored `/study-review`, and procedure-specific workflows.
+**Topic-anchored sessions**: user named a topic, document, or clinical question, including `/consult`, `/brain-dump`, `/study-material`, doc-anchored `/study-review`, and procedure-specific workflows.
 
 ```bash
 python3 src/study_memory.py summary --topic "<topic>" --limit 8 --scaffold-limit 2 --include-curated

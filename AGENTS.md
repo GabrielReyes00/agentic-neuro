@@ -20,6 +20,7 @@ Key shared contracts:
 - `.agents/shared/commands/anki-deck-maintenance.md` — separate live Anki deck rewrite/reorganization workflow; Anki is ground truth and Chroma is rebuilt from Anki.
 - `.agents/shared/commands/study-review.md` — doc-anchored and memory-driven review.
 - `.agents/shared/commands/consult.md` — lecture-first clinical consult, verification, Anki, pocket-card write, provenance-tiered citations.
+- `.agents/shared/commands/brain-dump.md` — de-identified service-teaching capture, targeted verification, artifact-anchor memory logging, and optional later review.
 - `.agents/shared/commands/quick-answer.md` — brief direct answers with lightweight memory logging, no startup recall, and optional Anki.
 - `.agents/shared/commands/generate-report.md` — citation-dense report generation with structured research plan, source cards, coverage ledger, synthesis map, provenance tiering, Mastery Objectives, and validator gate.
 - `.agents/shared/commands/intraoperative-guide.md` — deep-research operative rehearsal guides with procedure decomposition, serial RAG, operative knowledge maps, verified Obsidian wikilinks, restrained readable formatting, adversarial expert review, gap repair, structural validation, procedure-specific Anki decks, and Mastery Objectives.
@@ -88,9 +89,11 @@ Explicit or obvious workflow trigger:
 - Study material or quiz from a file -> `study-material`
 - Research report, comprehensive review, deep-dive on a topic -> `generate-report` (produces an encyclopedic, citation-dense reference document; not learner-tailored)
 - Focused clinical question, ward knowledge gap, curbside consult, or management question that should produce a reusable pocket card -> `consult` (brief expert lecture + verification questions + pocket-card vault note; not encyclopedic)
+- `/brain-dump`, "capture what I learned on shift", "senior corrected me on service", or "ward teaching lesson" -> `brain-dump` (de-identify first; verified compact artifact for later review; capture is not mastery)
 - Grand rounds, case presentation, or journal club deck -> `grand-rounds`
 
 Anki: card creation is inline in every learning skill via `anki_queue.py enqueue/check/flush` and follows `.agents/shared/commands/anki-session-workflow.md` plus `.agents/shared/commands/anki-card-quality.md`. There is no separate Anki runtime skill.
+Cards originating from `brain-dump` capture or later review of a `Brain Dumps/` artifact route to the dedicated `Neurosurgery::Brain Dumps` deck with `brain-dump` provenance tags, rather than topic-based textbook/reference decks.
 
 Current-deck cleanup, card rewriting, taxonomy reorganization, and Chroma rebuilds use the separate `.agents/shared/commands/anki-deck-maintenance.md` workflow. Do not let Chroma suppress cards as ground truth; rebuild it from live Anki after approved deck edits.
 
@@ -116,7 +119,7 @@ If validation fails, revise the generated note and rerun the guard. Do not start
 ## Session-End Protocol
 
 Learning commands are complete only after required workflow steps finish:
-1. Vault artifact write/update when applicable (`Study Material/`, `Consults/`, `Reports/`, `Operative Guides/`, `Presentations/`). `study-review` writes no vault artifact in either invocation mode.
+1. Vault artifact write/update when applicable (`Study Material/`, `Consults/`, `Brain Dumps/`, `Reports/`, `Operative Guides/`, `Presentations/`). `study-review` writes no vault artifact in either invocation mode.
 2. Concept extraction when applicable.
 3. `study_memory.py end-session` with a specific, actionable `--next-strategy`.
 4. `anki_queue.py review` + `check` + `flush` for the session's queued cards.
@@ -125,4 +128,4 @@ If the user exits abruptly, finalize with available data and do not claim full c
 
 ## Artifact Mastery Objectives
 
-Generated `Reports/`, `Consults/`, and `Operative Guides/` artifacts include a `## Mastery Objectives` section per their shared command contracts. `study-review --doc` must read the full document first and use Mastery Objectives only as a coverage checksum, never as a substitute for the source body.
+Generated `Reports/`, `Consults/`, `Brain Dumps/`, and `Operative Guides/` artifacts include a `## Mastery Objectives` section per their shared command contracts. `study-review --doc` must read the full document first and use Mastery Objectives only as a coverage checksum, never as a substitute for the source body.

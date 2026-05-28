@@ -143,6 +143,54 @@ class StudyMemoryTests(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_brain_dump_is_artifact_anchor_until_later_review_tests_learning(self) -> None:
+        conn = self._memory_conn()
+        try:
+            study_memory.log_answer(
+                conn,
+                session_id="brain-dump-1",
+                topic="evd transport management",
+                concept="brain dump artifact anchor",
+                question="What service teaching was captured for EVD transport management?",
+                answer="Captured a de-identified service lesson about drain management during transport.",
+                correct=2,
+                skill="brain-dump",
+                doc_path="Brain Dumps/EVD Transport Management.md",
+            )
+            anchor_result = study_memory.end_session(
+                conn,
+                session_id="brain-dump-1",
+                summary="De-identified EVD transport brain dump written.",
+                next_strategy="Use study-review on Brain Dumps/EVD Transport Management.md to test pressure-gradient reasoning.",
+            )
+
+            self.assertTrue(anchor_result["artifact_anchor"])
+            self.assertTrue(anchor_result["excluded_from_curation_count"])
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM exchanges").fetchone()[0], 1)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM claim_results").fetchone()[0], 0)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM claim_state").fetchone()[0], 0)
+
+            study_memory.log_answer(
+                conn,
+                session_id="review-brain-dump-1",
+                topic="evd transport management",
+                concept="pressure gradient transport risk",
+                question="What mechanism makes uncontrolled CSF drainage hazardous during transport?",
+                answer="I am not sure.",
+                correct=0,
+                correction="Rapid compartment pressure shifts can worsen tissue displacement risk.",
+                error_type="reasoning_gap",
+                skill="study-review",
+                doc_path="Brain Dumps/EVD Transport Management.md",
+                tested_claim="Uncontrolled CSF drainage can create harmful pressure shifts during transport.",
+                learner_claim="Could not explain the mechanism.",
+                missing_edge="pressure gradient mechanism",
+            )
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM claim_results").fetchone()[0], 1)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM claim_state").fetchone()[0], 1)
+        finally:
+            conn.close()
+
     def test_correct_after_gap_marks_repaired_same_session(self) -> None:
         conn = self._memory_conn()
         try:

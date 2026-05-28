@@ -1,0 +1,13 @@
+description = "capture de-identified teaching learned on service"
+
+prompt = """
+ACTIVE COMMAND: /brain-dump - Capture de-identified teaching learned on service.
+
+You MUST read and follow `.agents/shared/commands/brain-dump.md`.
+
+User's input: {{args}}
+
+---
+
+@{.gemini/commands/brain-dump.md}
+"""

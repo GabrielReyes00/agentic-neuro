@@ -30,7 +30,9 @@ The `log-answer` command prints `OK exchange_id=N`; use that N as `--exchange-id
 - Use `{{c1::target}}` for single-blank cloze. Multi-cloze is allowed only when all deletions are tightly related to one concept and each is independently worth testing.
 - Cloze answer text is queue-review metadata only and is not written into Anki `Back Extra`.
 - QA backs must be self-contained.
-- Deck: `Neurosurgery::<Domain>::<Topic Title>`. Exception: `/intraoperative-guide` uses `Neurosurgery::Procedures::<Operative Guide Title>`.
+- Deck: `Neurosurgery::<Domain>::<Topic Title>`.
+- Exception: `/intraoperative-guide` uses `Neurosurgery::Procedures::<Operative Guide Title>`.
+- Exception: cards explicitly created from `/brain-dump`, or during `/study-review` anchored to a `Brain Dumps/` artifact, use `Neurosurgery::Brain Dumps` with tag `brain-dump` to keep institution- and lived-experience-origin teaching distinct from textbook/source-heavy decks.
 - Tags: `<skill>,<error_type>` comma-separated, omitting error type if correct.
 
 ## Enqueue

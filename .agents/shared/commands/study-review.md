@@ -2,7 +2,7 @@
 
 Adaptive Socratic study session. Two invocation modes:
 
-- **Doc-anchored**: review an existing vault document — either a `Reports/<file>.md` (narrative with reasoning and citations) or a `Study Material/<file>.md` (structured question bank).
+- **Doc-anchored**: review an existing vault document — a `Reports/<file>.md` (narrative with reasoning and citations), a `Study Material/<file>.md` (structured question bank), or a `Brain Dumps/<file>.md` (de-identified service-teaching artifact with explicit provenance limits).
 - **Memory-driven custom review**: no document supplied — agent composes the session from the learner's memory state (open errors, weak concepts, stale knowledge, cross-topic gaps, learner-requested focus).
 
 Follow `.agents/shared/commands/learning-session-contract.md` for the module map. In particular, use `memory-operations.md` for memory writes, `memory-retrieval.md` for summary interpretation, `adaptive-teaching-doctrine.md` for teaching behavior, and `anki-session-workflow.md` plus `anki-card-quality.md` for cards.
@@ -82,7 +82,7 @@ Use this block for doc-anchored mode.
 
 Derive the slug from the user's request (e.g., "EVD Management" from "let's review EVD management"). If ambiguous, ask.
 
-Check both `Reports/<slug>.md` and `Study Material/<slug>.md`. If both exist, default to the Report for new or deep-dive topics and the Study Material for returning reviews with strong prior performance — but follow the user's lead if they specify one. If neither exists, invoke `/generate-report` or `/study-material` based on the user's intent.
+Check `Reports/<slug>.md`, `Study Material/<slug>.md`, and `Brain Dumps/<slug>.md`. If multiple exist, follow the user's named source. Otherwise default to the Report for new or deep-dive topics, Study Material for systematic question-bank review, and Brain Dumps when the request refers to teaching learned on service or an encountered correction. If none exists, invoke `/generate-report`, `/study-material`, or `/brain-dump` based on the user's intent.
 
 ### Step 1: Read the document
 
@@ -152,6 +152,8 @@ The source document shapes how the agent designs questions, not what the session
 **Reports** provide narrative context with reasoning, evidence, and clinical integration. The agent should use this rich context to design questions that test understanding of mechanisms, discriminators, management logic, and integration across concepts. The agent designs its own questions from the material rather than following a pre-built list — this allows questions to be responsive to the learner's exact knowledge state and to probe the reasoning and connections that the report's narrative makes explicit.
 
 **Study Material** provides a structured question inventory with atomic facts and pre-designed questions organized by teaching unit. The agent should use the question bank as a coverage scaffold — ensuring systematic testing across all sections — while adapting questions to the learner's current state rather than reading them verbatim. Pre-designed questions are starting points, not scripts: rephrase, combine, contextualize, or replace them based on what recall and real-time performance reveal about where the learner needs to be pushed.
+
+**Brain Dumps** provide compact, de-identified teaching captured from clinical experience. The agent should test whether the learner can apply the operational edge and explain its mechanism while preserving its provenance tier. Points labelled `Service teaching - locally confirm` must be tested as local practice knowledge or clarification targets, not recast as universal standards.
 
 In both cases, the document is the curriculum boundary — the agent's questions should be grounded in and traceable to the document's content, with related-topic probes as targeted supplements rather than tangents.
 
@@ -225,6 +227,8 @@ When a question is designed from a `must_retest` or `recent_repair` card, pass t
 Correctness: `2` = correct | `1` = partial (right direction, missing key detail) | `0` = wrong or misconception
 
 Follow `.agents/shared/commands/anki-session-workflow.md` after each `log-answer` call. Use `.agents/shared/commands/anki-card-quality.md` when drafting and validating cards.
+
+If `--doc` begins with `Brain Dumps/`, route all cards from that doc-anchored session to `Neurosurgery::Brain Dumps` and tag them `brain-dump` in addition to the usual review/error tags.
 
 ---
 

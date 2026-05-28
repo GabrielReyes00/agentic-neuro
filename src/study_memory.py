@@ -44,7 +44,7 @@ LOW_STAKES_TEACHING_INTENTS = frozenset({"quick_answer_reference"})
 # reviewed the content yet — that happens later via /study-review pointed at the
 # file). They never count toward the curation threshold and are not curation
 # evidence (no learner performance to synthesize).
-ARTIFACT_ANCHOR_SKILLS = frozenset({"generate-report", "intraoperative-guide"})
+ARTIFACT_ANCHOR_SKILLS = frozenset({"generate-report", "intraoperative-guide", "brain-dump"})
 
 # Skills whose ended sessions must NOT advance the rolling curation counter.
 # quick-answer is low-stakes reference; study-material/grand-rounds are

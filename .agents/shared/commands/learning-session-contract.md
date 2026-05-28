@@ -35,6 +35,7 @@ For full learning workflows, execute the modules in this order:
 
 - `study-review`, `consult`, and `study-material` usually need all modules above, unless their command contract explicitly narrows the behavior.
 - `quick-answer` intentionally does not use this contract; it has its own lightweight contract at `.agents/shared/commands/quick-answer.md`.
+- `brain-dump` captures de-identified service teaching as an artifact anchor and does not become an assessed learning session unless the learner chooses subsequent `study-review`.
 - Reference-generating workflows such as `generate-report`, `intraoperative-guide`, and `grand-rounds` may use learner memory for context and artifacts for downstream review, but their specific command contracts control depth, citations, and artifact validation.
 
 ## Conflict Resolution

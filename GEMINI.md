@@ -18,6 +18,7 @@ Key shared contracts:
 - `.agents/shared/commands/anki-deck-maintenance.md` — separate live Anki deck rewrite/reorganization workflow; Anki is ground truth and Chroma is rebuilt from Anki.
 - `.agents/shared/commands/study-review.md` — doc-anchored and memory-driven review.
 - `.agents/shared/commands/consult.md` — lecture-first clinical consult, verification, Anki, pocket-card write.
+- `.agents/shared/commands/brain-dump.md` — de-identified service-teaching capture, targeted verification, artifact-anchor memory logging, and optional later review.
 - `.agents/shared/commands/quick-answer.md` — brief direct answers with lightweight memory logging, no startup recall, and optional Anki.
 - `.agents/shared/commands/generate-report.md` — citation-dense report generation with structured research plan, source cards, coverage ledger, synthesis map, Mastery Objectives, and report validation.
 - `.agents/shared/commands/intraoperative-guide.md` — deep-research operative rehearsal guides with procedure decomposition, serial RAG, operative knowledge maps, verified Obsidian wikilinks, restrained readable formatting, adversarial expert review, gap repair, structural validation, procedure-specific Anki decks, and Mastery Objectives.
@@ -62,7 +63,7 @@ Use explicit branch targets in command workflows: `If X -> skip to Step N` / `If
 Commands longer than 2 minutes should surface timeout and use the documented fallback. First-call retrieval latency around 30-45 seconds is expected.
 
 Default model: `gemini-3-flash-preview`.
-Use `gemini-3.1-pro` for `/study-review`, `/generate-report`, `/intraoperative-guide`, `/study-material`, and `/consult`. `/study-material` generation is a Pro-only workflow by default: if currently running on a Flash-class model, stop before generation and ask Gabriel to rerun on `gemini-3.1-pro` unless he explicitly accepts a lower-quality draft. `/grand-rounds` may run on Gemini 3 Flash for routine deck-building; escalate to Pro only when dense article critique, difficult statistics, or complex case synthesis warrants it.
+Use `gemini-3.1-pro` for `/study-review`, `/generate-report`, `/intraoperative-guide`, `/study-material`, `/consult`, and `/brain-dump`. `/study-material` generation is a Pro-only workflow by default: if currently running on a Flash-class model, stop before generation and ask Gabriel to rerun on `gemini-3.1-pro` unless he explicitly accepts a lower-quality draft. `/grand-rounds` may run on Gemini 3 Flash for routine deck-building; escalate to Pro only when dense article critique, difficult statistics, or complex case synthesis warrants it.
 
 After editing `.toml` descriptors: `/commands reload`.
 
@@ -94,13 +95,14 @@ At 12+ turns in study sessions, notify user and offer digest before continuing. 
 | `Study Material/` | `/study-material` | Concept maps + question banks |
 | `Presentations/` | `/grand-rounds` | Grand rounds, case presentation, and journal club artifacts. Cases in `Presentations/Cases/`; articles in `Presentations/Articles/`; generated decks on Desktop |
 | `Consults/` | `/consult` | Focused clinical consult pocket cards for ward reference. If a prior consult on the same topic exists, a dated encounter section is appended rather than creating a duplicate |
+| `Brain Dumps/` | `/brain-dump` | De-identified teaching encountered on service; compact verified artifacts for optional active review |
 | `Reference/` | Agent (on request) | Curated reference notes (e.g., `Oral Boards Topic Bank.md`) used to seed memory-driven sessions |
 | `Concepts/` | Agent | Glossary of atomic concepts extracted by skills per §7c. `INDEX.md` is auto-regenerated. **Protected** (never overwrite): `Neurosurgery Consult Workflow.md`, `Neurosurgery Consult Checklists by Pathology.md`, `Peripheral Nerve Injury Classifications (Seddon & Sunderland).md` |
 | `Dashboard.md` | `study_memory.py summary` | Live learner-state context: coverage, open errors, weak concepts, stale knowledge, recent sessions. **Do not hand-edit generated views.** |
 | `ACGME Readiness.md` | `study_memory.py summary` | Active readiness context comes from the learner-memory summary. **Do not hand-edit generated views.** |
 
 
-**Tags**: `skill/{report,guide,study-material,study-review,rag,consult,quick-answer,grand-rounds}` | `domain/{vascular,spine,tumor,trauma,functional,pediatric,peripheral-nerve,general,anatomy}` | `type/{reference,session,case,article,concept}` | `source/{agent,user}`
+**Tags**: `skill/{report,guide,study-material,study-review,rag,consult,brain-dump,quick-answer,grand-rounds}` | `domain/{vascular,spine,tumor,trauma,functional,pediatric,peripheral-nerve,general,anatomy}` | `type/{reference,session,case,article,concept}` | `source/{agent,user}`
 
 ## §5 Skill -> Vault Write Rules
 
@@ -109,6 +111,7 @@ At 12+ turns in study sessions, notify user and offer digest before continuing. 
 - **study-material**: `Study Material/<Title>.md` + INDEX. Title Case from source doc name. Must pass `src/study_material_guard.py` before claiming success or starting a drill.
 - **grand-rounds**: `Presentations/Cases/<Title>.md` or `Presentations/Articles/<Title>.md` via `src/grand_rounds_writer.py` with `--require-quality-gate`. Scrub PHI before case writes.
 - **consult**: `Consults/<Topic Title>.md`. Focused pocket-card vault note for ward reference -- brief lecture model, not encyclopedic. Agent writes the pocket card directly. If a prior consult on the same topic exists, append an `## Encounter -- YYYY-MM-DD` section. Provenance tiering applies: source-grounded points are cited, clinical-knowledge points are labelled and high-stakes specifics carry a `⚠` verify flag (never fake-cited); pocket-card YAML records `internal_knowledge_used` + `provenance`. Dual-source Anki cards follow `anki-session-workflow.md` and `anki-card-quality.md`: lecture content + verification question misses; do not card `⚠` verify-tier specifics as settled fact. Memory recall informs teaching approach, never content omission. Include compact `## Mastery Objectives`. No H1, YAML at bottom.
+- **brain-dump**: `Brain Dumps/<Topic Title>.md`. De-identify before RAG, memory, Anki, or vault persistence; preserve teaching as `Source-grounded`, `Service teaching - locally confirm`, or `Clinical knowledge - verify`. Validate/install through `src/brain_dump_guard.py`. Its memory entry is an artifact anchor, not learner performance. Do not generate cards automatically; explicitly requested cards and later `study-review` cards anchored to this artifact route to `Neurosurgery::Brain Dumps` with tag `brain-dump`.
 - **study-review**: No vault artifact in either invocation mode (doc-anchored or memory-driven) -- the memory layer (`study_memory.py`) is the durable record. `log-answer` after each answer (with `--doc` only when reviewing a vault file); `end-session` at close.
 
 Before writing to any vault folder: ensure `INDEX.md` exists and scan existing vault files for valid wikilinks.
@@ -130,7 +133,7 @@ Invariant summary: topic-anchored sessions use only topic-scoped `summary --incl
 Learning commands complete only after:
 1. `study_memory.py end-session` with summary and next-strategy
 2. `anki_queue.py review`, `check`, and `flush` for the session's queued cards
-3. Vault writes (when applicable): `study-material` -> `Study Material/`, `consult` -> `Consults/`, `generate-report` -> `Reports/`, `intraoperative-guide` -> `Operative Guides/`, `grand-rounds` -> `Presentations/`
+3. Vault writes (when applicable): `study-material` -> `Study Material/`, `consult` -> `Consults/`, `brain-dump` -> `Brain Dumps/`, `generate-report` -> `Reports/`, `intraoperative-guide` -> `Operative Guides/`, `grand-rounds` -> `Presentations/`
 4. `study-review`: no vault artifact in either mode -- memory layer is the durable record
 
 If user exits abruptly, finalize with available data.
@@ -157,11 +160,12 @@ Default: answer directly from model knowledge. Skills are opt-in -- never auto-t
 | `/study-material`, "make study material from [file]" | `study-material` |
 | `/generate-report`, "generate a report on" | `generate-report` |
 | `/consult`, "consult on", "how do I manage", "what should I know about" | `consult` |
+| `/brain-dump`, "capture what I learned on shift", "senior corrected me on service", "ward teaching lesson" | `brain-dump` |
 | `/grand-rounds`, "build my grand rounds", "put together a case presentation", "journal club presentation" | `grand-rounds` |
 
 ### Anki
 
-Card creation is inline in every learning skill via `anki_queue.py enqueue/check/flush` per `.agents/shared/commands/anki-session-workflow.md`. Before drafting or validating cards, read `.agents/shared/commands/anki-card-quality.md` for focused card-quality, cloze, taxonomy, and duplicate rules. There is no separate Anki runtime skill -- when the user asks to "save to Anki" or "make cards", do it inline from the current session context.
+Card creation is inline in every learning skill via `anki_queue.py enqueue/check/flush` per `.agents/shared/commands/anki-session-workflow.md`. Before drafting or validating cards, read `.agents/shared/commands/anki-card-quality.md` for focused card-quality, cloze, taxonomy, and duplicate rules. There is no separate Anki runtime skill -- when the user asks to "save to Anki" or "make cards", do it inline from the current session context. `brain-dump` and `study-review` anchored to a `Brain Dumps/` artifact use the dedicated `Neurosurgery::Brain Dumps` deck to isolate institution- and experience-origin material.
 
 For current-deck cleanup, rewriting, taxonomy reorganization, or Chroma rebuilds, use `.agents/shared/commands/anki-deck-maintenance.md`. Anki is ground truth; Chroma is only rebuilt from live Anki.
 
@@ -169,7 +173,7 @@ For current-deck cleanup, rewriting, taxonomy reorganization, or Chroma rebuilds
 
 `/study-review` is the single learning-session skill. Two invocation modes:
 
-- **Doc-anchored**: triggered by "let's review [X]", "quiz me on [doc]", "continue our session on [doc]" with a matching vault file in `Reports/` or `Study Material/`.
+- **Doc-anchored**: triggered by "let's review [X]", "quiz me on [doc]", "continue our session on [doc]" with a matching vault file in `Reports/`, `Study Material/`, or `Brain Dumps/`.
 - **Memory-driven custom review**: triggered when no document is specified, or when the learner asks for a session composed from memory state -- open errors, weak concepts, stale knowledge, learner-named domain/persona/style.
 
 Persona-shaped sessions (intern-style firefight, oral-board staged cases, ward consult drills) run inside the memory-driven mode; the agent adjusts question shape and tone based on what the learner asks for. The reference topic bank at `Reference/Oral Boards Topic Bank.md` is a curated pool for board-style case selection.
@@ -179,7 +183,7 @@ Follow `.agents/shared/commands/study-review.md` for the full workflow and `.age
 ### Answer Directly
 Clinical questions, explanations, comparisons, coding: model knowledge. Offer RAG if depth warrants.
 
-**Vault-aware answering**: before responding to a clinical question, quickly check whether the topic has been studied -- `ls "$VAULT/Reports/" "$VAULT/Consults/" "$VAULT/Study Material/" "$VAULT/Operative Guides/"` for filename matches. If a relevant note exists, open with "you've already covered this in [[Reports/X]] -- I'll build from there" and pitch the answer at the next layer up rather than re-teaching the basics. If nothing matches, answer fresh.
+**Vault-aware answering**: before responding to a clinical question, quickly check whether the topic has been studied -- `ls "$VAULT/Reports/" "$VAULT/Consults/" "$VAULT/Brain Dumps/" "$VAULT/Study Material/" "$VAULT/Operative Guides/"` for filename matches. If a relevant note exists, build from it while respecting its provenance tier; do not treat a brain-dump note as universal source authority. If nothing matches, answer fresh.
 
 ## §9 Data Locations
 
@@ -189,7 +193,7 @@ Clinical questions, explanations, comparisons, coding: model knowledge. Offer RA
 | Textbook chunks + embeddings | `neurosurgery_v4.lance` (46,714 rows, 22 books) |
 | Anki advisory overlap cache rebuilt from live Anki | `data/chromadb_store_anki_memory` |
 | Anki card queue (per-session) | `data/Sessions/anki_queue.jsonl` |
-| Reports, guides, study docs, reviews, concepts | Obsidian vault |
+| Reports, guides, study docs, concepts, consults, brain dumps | Obsidian vault |
 | ACGME curriculum catalog (265 topics) | `data/acgme_curriculum.json` |
 | Learner memory interface | `python3 src/study_memory.py summary --limit 12 --scaffold-limit 0 --include-curated` |
 

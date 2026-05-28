@@ -1,6 +1,6 @@
 ---
 name: study-review
-description: Socratic review from an existing vault document (Reports/ or Study Material/) — memory-enabled, doc-anchored, no vault artifact.
+description: Socratic review from an existing vault document (Reports/, Study Material/, or Brain Dumps/) — memory-enabled, doc-anchored, no vault artifact.
 ---
 
 # Study Review

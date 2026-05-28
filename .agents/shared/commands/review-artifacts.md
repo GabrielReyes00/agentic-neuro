@@ -21,11 +21,12 @@ These are read-only outputs. Agents never hand-edit them.
 |---|---|---|
 | `study-material` | `Study Material/<Title>.md` | Q&A document |
 | `consult` | `Consults/<Topic Title>.md` | Pocket card |
+| `brain-dump` | `Brain Dumps/<Topic Title>.md` | De-identified service-teaching artifact |
 | `generate-report` | `Reports/<Title>.md` | Encyclopedic reference |
 | `intraoperative-guide` | `Operative Guides/<Title>.md` | Operative rehearsal guide |
 | `grand-rounds` | `Presentations/Cases\|Articles/<Title>.md` | Presentation note |
 
-`study-review` writes no vault artifact in either invocation mode; the memory layer is the durable record. No H1 in any vault file because filename is the title. YAML metadata belongs at bottom.
+`brain-dump` is an artifact-anchor workflow: its note is durable, while learner-state evidence arises only from a later tested review. `study-review` writes no vault artifact in either invocation mode; the memory layer is the durable record. No H1 in any vault file because filename is the title. YAML metadata belongs at bottom.
 
 ## Cleanup
 

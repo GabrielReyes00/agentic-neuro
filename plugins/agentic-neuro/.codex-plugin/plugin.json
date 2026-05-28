@@ -12,6 +12,7 @@
     "neurosurgery",
     "learning",
     "study-review",
+    "brain-dump",
     "anki",
     "obsidian",
     "rag"
@@ -33,7 +34,8 @@
     "defaultPrompt": [
       "Start a study review from my weak spots",
       "Generate a neurosurgery report",
-      "Run a focused consult"
+      "Run a focused consult",
+      "Capture a de-identified brain dump"
     ],
     "screenshots": [],
     "brandColor": "#1f6feb"

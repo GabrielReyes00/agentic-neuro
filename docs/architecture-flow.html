@@ -299,7 +299,7 @@
 
 <!-- ── ROW 2: Skills ── -->
 <div class="node theme-skill" style="left:340px;top:280px;width:180px;"
-  data-tip="/study-review — Two modes: doc-anchored (reads Reports/ or Study Material/) and memory-driven (uses study_memory prep output). Runs log-answer + end-session. No vault artifact.">
+  data-tip="/study-review — Two modes: doc-anchored (reads Reports/, Study Material/, or Brain Dumps/) and memory-driven (uses study_memory prep output). Runs log-answer + end-session. No vault artifact.">
   <div class="node-title">/study-review</div>
   <div class="node-body">doc-anchored · memory-driven · Socratic Q&A · log-answer</div>
   <span class="node-badge badge-skill">skill</span>
@@ -337,6 +337,13 @@
   data-tip="/intraoperative-guide — Detailed operative walkthrough. Writes Operative Guides/. RAG-augmented with textbook content. Concept extraction post-write.">
   <div class="node-title">/intraoperative-guide</div>
   <div class="node-body">Operative Guides/ · RAG · concept extraction</div>
+  <span class="node-badge badge-skill">skill</span>
+</div>
+
+<div class="node theme-skill" style="left:340px;top:385px;width:220px;"
+  data-tip="/brain-dump (/brain-dump alias) — De-identifies service teaching, performs targeted verification, validates through brain_dump_guard.py, writes Brain Dumps/, and creates an artifact anchor rather than learner mastery.">
+  <div class="node-title">/brain-dump</div>
+  <div class="node-body">PHI guard · targeted RAG · Brain Dumps/ · optional review</div>
   <span class="node-badge badge-skill">skill</span>
 </div>
 
@@ -416,7 +423,7 @@
 
 <!-- ── ROW 5: Anki Pipeline ── -->
 <div class="node theme-anki" style="left:1040px;top:720px;width:220px;"
-  data-tip="anki_queue.py — Per-session JSONL card queue. enqueue validates deck path (Neurosurgery::<Domain>::<Topic>). check/review runs novelty pre-flight via ChromaDB cosine similarity. flush dispatches to AnkiConnect HTTP.">
+  data-tip="anki_queue.py — Per-session JSONL card queue. Standard routing uses Neurosurgery::<Domain>::<Topic>; operative guides and Brain Dumps have explicit provenance-preserving exceptions. check/review runs novelty pre-flight via ChromaDB cosine similarity. flush dispatches to AnkiConnect HTTP.">
   <div class="node-title">anki_queue.py</div>
   <div class="node-body">enqueue · check (novelty) · flush → AnkiConnect<br>Queue: data/Sessions/anki_queue.jsonl<br>Dedup threshold: cosine 0.70</div>
   <span class="node-badge badge-anki">anki</span>
@@ -437,6 +444,13 @@
   data-tip="study_material_guard.py — Quality gate for Study Material notes. Checks question count, details blocks, classification tags [recall|spatial|…], TU-/AF- anchors. Installs only structurally sound notes.">
   <div class="node-title">study_material_guard.py</div>
   <div class="node-body">Q count · details blocks · classification tags · TU-/AF- anchors</div>
+  <span class="node-badge badge-python">gate</span>
+</div>
+
+<div class="node theme-data" style="left:290px;top:1030px;width:180px;"
+  data-tip="brain_dump_guard.py — Validates required sections, bottom YAML, provenance tier labels, and common direct identifier patterns before installing Brain Dumps notes.">
+  <div class="node-title">brain_dump_guard.py</div>
+  <div class="node-body">PHI patterns · required sections · provenance · install gate</div>
   <span class="node-badge badge-python">gate</span>
 </div>
 
@@ -476,6 +490,13 @@
   <span class="node-badge badge-yaml">vault</span>
 </div>
 
+<div class="node theme-vault" style="left:1360px;top:900px;width:175px;"
+  data-tip="Obsidian vault folder: Brain Dumps/ — De-identified, provenance-tiered teaching captured from service through /brain-dump. Discoverable for later /study-review; capture alone is not mastery.">
+  <div class="node-title">Brain Dumps/</div>
+  <div class="node-body">service teaching · de-identified · later review</div>
+  <span class="node-badge badge-yaml">vault</span>
+</div>
+
 <!-- PPTX output -->
 <div class="node theme-data" style="left:1400px;top:490px;width:155px;"
   data-tip="Desktop PPTX — Generated slide deck from /grand-rounds. Quality-gated. PHI scrubbed. Grand rounds manifest JSON stored in data/Sessions/.">
@@ -495,9 +516,9 @@
 
 <!-- AnkiConnect -->
 <div class="node theme-anki" style="left:1140px;top:900px;width:185px;"
-  data-tip="AnkiConnect HTTP API (localhost:8765) — Receives flushed cards from anki_queue.py. Card format: Neurosurgery::<Domain>::<Topic> deck hierarchy. Supports cloze and Q&A note types.">
+  data-tip="AnkiConnect HTTP API (localhost:8765) — Receives flushed cards from anki_queue.py. Standard cards use Neurosurgery::<Domain>::<Topic>; brain-dump cards use the isolated Neurosurgery::Brain Dumps deck. Supports cloze and Q&A note types.">
   <div class="node-title">AnkiConnect (localhost:8765)</div>
-  <div class="node-body">Neurosurgery::<Domain>::<Topic> deck tree · cloze + Q&A types</div>
+  <div class="node-body">Topic decks · Brain Dumps · cloze + Q&A types</div>
   <span class="node-badge badge-anki">anki</span>
 </div>
 

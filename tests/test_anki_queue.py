@@ -62,6 +62,46 @@ class EnqueueTests(unittest.TestCase):
         self.assertEqual(entries[0]["card_type"], "qa")
         self.assertIn("flat EVD waveform", entries[0]["front"])
 
+    def test_enqueue_allows_brain_dump_deck_with_provenance_tag(self):
+        ok = anki_queue.enqueue(
+            session="ts",
+            exchange_id=102,
+            deck="Neurosurgery::Brain Dumps",
+            card_type="qa",
+            front="During local transport practice, what EVD step requires confirmation?",
+            back="Confirm the institution-specific clamping and leveling plan with the supervising service.",
+            tags="brain-dump,study-review",
+            queue_path=self.queue,
+        )
+        self.assertTrue(ok)
+        entries = anki_queue._read_queue(self.queue)
+        self.assertEqual(entries[0]["deck"], "Neurosurgery::Brain Dumps")
+        self.assertIn("brain-dump", entries[0]["tags"])
+
+    def test_enqueue_rejects_unlabelled_or_misrouted_brain_dump_card(self):
+        unlabelled = anki_queue.enqueue(
+            session="ts",
+            exchange_id=103,
+            deck="Neurosurgery::Brain Dumps",
+            card_type="qa",
+            front="During local transport practice, what EVD step requires confirmation?",
+            back="Confirm local practice.",
+            queue_path=self.queue,
+        )
+        misrouted = anki_queue.enqueue(
+            session="ts",
+            exchange_id=104,
+            deck="Neurosurgery::Neurocritical care::EVD",
+            card_type="qa",
+            front="During local transport practice, what EVD step requires confirmation?",
+            back="Confirm local practice.",
+            tags="brain-dump",
+            queue_path=self.queue,
+        )
+        self.assertFalse(unlabelled)
+        self.assertFalse(misrouted)
+        self.assertFalse(self.queue.exists())
+
     def test_enqueue_rejects_short_text(self):
         ok = anki_queue.enqueue(
             session="ts",
@@ -365,6 +405,7 @@ class FlushTests(unittest.TestCase):
         self._enqueue_sample(n=2)
         mock_store = self._mock_no_existing_duplicates(MockStore)
         mock_store._embed.return_value = [[1.0, 0.0], [1.0, 0.0]]
+        MockClient.return_value.check_connection.return_value = (True, "")
 
         result = anki_queue.flush(queue_path=self.queue)
 

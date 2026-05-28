@@ -190,6 +190,7 @@ def _batch_duplicate_details(
 # ── enqueue ─────────────────────────────────────────────────────────
 
 _DECK_RE = re.compile(r"^Neurosurgery::.+::.+$")
+BRAIN_DUMP_DECK = "Neurosurgery::Brain Dumps"
 
 
 def _validate_enqueue(
@@ -203,10 +204,15 @@ def _validate_enqueue(
     problems: list[str] = []
     if len(text.split()) < 4:
         problems.append(f"Card text too short ({len(text.split())} words, min 4)")
-    if not _DECK_RE.match(deck):
+    parsed_tags = {tag.strip() for tag in tags.split(",") if tag.strip()}
+    if deck != BRAIN_DUMP_DECK and not _DECK_RE.match(deck):
         problems.append(
-            f"Deck must be Neurosurgery::<Domain>::<Topic>, got: '{deck}'"
+            f"Deck must be Neurosurgery::<Domain>::<Topic> or {BRAIN_DUMP_DECK}, got: '{deck}'"
         )
+    if deck == BRAIN_DUMP_DECK and "brain-dump" not in parsed_tags:
+        problems.append("Cards in Neurosurgery::Brain Dumps must include the brain-dump tag")
+    if "brain-dump" in parsed_tags and deck != BRAIN_DUMP_DECK:
+        problems.append("Cards tagged brain-dump must use the Neurosurgery::Brain Dumps deck")
     if card_type == "cloze" and "{{c1::" not in text:
         problems.append("Cloze card missing {{c1::...}} blank")
     return problems
@@ -393,6 +399,14 @@ def flush(
         print(json.dumps({"queue_size": 0}))
         return {"queue_size": 0}
 
+    if not dry_run:
+        client = AnkiClient(ANKI_URL)
+        ok, err = client.check_connection()
+        if not ok:
+            print(f"AnkiConnect unavailable: {err}", file=sys.stderr)
+            print(json.dumps({"error": f"AnkiConnect unavailable: {err}"}))
+            return {"error": err}
+
     preflight = check(session=session, queue_path=queue_path)
     duplicate_candidates = preflight.get("duplicate_candidates", [])
     if duplicate_candidates and not allow_duplicate_candidates:
@@ -407,14 +421,6 @@ def flush(
         }
         print(json.dumps(result, indent=2))
         return result
-
-    if not dry_run:
-        client = AnkiClient(ANKI_URL)
-        ok, err = client.check_connection()
-        if not ok:
-            print(f"AnkiConnect unavailable: {err}", file=sys.stderr)
-            print(json.dumps({"error": f"AnkiConnect unavailable: {err}"}))
-            return {"error": err}
 
     drafts = []
     for e in to_flush:
