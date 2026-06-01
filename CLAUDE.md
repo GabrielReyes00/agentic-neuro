@@ -10,12 +10,14 @@ The canonical workflow contracts live in `.agents/shared/commands/`. Claude/Code
 Key shared contracts:
 - `.agents/shared/commands/learning-session-contract.md` — thin orchestration index for learning workflows.
 - `.agents/shared/commands/memory-operations.md` — learner-memory reads/writes, session start/end, integrity checks, entry formatting.
-- `.agents/shared/commands/memory-retrieval.md` — interpretation of `cards`, `curated_summaries`, `graph_signals`, `counts`, `omitted`, and `retrieval_guidance`.
-- `.agents/shared/commands/memory-curation.md` — optional post-flush curated summaries and concept graph edges.
+- `.agents/shared/commands/memory-retrieval.md` — cards, learner graph signals, model/context surfaces, and truncation metadata.
+- `.agents/shared/commands/memory-curation.md` — optional post-flush curated summaries, learner graph edges, and shadow rules.
+- `.agents/shared/commands/memory-maintenance.md` — deliberate identity audits, guarded topic merges, telemetry audits, and reviewed reference-graph loading.
 - `.agents/shared/commands/adaptive-teaching-doctrine.md` — cognitive-friction teaching behavior, repair/retest logic, learner posture.
 - `.agents/shared/commands/anki-session-workflow.md` — per-answer Anki decisions, queue review/check/flush.
 - `.agents/shared/commands/anki-card-quality.md` — short card-quality, cloze, deck taxonomy, and duplicate-judgment rules for all Anki creation/review.
 - `.agents/shared/commands/anki-deck-maintenance.md` — separate live Anki deck rewrite/reorganization workflow; Anki is ground truth and Chroma is rebuilt from Anki.
+- `.agents/shared/commands/concept-extraction.md` — shared post-write concept-stub rules for artifact-generating workflows.
 - `.agents/shared/commands/study-review.md` — doc-anchored and memory-driven review.
 - `.agents/shared/commands/consult.md` — lecture-first clinical consult, verification, Anki, pocket-card write.
 - `.agents/shared/commands/brain-dump.md` — de-identified service-teaching capture, targeted verification, artifact-anchor memory logging, and optional later review.
@@ -85,12 +87,12 @@ After Gabriel commits to an answer, reveal progressively. Grade the answer brief
 | `Consults/` | `/consult` | Focused clinical consult pocket cards for ward reference. If a prior consult on the same topic exists, a dated encounter section is appended rather than creating a duplicate |
 | `Brain Dumps/` | `/brain-dump` | De-identified teaching encountered on service; compact verified artifacts for optional active review |
 | `Reference/` | Agent (on request) | Curated reference notes (e.g., `Oral Boards Topic Bank.md`) used to seed memory-driven sessions |
-| `Concepts/` | Agent | Glossary of atomic concepts extracted by skills per §7c. `INDEX.md` is auto-regenerated. **Protected** (never overwrite): `Neurosurgery Consult Workflow.md`, `Neurosurgery Consult Checklists by Pathology.md`, `Peripheral Nerve Injury Classifications (Seddon & Sunderland).md` |
+| `Concepts/` | Agent | Glossary of atomic concepts extracted by skills per `.agents/shared/commands/concept-extraction.md`. `INDEX.md` is auto-regenerated. **Protected** (never overwrite): `Neurosurgery Consult Workflow.md`, `Neurosurgery Consult Checklists by Pathology.md`, `Peripheral Nerve Injury Classifications (Seddon & Sunderland).md` |
 | `Dashboard.md` | `study_memory.py summary` | Active learner-state surface. **Do not hand-edit generated views.** |
 | `ACGME Readiness.md` | `study_memory.py summary` | Active readiness context comes from the learner-memory summary. **Do not hand-edit generated views.** |
 
 
-**Concept File Schema**: Concept files in `Concepts/` follow the extraction protocol in §7c. The bottom YAML block is retained only for tags/aliases.
+**Concept File Schema**: Concept files in `Concepts/` follow `.agents/shared/commands/concept-extraction.md`. The bottom YAML block is retained only for tags/aliases.
 
 **Tags**: `skill/{report,guide,study-material,study-review,rag,consult,brain-dump,quick-answer,grand-rounds}` | `domain/{vascular,spine,tumor,trauma,functional,pediatric,peripheral-nerve,general,anatomy}` | `type/{reference,session,case,article,concept}` | `source/{agent,user}`
 
@@ -128,37 +130,20 @@ Before any skill writes primary output, verify the folder's `INDEX.md` exists. C
 
 ### §7c Concept Extraction Protocol
 
-After any skill writes to vault, extract 2-5 atomic concepts NOT already in `Concepts/`. Write each to `Concepts/<Concept Name>.md`:
-
-```markdown
-**<Concept Name>**: <Core definition, 2-3 sentences.>
-
-**Clinical Relevance**: <1-2 sentences.>
-
-**Key Distinctions**: <Most important differentiating features.>
-
----
-aliases: [<abbreviations>]
-created: YYYY-MM-DD
-extracted_from: "<skill>: <topic>"
-tags: [type/concept, domain/<domain>, source/agent]
----
-```
-
-Atomic, glossary-level. Only create concepts useful as wikilink targets.
-**Triggers**: generate-report, intraoperative-guide, study-material, consult, grand-rounds.
+Use `.agents/shared/commands/concept-extraction.md`. Atomic, glossary-level concept stubs are written only after real artifact-generating workflows and only when useful as future wikilink targets.
 
 ### §7d Memory Layer
 
 The active memory layer is `data/study_memory.db` via `src/study_memory.py`. The detailed rules are intentionally modular:
 
 - `.agents/shared/commands/memory-operations.md` controls session start, topic/global retrieval selection, `log-answer`, `end-session`, integrity checks, invisible bookkeeping, and entry formatting.
-- `.agents/shared/commands/memory-retrieval.md` controls interpretation of `cards`, `curated_summaries`, `graph_signals`, and truncation metadata.
+- `.agents/shared/commands/memory-retrieval.md` controls interpretation of cards, learner graph signals, model/context surfaces, and truncation metadata.
 - `.agents/shared/commands/memory-curation.md` controls the optional post-Anki curation pass.
+- `.agents/shared/commands/memory-maintenance.md` controls deliberate audits and reviewed reference-graph updates; do not run it inside routine teaching loops.
 - `.agents/shared/commands/adaptive-teaching-doctrine.md` controls teaching behavior.
 - `.agents/shared/commands/anki-session-workflow.md` and `.agents/shared/commands/anki-card-quality.md` control routine Anki generation and flush.
 
-Invariant summary: topic-anchored sessions use only topic-scoped `summary --include-curated`; memory-driven custom review is the only mode that uses global summary. Skills never write directly to the curated layer; curation is post-flush bookkeeping.
+Invariant summary: topic-anchored sessions use only topic-scoped `summary --include-curated --include-model`; memory-driven custom review is the only mode that uses global summary. Skills never write directly to the curated layer; curation is post-flush bookkeeping.
 
 ## §9 Capability Router
 
@@ -169,7 +154,7 @@ Invariant summary: topic-anchored sessions use only topic-scoped `summary --incl
 |---|---|
 | "inbox", "triage emails", "check my mail" | `inbox-workflow` |
 | "what should I study", "what should I review", "drill my weak spots", "go after my open errors", "build me a custom session", "board-style case" | `study-review` (memory-driven mode) |
-| "gaps", "dashboard", "ACGME readiness" | Use `python3 src/study_memory.py summary --limit 12 --scaffold-limit 0 --include-curated` for active learner state. |
+| "gaps", "dashboard", "ACGME readiness" | Use `python3 src/study_memory.py summary --limit 12 --scaffold-limit 0 --include-curated --include-model` for active learner state. |
 | "what books", "list textbooks", "what's loaded" | recipe: `python3 src/lance_retriever.py list_textbooks` |
 | Calendar/scheduling/events | GCal MCP tools |
 
@@ -217,21 +202,22 @@ Follow `.agents/shared/commands/study-review.md` for the full workflow and `.age
 | Anki card queue (per-session) | `data/Sessions/anki_queue.jsonl` |
 | Reports, guides, study docs, concepts, consults, brain dumps | Obsidian vault |
 | ACGME curriculum catalog (265 topics) | `data/acgme_curriculum.json` |
-| Learner memory interface | `python3 src/study_memory.py summary --limit 12 --scaffold-limit 0 --include-curated` |
+| Learner memory interface | `python3 src/study_memory.py summary --limit 12 --scaffold-limit 0 --include-curated --include-model` |
 
 ## §12 Command Reference
 
 ```bash
 # study_memory.py — active session memory (see §7d for full usage)
-summary --topic "T" --limit 8 --scaffold-limit 2 --include-curated  # topic-specific retrieval (skills always pass --include-curated)
-summary --limit 12 --scaffold-limit 0 --include-curated             # MEMORY-DRIVEN CUSTOM REVIEW ONLY
-log-answer --session "TS" --topic "T" --concept "C" --question "Q" --answer "A" --correct 0|1|2 [--correction "..."] [--error-type "..."] [--misconception "..."] [--doc "..."] [--skill "..."] [--tested-claim "..."] [--learner-claim "..."] [--missing-edge "..."] [--corrected-rule "..."] [--clinical-consequence "..."] [--retest-prompt-shape "..."] [--priority urgent|high|medium|low] [--match-claim-state-id ID|--new-claim] [--repairs-claim-state-ids "ID,ID"]
+summary --topic "T" --limit 8 --scaffold-limit 2 --include-curated --include-model  # topic-specific retrieval
+summary --limit 12 --scaffold-limit 0 --include-curated --include-model             # MEMORY-DRIVEN CUSTOM REVIEW ONLY
+log-answer ... --strict-telemetry ...                                  # assessed learning: follow memory-operations.md; omit strict mode for quick-answer/artifact anchors
 end-session --session "TS" --summary "..." --next-strategy "..." --json   # --json surfaces curation.recommended for the optional post-flush curation pass
 status
 resolve-topic --topic "T" [--doc "<folder>/X.md"]
 curation-status                                                       # current rolling-session counter and last curation version
 curate-candidates [--mode compact|detailed] [--topic "T"] [--recent-sessions N] [--limit N]
 apply-curation --input path.json | --stdin                            # governed by memory-curation.md
+# deliberate audits, guarded topic merges, and reviewed reference-graph loading: see memory-maintenance.md
 
 
 # anki_queue.py — per-session card queue (see anki-session-workflow.md)

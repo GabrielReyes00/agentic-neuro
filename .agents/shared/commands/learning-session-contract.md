@@ -11,18 +11,18 @@ Read the modules that apply to the workflow before acting:
 | Module | Scope |
 |---|---|
 | `.agents/shared/commands/memory-operations.md` | Session start, topic/global summary selection, `log-answer`, `end-session`, integrity verification, invisible bookkeeping, entry formatting |
-| `.agents/shared/commands/memory-retrieval.md` | How to interpret `cards`, `curated_summaries`, `graph_signals`, `counts`, `omitted`, and `retrieval_guidance` |
+| `.agents/shared/commands/memory-retrieval.md` | How to interpret cards, learner graph signals, model surfaces, context surfaces, and truncation metadata |
 | `.agents/shared/commands/adaptive-teaching-doctrine.md` | Socratic teaching behavior, cognitive friction, progressive reveal, repair/retest logic |
 | `.agents/shared/commands/anki-session-workflow.md` | Per-answer card decisions, queue review, duplicate checking, Anki flush |
 | `.agents/shared/commands/anki-card-quality.md` | Card quality, cloze policy, deck taxonomy, duplicate judgment |
-| `.agents/shared/commands/memory-curation.md` | Optional post-flush curated summaries and concept relationships |
+| `.agents/shared/commands/memory-curation.md` | Optional post-flush curated summaries, learner graph edges, and shadow rules |
 | `.agents/shared/commands/review-artifacts.md` | Vault artifact destinations, generated dashboard/readiness surfaces, cleanup |
 
 ## Core Sequence
 
 For full learning workflows, execute the modules in this order:
 
-1. **Session start**: follow `memory-operations.md` for topic-scoped versus global retrieval. Always use `--include-curated` for skill-driven summaries.
+1. **Session start**: follow `memory-operations.md` for topic-scoped versus global retrieval. Always use `--include-curated --include-model` for skill-driven summaries.
 2. **Memory interpretation**: follow `memory-retrieval.md` before designing questions. If high-signal cards were omitted, run a suggested expansion command before teaching.
 3. **Teaching loop**: follow `adaptive-teaching-doctrine.md`. Ask one question, stop, wait for the learner, evaluate, reveal progressively, and choose the next teaching move.
 4. **After each answer**: log the evaluated exchange with `study_memory.py log-answer` per `memory-operations.md`; then decide whether to enqueue Anki cards per `anki-session-workflow.md` and `anki-card-quality.md`.
@@ -30,6 +30,8 @@ For full learning workflows, execute the modules in this order:
 6. **Anki completion**: run queue review, `check`, and `flush` per `anki-session-workflow.md`.
 7. **Optional curation**: if `end-session --json` reported `curation.recommended = true`, run the post-flush curation pass in `memory-curation.md`.
 8. **Artifacts and cleanup**: follow the workflow-specific command contract plus `review-artifacts.md`.
+
+`memory-maintenance.md` is not part of this sequence. Use it only for deliberate identity audits, reviewed topic merges, telemetry audits, or reference-graph loading.
 
 ## Routing Notes
 

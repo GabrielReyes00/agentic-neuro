@@ -69,7 +69,7 @@ The validator is a structural and ledger gate, not a substitute for agent self-a
 1. Write `Reports/<Title Case Title>.md`.
 2. Run `report_validator.py` with `--coverage-ledger`.
 3. Update `Reports/INDEX.md`.
-4. Extract 2-5 concept stubs when appropriate.
+4. Extract 2-5 concept stubs when appropriate per `.agents/shared/commands/concept-extraction.md`.
 5. Log the report anchor to memory with `skill="generate-report"`.
 6. Surface to the user: TL;DR, file path, source mix, Quality Contract result, coverage-ledger result, validator result, and wikilinks added.
 

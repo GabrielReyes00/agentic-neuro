@@ -34,6 +34,7 @@ This file is the public command contract and orchestrator. Detailed post-retriev
 - `.agents/shared/commands/generate-report-research.md` — `source_cards.jsonl`, non-RAG source-card normalization, and `coverage_ledger.json`.
 - `.agents/shared/commands/generate-report-synthesis-map.md` — compact-but-dense `report_knowledge_map.json` built from source cards and the coverage ledger.
 - `.agents/shared/commands/generate-report-finalize.md` — write from the synthesis map, run `report_validator.py --coverage-ledger`, update INDEX, concepts, memory, and final user summary.
+- `.agents/shared/commands/concept-extraction.md` — shared concept-stub rules for post-write concept extraction.
 
 Do not copy the full `/intraoperative-guide` workflow. Reports need structured coverage control, not mandatory reviewer subagents, operative verdict chains, or attending-question gates. Optional review is appropriate only for unusually large, high-stakes, or controversy-heavy reports.
 
@@ -238,7 +239,7 @@ This is not a checklist gate. If the draft fails the contract on any axis, re-re
 
 Before executing the finish steps, read `.agents/shared/commands/generate-report-finalize.md`.
 
-1. **Write the file** to `Reports/<Title Case Title>.md`. No H1 header — the filename is the title in Obsidian. Start with the opening `## Clinical Utility & Quick Reference` block. End the body with topic sections, `## Mastery Objectives`, `## Related in This Vault`, and a YAML metadata block at the bottom (per CLAUDE.md §1).
+1. **Write the file** to `Reports/<Title Case Title>.md`. No H1 header — the filename is the title in Obsidian. Start with the opening `## Clinical Utility & Quick Reference` block. End the body with topic sections, `## Mastery Objectives`, `## Related in This Vault`, and a YAML metadata block at the bottom.
 
 2. **Validate the report and coverage ledger**:
 
@@ -253,7 +254,7 @@ If validation fails, repair the report or coverage artifacts and rerun validatio
 
 3. **Update `Reports/INDEX.md`** with the new entry per the standard table format.
 
-4. **Concept extraction** per CLAUDE.md §7c — identify 2–5 atomic concepts not already in `Concepts/` and write each as its own concept stub.
+4. **Concept extraction** per `.agents/shared/commands/concept-extraction.md` — identify 2–5 atomic concepts not already in `Concepts/` and write each as its own concept stub.
 
 5. **Log to memory** so downstream `/study-review` and future `/generate-report` runs can discover this report. Two calls in sequence — `log-answer` creates a topic-indexed artifact anchor entry, then `end-session` records the summary and next-strategy directive. This is discoverability/provenance only: `skill="generate-report"` must not be interpreted as learner mastery, an open gap, or curation evidence.
 

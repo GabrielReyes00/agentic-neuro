@@ -47,17 +47,26 @@ Before retrieval or writing, produce an internal sanitized version. Generalize p
 
 Never preserve identifying labels or a unique patient timeline.
 
-Build a compact extraction map before the teaching synthesis. This table is the
+Build a compact extraction map before the teaching synthesis. This flow is the
 audit trail from messy input to durable learning value and should remain near
-the top of the artifact for future scanning:
+the top of the artifact for future scanning. Use terse markdown lines with typed
+arrowheads, not a table:
 
-| Raw fragment | Interpreted question | Verification target | Final teaching point |
-|---|---|---|---|
-| What Gabriel said, after de-identification | What the agent thinks this means | What must be checked or sourced | What the artifact will teach or correct |
+- `raw fragment --> interpreted question --> verification target --> final teaching point`
+- `muscle relaxer gap --> postop pain plan? --> guideline + reviews --> multimodal plan; spasm adjunct`
 
 If the map reveals that a fragment is superficial, low-yield, or merely an
 institutional habit, keep it but label the verification target honestly rather
 than inflating it into a general clinical rule.
+
+Keep each node short enough to scan in a few seconds. If a node needs a sentence,
+the map is doing too much; put the explanation in `## Verified Bridge` instead.
+
+Immediately after the extraction map, add `## Priority Takeaways`: one to three
+short bullets ordered by learning value and next-shift consequence. This is the
+retention layer. It should answer, within seconds, "what should I remember or
+change tomorrow?" Do not bury the most important correction inside the verification
+prose.
 
 ### 2. Extract The Teaching Edge
 
@@ -74,7 +83,7 @@ Run topic-scoped retrieval only:
 
 ```bash
 cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
-python3 src/study_memory.py summary --topic "<topic>" --limit 8 --scaffold-limit 2 --include-curated
+python3 src/study_memory.py summary --topic "<topic>" --limit 8 --scaffold-limit 2 --include-curated --include-model
 ```
 
 Read `counts`, `omitted`, and `retrieval_guidance` per `memory-retrieval.md`; expand only when high-signal items were omitted. Use this context to choose explanation depth and future review suggestions. Do not state what memory returned.
@@ -105,6 +114,15 @@ Every verified clinical bridge in the installed artifact must link to its
 supporting external source, such as a DOI, PubMed, or publisher full-text URL.
 Internal textbook RAG can support synthesis, but an inaccessible local citation
 alone is not sufficient for a verified clinical assertion in the vault artifact.
+
+Keep the bridge compact. For each teaching point, prefer:
+
+- one source-grounded sentence for the mechanism or correction;
+- one source-grounded sentence for the clinical/action consequence;
+- one optional `Operational mental model` line.
+
+Move long caveats, medication lists, and exceptions into `Clarify Or Verify
+Locally` unless they are essential to prevent a dangerous overgeneralization.
 
 Label each cited support item by evidence type:
 
@@ -151,6 +169,8 @@ For a new topic, the note must contain:
 ## De-identified Teaching Trigger
 
 ## Extraction Map
+
+## Priority Takeaways
 
 ## Reported Teaching
 

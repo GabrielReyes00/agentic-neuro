@@ -15,11 +15,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 import sqlite3
 import sys
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from memory_operations import (
@@ -30,6 +31,12 @@ from memory_operations import (
     curation_status,
     graph_signals_for_summary,
     mark_session_counted,
+    shadow_rule_signals_for_summary,
+)
+from reference_graph import (
+    context_graph_focus_for_summary,
+    ensure_reference_graph_schema,
+    load_reference_graph_file,
 )
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -66,6 +73,18 @@ VALID_GAP_TYPES = frozenset({
     "reasoning_gap",
     "omission",
 })
+VALID_ANSWER_MODES = frozenset({"unaided", "prompted", "after_hint", "after_teaching", "self_corrected"})
+VALID_CONFIDENCE_OBSERVATIONS = frozenset({"low", "medium", "high", "hesitant", "fluent"})
+VALID_TEACHING_MOVES = frozenset({
+    "changed_frame_retest",
+    "contrastive_drill",
+    "initial_probe",
+    "mechanism_first",
+    "order_set",
+    "other",
+    "premortem",
+    "visual_probe",
+})
 
 STOPWORDS = frozenset(
     "the a an of in for with and or to on by is at as it its from that this "
@@ -96,6 +115,14 @@ CREATE TABLE IF NOT EXISTS topic_aliases (
     FOREIGN KEY(topic_id) REFERENCES topics(id)
 );
 CREATE INDEX IF NOT EXISTS idx_memory_topic_aliases_topic ON topic_aliases(topic_id);
+
+CREATE TABLE IF NOT EXISTS topic_redirects (
+    alias_slug TEXT PRIMARY KEY,
+    target_topic_id INTEGER NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(target_topic_id) REFERENCES topics(id)
+);
 
 CREATE TABLE IF NOT EXISTS concepts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -196,6 +223,8 @@ CREATE TABLE IF NOT EXISTS claim_state (
     source_result_id INTEGER,
     last_seen_ts TEXT NOT NULL DEFAULT '',
     next_due_ts TEXT DEFAULT '',
+    difficulty REAL NOT NULL DEFAULT 0.3,
+    stability REAL NOT NULL DEFAULT 1.0,
     reason TEXT NOT NULL DEFAULT '',
     UNIQUE(topic_id, concept_id, claim_slug),
     FOREIGN KEY(topic_id) REFERENCES topics(id),
@@ -218,6 +247,31 @@ CREATE TABLE IF NOT EXISTS state_events (
     FOREIGN KEY(result_id) REFERENCES claim_results(id)
 );
 CREATE INDEX IF NOT EXISTS idx_memory_state_events_state ON state_events(claim_state_id);
+
+CREATE TABLE IF NOT EXISTS repair_episodes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    claim_state_id INTEGER NOT NULL,
+    source_result_id INTEGER NOT NULL,
+    gap_type TEXT NOT NULL DEFAULT '',
+    teaching_move TEXT NOT NULL DEFAULT '',
+    started_ts TEXT NOT NULL,
+    repaired_result_id INTEGER,
+    repaired_ts TEXT NOT NULL DEFAULT '',
+    retention_result_id INTEGER,
+    retention_ts TEXT NOT NULL DEFAULT '',
+    transfer_result_id INTEGER,
+    transfer_ts TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'active'
+        CHECK(status IN ('active', 'immediate_repair', 'retained', 'transferred', 'regressed')),
+    FOREIGN KEY(claim_state_id) REFERENCES claim_state(id),
+    FOREIGN KEY(source_result_id) REFERENCES claim_results(id),
+    FOREIGN KEY(repaired_result_id) REFERENCES claim_results(id),
+    FOREIGN KEY(retention_result_id) REFERENCES claim_results(id),
+    FOREIGN KEY(transfer_result_id) REFERENCES claim_results(id)
+);
+CREATE INDEX IF NOT EXISTS idx_repair_episodes_claim ON repair_episodes(claim_state_id);
+CREATE INDEX IF NOT EXISTS idx_repair_episodes_move ON repair_episodes(teaching_move);
+CREATE INDEX IF NOT EXISTS idx_repair_episodes_status ON repair_episodes(status);
 
 CREATE TABLE IF NOT EXISTS retrieval_cards (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -313,6 +367,54 @@ CREATE TABLE IF NOT EXISTS concept_relationship_evidence (
     FOREIGN KEY(relationship_id) REFERENCES concept_relationships(id),
     FOREIGN KEY(claim_result_id) REFERENCES claim_results(id)
 );
+
+CREATE TABLE IF NOT EXISTS shadow_rules (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    false_rule TEXT NOT NULL,
+    corrected_rule TEXT NOT NULL,
+    clinical_consequence TEXT NOT NULL,
+    probe_shape TEXT NOT NULL,
+    severity TEXT NOT NULL DEFAULT 'medium' CHECK(severity IN ('low', 'medium', 'high', 'urgent')),
+    status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'repaired', 'extinguished', 'regressed')),
+    evidence_summary_id INTEGER,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(false_rule, corrected_rule),
+    FOREIGN KEY(evidence_summary_id) REFERENCES memory_summaries(id)
+);
+CREATE INDEX IF NOT EXISTS idx_shadow_rules_status ON shadow_rules(status);
+CREATE INDEX IF NOT EXISTS idx_shadow_rules_severity ON shadow_rules(severity);
+
+CREATE TABLE IF NOT EXISTS shadow_rule_bindings (
+    shadow_rule_id INTEGER NOT NULL,
+    concept_id INTEGER NOT NULL,
+    binding_type TEXT NOT NULL DEFAULT 'trigger' CHECK(binding_type IN ('trigger', 'contrast', 'context')),
+    PRIMARY KEY(shadow_rule_id, concept_id, binding_type),
+    FOREIGN KEY(shadow_rule_id) REFERENCES shadow_rules(id),
+    FOREIGN KEY(concept_id) REFERENCES concepts(id)
+);
+
+CREATE TABLE IF NOT EXISTS shadow_rule_evidence (
+    shadow_rule_id INTEGER NOT NULL,
+    claim_result_id INTEGER NOT NULL,
+    PRIMARY KEY(shadow_rule_id, claim_result_id),
+    FOREIGN KEY(shadow_rule_id) REFERENCES shadow_rules(id),
+    FOREIGN KEY(claim_result_id) REFERENCES claim_results(id)
+);
+
+CREATE TABLE IF NOT EXISTS shadow_rule_checks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    shadow_rule_id INTEGER NOT NULL,
+    claim_result_id INTEGER NOT NULL,
+    context_label TEXT NOT NULL,
+    check_type TEXT NOT NULL CHECK(check_type IN ('changed_frame', 'transfer')),
+    outcome TEXT NOT NULL CHECK(outcome IN ('pass', 'fail')),
+    checked_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(shadow_rule_id, claim_result_id, context_label, check_type),
+    FOREIGN KEY(shadow_rule_id) REFERENCES shadow_rules(id),
+    FOREIGN KEY(claim_result_id) REFERENCES claim_results(id)
+);
+CREATE INDEX IF NOT EXISTS idx_shadow_rule_checks_rule ON shadow_rule_checks(shadow_rule_id);
 """
 
 
@@ -332,8 +434,47 @@ def _get_db(path: Path | None = None) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(SCHEMA_SQL)
+    ensure_reference_graph_schema(conn)
+    _migrate_schema(conn)
     conn.commit()
     return conn
+
+
+def _migrate_schema(conn: sqlite3.Connection) -> None:
+    """Apply additive migrations for existing SQLite databases."""
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(claim_state)")}
+    if "difficulty" not in columns:
+        conn.execute("ALTER TABLE claim_state ADD COLUMN difficulty REAL NOT NULL DEFAULT 0.3")
+    if "stability" not in columns:
+        conn.execute("ALTER TABLE claim_state ADD COLUMN stability REAL NOT NULL DEFAULT 1.0")
+    _backfill_memory_schedule(conn)
+
+
+def _backfill_memory_schedule(conn: sqlite3.Connection) -> None:
+    """Seed due dates for pre-scheduler rows without overwriting live updates."""
+    rows = conn.execute(
+        """SELECT id, state, priority, last_seen_ts
+           FROM claim_state
+           WHERE COALESCE(next_due_ts, '') = ''"""
+    ).fetchall()
+    for row in rows:
+        last_seen = _parse_ts(row["last_seen_ts"]) or datetime.now(timezone.utc)
+        state = row["state"]
+        priority = row["priority"]
+        if state in {"missed", "partially_repaired", "regressed"}:
+            stability = 0.75
+        elif state == "repaired_same_session":
+            stability = 2.0
+        else:
+            stability = 14.0 if priority == "low" else 7.0
+        delay = max(0.1, stability * _priority_delay_factor(priority))
+        conn.execute(
+            """UPDATE claim_state
+               SET stability = ?, difficulty = COALESCE(difficulty, 0.3),
+                   next_due_ts = ?
+               WHERE id = ? AND COALESCE(next_due_ts, '') = ''""",
+            (round(stability, 3), (last_seen + timedelta(days=delay)).isoformat(), int(row["id"])),
+        )
 
 
 def _normalize(text: str) -> str:
@@ -357,6 +498,50 @@ def _slug(text: str) -> str:
 def _display(text: str) -> str:
     keep_upper = {"tbi", "evd", "sah", "ich", "dci", "icp", "cpp", "avm", "mri", "ct", "cta", "dsa"}
     return " ".join(w.upper() if w in keep_upper else w.capitalize() for w in _normalize(text.replace("-", " ")).split())
+
+
+def _controlled_value(value: str) -> str:
+    return _normalize(value).replace(" ", "_").replace("-", "_")
+
+
+def _validate_strict_telemetry(
+    *,
+    score: int,
+    error_type: str,
+    misconception: str,
+    missing_edge: str,
+    corrected_rule: str,
+    correction: str,
+    tested_claim: str,
+    answer_mode: str,
+    confidence_observed: str,
+    teaching_move: str,
+) -> None:
+    """Reject underspecified assessment telemetry when an agent opts into strict mode."""
+    # A meaningful claim must be reconstructable, otherwise _derive_claim falls back
+    # to boilerplate ("Apply <concept> ...") and the stored claim_state carries no
+    # testable content. Required for every assessed exchange, not just misses.
+    if not (tested_claim.strip() or corrected_rule.strip() or correction.strip()):
+        raise ValueError(
+            "strict telemetry requires tested_claim (or corrected_rule/correction) "
+            "so the stored claim is a real testable statement, not boilerplate"
+        )
+    controlled = {
+        "answer_mode": (_controlled_value(answer_mode), VALID_ANSWER_MODES),
+        "confidence_observed": (_controlled_value(confidence_observed), VALID_CONFIDENCE_OBSERVATIONS),
+        "teaching_move": (_controlled_value(teaching_move), VALID_TEACHING_MOVES),
+    }
+    for field, (value, allowed) in controlled.items():
+        if value not in allowed:
+            raise ValueError(f"strict telemetry requires {field} in {sorted(allowed)}, got {value or '[empty]'!r}")
+    if score < 2:
+        gap = _controlled_value(error_type)
+        if gap not in VALID_GAP_TYPES:
+            raise ValueError(f"strict telemetry requires error_type in {sorted(VALID_GAP_TYPES)} for score < 2")
+        if not (missing_edge.strip() or misconception.strip()):
+            raise ValueError("strict telemetry requires missing_edge or misconception for score < 2")
+        if not (corrected_rule.strip() or correction.strip()):
+            raise ValueError("strict telemetry requires corrected_rule or correction for score < 2")
 
 
 def _doc_alias(doc_path: str) -> str:
@@ -383,10 +568,30 @@ TOPIC_STOPWORDS = frozenset(
     "after before per via vs versus during over under into onto".split()
 )
 
+CONTEXT_GENERIC_TOKENS = frozenset({
+    "acute", "anterior", "care", "classification", "critical", "management",
+    "medical", "posterior", "surgical",
+})
+
 
 def _topic_tokens(text: str) -> set[str]:
     normalized = _normalize(text).replace("-", " ").replace("/", " ")
     return {w for w in normalized.split() if w not in TOPIC_STOPWORDS and len(w) > 1}
+
+
+def _topic_overlap(left: str, right: str) -> dict[str, object]:
+    left_tokens = _topic_tokens(left)
+    right_tokens = _topic_tokens(right)
+    shared = left_tokens & right_tokens
+    overlap = len(shared)
+    containment = overlap / max(1, min(len(left_tokens), len(right_tokens)))
+    f1 = 2 * overlap / max(1, len(left_tokens) + len(right_tokens))
+    return {
+        "shared_tokens": sorted(shared),
+        "overlap": overlap,
+        "containment": round(containment, 3),
+        "f1": round(f1, 3),
+    }
 
 
 # Migration path: study topics that existed under the previous hardcoded resolver
@@ -558,6 +763,15 @@ def resolve_topic(conn: sqlite3.Connection, topic_hint: str, doc_path: str = "")
     doc_alias = _doc_alias(doc_path)
     if hint:
         row = conn.execute(
+            """SELECT t.* FROM topic_redirects r
+               JOIN topics t ON t.id = r.target_topic_id
+               WHERE r.alias_slug = ?""",
+            (_slug(hint),),
+        ).fetchone()
+        if row:
+            aliases = tuple(r["alias"] for r in conn.execute("SELECT alias FROM topic_aliases WHERE topic_id = ?", (row["id"],)))
+            return TopicResolution(row["canonical_slug"], row["display_name"], row["domain"], aliases, 1.0)
+        row = conn.execute(
             "SELECT t.* FROM topic_aliases a JOIN topics t ON t.id = a.topic_id WHERE a.alias = ?",
             (hint,),
         ).fetchone()
@@ -610,6 +824,248 @@ def _ensure_topic(conn: sqlite3.Connection, resolution: TopicResolution, doc_pat
                 (topic_id, _normalize(alias), "resolver", resolution.confidence),
             )
     return topic_id
+
+
+def identity_audit(conn: sqlite3.Connection) -> dict[str, object]:
+    """Return reviewable topic and claim-state identity collision candidates."""
+    topics = conn.execute(
+        "SELECT id, canonical_slug, display_name, domain FROM topics ORDER BY canonical_slug"
+    ).fetchall()
+    duplicate_topics: list[dict[str, object]] = []
+    for idx, left in enumerate(topics):
+        for right in topics[idx + 1:]:
+            metrics = _topic_overlap(left["display_name"], right["display_name"])
+            if int(metrics["overlap"]) < 2:
+                continue
+            if float(metrics["containment"]) < 0.75 and float(metrics["f1"]) < 0.72:
+                continue
+            duplicate_topics.append({
+                "source_topic": left["canonical_slug"],
+                "target_topic": right["canonical_slug"],
+                "source_domain": left["domain"],
+                "target_domain": right["domain"],
+                **metrics,
+            })
+    duplicate_topics.sort(
+        key=lambda item: (-float(item["containment"]), -float(item["f1"]), str(item["source_topic"]))
+    )
+    duplicate_claim_states = [
+        {
+            "topic": row["topic"],
+            "concept_id": int(row["concept_id"]),
+            "concept": row["concept"],
+            "claim_state_count": int(row["claim_state_count"]),
+            "claim_state_ids": [int(value) for value in str(row["claim_state_ids"]).split(",")],
+        }
+        for row in conn.execute(
+            """SELECT t.canonical_slug AS topic, cs.concept_id, c.display_name AS concept,
+                      COUNT(*) AS claim_state_count, GROUP_CONCAT(cs.id) AS claim_state_ids
+                 FROM claim_state cs
+                 JOIN topics t ON t.id = cs.topic_id
+                 JOIN concepts c ON c.id = cs.concept_id
+                GROUP BY cs.topic_id, cs.concept_id
+               HAVING COUNT(*) > 1
+                ORDER BY claim_state_count DESC, topic, concept"""
+        ).fetchall()
+    ]
+    return {
+        "counts": {
+            "topics": len(topics),
+            "duplicate_topic_candidates": len(duplicate_topics),
+            "duplicate_claim_state_candidates": len(duplicate_claim_states),
+        },
+        "duplicate_topic_candidates": duplicate_topics,
+        "duplicate_claim_state_candidates": duplicate_claim_states,
+        "guardrail": "Review candidates manually. merge-topics is dry-run unless --apply is explicit and refuses concept collisions.",
+    }
+
+
+def _exact_topic_row(conn: sqlite3.Connection, topic_slug_or_alias: str) -> sqlite3.Row | None:
+    hint = _normalize(topic_slug_or_alias)
+    row = conn.execute("SELECT * FROM topics WHERE canonical_slug = ?", (_slug(hint),)).fetchone()
+    if row:
+        return row
+    return conn.execute(
+        """SELECT t.* FROM topic_aliases a
+           JOIN topics t ON t.id = a.topic_id
+           WHERE a.alias = ?""",
+        (hint,),
+    ).fetchone()
+
+
+def merge_topics(
+    conn: sqlite3.Connection,
+    *,
+    source_topic: str,
+    target_topic: str,
+    apply: bool = False,
+) -> dict[str, object]:
+    """Consolidate an exact source topic into an exact target topic after review."""
+    source = _exact_topic_row(conn, source_topic)
+    target = _exact_topic_row(conn, target_topic)
+    if source is None:
+        raise ValueError(f"source topic not found by exact slug or alias: {source_topic!r}")
+    if target is None:
+        raise ValueError(f"target topic not found by exact slug or alias: {target_topic!r}")
+    source_id = int(source["id"])
+    target_id = int(target["id"])
+    if source_id == target_id:
+        raise ValueError("source and target resolve to the same topic")
+    collisions = [
+        row["canonical_slug"]
+        for row in conn.execute(
+            """SELECT sc.canonical_slug
+                 FROM concepts sc
+                 JOIN concepts tc
+                   ON tc.topic_id = ? AND tc.canonical_slug = sc.canonical_slug
+                WHERE sc.topic_id = ?
+                ORDER BY sc.canonical_slug""",
+            (target_id, source_id),
+        ).fetchall()
+    ]
+    counts = {
+        table: int(conn.execute(f"SELECT COUNT(*) FROM {table} WHERE {column} = ?", (source_id,)).fetchone()[0])
+        for table, column in (
+            ("concepts", "topic_id"),
+            ("sessions", "primary_topic_id"),
+            ("session_topics", "topic_id"),
+            ("exchanges", "topic_id"),
+            ("claim_results", "topic_id"),
+            ("claim_state", "topic_id"),
+            ("retrieval_cards", "topic_id"),
+            ("memory_summaries", "topic_id"),
+        )
+    }
+    result: dict[str, object] = {
+        "source_topic": source["canonical_slug"],
+        "target_topic": target["canonical_slug"],
+        "apply_requested": apply,
+        "blocked": bool(collisions),
+        "concept_collisions": collisions,
+        "affected_rows": counts,
+    }
+    if collisions:
+        result["guardrail"] = "Merge refused: reconcile same-slug concept collisions explicitly before applying."
+        return result
+    if not apply:
+        result["guardrail"] = "Dry run only. Re-run with --apply after reviewing affected_rows."
+        return result
+
+    aliases = [
+        row["alias"] for row in conn.execute("SELECT alias FROM topic_aliases WHERE topic_id = ?", (source_id,)).fetchall()
+    ]
+    try:
+        if conn.in_transaction:
+            conn.commit()
+        conn.execute("BEGIN")
+        conn.execute("UPDATE concepts SET topic_id = ? WHERE topic_id = ?", (target_id, source_id))
+        for table, column in (
+            ("sessions", "primary_topic_id"),
+            ("exchanges", "topic_id"),
+            ("claim_results", "topic_id"),
+            ("claim_state", "topic_id"),
+            ("retrieval_cards", "topic_id"),
+            ("memory_summaries", "topic_id"),
+        ):
+            conn.execute(f"UPDATE {table} SET {column} = ? WHERE {column} = ?", (target_id, source_id))
+        conn.execute(
+            """INSERT OR IGNORE INTO session_topics (session_id, topic_id)
+               SELECT session_id, ? FROM session_topics WHERE topic_id = ?""",
+            (target_id, source_id),
+        )
+        conn.execute("DELETE FROM session_topics WHERE topic_id = ?", (source_id,))
+        conn.execute("UPDATE topics SET parent_topic_id = ? WHERE parent_topic_id = ?", (target_id, source_id))
+        conn.execute("DELETE FROM topic_aliases WHERE topic_id = ?", (source_id,))
+        for alias in aliases:
+            conn.execute(
+                "INSERT OR IGNORE INTO topic_aliases (topic_id, alias, source, confidence) VALUES (?, ?, 'topic_merge', 1.0)",
+                (target_id, alias),
+            )
+        conn.execute(
+            """INSERT INTO topic_redirects (alias_slug, target_topic_id, reason)
+               VALUES (?, ?, ?)
+               ON CONFLICT(alias_slug) DO UPDATE SET target_topic_id = excluded.target_topic_id, reason = excluded.reason""",
+            (source["canonical_slug"], target_id, f"merged into {target['canonical_slug']}"),
+        )
+        conn.execute("DELETE FROM topics WHERE id = ?", (source_id,))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    result["applied"] = True
+    return result
+
+
+def record_shadow_rule_check(
+    conn: sqlite3.Connection,
+    *,
+    shadow_rule_id: int,
+    claim_result_id: int,
+    context_label: str,
+    check_type: str,
+    outcome: str,
+    apply: bool = False,
+) -> dict[str, object]:
+    """Record a reviewed probe result and enforce the shadow-rule extinction threshold."""
+    if check_type not in {"changed_frame", "transfer"}:
+        raise ValueError("check_type must be changed_frame or transfer")
+    if outcome not in {"pass", "fail"}:
+        raise ValueError("outcome must be pass or fail")
+    if not context_label.strip():
+        raise ValueError("context_label must be a non-empty changed-frame context")
+    rule = conn.execute("SELECT id, status FROM shadow_rules WHERE id = ?", (shadow_rule_id,)).fetchone()
+    if rule is None:
+        raise ValueError(f"unknown shadow_rule_id={shadow_rule_id}")
+    claim = conn.execute("SELECT id, score FROM claim_results WHERE id = ?", (claim_result_id,)).fetchone()
+    if claim is None:
+        raise ValueError(f"unknown claim_result_id={claim_result_id}")
+    score = int(claim["score"])
+    if outcome == "pass" and score != 2:
+        raise ValueError("a passing shadow-rule check requires claim_result score=2")
+    if outcome == "fail" and score >= 2:
+        raise ValueError("a failing shadow-rule check requires claim_result score < 2")
+    result: dict[str, object] = {
+        "shadow_rule_id": shadow_rule_id,
+        "claim_result_id": claim_result_id,
+        "context_label": context_label.strip(),
+        "check_type": check_type,
+        "outcome": outcome,
+        "apply_requested": apply,
+    }
+    if not apply:
+        result["guardrail"] = "Dry run only. Re-run with --apply after confirming the probe metadata."
+        return result
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        """INSERT OR IGNORE INTO shadow_rule_checks
+           (shadow_rule_id, claim_result_id, context_label, check_type, outcome, checked_at)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (shadow_rule_id, claim_result_id, context_label.strip(), check_type, outcome, now),
+    )
+    if outcome == "fail":
+        status_value = "regressed"
+    else:
+        counts = conn.execute(
+            """SELECT
+                   SUM(CASE WHEN check_type = 'changed_frame' AND outcome = 'pass' THEN 1 ELSE 0 END) AS changed_frames,
+                   COUNT(DISTINCT CASE WHEN check_type = 'transfer' AND outcome = 'pass' THEN context_label END) AS transfer_contexts
+               FROM shadow_rule_checks WHERE shadow_rule_id = ?""",
+            (shadow_rule_id,),
+        ).fetchone()
+        changed_frames = int(counts["changed_frames"] or 0)
+        transfer_contexts = int(counts["transfer_contexts"] or 0)
+        status_value = "extinguished" if changed_frames >= 1 and transfer_contexts >= 2 else "repaired"
+        result["passed_changed_frames"] = changed_frames
+        result["passed_transfer_contexts"] = transfer_contexts
+    conn.execute(
+        "UPDATE shadow_rules SET status = ?, updated_at = ? WHERE id = ?",
+        (status_value, now, shadow_rule_id),
+    )
+    conn.commit()
+    result["applied"] = True
+    result["status"] = status_value
+    result["extinction_guardrail"] = "Extinction requires >=1 changed-frame pass and >=2 distinct transfer-context passes."
+    return result
 
 
 def _ensure_concept(conn: sqlite3.Connection, topic_id: int, topic_slug: str, concept: str, question: str = "", correction: str = "") -> int:
@@ -707,6 +1163,58 @@ def _claim_state_for_score(
     if existing_state in {"missed", "partially_repaired", "repaired_same_session", "regressed"}:
         return "repaired_same_session", "repaired"
     return "durable", "confirmed"
+
+
+def _parse_ts(value: str) -> datetime | None:
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _priority_delay_factor(priority: str) -> float:
+    return {"urgent": 0.45, "high": 0.7, "medium": 1.0, "low": 1.35}.get(priority, 1.0)
+
+
+def _update_memory_schedule(
+    *,
+    score: int,
+    state: str,
+    priority: str,
+    existing: sqlite3.Row | None,
+    now: str,
+) -> tuple[float, float, str]:
+    """Return DSR-lite difficulty, stability-days, and next due timestamp.
+
+    This is intentionally simple and deterministic. It gives the claim layer the
+    same shape as spaced-repetition scheduling without pretending sparse n=1
+    data can support a fully fit FSRS model.
+    """
+    previous_difficulty = float(existing["difficulty"]) if existing and "difficulty" in existing.keys() else 0.3
+    previous_stability = float(existing["stability"]) if existing and "stability" in existing.keys() else 1.0
+    difficulty = min(1.0, max(0.05, previous_difficulty + {0: 0.18, 1: 0.08, 2: -0.06}[score]))
+    if score == 0:
+        stability = max(0.25, min(previous_stability * 0.45, 1.0))
+    elif score == 1:
+        stability = max(0.75, min(previous_stability * 0.8, 2.0))
+    elif state == "repaired_same_session":
+        stability = max(1.5, previous_stability * 1.35)
+    elif state == "durable":
+        stability = max(3.0, previous_stability * (2.2 - difficulty))
+    else:
+        stability = max(1.0, previous_stability)
+    delay_days = max(0.1, stability * _priority_delay_factor(priority))
+    due = (_parse_ts(now) or datetime.now(timezone.utc)) + timedelta(days=delay_days)
+    return round(difficulty, 3), round(stability, 3), due.isoformat()
+
+
+def _retrievability(last_seen_ts: str, stability: float, as_of: datetime | None = None) -> float:
+    last = _parse_ts(last_seen_ts)
+    if last is None:
+        return 0.0
+    now = as_of or datetime.now(timezone.utc)
+    elapsed_days = max(0.0, (now - last).total_seconds() / 86400.0)
+    return round(math.exp(-elapsed_days / max(float(stability or 0.1), 0.1)), 3)
 
 
 def _ensure_session(conn: sqlite3.Connection, session_id: str, started: str, skill: str, topic_id: int, doc_path: str) -> None:
@@ -821,7 +1329,7 @@ def _find_matching_claim_state(
     agent_signal: dict[str, str],
 ) -> sqlite3.Row | None:
     exact = conn.execute(
-        """SELECT id, claim_slug, claim_text, state, reason
+        """SELECT id, claim_slug, claim_text, state, reason, difficulty, stability
            FROM claim_state
            WHERE topic_id = ? AND claim_slug = ?
            ORDER BY last_seen_ts DESC LIMIT 1""",
@@ -837,7 +1345,7 @@ def _find_matching_claim_state(
     if not expected_edge and len(_tokens(corrected_rule)) < 5:
         return None
     rows = conn.execute(
-        """SELECT id, claim_slug, claim_text, state, reason
+        """SELECT id, claim_slug, claim_text, state, reason, difficulty, stability
            FROM claim_state
            WHERE topic_id = ?
            ORDER BY last_seen_ts DESC LIMIT 30""",
@@ -849,6 +1357,65 @@ def _find_matching_claim_state(
         if score >= 0.62 and (best is None or score > best[0]):
             best = (score, row)
     return best[1] if best else None
+
+
+def _record_repair_episode_transition(
+    conn: sqlite3.Connection,
+    *,
+    claim_state_id: int,
+    result_id: int,
+    score: int,
+    gap_type: str,
+    event: str,
+    teaching_intent: str,
+    teaching_move: str,
+    now: str,
+) -> None:
+    move = _controlled_value(teaching_move)
+    if score < 2:
+        conn.execute(
+            """UPDATE repair_episodes SET status = 'regressed'
+               WHERE claim_state_id = ? AND status IN ('active', 'immediate_repair', 'retained')""",
+            (claim_state_id,),
+        )
+        conn.execute(
+            """INSERT INTO repair_episodes
+               (claim_state_id, source_result_id, gap_type, teaching_move, started_ts)
+               VALUES (?, ?, ?, ?, ?)""",
+            (claim_state_id, result_id, gap_type, move, now),
+        )
+        return
+    episode = conn.execute(
+        """SELECT id FROM repair_episodes
+           WHERE claim_state_id = ? AND status IN ('active', 'immediate_repair', 'retained')
+           ORDER BY id DESC LIMIT 1""",
+        (claim_state_id,),
+    ).fetchone()
+    if episode is None:
+        return
+    episode_id = int(episode["id"])
+    if teaching_intent == "transfer_check":
+        conn.execute(
+            """UPDATE repair_episodes
+                  SET transfer_result_id = ?, transfer_ts = ?, status = 'transferred'
+                WHERE id = ?""",
+            (result_id, now, episode_id),
+        )
+    elif teaching_intent == "retention_check" or event == "retention_passed":
+        conn.execute(
+            """UPDATE repair_episodes
+                  SET retention_result_id = ?, retention_ts = ?, status = 'retained'
+                WHERE id = ?""",
+            (result_id, now, episode_id),
+        )
+    else:
+        conn.execute(
+            """UPDATE repair_episodes
+                  SET repaired_result_id = ?, repaired_ts = ?, status = 'immediate_repair',
+                      teaching_move = CASE WHEN ? != '' THEN ? ELSE teaching_move END
+                WHERE id = ?""",
+            (result_id, now, move, move, episode_id),
+        )
 
 
 def _log_claim_result(
@@ -900,7 +1467,7 @@ def _log_claim_result(
         existing = None
     elif match_claim_state_id is not None:
         existing = conn.execute(
-            """SELECT id, claim_slug, claim_text, state, reason
+            """SELECT id, claim_slug, claim_text, state, reason, difficulty, stability
                FROM claim_state WHERE id = ? AND topic_id = ?""",
             (int(match_claim_state_id), topic_id),
         ).fetchone()
@@ -955,28 +1522,46 @@ def _log_claim_result(
     if state == "repaired_same_session" and priority == "low":
         priority = "medium"
     reason = missing or fixed_rule or learner
+    difficulty, stability, next_due_ts = _update_memory_schedule(
+        score=score,
+        state=state,
+        priority=priority,
+        existing=existing,
+        now=now,
+    )
     if existing:
         state_id = int(existing["id"])
         conn.execute(
             """UPDATE claim_state
                SET claim_text = ?, state = ?, priority = ?, gap_type = ?,
                    last_result_id = ?, source_result_id = COALESCE(source_result_id, ?),
-                   last_seen_ts = ?, reason = ?
+                   last_seen_ts = ?, next_due_ts = ?, difficulty = ?, stability = ?, reason = ?
                WHERE id = ?""",
-            (claim_text, state, priority, gap_type, result_id, result_id, now, reason, state_id),
+            (claim_text, state, priority, gap_type, result_id, result_id, now, next_due_ts, difficulty, stability, reason, state_id),
         )
     else:
         conn.execute(
             """INSERT INTO claim_state
                (topic_id, concept_id, claim_slug, claim_text, state, priority, gap_type,
-                last_result_id, source_result_id, last_seen_ts, reason)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (topic_id, concept_id, claim_slug, claim_text, state, priority, gap_type, result_id, result_id, now, reason),
+                last_result_id, source_result_id, last_seen_ts, next_due_ts, difficulty, stability, reason)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (topic_id, concept_id, claim_slug, claim_text, state, priority, gap_type, result_id, result_id, now, next_due_ts, difficulty, stability, reason),
         )
         state_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
     conn.execute(
         "INSERT INTO state_events (claim_state_id, event_type, result_id, ts, detail) VALUES (?, ?, ?, ?, ?)",
         (state_id, event, result_id, now, reason),
+    )
+    _record_repair_episode_transition(
+        conn,
+        claim_state_id=state_id,
+        result_id=result_id,
+        score=score,
+        gap_type=gap_type,
+        event=event,
+        teaching_intent=teaching_intent,
+        teaching_move=agent_signal.get("teaching_move", ""),
+        now=now,
     )
     if state in {"missed", "partially_repaired", "repaired_same_session", "regressed"}:
         card_type = "must_retest" if state in {"missed", "partially_repaired", "regressed"} else "recent_repair"
@@ -1038,7 +1623,7 @@ def _apply_asserted_repairs(
     """
     for raw_id in repairs_claim_state_ids:
         row = conn.execute(
-            """SELECT id, claim_text FROM claim_state
+            """SELECT id, claim_text, difficulty, stability FROM claim_state
                WHERE id = ? AND topic_id = ?
                  AND state IN ('missed', 'partially_repaired', 'regressed')""",
             (int(raw_id), topic_id),
@@ -1047,17 +1632,36 @@ def _apply_asserted_repairs(
             # Not open (or wrong topic): ignore rather than fabricate a transition.
             continue
         rationale = "Agent asserted this open claim was repaired by a related correct answer."
+        difficulty, stability, next_due_ts = _update_memory_schedule(
+            score=2,
+            state="repaired_same_session",
+            priority="medium",
+            existing=row,
+            now=now,
+        )
         conn.execute(
             """UPDATE claim_state
                SET state = 'repaired_same_session', priority = 'medium',
-                   last_result_id = ?, last_seen_ts = ?, reason = ?
+                   last_result_id = ?, last_seen_ts = ?, next_due_ts = ?,
+                   difficulty = ?, stability = ?, reason = ?
                WHERE id = ?""",
-            (result_id, now, rationale, row["id"]),
+            (result_id, now, next_due_ts, difficulty, stability, rationale, row["id"]),
         )
         _deactivate_other_cards(conn, row["id"], "recent_repair")
         conn.execute(
             "INSERT INTO state_events (claim_state_id, event_type, result_id, ts, detail) VALUES (?, ?, ?, ?, ?)",
             (row["id"], "asserted_repair", result_id, now, rationale),
+        )
+        _record_repair_episode_transition(
+            conn,
+            claim_state_id=int(row["id"]),
+            result_id=result_id,
+            score=2,
+            gap_type="",
+            event="asserted_repair",
+            teaching_intent="",
+            teaching_move="",
+            now=now,
         )
         _upsert_retrieval_card(
             conn,
@@ -1104,11 +1708,26 @@ def log_answer(
     curriculum_unit: str = "",
     answer_mode: str = "",
     confidence_observed: str = "",
+    teaching_move: str = "",
+    strict_telemetry: bool = False,
     agent_priority: str = "",
     match_claim_state_id: int | None = None,
     force_new_claim: bool = False,
     repairs_claim_state_ids: tuple[int, ...] = (),
 ) -> int:
+    if strict_telemetry:
+        _validate_strict_telemetry(
+            score=correct,
+            error_type=error_type,
+            misconception=misconception,
+            missing_edge=missing_edge,
+            corrected_rule=corrected_rule,
+            correction=correction,
+            tested_claim=tested_claim,
+            answer_mode=answer_mode,
+            confidence_observed=confidence_observed,
+            teaching_move=teaching_move,
+        )
     now = ts or datetime.now(timezone.utc).isoformat()
     resolution = resolve_topic(conn, topic, doc_path)
     topic_id = _ensure_topic(conn, resolution, doc_path)
@@ -1125,6 +1744,7 @@ def log_answer(
         "curriculum_unit": curriculum_unit,
         "answer_mode": answer_mode,
         "confidence_observed": confidence_observed,
+        "teaching_move": teaching_move,
     }
     conn.execute(
         """INSERT INTO exchanges
@@ -1199,6 +1819,7 @@ def log_exchange_claims(
     curriculum_unit: str = "",
     answer_mode: str = "",
     confidence_observed: str = "",
+    teaching_move: str = "",
 ) -> int:
     """Log one raw Q/A exchange with multiple assessed claim results."""
     if not claims:
@@ -1221,6 +1842,7 @@ def log_exchange_claims(
         "curriculum_unit": curriculum_unit,
         "answer_mode": answer_mode,
         "confidence_observed": confidence_observed,
+        "teaching_move": teaching_move,
         "claim_count": str(len(claims)),
     }
     conn.execute(
@@ -1254,7 +1876,7 @@ def log_exchange_claims(
         claim_signal = {k: v for k, v in source.items() if v}
         claim_signal.update({
             k: str(claim[k])
-            for k in ("teaching_intent", "expected_answer_edge", "coverage_role", "source_section", "source_anchor", "curriculum_unit", "answer_mode", "confidence_observed")
+            for k in ("teaching_intent", "expected_answer_edge", "coverage_role", "source_section", "source_anchor", "curriculum_unit", "answer_mode", "confidence_observed", "teaching_move")
             if k in claim and claim[k]
         })
         repairs = claim.get("repairs_claim_state_ids") or ()
@@ -1360,12 +1982,537 @@ def _retrieval_card_payload(row: sqlite3.Row) -> dict[str, str | None]:
         "type": row["card_type"],
         "priority": row["priority"],
         "state": row["state"],
+        "claim_state_id": row["claim_state_id"],
         "concept_id": row["concept_id"],
         "concept": row["concept"],
         "claim": row["claim_text"],
         "summary": row["summary"],
         "next_action": row["next_action"],
     }
+
+
+def _due_claims_for_summary(
+    conn: sqlite3.Connection,
+    *,
+    topic_id: int | None,
+    limit: int,
+    exclude_claim_state_ids: set[int] | None = None,
+) -> list[dict[str, object]]:
+    where = "WHERE COALESCE(cs.next_due_ts, '') != '' AND cs.next_due_ts <= ?"
+    params: list[object] = [datetime.now(timezone.utc).isoformat()]
+    if topic_id is not None:
+        where += " AND cs.topic_id = ?"
+        params.append(topic_id)
+    if exclude_claim_state_ids:
+        placeholders = ",".join("?" * len(exclude_claim_state_ids))
+        where += f" AND cs.id NOT IN ({placeholders})"
+        params.extend(sorted(exclude_claim_state_ids))
+    rows = conn.execute(
+        f"""SELECT cs.id, cs.claim_text, cs.state, cs.priority, cs.last_seen_ts,
+                   cs.next_due_ts, cs.difficulty, cs.stability,
+                   t.canonical_slug AS topic, c.display_name AS concept
+              FROM claim_state cs
+              JOIN topics t ON t.id = cs.topic_id
+              JOIN concepts c ON c.id = cs.concept_id
+              {where}
+              ORDER BY CASE cs.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,
+                       cs.next_due_ts ASC
+              LIMIT ?""",
+        [*params, max(0, limit)],
+    ).fetchall()
+    return [
+        {
+            "claim_state_id": int(r["id"]),
+            "topic": r["topic"],
+            "concept": r["concept"],
+            "claim": r["claim_text"],
+            "state": r["state"],
+            "priority": r["priority"],
+            "next_due_ts": r["next_due_ts"],
+            "difficulty": round(float(r["difficulty"]), 3),
+            "stability": round(float(r["stability"]), 3),
+            "retrievability": _retrievability(r["last_seen_ts"], float(r["stability"])),
+            "next_action": "Run a changed-frame retention check before relying on this scaffold.",
+        }
+        for r in rows
+    ]
+
+
+def _confidence_bucket(value: str) -> str:
+    v = _normalize(value).replace("-", "_")
+    if not v:
+        return ""
+    if any(token in v for token in ("high", "fluent", "confident")):
+        return "high"
+    if any(token in v for token in ("low", "hesitant", "uncertain", "unsure")):
+        return "low"
+    return "medium"
+
+
+def _calibration_profile_for_summary(
+    conn: sqlite3.Connection,
+    *,
+    topic_id: int | None,
+    limit: int,
+) -> dict[str, object]:
+    where = "WHERE COALESCE(ex.skill, '') != 'quick-answer'"
+    params: list[object] = []
+    if topic_id is not None:
+        where += " AND cr.topic_id = ?"
+        params.append(topic_id)
+    rows = conn.execute(
+        f"""SELECT cr.id, cr.score, cr.claim_text, cr.created_at,
+                   ex.source_json, t.canonical_slug AS topic, c.display_name AS concept
+              FROM claim_results cr
+              JOIN exchanges ex ON ex.id = cr.exchange_id
+              JOIN topics t ON t.id = cr.topic_id
+              JOIN concepts c ON c.id = cr.concept_id
+              {where}
+              ORDER BY cr.created_at DESC""",
+        params,
+    ).fetchall()
+    buckets: dict[str, dict[str, float | int]] = {
+        "high": {"count": 0, "misses": 0, "avg_score": 0.0},
+        "medium": {"count": 0, "misses": 0, "avg_score": 0.0},
+        "low": {"count": 0, "misses": 0, "avg_score": 0.0},
+    }
+    score_totals = {"high": 0.0, "medium": 0.0, "low": 0.0}
+    high_confidence_misses: list[dict[str, object]] = []
+    for row in rows:
+        try:
+            source = json.loads(row["source_json"] or "{}")
+        except json.JSONDecodeError:
+            source = {}
+        bucket = _confidence_bucket(str(source.get("confidence_observed") or ""))
+        if not bucket:
+            continue
+        score = int(row["score"])
+        buckets[bucket]["count"] = int(buckets[bucket]["count"]) + 1
+        buckets[bucket]["misses"] = int(buckets[bucket]["misses"]) + (1 if score < 2 else 0)
+        score_totals[bucket] += score / 2
+        if bucket == "high" and score < 2 and len(high_confidence_misses) < limit:
+            high_confidence_misses.append({
+                "claim_result_id": int(row["id"]),
+                "topic": row["topic"],
+                "concept": row["concept"],
+                "claim": row["claim_text"],
+                "score": score,
+                "created_at": row["created_at"],
+                "teaching_note": "High-confidence miss: prioritize a precise correction and changed-frame retest.",
+            })
+    for bucket, data in buckets.items():
+        count = int(data["count"])
+        data["avg_score"] = round(score_totals[bucket] / count, 3) if count else None
+        data["miss_rate"] = round(int(data["misses"]) / count, 3) if count else None
+    return {
+        "buckets": buckets,
+        "high_confidence_misses": high_confidence_misses,
+    }
+
+
+def _operation_profile_for_summary(
+    conn: sqlite3.Connection,
+    *,
+    topic_id: int | None,
+    limit: int,
+) -> list[dict[str, object]]:
+    where = "WHERE COALESCE(cr.learning_operation, '') != '' AND COALESCE(ex.skill, '') != 'quick-answer'"
+    params: list[object] = []
+    if topic_id is not None:
+        where += " AND cr.topic_id = ?"
+        params.append(topic_id)
+    rows = conn.execute(
+        f"""SELECT COALESCE(NULLIF(t.domain, ''), 'general') AS domain,
+                   cr.learning_operation AS operation,
+                   COUNT(*) AS n,
+                   SUM(CASE WHEN cr.score < 2 THEN 1 ELSE 0 END) AS misses,
+                   AVG(cr.score) AS avg_score,
+                   SUM(CASE WHEN cs.state IN ('missed','partially_repaired','regressed') THEN 1 ELSE 0 END) AS open_gaps
+              FROM claim_results cr
+              JOIN exchanges ex ON ex.id = cr.exchange_id
+              JOIN topics t ON t.id = cr.topic_id
+              LEFT JOIN claim_state cs ON cs.last_result_id = cr.id
+              {where}
+              GROUP BY domain, operation
+              HAVING n >= 2
+              ORDER BY (misses * 1.0 / n) DESC, open_gaps DESC, n DESC
+              LIMIT ?""",
+        [*params, max(0, limit)],
+    ).fetchall()
+    return [
+        {
+            "domain": r["domain"],
+            "operation": r["operation"],
+            "attempts": int(r["n"]),
+            "misses": int(r["misses"] or 0),
+            "miss_rate": round(float(r["misses"] or 0) / max(1, int(r["n"])), 3),
+            "mastery_estimate": round(float(r["avg_score"] or 0) / 2, 3),
+            "open_gaps": int(r["open_gaps"] or 0),
+            "teaching_note": f"Bias probes toward {r['operation']} in {r['domain']} until this vector improves.",
+        }
+        for r in rows
+    ]
+
+
+def _catalog_coverage_for_summary(
+    conn: sqlite3.Connection,
+    *,
+    topic_id: int | None,
+    limit: int,
+) -> dict[str, object]:
+    domain_filter = ""
+    if topic_id is not None:
+        row = conn.execute("SELECT domain FROM topics WHERE id = ?", (topic_id,)).fetchone()
+        domain_filter = row["domain"] if row else ""
+    covered_rows = conn.execute(
+        """SELECT t.canonical_slug, t.display_name, t.domain, COUNT(cr.id) AS attempts
+             FROM topics t
+             JOIN claim_results cr ON cr.topic_id = t.id
+             JOIN exchanges ex ON ex.id = cr.exchange_id
+             WHERE COALESCE(ex.skill, '') != 'quick-answer'
+             GROUP BY t.id"""
+    ).fetchall()
+    covered = {
+        row["canonical_slug"]: {
+            "title": row["display_name"],
+            "domain": row["domain"],
+            "attempts": int(row["attempts"]),
+            "tokens": _topic_tokens(row["display_name"]),
+        }
+        for row in covered_rows
+    }
+    catalog = [
+        (title, domain, tokens)
+        for title, domain, tokens in _load_curriculum_catalog()
+        if not domain_filter or domain == domain_filter
+    ]
+    frontier: list[dict[str, object]] = []
+    blind_spots: list[dict[str, object]] = []
+    tested = 0
+    high_yield_terms = {
+        "emergency", "management", "trauma", "sah", "aneurysm", "hydrocephalus",
+        "stroke", "ich", "spine", "cord", "icu", "ct", "herniation", "airway",
+    }
+    # Coverage is tiered by token overlap against covered learner topics, the same
+    # signal blind_spots already used. Strong overlap (>= CATALOG_MIN_OVERLAP shared
+    # meaningful tokens) means the catalog topic is effectively tested; a single
+    # shared token means adjacent-but-untested (frontier); zero overlap on a
+    # high-yield topic is a blind spot. Exact-slug equality always counts as tested.
+    for title, domain, tokens in catalog:
+        slug = _slug(title)
+        best_overlap = 0
+        best_neighbor = ""
+        for row in covered.values():
+            overlap = len(tokens & row["tokens"])
+            if overlap > best_overlap:
+                best_overlap = overlap
+                best_neighbor = str(row["title"])
+        if slug in covered or best_overlap >= CATALOG_MIN_OVERLAP:
+            tested += 1
+            continue
+        item = {
+            "topic": slug,
+            "title": _display(title),
+            "domain": domain,
+            "nearest_tested_topic": best_neighbor,
+            "readiness_score": round(min(1.0, best_overlap / 4), 3),
+            "reason": "untested catalog topic adjacent to covered material" if best_overlap == 1 else "high-yield catalog topic with no direct learner evidence",
+        }
+        if best_overlap == 1:
+            frontier.append(item)
+        elif tokens & high_yield_terms:
+            blind_spots.append(item)
+    frontier.sort(key=lambda x: (-float(x["readiness_score"]), str(x["title"])))
+    blind_spots.sort(key=lambda x: (str(x["domain"]), str(x["title"])))
+    return {
+        "catalog_topics": len(catalog),
+        "tested_catalog_topics": tested,
+        "frontier_candidates": frontier[:limit],
+        "blind_spots": blind_spots[:limit],
+    }
+
+
+def _shadow_queue_for_summary(
+    conn: sqlite3.Connection,
+    *,
+    topic_id: int | None,
+    limit: int,
+) -> list[dict[str, object]]:
+    topic_filter = ""
+    params: list[object] = []
+    if topic_id is not None:
+        topic_filter = "AND cr.topic_id = ?"
+        params.append(topic_id)
+    quick_rows = conn.execute(
+        f"""SELECT cr.id, cr.claim_text, cr.created_at, t.canonical_slug AS topic,
+                   c.display_name AS concept
+              FROM claim_results cr
+              JOIN exchanges ex ON ex.id = cr.exchange_id
+              JOIN topics t ON t.id = cr.topic_id
+              JOIN concepts c ON c.id = cr.concept_id
+              WHERE ex.skill = 'quick-answer'
+                AND NOT EXISTS (
+                    SELECT 1 FROM claim_state cs
+                    WHERE cs.topic_id = cr.topic_id AND cs.concept_id = cr.concept_id
+                )
+                {topic_filter}
+              ORDER BY cr.created_at DESC
+              LIMIT ?""",
+        [*params, max(0, limit)],
+    ).fetchall()
+    items = [
+        {
+            "type": "quick_answer_interest",
+            "topic": row["topic"],
+            "concept": row["concept"],
+            "claim": row["claim_text"],
+            "source_id": int(row["id"]),
+            "updated_ts": row["created_at"],
+            "weight": "low",
+            "next_action": "Ask one lightweight probe later; do not treat as mastery or a miss.",
+        }
+        for row in quick_rows
+    ]
+    artifact_skills = tuple(sorted(ARTIFACT_ANCHOR_SKILLS))
+    placeholders = ",".join("?" * len(artifact_skills))
+    artifact_filter = ""
+    artifact_params: list[object] = [*artifact_skills]
+    if topic_id is not None:
+        artifact_filter = "AND ex.topic_id = ?"
+        artifact_params.append(topic_id)
+    artifact_rows = conn.execute(
+        f"""SELECT ex.id, ex.ts, ex.skill, ex.raw_question, t.canonical_slug AS topic,
+                   c.display_name AS concept
+              FROM exchanges ex
+              JOIN topics t ON t.id = ex.topic_id
+              JOIN concepts c ON c.id = ex.concept_id
+              WHERE ex.skill IN ({placeholders}) {artifact_filter}
+              ORDER BY ex.ts DESC
+              LIMIT ?""",
+        [*artifact_params, max(0, limit)],
+    ).fetchall()
+    items.extend(
+        {
+            "type": "artifact_review_anchor",
+            "topic": row["topic"],
+            "concept": row["concept"],
+            "claim": row["raw_question"],
+            "source_id": int(row["id"]),
+            "updated_ts": row["ts"],
+            "weight": "low",
+            "next_action": f"Use study-review to test the generated {row['skill']} artifact before inferring learner state.",
+        }
+        for row in artifact_rows
+    )
+    items.sort(key=lambda x: str(x["updated_ts"]), reverse=True)
+    return items[:limit]
+
+
+def _teaching_move_profile_for_summary(
+    conn: sqlite3.Connection,
+    *,
+    topic_id: int | None,
+    limit: int,
+) -> list[dict[str, object]]:
+    where = "WHERE COALESCE(ex.skill, '') != 'quick-answer'"
+    params: list[object] = []
+    if topic_id is not None:
+        where += " AND cr.topic_id = ?"
+        params.append(topic_id)
+    rows = conn.execute(
+        f"""SELECT ex.source_json, cr.score
+              FROM claim_results cr
+              JOIN exchanges ex ON ex.id = cr.exchange_id
+              {where}
+              ORDER BY cr.created_at DESC""",
+        params,
+    ).fetchall()
+    stats: dict[str, dict[str, int | float]] = {}
+    for row in rows:
+        try:
+            source = json.loads(row["source_json"] or "{}")
+        except json.JSONDecodeError:
+            source = {}
+        move = _normalize(str(source.get("teaching_move") or "")).replace(" ", "_")
+        if not move:
+            continue
+        score = int(row["score"])
+        bucket = stats.setdefault(move, {"attempts": 0, "score_total": 0.0, "misses": 0, "strong": 0})
+        bucket["attempts"] = int(bucket["attempts"]) + 1
+        bucket["score_total"] = float(bucket["score_total"]) + score / 2
+        bucket["misses"] = int(bucket["misses"]) + (1 if score < 2 else 0)
+        bucket["strong"] = int(bucket["strong"]) + (1 if score == 2 else 0)
+    out = []
+    for move, data in stats.items():
+        attempts = int(data["attempts"])
+        out.append({
+            "teaching_move": move,
+            "attempts": attempts,
+            "mastery_after_move": round(float(data["score_total"]) / max(1, attempts), 3),
+            "miss_rate": round(int(data["misses"]) / max(1, attempts), 3),
+            "strong_answers": int(data["strong"]),
+        })
+    out.sort(key=lambda x: (-float(x["mastery_after_move"]), -int(x["attempts"]), str(x["teaching_move"])))
+    return out[:limit]
+
+
+def _telemetry_profile_for_summary(
+    conn: sqlite3.Connection,
+    *,
+    topic_id: int | None,
+) -> dict[str, object]:
+    where = "WHERE COALESCE(ex.skill, '') != 'quick-answer'"
+    params: list[object] = []
+    if topic_id is not None:
+        where += " AND cr.topic_id = ?"
+        params.append(topic_id)
+    rows = conn.execute(
+        f"""SELECT cr.score, cr.gap_type, ex.source_json
+              FROM claim_results cr
+              JOIN exchanges ex ON ex.id = cr.exchange_id
+              {where}""",
+        params,
+    ).fetchall()
+    fields = ("answer_mode", "confidence_observed", "teaching_move")
+    populated = {field: 0 for field in fields}
+    violations = {field: 0 for field in fields}
+    allowed = {
+        "answer_mode": VALID_ANSWER_MODES,
+        "confidence_observed": VALID_CONFIDENCE_OBSERVATIONS,
+        "teaching_move": VALID_TEACHING_MOVES,
+    }
+    miss_metadata_complete = 0
+    misses = 0
+    for row in rows:
+        try:
+            source = json.loads(row["source_json"] or "{}")
+        except json.JSONDecodeError:
+            source = {}
+        for field in fields:
+            value = _controlled_value(str(source.get(field) or ""))
+            if value:
+                populated[field] += 1
+                if value not in allowed[field]:
+                    violations[field] += 1
+        if int(row["score"]) < 2:
+            misses += 1
+            if row["gap_type"]:
+                miss_metadata_complete += 1
+    total = len(rows)
+    return {
+        "assessed_claim_results": total,
+        "field_completeness": {
+            field: {
+                "populated": populated[field],
+                "rate": round(populated[field] / max(1, total), 3),
+                "controlled_value_violations": violations[field],
+            }
+            for field in fields
+        },
+        "miss_gap_type_completeness": {
+            "misses": misses,
+            "populated": miss_metadata_complete,
+            "rate": round(miss_metadata_complete / max(1, misses), 3),
+        },
+        "guardrail": "Use --strict-telemetry for assessed learning exchanges. Historical gaps remain visible but are not treated as clean efficacy evidence.",
+    }
+
+
+def _tutor_efficacy_profile_for_summary(
+    conn: sqlite3.Connection,
+    *,
+    topic_id: int | None,
+    limit: int,
+) -> list[dict[str, object]]:
+    where = "WHERE COALESCE(re.teaching_move, '') != ''"
+    params: list[object] = []
+    if topic_id is not None:
+        where += " AND cs.topic_id = ?"
+        params.append(topic_id)
+    rows = conn.execute(
+        f"""SELECT re.teaching_move, COUNT(*) AS attempts,
+                   SUM(CASE WHEN re.repaired_result_id IS NOT NULL THEN 1 ELSE 0 END) AS immediate_repairs,
+                   SUM(CASE WHEN re.retention_result_id IS NOT NULL THEN 1 ELSE 0 END) AS retention_passes,
+                   SUM(CASE WHEN re.transfer_result_id IS NOT NULL THEN 1 ELSE 0 END) AS transfer_passes,
+                   SUM(CASE WHEN re.status = 'regressed' THEN 1 ELSE 0 END) AS regressions
+              FROM repair_episodes re
+              JOIN claim_state cs ON cs.id = re.claim_state_id
+              {where}
+             GROUP BY re.teaching_move
+             ORDER BY retention_passes DESC, transfer_passes DESC, immediate_repairs DESC, attempts DESC
+             LIMIT ?""",
+        [*params, max(0, limit)],
+    ).fetchall()
+    return [
+        {
+            "teaching_move": row["teaching_move"],
+            "attempts": int(row["attempts"]),
+            "immediate_repairs": int(row["immediate_repairs"] or 0),
+            "retention_passes": int(row["retention_passes"] or 0),
+            "transfer_passes": int(row["transfer_passes"] or 0),
+            "regressions": int(row["regressions"] or 0),
+            "evidence_level": "directional" if int(row["attempts"]) >= 3 and int(row["retention_passes"] or 0) >= 2 else "insufficient",
+            "directive": (
+                "Use as a directional preference, not a mandatory route."
+                if int(row["attempts"]) >= 3 and int(row["retention_passes"] or 0) >= 2
+                else "Collect more delayed-retention evidence before preferring this teaching move."
+            ),
+        }
+        for row in rows
+    ]
+
+
+def _context_focus_for_summary(
+    *,
+    context: str,
+    due_claims: list[dict[str, object]],
+    coverage_frontier: dict[str, object],
+    shadow_queue: list[dict[str, object]],
+    limit: int,
+) -> list[dict[str, object]]:
+    tokens = _topic_tokens(context)
+    if not tokens:
+        return []
+    candidates: list[dict[str, object]] = []
+
+    def add_candidate(surface: str, item: dict[str, object], text: str) -> None:
+        matched = tokens & _topic_tokens(text)
+        if not matched:
+            return
+        specific = matched - CONTEXT_GENERIC_TOKENS
+        if len(matched) < 2 and not specific:
+            return
+        candidates.append({
+            "surface": surface,
+            "overlap": len(matched),
+            "specific_overlap": len(specific),
+            "matched_tokens": sorted(matched),
+            "item": item,
+        })
+
+    for item in due_claims:
+        text = " ".join(str(item.get(k, "")) for k in ("topic", "concept", "claim"))
+        add_candidate("due_claims", item, text)
+    for surface_name in ("frontier_candidates", "blind_spots"):
+        for item in coverage_frontier.get(surface_name, []):
+            if not isinstance(item, dict):
+                continue
+            text = " ".join(str(item.get(k, "")) for k in ("topic", "title", "domain"))
+            add_candidate(surface_name, item, text)
+    for item in shadow_queue:
+        text = " ".join(str(item.get(k, "")) for k in ("topic", "concept", "claim"))
+        add_candidate("shadow_queue", item, text)
+    candidates.sort(key=lambda x: (-int(x["specific_overlap"]), -int(x["overlap"]), str(x["surface"])))
+    return [
+        {
+            "surface": c["surface"],
+            "context_overlap": int(c["overlap"]),
+            "context_specific_overlap": int(c["specific_overlap"]),
+            "matched_tokens": c["matched_tokens"],
+            "item": c["item"],
+        }
+        for c in candidates[:limit]
+    ]
 
 
 def _summary_command(
@@ -1375,6 +2522,9 @@ def _summary_command(
     scaffold_limit: int,
     include_global_scaffolds: bool = False,
     include_curated: bool = False,
+    include_due: bool = False,
+    include_model: bool = False,
+    context: str = "",
 ) -> str:
     parts = ["python3 src/study_memory.py summary"]
     if topic:
@@ -1385,6 +2535,13 @@ def _summary_command(
         parts.append("--include-global-scaffolds")
     if include_curated:
         parts.append("--include-curated")
+    if include_due:
+        parts.append("--include-due")
+    if include_model:
+        parts.append("--include-model")
+    if context:
+        safe_context = context.replace('"', "'")
+        parts.append(f'--context "{safe_context}"')
     return " ".join(parts)
 
 
@@ -1397,6 +2554,9 @@ def _retrieval_guidance(
     omitted: dict[str, int],
     include_global_scaffolds: bool,
     include_curated: bool,
+    include_due: bool = False,
+    include_model: bool = False,
+    context: str = "",
 ) -> dict[str, object]:
     high_signal_types = ("must_retest", "session_handoff", "recent_repair")
     omitted_high_signal = {k: omitted[k] for k in high_signal_types if omitted.get(k, 0)}
@@ -1410,6 +2570,9 @@ def _retrieval_guidance(
                 scaffold_limit=scaffold_limit,
                 include_global_scaffolds=include_global_scaffolds,
                 include_curated=include_curated,
+                include_due=include_due,
+                include_model=include_model,
+                context=context,
             )
         )
     if topic and omitted.get("scaffold", 0):
@@ -1419,6 +2582,9 @@ def _retrieval_guidance(
                 limit=limit,
                 scaffold_limit=min(counts.get("scaffold", scaffold_limit), max(scaffold_limit * 2, 4)),
                 include_curated=include_curated,
+                include_due=include_due,
+                include_model=include_model,
+                context=context,
             )
         )
     if not topic and omitted.get("scaffold", 0) and not include_global_scaffolds:
@@ -1429,6 +2595,9 @@ def _retrieval_guidance(
                 scaffold_limit=scaffold_limit,
                 include_global_scaffolds=True,
                 include_curated=include_curated,
+                include_due=include_due,
+                include_model=include_model,
+                context=context,
             )
         )
 
@@ -1457,6 +2626,9 @@ def retrieval_summary(
     include_scaffolds: bool = True,
     include_global_scaffolds: bool = False,
     include_curated: bool = False,
+    include_due: bool = False,
+    include_model: bool = False,
+    context: str = "",
 ) -> str:
     limit = max(0, limit)
     scaffold_limit = max(0, scaffold_limit)
@@ -1483,6 +2655,25 @@ def retrieval_summary(
             if include_curated:
                 base["curated_summaries"] = []
                 base["graph_signals"] = []
+                base["shadow_rule_signals"] = []
+            if include_due:
+                base["due_claims"] = []
+            if include_model:
+                base["calibration_profile"] = {"buckets": {}, "high_confidence_misses": []}
+                base["operation_profile"] = []
+                base["teaching_move_profile"] = []
+                base["telemetry_profile"] = {}
+                base["tutor_efficacy_profile"] = []
+                base["coverage_frontier"] = {
+                    "catalog_topics": 0,
+                    "tested_catalog_topics": 0,
+                    "frontier_candidates": [],
+                    "blind_spots": [],
+                }
+                base["shadow_queue"] = []
+                if context:
+                    base["context_focus"] = []
+                    base["context_graph_focus"] = []
             return json.dumps(base, indent=2)
         resolved_topic_id = int(topic_row["id"])
         topic_filter = "AND rc.topic_id = ?"
@@ -1562,6 +2753,9 @@ def retrieval_summary(
             omitted=omitted,
             include_global_scaffolds=include_global_scaffolds,
             include_curated=include_curated,
+            include_due=include_due,
+            include_model=include_model,
+            context=context,
         ),
     }
 
@@ -1590,6 +2784,91 @@ def retrieval_summary(
             conn,
             must_retest_concept_ids=must_retest_concept_ids,
         )
+        payload["shadow_rule_signals"] = shadow_rule_signals_for_summary(
+            conn,
+            relevant_concept_ids=returned_concept_ids,
+            limit=4,
+        )
+
+    if include_due or include_model:
+        # Dedup against the active-open triage cards only: a claim already shown as
+        # a must_retest or recent_repair card carries its own next_action, so its
+        # decay signal is redundant. Scaffolds are intentionally not excluded -- a
+        # decayed scaffold's retention-check signal lives in due_claims and serves a
+        # different purpose than the scaffold-as-premise card.
+        card_claim_state_ids = {
+            int(row["claim_state_id"])
+            for row in rows
+            if row["claim_state_id"] is not None
+            and row["card_type"] in ("must_retest", "recent_repair")
+        }
+        payload["due_claims"] = _due_claims_for_summary(
+            conn,
+            topic_id=resolved_topic_id,
+            limit=max(4, limit),
+            exclude_claim_state_ids=card_claim_state_ids,
+        )
+    if include_model:
+        payload["calibration_profile"] = _calibration_profile_for_summary(
+            conn,
+            topic_id=resolved_topic_id,
+            limit=max(4, limit),
+        )
+        payload["operation_profile"] = _operation_profile_for_summary(
+            conn,
+            topic_id=resolved_topic_id,
+            limit=max(4, limit),
+        )
+        payload["teaching_move_profile"] = _teaching_move_profile_for_summary(
+            conn,
+            topic_id=resolved_topic_id,
+            limit=max(4, limit),
+        )
+        payload["telemetry_profile"] = _telemetry_profile_for_summary(
+            conn,
+            topic_id=resolved_topic_id,
+        )
+        payload["tutor_efficacy_profile"] = _tutor_efficacy_profile_for_summary(
+            conn,
+            topic_id=resolved_topic_id,
+            limit=max(4, limit),
+        )
+        # coverage_frontier is the ACGME global coverage map. It only makes sense
+        # in memory-driven/global review (no chosen topic); during a topic-anchored
+        # drill it is irrelevant noise, so it is emitted empty there.
+        if resolved_topic_id is None:
+            payload["coverage_frontier"] = _catalog_coverage_for_summary(
+                conn,
+                topic_id=None,
+                limit=max(4, limit),
+            )
+        else:
+            payload["coverage_frontier"] = {
+                "catalog_topics": 0,
+                "tested_catalog_topics": 0,
+                "frontier_candidates": [],
+                "blind_spots": [],
+            }
+        payload["shadow_queue"] = _shadow_queue_for_summary(
+            conn,
+            topic_id=resolved_topic_id,
+            limit=max(4, limit),
+        )
+        if context:
+            payload["context_focus"] = _context_focus_for_summary(
+                context=context,
+                due_claims=payload["due_claims"],  # type: ignore[arg-type]
+                coverage_frontier=payload["coverage_frontier"],  # type: ignore[arg-type]
+                shadow_queue=payload["shadow_queue"],  # type: ignore[arg-type]
+                limit=max(4, limit),
+            )
+            payload["context_graph_focus"] = context_graph_focus_for_summary(
+                conn,
+                context=context,
+                due_claims=payload["due_claims"],  # type: ignore[arg-type]
+                limit=min(8, max(4, limit)),
+                max_hops=2,
+            )
 
     return json.dumps(payload, indent=2)
 
@@ -1601,6 +2880,10 @@ def status(conn: sqlite3.Connection) -> str:
         "exchanges": conn.execute("SELECT COUNT(*) FROM exchanges").fetchone()[0],
         "claim_results": conn.execute("SELECT COUNT(*) FROM claim_results").fetchone()[0],
         "claim_states": conn.execute("SELECT COUNT(*) FROM claim_state").fetchone()[0],
+        "repair_episodes": conn.execute("SELECT COUNT(*) FROM repair_episodes").fetchone()[0],
+        "shadow_rules": conn.execute("SELECT COUNT(*) FROM shadow_rules").fetchone()[0],
+        "reference_nodes": conn.execute("SELECT COUNT(*) FROM reference_nodes").fetchone()[0],
+        "reference_edges": conn.execute("SELECT COUNT(*) FROM reference_edges").fetchone()[0],
         "retrieval_cards": conn.execute("SELECT COUNT(*) FROM retrieval_cards").fetchone()[0],
         "must_retest": conn.execute("SELECT COUNT(*) FROM claim_state WHERE state IN ('missed','partially_repaired','regressed')").fetchone()[0],
         "recent_repairs": conn.execute("SELECT COUNT(*) FROM claim_state WHERE state = 'repaired_same_session'").fetchone()[0],
@@ -1643,6 +2926,8 @@ def main() -> None:
     p_log.add_argument("--curriculum-unit", default="")
     p_log.add_argument("--answer-mode", default="")
     p_log.add_argument("--confidence-observed", default="")
+    p_log.add_argument("--teaching-move", default="")
+    p_log.add_argument("--strict-telemetry", action="store_true")
     p_log.add_argument("--priority", default="", help="Agent-asserted priority: urgent|high|medium|low (overrides heuristic)")
     p_log.add_argument("--match-claim-state-id", type=int, default=None, help="Bind this answer to an existing open claim (agent-asserted recurrence)")
     p_log.add_argument("--new-claim", action="store_true", help="Force a new claim_state even if a similar one exists")
@@ -1662,15 +2947,37 @@ def main() -> None:
     p_summary.add_argument("--no-scaffolds", action="store_true")
     p_summary.add_argument("--include-global-scaffolds", action="store_true")
     p_summary.add_argument("--include-curated", action="store_true")
+    p_summary.add_argument("--include-due", action="store_true")
+    p_summary.add_argument("--include-model", action="store_true")
+    p_summary.add_argument("--context", default="", help="Optional upcoming case/rotation/context string for relevance weighting")
 
     sub.add_parser("status")
+    sub.add_parser("identity-audit")
+    sub.add_parser("telemetry-audit")
     sub.add_parser("curation-status")
+
+    p_merge_topics = sub.add_parser("merge-topics")
+    p_merge_topics.add_argument("--from-topic", required=True)
+    p_merge_topics.add_argument("--into-topic", required=True)
+    p_merge_topics.add_argument("--apply", action="store_true")
+
+    p_shadow_check = sub.add_parser("record-shadow-check")
+    p_shadow_check.add_argument("--rule-id", type=int, required=True)
+    p_shadow_check.add_argument("--claim-result-id", type=int, required=True)
+    p_shadow_check.add_argument("--context-label", required=True)
+    p_shadow_check.add_argument("--check-type", choices=["changed_frame", "transfer"], required=True)
+    p_shadow_check.add_argument("--outcome", choices=["pass", "fail"], required=True)
+    p_shadow_check.add_argument("--apply", action="store_true")
+
+    p_reference_graph = sub.add_parser("load-reference-graph")
+    p_reference_graph.add_argument("--input", required=True)
+    p_reference_graph.add_argument("--apply", action="store_true")
 
     p_candidates = sub.add_parser("curate-candidates")
     p_candidates.add_argument("--mode", choices=["compact", "detailed"], default="compact")
     p_candidates.add_argument("--topic", default="")
     p_candidates.add_argument("--recent-sessions", type=int, default=5)
-    p_candidates.add_argument("--limit", type=int, default=80)
+    p_candidates.add_argument("--limit", type=int, default=40)
 
     p_apply = sub.add_parser("apply-curation")
     p_apply_src = p_apply.add_mutually_exclusive_group(required=True)
@@ -1715,6 +3022,8 @@ def main() -> None:
                 curriculum_unit=args.curriculum_unit,
                 answer_mode=args.answer_mode,
                 confidence_observed=args.confidence_observed,
+                teaching_move=args.teaching_move,
+                strict_telemetry=args.strict_telemetry,
                 agent_priority=args.priority,
                 match_claim_state_id=args.match_claim_state_id,
                 force_new_claim=args.new_claim,
@@ -1739,10 +3048,45 @@ def main() -> None:
                     include_scaffolds=not args.no_scaffolds,
                     include_global_scaffolds=args.include_global_scaffolds,
                     include_curated=args.include_curated,
+                    include_due=args.include_due,
+                    include_model=args.include_model,
+                    context=args.context,
                 )
             )
         elif args.command == "status":
             print(status(conn))
+        elif args.command == "identity-audit":
+            print(json.dumps(identity_audit(conn), indent=2))
+        elif args.command == "telemetry-audit":
+            print(json.dumps(_telemetry_profile_for_summary(conn, topic_id=None), indent=2))
+        elif args.command == "merge-topics":
+            print(json.dumps(
+                merge_topics(
+                    conn,
+                    source_topic=args.from_topic,
+                    target_topic=args.into_topic,
+                    apply=args.apply,
+                ),
+                indent=2,
+            ))
+        elif args.command == "record-shadow-check":
+            print(json.dumps(
+                record_shadow_rule_check(
+                    conn,
+                    shadow_rule_id=args.rule_id,
+                    claim_result_id=args.claim_result_id,
+                    context_label=args.context_label,
+                    check_type=args.check_type,
+                    outcome=args.outcome,
+                    apply=args.apply,
+                ),
+                indent=2,
+            ))
+        elif args.command == "load-reference-graph":
+            print(json.dumps(
+                load_reference_graph_file(conn, Path(args.input), apply=args.apply),
+                indent=2,
+            ))
         elif args.command == "curation-status":
             print(json.dumps(curation_status(conn), indent=2))
         elif args.command == "curate-candidates":
@@ -1757,6 +3101,13 @@ def main() -> None:
             except CurationError as exc:
                 print(json.dumps({"ok": False, "error": str(exc)}, indent=2), file=sys.stderr)
                 sys.exit(2)
+            # Curation and maintenance bookkeeping fire together: the same pass that
+            # synthesizes curated memory also surfaces topic-identity and telemetry
+            # audits, so they cannot silently fall stale. One invocation, one packet.
+            packet["maintenance"] = {
+                "identity_audit": identity_audit(conn),
+                "telemetry_audit": _telemetry_profile_for_summary(conn, topic_id=None),
+            }
             print(json.dumps(packet, indent=2))
         elif args.command == "apply-curation":
             if args.stdin:

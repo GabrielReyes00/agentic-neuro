@@ -12,12 +12,14 @@ Codex CLI slash commands are exposed through the repo-local plugin at `plugins/a
 Key shared contracts:
 - `.agents/shared/commands/learning-session-contract.md` — thin orchestration index for learning workflows.
 - `.agents/shared/commands/memory-operations.md` — learner-memory reads/writes, session start/end, integrity checks, entry formatting.
-- `.agents/shared/commands/memory-retrieval.md` — how to interpret `cards`, `curated_summaries`, `graph_signals`, `counts`, `omitted`, and `retrieval_guidance`.
-- `.agents/shared/commands/memory-curation.md` — optional post-flush curated summaries and concept graph edges.
+- `.agents/shared/commands/memory-retrieval.md` — cards, learner graph signals, model/context surfaces, and truncation metadata.
+- `.agents/shared/commands/memory-curation.md` — optional post-flush curated summaries, learner graph edges, and shadow rules.
+- `.agents/shared/commands/memory-maintenance.md` — deliberate identity audits, guarded topic merges, telemetry audits, and reviewed reference-graph loading.
 - `.agents/shared/commands/adaptive-teaching-doctrine.md` — cognitive-friction teaching behavior, repair/retest logic, and learner posture.
 - `.agents/shared/commands/anki-session-workflow.md` — per-answer Anki decisions, queue review/check/flush.
 - `.agents/shared/commands/anki-card-quality.md` — short card-quality, cloze, deck taxonomy, and duplicate-judgment rules for all Anki creation/review.
 - `.agents/shared/commands/anki-deck-maintenance.md` — separate live Anki deck rewrite/reorganization workflow; Anki is ground truth and Chroma is rebuilt from Anki.
+- `.agents/shared/commands/concept-extraction.md` — shared post-write concept-stub rules for artifact-generating workflows.
 - `.agents/shared/commands/study-review.md` — doc-anchored and memory-driven review.
 - `.agents/shared/commands/consult.md` — lecture-first clinical consult, verification, Anki, pocket-card write, provenance-tiered citations.
 - `.agents/shared/commands/brain-dump.md` — de-identified service-teaching capture, targeted verification, artifact-anchor memory logging, and optional later review.
@@ -66,10 +68,11 @@ The active long-term memory system is the claim-centered learner model at `data/
 
 Detailed memory mechanics now live in focused modules:
 - Use `.agents/shared/commands/memory-operations.md` for session start, `summary`, `log-answer`, `end-session`, integrity checks, and entry formatting.
-- Use `.agents/shared/commands/memory-retrieval.md` for interpreting `cards`, `curated_summaries`, `graph_signals`, `counts`, `omitted`, and `retrieval_guidance`.
+- Use `.agents/shared/commands/memory-retrieval.md` for interpreting cards, learner graph signals, model/context surfaces, and truncation metadata.
 - Use `.agents/shared/commands/memory-curation.md` for the optional post-Anki curation pass.
+- Use `.agents/shared/commands/memory-maintenance.md` only for deliberate audits or reviewed graph maintenance, never inside routine teaching loops.
 
-Invariant summary: topic-anchored sessions use only topic-scoped `summary --include-curated`; memory-driven custom review is the only mode that uses global summary. Memory writes occur only inside explicit memory-enabled workflows or when the user asks to save/capture memory. Quick-answer entries are low-stakes reference captures, not demonstrated mastery.
+Invariant summary: topic-anchored sessions use only topic-scoped `summary --include-curated --include-model`; memory-driven custom review is the only mode that uses global summary. Memory writes occur only inside explicit memory-enabled workflows or when the user asks to save/capture memory. Quick-answer entries are low-stakes reference captures, not demonstrated mastery.
 
 ## Capability Router
 
@@ -78,7 +81,7 @@ Default: answer clinical questions directly from model knowledge. Use tools/skil
 Always intercept:
 - Inbox/email -> `inbox-workflow`
 - "What should I study/review", "drill my weak spots", "go after my open errors", "build me a custom session", "board-style case" -> `study-review` (memory-driven mode)
-- Gaps/dashboard/ACGME readiness -> use `python3 src/study_memory.py summary --limit 12 --scaffold-limit 0 --include-curated` for active learner state.
+- Gaps/dashboard/ACGME readiness -> use `python3 src/study_memory.py summary --limit 12 --scaffold-limit 0 --include-curated --include-model` for active learner state.
 - Textbook inventory -> recipe: `python3 src/lance_retriever.py list_textbooks`
 - Calendar/scheduling/events -> GCal MCP
 

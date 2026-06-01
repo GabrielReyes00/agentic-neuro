@@ -5,11 +5,13 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import study_memory
+from reference_graph import context_graph_focus_for_summary, load_reference_graph_payload
 
 
 class StudyMemoryTests(unittest.TestCase):
@@ -415,6 +417,428 @@ class StudyMemoryTests(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_claim_state_records_schedule_and_due_surface(self) -> None:
+        conn = self._memory_conn()
+        try:
+            study_memory.log_answer(
+                conn,
+                session_id="session-schedule",
+                topic="evd management",
+                concept="evd clamp trial failure",
+                question="Clamp trial: ventricles enlarge but ICP stays 12; pass or fail?",
+                answer="Fail because symptoms and ventriculomegaly matter.",
+                correct=2,
+                tested_claim="Clamp trial failure can occur from symptoms and ventriculomegaly even without sustained ICP elevation.",
+                corrected_rule="Treat symptomatic ventriculomegaly as clamp failure even if ICP is not high.",
+            )
+            state = conn.execute(
+                "SELECT next_due_ts, difficulty, stability FROM claim_state"
+            ).fetchone()
+            self.assertTrue(state["next_due_ts"])
+            self.assertGreater(float(state["stability"]), 1.0)
+            self.assertLess(float(state["difficulty"]), 0.3)
+
+            past_due = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+            conn.execute("UPDATE claim_state SET next_due_ts = ?, last_seen_ts = ?", (past_due, past_due))
+            payload = json.loads(
+                study_memory.retrieval_summary(
+                    conn,
+                    topic="evd management",
+                    limit=4,
+                    include_due=True,
+                )
+            )
+            self.assertEqual(len(payload["due_claims"]), 1)
+            due = payload["due_claims"][0]
+            self.assertEqual(due["topic"], "evd-management-icu")
+            self.assertEqual(due["next_action"], "Run a changed-frame retention check before relying on this scaffold.")
+            self.assertLess(due["retrievability"], 1.0)
+        finally:
+            conn.close()
+
+    def test_existing_claim_states_get_due_backfill(self) -> None:
+        conn = self._memory_conn()
+        try:
+            study_memory.log_answer(
+                conn,
+                session_id="session-backfill",
+                topic="evd management",
+                concept="evd infection risk",
+                question="What EVD handling increases infection risk?",
+                answer="Frequent breaks in the sterile system.",
+                correct=2,
+                tested_claim="Frequent EVD system access increases infection risk.",
+                corrected_rule="Minimize sterile system breaks.",
+            )
+            conn.execute("UPDATE claim_state SET next_due_ts = ''")
+            conn.commit()
+        finally:
+            conn.close()
+
+        conn = self._memory_conn()
+        try:
+            due = conn.execute("SELECT next_due_ts, stability FROM claim_state").fetchone()
+            self.assertTrue(due["next_due_ts"])
+            self.assertGreater(float(due["stability"]), 0)
+        finally:
+            conn.close()
+
+    def test_model_summary_surfaces_calibration_and_operation_profile(self) -> None:
+        conn = self._memory_conn()
+        try:
+            for idx in range(2):
+                study_memory.log_answer(
+                    conn,
+                    session_id="session-model",
+                    topic="evd management",
+                    concept=f"evd troubleshooting sequence {idx}",
+                    question=f"EVD stops draining at bedside: what is your step {idx}?",
+                    answer="Flush toward the patient first.",
+                    correct=0,
+                    correction="First check level, clamp state, kinks, transducer, and patient position; do not flush toward the patient.",
+                    error_type="sequencing",
+                    tested_claim=f"EVD troubleshooting requires external system checks before invasive manipulation {idx}.",
+                    missing_edge="bedside troubleshooting sequence before invasive flushing",
+                    learning_operation="sequencing",
+                    confidence_observed="fluent",
+                    answer_mode="unaided",
+                    teaching_move="order_set",
+                    force_new_claim=True,
+                )
+            study_memory.log_answer(
+                conn,
+                session_id="session-model",
+                topic="evd management",
+                concept="evd waveform mechanism",
+                question="Why can an EVD waveform dampen?",
+                answer="Catheter obstruction or compliance/leveling issues can dampen it.",
+                correct=2,
+                tested_claim="EVD waveform quality reflects catheter patency, leveling, and compliance.",
+                corrected_rule="Use waveform changes as a troubleshooting signal.",
+                learning_operation="mechanism",
+                confidence_observed="hesitant",
+                answer_mode="unaided",
+                teaching_move="mechanism_first",
+                force_new_claim=True,
+            )
+            payload = json.loads(
+                study_memory.retrieval_summary(
+                    conn,
+                    topic="evd management",
+                    limit=8,
+                    include_model=True,
+                )
+            )
+            calibration = payload["calibration_profile"]
+            self.assertEqual(calibration["buckets"]["high"]["count"], 2)
+            self.assertEqual(calibration["buckets"]["high"]["misses"], 2)
+            self.assertEqual(len(calibration["high_confidence_misses"]), 2)
+            operations = payload["operation_profile"]
+            self.assertEqual(operations[0]["operation"], "sequencing")
+            self.assertEqual(operations[0]["miss_rate"], 1.0)
+            moves = payload["teaching_move_profile"]
+            self.assertEqual(moves[0]["teaching_move"], "mechanism_first")
+            self.assertIn("due_claims", payload)
+        finally:
+            conn.close()
+
+    def test_model_summary_surfaces_coverage_frontier_and_shadow_queue(self) -> None:
+        conn = self._memory_conn()
+        try:
+            study_memory.log_answer(
+                conn,
+                session_id="session-coverage",
+                topic="tbi classification",
+                concept="marshall ct classification",
+                question="What does the Marshall CT score classify?",
+                answer="TBI CT severity patterns.",
+                correct=2,
+                tested_claim="TBI classification includes CT-based Marshall or Rotterdam scoring.",
+                corrected_rule="Use CT classification as part of TBI severity stratification.",
+            )
+            study_memory.log_answer(
+                conn,
+                session_id="quick-shadow",
+                topic="tbi management",
+                concept="hyperosmolar choice",
+                question="Mannitol or hypertonic saline for impending herniation?",
+                answer="Both are temporizing options; choose based on hemodynamics and sodium/osmolality context.",
+                correct=2,
+                skill="quick-answer",
+                tested_claim="Hyperosmolar choice depends on hemodynamics and sodium/osmolality context.",
+                learner_claim="Question-only exchange; no learner performance assessed.",
+                teaching_intent="quick_answer_reference",
+                answer_mode="after_teaching",
+            )
+            study_memory.log_answer(
+                conn,
+                session_id="report-shadow",
+                topic="tbi management",
+                concept="report coverage anchor",
+                question="What is covered in the Severe TBI report?",
+                answer="Initial resuscitation, ICP treatment, and operative escalation.",
+                correct=2,
+                skill="generate-report",
+                doc_path="Reports/Severe TBI.md",
+            )
+            payload = json.loads(
+                study_memory.retrieval_summary(
+                    conn,
+                    limit=8,
+                    include_model=True,
+                    context="TBI herniation hyperosmolar",
+                )
+            )
+            coverage = payload["coverage_frontier"]
+            self.assertGreaterEqual(coverage["catalog_topics"], 1)
+            self.assertGreaterEqual(coverage["tested_catalog_topics"], 1)
+            self.assertTrue(coverage["frontier_candidates"] or coverage["blind_spots"])
+            shadow_types = {item["type"] for item in payload["shadow_queue"]}
+            self.assertIn("quick_answer_interest", shadow_types)
+            self.assertIn("artifact_review_anchor", shadow_types)
+            self.assertTrue(payload["context_focus"])
+            self.assertTrue(any(item["surface"] == "shadow_queue" for item in payload["context_focus"]))
+        finally:
+            conn.close()
+
+    def test_context_focus_rejects_single_generic_token_overlap(self) -> None:
+        candidates = study_memory._context_focus_for_summary(
+            context="anterior cervical discectomy and fusion ACDF",
+            due_claims=[
+                {
+                    "topic": "anterior-choroidal-artery-territory",
+                    "concept": "anterior choroidal artery supply",
+                    "claim": "Identify anterior choroidal artery territory.",
+                },
+                {
+                    "topic": "cervical-spine-fractures",
+                    "concept": "cervical instability clearance",
+                    "claim": "Apply cervical instability clearance rules.",
+                },
+            ],
+            coverage_frontier={"frontier_candidates": [], "blind_spots": []},
+            shadow_queue=[],
+            limit=8,
+        )
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["item"]["topic"], "cervical-spine-fractures")
+        self.assertEqual(candidates[0]["matched_tokens"], ["cervical"])
+
+    def test_identity_audit_and_guarded_topic_merge(self) -> None:
+        conn = self._memory_conn()
+        try:
+            conn.execute(
+                """INSERT INTO topics (canonical_slug, display_name, domain, created_at)
+                   VALUES ('spine-emergencies-sci-critical-care', 'Spine Emergencies SCI Critical Care', 'spine', '')"""
+            )
+            conn.execute(
+                """INSERT INTO topics (canonical_slug, display_name, domain, created_at)
+                   VALUES ('spine-emergencies-sci-and-critical-care', 'Spine Emergencies SCI And Critical Care', 'spine', '')"""
+            )
+            conn.commit()
+            audit = study_memory.identity_audit(conn)
+            self.assertTrue(audit["duplicate_topic_candidates"])
+
+            source = conn.execute(
+                "SELECT id FROM topics WHERE canonical_slug = 'spine-emergencies-sci-critical-care'"
+            ).fetchone()["id"]
+            target = conn.execute(
+                "SELECT id FROM topics WHERE canonical_slug = 'spine-emergencies-sci-and-critical-care'"
+            ).fetchone()["id"]
+            conn.execute(
+                """INSERT INTO concepts (topic_id, canonical_slug, display_name, created_at)
+                   VALUES (?, 'respiratory-thresholds', 'respiratory thresholds', '')""",
+                (source,),
+            )
+            conn.commit()
+
+            dry_run = study_memory.merge_topics(
+                conn,
+                source_topic="spine-emergencies-sci-critical-care",
+                target_topic="spine-emergencies-sci-and-critical-care",
+            )
+            self.assertFalse(dry_run["blocked"])
+            self.assertNotIn("applied", dry_run)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM topics").fetchone()[0], 2)
+
+            applied = study_memory.merge_topics(
+                conn,
+                source_topic="spine-emergencies-sci-critical-care",
+                target_topic="spine-emergencies-sci-and-critical-care",
+                apply=True,
+            )
+            self.assertTrue(applied["applied"])
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM topics").fetchone()[0], 1)
+            concept_topic = conn.execute(
+                "SELECT topic_id FROM concepts WHERE canonical_slug = 'respiratory-thresholds'"
+            ).fetchone()["topic_id"]
+            self.assertEqual(concept_topic, target)
+            resolved = study_memory.resolve_topic(conn, "spine-emergencies-sci-critical-care")
+            self.assertEqual(resolved.slug, "spine-emergencies-sci-and-critical-care")
+        finally:
+            conn.close()
+
+    def test_topic_merge_refuses_same_slug_concept_collision(self) -> None:
+        conn = self._memory_conn()
+        try:
+            conn.execute(
+                "INSERT INTO topics (canonical_slug, display_name, created_at) VALUES ('source-topic', 'Source Topic', '')"
+            )
+            conn.execute(
+                "INSERT INTO topics (canonical_slug, display_name, created_at) VALUES ('target-topic', 'Target Topic', '')"
+            )
+            rows = conn.execute("SELECT id, canonical_slug FROM topics ORDER BY id").fetchall()
+            ids = {row["canonical_slug"]: int(row["id"]) for row in rows}
+            for topic_id in ids.values():
+                conn.execute(
+                    """INSERT INTO concepts (topic_id, canonical_slug, display_name, created_at)
+                       VALUES (?, 'shared-concept', 'shared concept', '')""",
+                    (topic_id,),
+                )
+            conn.commit()
+            result = study_memory.merge_topics(
+                conn,
+                source_topic="source-topic",
+                target_topic="target-topic",
+                apply=True,
+            )
+            self.assertTrue(result["blocked"])
+            self.assertEqual(result["concept_collisions"], ["shared-concept"])
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM topics").fetchone()[0], 2)
+        finally:
+            conn.close()
+
+    def test_strict_telemetry_rejects_incomplete_assessment(self) -> None:
+        conn = self._memory_conn()
+        try:
+            # No tested_claim/corrected_rule/correction -> the stored claim would be
+            # boilerplate, so strict mode rejects on the claim gate first.
+            with self.assertRaisesRegex(ValueError, "strict telemetry requires tested_claim"):
+                study_memory.log_answer(
+                    conn,
+                    session_id="strict-missing",
+                    topic="evd management",
+                    concept="evd troubleshooting",
+                    question="What next?",
+                    answer="Check the system.",
+                    correct=1,
+                    strict_telemetry=True,
+                )
+            # With a real claim present, the controlled-field gate still rejects when
+            # answer_mode/confidence/teaching_move are missing.
+            with self.assertRaisesRegex(ValueError, "strict telemetry requires answer_mode"):
+                study_memory.log_answer(
+                    conn,
+                    session_id="strict-missing",
+                    topic="evd management",
+                    concept="evd troubleshooting",
+                    question="What next?",
+                    answer="Check the system.",
+                    correct=1,
+                    tested_claim="External troubleshooting precedes invasive EVD manipulation.",
+                    strict_telemetry=True,
+                )
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM exchanges").fetchone()[0], 0)
+        finally:
+            conn.close()
+
+    def test_repair_episode_tracks_immediate_and_delayed_outcomes(self) -> None:
+        conn = self._memory_conn()
+        try:
+            study_memory.log_answer(
+                conn,
+                session_id="repair-episode",
+                topic="evd management",
+                concept="evd troubleshooting order",
+                question="EVD stops draining. What do you check first?",
+                answer="Flush toward the patient.",
+                correct=0,
+                error_type="reasoning_gap",
+                misconception="Flush toward the patient before checking the external system.",
+                corrected_rule="Check leveling, clamps, tubing, and patient position before invasive manipulation.",
+                missing_edge="external troubleshooting before invasive manipulation",
+                answer_mode="unaided",
+                confidence_observed="high",
+                teaching_move="initial_probe",
+                strict_telemetry=True,
+            )
+            claim_state_id = int(conn.execute("SELECT id FROM claim_state").fetchone()["id"])
+            study_memory.log_answer(
+                conn,
+                session_id="repair-episode",
+                topic="evd management",
+                concept="evd troubleshooting order",
+                question="Changed bedside sequence?",
+                answer="Check leveling, clamps, tubing, and patient position first.",
+                correct=2,
+                corrected_rule="Check external causes before invasive manipulation.",
+                answer_mode="after_teaching",
+                confidence_observed="medium",
+                teaching_move="order_set",
+                strict_telemetry=True,
+                match_claim_state_id=claim_state_id,
+            )
+            study_memory.log_answer(
+                conn,
+                session_id="repair-retention",
+                topic="evd management",
+                concept="evd troubleshooting order",
+                question="Delayed transfer: a transported patient has stopped draining. First checks?",
+                answer="Re-level, inspect clamps and tubing, then assess position before invasive manipulation.",
+                correct=2,
+                corrected_rule="Check external causes before invasive manipulation.",
+                teaching_intent="retention_check",
+                answer_mode="unaided",
+                confidence_observed="high",
+                teaching_move="changed_frame_retest",
+                strict_telemetry=True,
+                match_claim_state_id=claim_state_id,
+            )
+            episode = conn.execute("SELECT * FROM repair_episodes").fetchone()
+            self.assertEqual(episode["status"], "retained")
+            self.assertEqual(episode["teaching_move"], "order_set")
+            self.assertIsNotNone(episode["repaired_result_id"])
+            self.assertIsNotNone(episode["retention_result_id"])
+            payload = json.loads(study_memory.retrieval_summary(conn, include_model=True))
+            self.assertEqual(payload["tutor_efficacy_profile"][0]["evidence_level"], "insufficient")
+            self.assertEqual(payload["telemetry_profile"]["field_completeness"]["answer_mode"]["rate"], 1.0)
+        finally:
+            conn.close()
+
+    def test_reference_graph_is_reviewed_dry_run_and_predicate_aware(self) -> None:
+        conn = self._memory_conn()
+        try:
+            seed_path = Path(__file__).resolve().parents[1] / "data" / "reference_graph_seed.json"
+            seed = json.loads(seed_path.read_text())
+            dry_run = load_reference_graph_payload(conn, seed)
+            self.assertNotIn("applied", dry_run)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM reference_nodes").fetchone()[0], 0)
+            applied = load_reference_graph_payload(conn, seed, apply=True)
+            self.assertTrue(applied["applied"])
+            due_claims = [{
+                "claim_state_id": 42,
+                "topic": "spine-emergencies-acute-spinal-cord-injury-and-critical-care",
+                "concept": "cervical spinal cord injury respiratory mechanics and elective intubation thresholds",
+                "claim": "Use FVC and NIF respiratory thresholds for elective intubation in cervical SCI.",
+            }]
+            routine_acdf = context_graph_focus_for_summary(
+                conn,
+                context="ACDF",
+                due_claims=due_claims,
+            )
+            self.assertFalse(any(item["node_key"] == "sci-elective-intubation-thresholds" for item in routine_acdf))
+            trauma = context_graph_focus_for_summary(
+                conn,
+                context="cervical fracture stabilization SCI",
+                due_claims=due_claims,
+            )
+            self.assertFalse(any(item["node_key"] == "acdf" for item in trauma))
+            threshold = next(item for item in trauma if item["node_key"] == "sci-elective-intubation-thresholds")
+            self.assertLessEqual(threshold["hops"], 2)
+            self.assertEqual(threshold["due_claims"][0]["claim_state_id"], 42)
+        finally:
+            conn.close()
+
     def test_regression_after_durable_is_explicit(self) -> None:
         conn = self._memory_conn()
         try:
@@ -670,6 +1094,22 @@ class StudyMemoryTests(unittest.TestCase):
             commands = payload["retrieval_guidance"]["suggested_commands"]
             self.assertTrue(commands)
             self.assertTrue(all("--include-curated" in command for command in commands))
+
+            model_payload = json.loads(
+                study_memory.retrieval_summary(
+                    conn,
+                    topic="hypertension management",
+                    limit=8,
+                    scaffold_limit=2,
+                    include_curated=True,
+                    include_model=True,
+                    context="stroke blood pressure",
+                )
+            )
+            model_commands = model_payload["retrieval_guidance"]["suggested_commands"]
+            self.assertTrue(model_commands)
+            self.assertTrue(all("--include-model" in command for command in model_commands))
+            self.assertTrue(all("--context" in command for command in model_commands))
         finally:
             conn.close()
 
@@ -1583,6 +2023,113 @@ class CurationLayerTests(unittest.TestCase):
             directions = {g["direction"] for g in signals if g["relation_type"] == "prerequisite"}
             self.assertIn("prerequisite_of_current", directions)
             self.assertIn("depends_on_current", directions)
+        finally:
+            conn.close()
+
+    def test_shadow_rule_requires_evidence_and_surfaces_bounded_probe(self) -> None:
+        from memory_operations import CurationError, apply_curation_payload
+
+        conn = self._conn()
+        try:
+            cr_a = self._seed_session(conn, "shadow-a", fixture_idx=0)
+            cr_b = self._seed_session(conn, "shadow-b", fixture_idx=1)
+            concept_id = int(conn.execute("SELECT concept_id FROM claim_results WHERE id = ?", (cr_a,)).fetchone()["concept_id"])
+            base_rule = {
+                "false_rule": "Any hypertensive neuro emergency should be normalized immediately.",
+                "corrected_rule": "Match blood pressure action to pathology and perfusion physiology.",
+                "clinical_consequence": "Reflex lowering can worsen cerebral or spinal cord perfusion.",
+                "probe_shape": "Present bradycardic hypertension across two pathologies and require the management split.",
+                "severity": "urgent",
+                "bindings": [{"concept_id": concept_id, "binding_type": "trigger"}],
+            }
+            with self.assertRaisesRegex(CurationError, "evidence floor"):
+                apply_curation_payload(
+                    conn,
+                    {
+                        "built_at_version": 0,
+                        "shadow_rules": [{**base_rule, "evidence_claim_result_ids": [cr_a]}],
+                    },
+                )
+            result = apply_curation_payload(
+                conn,
+                {
+                    "built_at_version": 0,
+                    "shadow_rules": [{**base_rule, "evidence_claim_result_ids": [cr_a, cr_b]}],
+                },
+            )
+            self.assertEqual(len(result["shadow_rules_upserted"]), 1)
+            payload = json.loads(
+                study_memory.retrieval_summary(
+                    conn,
+                    topic="hypertension management",
+                    limit=8,
+                    include_curated=True,
+                )
+            )
+            signals = payload["shadow_rule_signals"]
+            self.assertEqual(len(signals), 1)
+            self.assertEqual(signals[0]["severity"], "urgent")
+            self.assertIn("changed-frame", signals[0]["next_action"])
+        finally:
+            conn.close()
+
+    def test_shadow_rule_extinction_requires_changed_frame_and_two_transfer_contexts(self) -> None:
+        from memory_operations import apply_curation_payload
+
+        conn = self._conn()
+        try:
+            miss_a = self._seed_session(conn, "shadow-extinct-miss-a", fixture_idx=0)
+            miss_b = self._seed_session(conn, "shadow-extinct-miss-b", fixture_idx=1)
+            concept_id = int(conn.execute("SELECT concept_id FROM claim_results WHERE id = ?", (miss_a,)).fetchone()["concept_id"])
+            rule_id = apply_curation_payload(
+                conn,
+                {
+                    "built_at_version": 0,
+                    "shadow_rules": [{
+                        "false_rule": "All severe hypertension requires immediate lowering.",
+                        "corrected_rule": "First classify whether hypertension is compensatory or injurious.",
+                        "clinical_consequence": "Incorrect lowering can reduce perfusion.",
+                        "probe_shape": "Contrast Cushing physiology, autonomic dysreflexia, and ICH.",
+                        "severity": "urgent",
+                        "evidence_claim_result_ids": [miss_a, miss_b],
+                        "bindings": [{"concept_id": concept_id, "binding_type": "trigger"}],
+                    }],
+                },
+            )["shadow_rules_upserted"][0]
+            pass_ids = [
+                self._seed_session(conn, f"shadow-pass-{idx}", fixture_idx=idx, score=2)
+                for idx in range(3)
+            ]
+            first = study_memory.record_shadow_rule_check(
+                conn,
+                shadow_rule_id=rule_id,
+                claim_result_id=pass_ids[0],
+                context_label="tumor herniation",
+                check_type="changed_frame",
+                outcome="pass",
+                apply=True,
+            )
+            self.assertEqual(first["status"], "repaired")
+            second = study_memory.record_shadow_rule_check(
+                conn,
+                shadow_rule_id=rule_id,
+                claim_result_id=pass_ids[1],
+                context_label="autonomic dysreflexia",
+                check_type="transfer",
+                outcome="pass",
+                apply=True,
+            )
+            self.assertEqual(second["status"], "repaired")
+            third = study_memory.record_shadow_rule_check(
+                conn,
+                shadow_rule_id=rule_id,
+                claim_result_id=pass_ids[2],
+                context_label="intracerebral hemorrhage",
+                check_type="transfer",
+                outcome="pass",
+                apply=True,
+            )
+            self.assertEqual(third["status"], "extinguished")
         finally:
             conn.close()
 

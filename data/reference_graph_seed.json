@@ -1,0 +1,88 @@
+{
+  "nodes": [
+    {
+      "node_key": "acdf",
+      "label": "Anterior cervical discectomy and fusion",
+      "node_type": "procedure",
+      "aliases": ["ACDF"],
+      "provenance": "reviewed repo seed",
+      "reviewed_at": "2026-06-01"
+    },
+    {
+      "node_key": "subaxial-cervical-anatomy",
+      "label": "Subaxial cervical anatomy",
+      "node_type": "anatomy",
+      "aliases": ["cervical levels", "anterior cervical anatomy"],
+      "provenance": "reviewed repo seed",
+      "reviewed_at": "2026-06-01"
+    },
+    {
+      "node_key": "cervical-fracture-stabilization",
+      "label": "Cervical fracture stabilization",
+      "node_type": "context",
+      "aliases": ["cervical instability", "cervical trauma stabilization"],
+      "provenance": "reviewed repo seed",
+      "reviewed_at": "2026-06-01"
+    },
+    {
+      "node_key": "cervical-sci-respiratory-mechanics",
+      "label": "Cervical spinal cord injury respiratory mechanics",
+      "node_type": "physiology",
+      "aliases": ["cervical SCI respiratory failure", "accessory muscle fatigue"],
+      "provenance": "reviewed repo seed",
+      "reviewed_at": "2026-06-01"
+    },
+    {
+      "node_key": "sci-elective-intubation-thresholds",
+      "label": "Spinal cord injury elective intubation thresholds",
+      "node_type": "threshold",
+      "aliases": ["FVC threshold", "NIF threshold", "respiratory intubation threshold"],
+      "provenance": "reviewed repo seed",
+      "reviewed_at": "2026-06-01"
+    },
+    {
+      "node_key": "neurogenic-shock",
+      "label": "Neurogenic shock physiology",
+      "node_type": "physiology",
+      "aliases": ["autonomic outflow disruption", "spinal cord injury shock"],
+      "provenance": "reviewed repo seed",
+      "reviewed_at": "2026-06-01"
+    }
+  ],
+  "edges": [
+    {
+      "source": "acdf",
+      "target": "subaxial-cervical-anatomy",
+      "relation_type": "anatomy_of",
+      "weight": 0.95,
+      "provenance": "reviewed repo seed",
+      "reviewed_at": "2026-06-01"
+    },
+    {
+      "source": "cervical-fracture-stabilization",
+      "target": "cervical-sci-respiratory-mechanics",
+      "relation_type": "relevant_context",
+      "weight": 0.9,
+      "required_context_any": ["injury", "trauma", "fracture", "cord", "sci"],
+      "provenance": "reviewed repo seed",
+      "reviewed_at": "2026-06-01"
+    },
+    {
+      "source": "cervical-sci-respiratory-mechanics",
+      "target": "sci-elective-intubation-thresholds",
+      "relation_type": "management_depends_on",
+      "weight": 0.95,
+      "provenance": "reviewed repo seed",
+      "reviewed_at": "2026-06-01"
+    },
+    {
+      "source": "cervical-fracture-stabilization",
+      "target": "neurogenic-shock",
+      "relation_type": "relevant_context",
+      "weight": 0.8,
+      "required_context_any": ["injury", "trauma", "fracture", "cord", "sci"],
+      "provenance": "reviewed repo seed",
+      "reviewed_at": "2026-06-01"
+    }
+  ]
+}

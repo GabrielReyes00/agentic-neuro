@@ -369,6 +369,36 @@ def check(
                 "warnings": warnings,
             })
 
+    # Programmatic check for missed/partial exchanges in SQLite missing from the queue
+    db_path = Path("data/study_memory.db")
+    if db_path.exists() and session:
+        import sqlite3
+        try:
+            conn = sqlite3.connect(str(db_path))
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """SELECT DISTINCT e.id, c.display_name AS concept
+                   FROM exchanges e
+                   JOIN claim_results cr ON e.id = cr.exchange_id
+                   JOIN concepts c ON e.concept_id = c.id
+                   WHERE e.session_id = ? AND cr.score < 2""",
+                [session],
+            ).fetchall()
+
+            enqueued_exchanges = {int(e["exchange_id"]) for e in to_check if e.get("exchange_id") is not None}
+
+            for r in rows:
+                ex_id = int(r["id"])
+                if ex_id not in enqueued_exchanges:
+                    quality_warnings.append({
+                        "claim_id": f"missed_exchange_{ex_id}",
+                        "card": f"Exchange {ex_id} (concept: '{r['concept']}') was logged with score < 2 but has NO enqueued card.",
+                        "warnings": ["uncarded_missed_exchange"],
+                    })
+            conn.close()
+        except Exception:
+            pass
+
     result = {
         "queue_size": len(to_check),
         "duplicate_candidates": duplicate_candidates,

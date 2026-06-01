@@ -18,6 +18,7 @@ INDEX_FILENAME = "INDEX.md"
 REQUIRED_HEADINGS = (
     "De-identified Teaching Trigger",
     "Extraction Map",
+    "Priority Takeaways",
     "Reported Teaching",
     "Verified Bridge",
     "Operational Consequence",
@@ -50,10 +51,8 @@ HIGH_STAKES_SOURCE_RE = re.compile(
     r"operative|surgical approach|approach selection|ACDF|lordosis|deformity|threshold)\b",
     re.I,
 )
-EXTRACTION_MAP_HEADER_RE = re.compile(
-    r"\|\s*Raw fragment\s*\|\s*Interpreted question\s*\|\s*Verification target\s*\|\s*Final teaching point\s*\|",
-    re.I,
-)
+EXTRACTION_MAP_MAX_NODE_WORDS = 8
+PRIORITY_TAKEAWAY_MAX_WORDS = 16
 PHI_PATTERNS = (
     ("medical record number", re.compile(r"\b(?:mrn|medical record number)\s*[:#-]?\s*\d{4,}\b", re.I)),
     ("named patient", re.compile(r"\b(?:patient name|pt name)\s*:\s*\S+", re.I)),
@@ -126,21 +125,47 @@ def validate_text(text: str, *, path: Path) -> ValidationResult:
     if not any(label in text for label in PROVENANCE_LABELS):
         errors.append("artifact must identify at least one approved provenance tier")
 
+    priority_match = re.search(
+        r"^## Priority Takeaways\s*$([\s\S]*?)(?=^## |\n---\n|\Z)", text, flags=re.M
+    )
+    if priority_match:
+        bullets = re.findall(r"^\s*[-*]\s+\S.*$", priority_match.group(1), flags=re.M)
+        if not bullets:
+            errors.append("Priority Takeaways must include 1 to 3 bullet takeaways")
+        if len(bullets) > 3:
+            errors.append("Priority Takeaways must include no more than 3 bullets")
+        for bullet in bullets:
+            words = re.findall(r"\b[\w/+.-]+\b", bullet)
+            if len(words) > PRIORITY_TAKEAWAY_MAX_WORDS:
+                errors.append(
+                    "Priority Takeaways bullets must be succinct "
+                    f"({len(words)} words, max {PRIORITY_TAKEAWAY_MAX_WORDS}): {bullet[:80]}"
+                )
+
     extraction_match = re.search(
         r"^## Extraction Map\s*$([\s\S]*?)(?=^## |\n---\n|\Z)", text, flags=re.M
     )
     if extraction_match:
         extraction_body = extraction_match.group(1)
-        if not EXTRACTION_MAP_HEADER_RE.search(extraction_body):
-            errors.append("Extraction Map must include Raw fragment, Interpreted question, Verification target, and Final teaching point columns")
-        data_rows = [
-            line for line in extraction_body.splitlines()
-            if line.strip().startswith("|")
-            and not re.match(r"^\|\s*-+\s*\|\s*-+\s*\|\s*-+\s*\|\s*-+\s*\|", line.strip())
-            and not EXTRACTION_MAP_HEADER_RE.search(line)
+        if "|" in extraction_body:
+            errors.append("Extraction Map must use terse '-->' flow lines, not a markdown table")
+        flow_lines = [
+            line.strip().lstrip("-").strip()
+            for line in extraction_body.splitlines()
+            if "-->" in line
         ]
-        if not data_rows:
-            errors.append("Extraction Map must include at least one mapped teaching fragment")
+        if not flow_lines:
+            errors.append("Extraction Map must include at least one '-->' flow line")
+        for line in flow_lines:
+            if line.count("-->") < 2:
+                errors.append(f"extraction flow must have at least 3 nodes: {line[:80]}")
+            for node in [part.strip(" `") for part in line.split("-->")]:
+                word_count = len(re.findall(r"\b[\w/+.-]+\b", node))
+                if word_count > EXTRACTION_MAP_MAX_NODE_WORDS:
+                    errors.append(
+                        "extraction flow node too long "
+                        f"({word_count} words, max {EXTRACTION_MAP_MAX_NODE_WORDS}): {node[:80]}"
+                    )
 
     sources_match = re.search(
         r"^## Sources\s*$([\s\S]*?)(?=^## |\n---\n|\Z)", text, flags=re.M

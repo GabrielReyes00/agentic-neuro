@@ -65,7 +65,13 @@ python3 src/anki_queue.py enqueue \
 
 Run this after `end-session --json`.
 
-1. Review queued cards:
+1. **Pre-Validation Extraction Audit**:
+   Before reviewing or checking the queue, the agent must perform a systematic, turn-by-turn audit of every single Q&A exchange from the session (reviewing the agent's question/teaching and the learner's response together as a pair):
+   - For each turn, verify: *"Did we draft cards that encapsulate all critical nominal and quantitative facts in this exchange (e.g., anatomical structures, surgical procedures, drug names, dosage numbers, threshold windows, and named classifications)?"*
+   - If an important clinical threshold, anatomical structure, or key diagnostic/management discriminator was discussed but has NO enqueued card, the agent MUST immediately run `anki_queue.py enqueue` to draft the missing card for that specific exchange.
+   - Once every turn has been audited and verified to have been "Anki extracted", continue to the steps below.
+
+2. Review queued cards:
 
    ```bash
    python3 src/anki_queue.py review --session "$SESSION_TS"
@@ -73,15 +79,16 @@ Run this after `end-session --json`.
 
    Verify atomicity, numbers/thresholds/dosages, and match to discussed material. Rewrite or remove true problems before flushing.
 
-2. Run duplicate and quality check:
+3. Run duplicate and quality check:
 
    ```bash
    python3 src/anki_queue.py check --session "$SESSION_TS"
    ```
 
-   If `duplicate_candidates` is non-empty, compare by tested memory trace, not wording. Remove true duplicates with `python3 src/anki_queue.py remove --claim-id "<id>"`. Keep false positives when the queued card tests something the existing card does not.
+   - **Duplicate Candidates**: If `duplicate_candidates` is non-empty, compare by tested memory trace, not wording. Remove true duplicates with `python3 src/anki_queue.py remove --claim-id "<id>"`. Keep false positives when the queued card tests something the existing card does not.
+   - **Uncarded Misses Guardrail**: If `quality_warnings` contains `uncarded_missed_exchange`, this means a concept logged in SQLite as a miss (`score < 2`) lacks an enqueued card. **The agent is structurally blocked from completing the session** and MUST run the corresponding `enqueue` command for the missing exchange before proceeding.
 
-3. Flush to Anki:
+4. Flush to Anki:
 
    ```bash
    python3 src/anki_queue.py flush --session "$SESSION_TS"
@@ -89,4 +96,4 @@ Run this after `end-session --json`.
 
    `flush` re-runs duplicate gates and refuses to proceed if unresolved duplicate candidates remain. Use `--allow-duplicate-candidates` only after reviewing every candidate from `check` and judging remaining candidates false positives.
 
-4. If AnkiConnect is unavailable, note it; the queue persists and can flush next session.
+5. If AnkiConnect is unavailable, note it; the queue persists and can flush next session.

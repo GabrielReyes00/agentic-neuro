@@ -1,6 +1,6 @@
 # Memory Retrieval Intelligence
 
-Single-purpose contract for interpreting `study_memory.py summary --include-curated` output.
+Single-purpose contract for interpreting `study_memory.py summary --include-curated --include-model` output.
 
 The database stores facts. The agent supplies judgment. Memory is evidence for teaching design, not a rigid routing table and not learner-facing narration.
 
@@ -9,13 +9,13 @@ The database stores facts. The agent supplies judgment. Memory is evidence for t
 Use a staged agent-facing read path:
 
 ```bash
-python3 src/study_memory.py summary --topic "<topic>" --limit 8 --scaffold-limit 2 --include-curated
+python3 src/study_memory.py summary --topic "<topic>" --limit 8 --scaffold-limit 2 --include-curated --include-model
 ```
 
 For memory-driven global review only:
 
 ```bash
-python3 src/study_memory.py summary --limit 12 --scaffold-limit 0 --include-curated
+python3 src/study_memory.py summary --limit 12 --scaffold-limit 0 --include-curated --include-model
 ```
 
 Always read `counts`, `omitted`, and `retrieval_guidance` before teaching. If `retrieval_guidance.omitted_high_signal` is non-empty, run one of the suggested expansion commands before designing the session.
@@ -30,7 +30,9 @@ Read the JSON in this order:
 
 1. **`cards`**: per-claim-state retrieval cards: `must_retest`, `recent_repair`, `scaffold`, `session_handoff`. This is the triage surface: the exact claim open now.
 2. **`curated_summaries`**: agent-authored cross-session synthesis. This is the strategic surface: recurring patterns across sessions.
-3. **`graph_signals`**: asserted adjacent concepts related to the current `must_retest` set. This is the transfer/discrimination surface.
+3. **Learner graph surfaces**: `graph_signals` and `shadow_rule_signals`. These are evidence-backed discrimination and false-rule repair inputs.
+4. **Model surfaces**: `due_claims`, `calibration_profile`, `operation_profile`, `teaching_move_profile`, `telemetry_profile`, `tutor_efficacy_profile`, `coverage_frontier`, and `shadow_queue`.
+5. **Context surfaces**: optional `context_focus` and `context_graph_focus` when `--context` is present. These weight session planning; they do not override urgent gaps.
 
 ## Cards
 
@@ -56,9 +58,28 @@ Each summary should name a pattern, not a recap.
 - Strength >= 0.6 is the visibility floor. Strength 0.8-0.9 names dominant fault lines worth designing around.
 - Selection policy: signals fire only from the top 3 `must_retest` concepts by priority.
 
+## Shadow Rule Signals
+
+- `shadow_rule_signals` represent coherent false decision rules that can leak across contexts. Inject one bounded discriminator probe without telegraphing the rule.
+- `active` or `regressed` rules deserve changed-frame testing. `repaired` rules still need transfer evidence.
+- Do not declare a rule extinguished from conversation alone. Extinction is enforced through `record-shadow-check` per `memory-curation.md`.
+
 ## Quick-Answer Entries
 
 Quick-answer entries normally do not appear as `cards` because they do not create `claim_state` or `retrieval_cards`. If encountered in curation packets or raw `claim_results`, interpret `skill = quick-answer` as "Gabriel asked about this concept and received an explanation." It is useful for topic adjacency and future context, but it is not evidence that the learner knew, missed, repaired, or mastered the concept.
+
+## Model Surfaces
+
+- `due_claims`: conceptual claims whose retrievability has decayed, deduplicated against the active triage cards — a claim already shown as a `must_retest` or `recent_repair` card is omitted here, so this surface is the pure-decay remainder (including decayed scaffolds). Use changed-frame retention checks; do not repeat the original wording. Each entry carries `claim_state_id`, matching the `claim_state_id` now on every card for cross-reference.
+- `calibration_profile`: prioritize high-confidence misses because they are safety-relevant and high-yield to correct. Low-confidence correct answers may need confidence-building transfer, not re-teaching.
+- `operation_profile`: recurring weakness by domain and cognitive operation. Use it to choose question shape: sequencing drills for sequencing weakness, contrastive probes for discrimination weakness, order sets for quantification/management gaps.
+- `teaching_move_profile`: early n=1 feedback on which teaching moves are landing. Treat as suggestive until repeated.
+- `telemetry_profile`: metadata completeness and controlled-value violations. Historical gaps remain visible but are not clean efficacy evidence.
+- `tutor_efficacy_profile`: repair-episode outcomes. Treat `evidence_level = insufficient` as instrumentation only; use directional preferences only after the returned gate is satisfied.
+- `coverage_frontier`: read-only ACGME coverage map, populated only in memory-driven/global review — it is emitted empty during a topic-anchored drill, where the global map is irrelevant. Coverage is tiered by token overlap against tested learner topics: `tested_catalog_topics` counts catalog topics with strong overlap, `frontier_candidates` are adjacent untested topics (a single shared term), and `blind_spots` are high-yield topics with no overlap. Untested means unknown, not weak.
+- `shadow_queue`: low-weight implied interest from quick answers and generated artifacts. Probe later, but never treat it as mastery or a miss until tested.
+- `context_focus`: only appears when the command includes `--context "<case/rotation/upcoming focus>"`; use it to weight, not override, due and safety-critical gaps.
+- `context_graph_focus`: reviewed reference-graph paths, capped at two hops and filtered by context predicates. Verify the path makes clinical sense before using it. Learner graph edges and the reference graph are separate layers.
 
 ## Invisibility Rule
 

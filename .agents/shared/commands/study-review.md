@@ -37,17 +37,19 @@ When invoked without a document, compose the session from memory state.
 
 ```bash
 cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
-python3 src/study_memory.py summary --limit 12 --scaffold-limit 0 --include-curated
+python3 src/study_memory.py summary --limit 12 --scaffold-limit 0 --include-curated --include-model
 ```
 
-Read the global picture: active `must_retest` cards, session handoffs, recent repairs, curated cross-session summaries, graph signals, and `retrieval_guidance`.
+Read the global picture: active `must_retest` cards, due claims, session handoffs, recent repairs, curated cross-session summaries, learner graph signals, model surfaces, and `retrieval_guidance`.
+
+If Gabriel names an upcoming case, rotation, service context, or board persona, add `--context "<brief context>"` to summary commands. Use `context_focus` and the reviewed `context_graph_focus` paths during planning when present: they shape thematic order, while urgent safety-critical due claims remain gatekeepers. Verify that a graph path is clinically applicable before using it.
 
 ### Step 1: Per-candidate summary
 
 For each candidate topic the status output surfaces (top weak concepts, recent open errors, stale-but-PGY-relevant areas, anything the learner named):
 
 ```bash
-python3 src/study_memory.py summary --topic "<candidate topic>" --limit 8 --scaffold-limit 2 --include-curated
+python3 src/study_memory.py summary --topic "<candidate topic>" --limit 8 --scaffold-limit 2 --include-curated --include-model
 ```
 
 Read each summary output per `.agents/shared/commands/memory-retrieval.md`. Note session handoff, active retest cards, recent repairs, and scaffold premises per topic.
@@ -58,8 +60,10 @@ Order the queue by clinical/educational priority, drawing from:
 
 - **Open errors**: concepts with `correct=0` in recent sessions that have not been retested. Highest priority — these are unfixed misconceptions.
 - **Weak concepts**: concepts missed multiple times across sessions with low mastery indicators. If a prior teaching approach failed on the same concept, change strategies.
-- **Stale knowledge**: previously-confirmed concepts not touched in many sessions, especially PGY-relevant or safety-critical ones — schedule a delayed retention check.
+- **Stale knowledge**: draw only from `due_claims` in the memory summary; these are previously-confirmed conceptual claims whose retrievability has decayed. Schedule changed-frame retention checks, especially for PGY-relevant or safety-critical items.
 - **Cross-topic gaps**: concepts surfaced by scouting in one session but never followed up under their own topic.
+- **Frontier/blind spots**: untested ACGME catalog regions that are adjacent to mastered material or high-yield for PGY-1 readiness.
+- **Shadow interests**: quick answers or generated artifacts that signal possible curiosity or uncertainty; probe lightly before assigning learner state.
 - **Learner-requested focus**: if the user names a domain, scenario, persona, or filter ("vascular weak spots", "ICU management", "intern-style firefight on neurotrauma"), filter and shape the queue accordingly.
 
 ### Step 3: Present and confirm
@@ -94,7 +98,7 @@ If the document contains `## Mastery Objectives`, extract them only after readin
 
 ```bash
 cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
-python3 src/study_memory.py summary --topic "<doc topic>" --limit 8 --scaffold-limit 2 --include-curated
+python3 src/study_memory.py summary --topic "<doc topic>" --limit 8 --scaffold-limit 2 --include-curated --include-model
 ```
 
 Follow the pre-session verification protocol from `memory-operations.md` before proceeding. `SESSION_TS` is set per `memory-operations.md` at the first learner-facing question.
@@ -122,6 +126,8 @@ python3 src/study_memory.py log-answer \
   --session "$SESSION_TS" --topic "<related topic>" --concept "<concept>" \
   --question "..." --answer "..." --correct <0|1|2> \
   --skill "study-review" \
+  --strict-telemetry --answer-mode "<mode>" \
+  --confidence-observed "<observation>" --teaching-move "<move>" \
   [--priority "urgent|high|medium|low"] \
   [--match-claim-state-id <id>] [--new-claim] \
   [--repairs-claim-state-ids "id,id,..."]
@@ -205,6 +211,10 @@ python3 src/study_memory.py log-answer \
   --correct <0|1|2> \
   --doc "<folder>/<slug>.md" \
   --skill "study-review" \
+  --strict-telemetry \
+  --answer-mode "<unaided|prompted|after_hint|after_teaching|self_corrected>" \
+  --confidence-observed "<low|medium|high|hesitant|fluent>" \
+  --teaching-move "<initial_probe|contrastive_drill|mechanism_first|order_set|premortem|visual_probe|changed_frame_retest|other>" \
   [--correction "<corrected fact>"] \
   [--error-type "<type>"] \
   [--misconception "<specific wrong belief>"] \

@@ -27,6 +27,8 @@ EXISTING_SUMMARIES_CAP = 12
 RELATIONSHIP_HINT_CAP = 20
 ALLOWED_SUMMARY_TYPES = frozenset({"thematic", "proficiency_map"})
 ALLOWED_RELATION_TYPES = frozenset({"confused_with", "prerequisite"})
+ALLOWED_SHADOW_SEVERITIES = frozenset({"low", "medium", "high", "urgent"})
+ALLOWED_SHADOW_BINDING_TYPES = frozenset({"trigger", "contrast", "context"})
 ACTIVE_STATUS = "active"
 SUPERSEDED_STATUS = "superseded"
 
@@ -303,6 +305,37 @@ def _existing_summaries(
     return out, omitted
 
 
+def _existing_shadow_rules(conn: sqlite3.Connection, *, topic_id: int | None) -> list[dict[str, Any]]:
+    where = "WHERE sr.status IN ('active', 'repaired', 'regressed')"
+    params: list[Any] = []
+    if topic_id is not None:
+        where += " AND EXISTS (SELECT 1 FROM shadow_rule_bindings srb JOIN concepts c ON c.id = srb.concept_id WHERE srb.shadow_rule_id = sr.id AND c.topic_id = ?)"
+        params.append(topic_id)
+    rows = conn.execute(
+        f"""SELECT sr.id, sr.false_rule, sr.corrected_rule, sr.clinical_consequence,
+                   sr.probe_shape, sr.severity, sr.status, sr.updated_at
+              FROM shadow_rules sr
+              {where}
+             ORDER BY CASE sr.severity WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,
+                      sr.updated_at DESC
+             LIMIT 12""",
+        params,
+    ).fetchall()
+    return [
+        {
+            "shadow_rule_id": int(row["id"]),
+            "false_rule": _truncate(row["false_rule"], COMPACT_CLAIM_TEXT_LIMIT),
+            "corrected_rule": _truncate(row["corrected_rule"], COMPACT_CLAIM_TEXT_LIMIT),
+            "clinical_consequence": _truncate(row["clinical_consequence"], COMPACT_CLAIM_TEXT_LIMIT),
+            "probe_shape": _truncate(row["probe_shape"], COMPACT_CLAIM_TEXT_LIMIT),
+            "severity": row["severity"],
+            "status": row["status"],
+            "updated_at": row["updated_at"],
+        }
+        for row in rows
+    ]
+
+
 def _retrieval_cards_compact(
     conn: sqlite3.Connection,
     *,
@@ -427,13 +460,15 @@ def build_curation_candidates(
         "retrieval_cards": cards,
         "existing_summaries": summaries,
         "existing_summaries_omitted": summaries_omitted,
+        "existing_shadow_rules": _existing_shadow_rules(conn, topic_id=topic_id),
         "candidate_relationship_hints": hints,
         "instructions": {
             "agent_task": (
                 "Return an apply-curation payload. Every summary must cite >=2 claim_result evidence ids. "
                 "Every relationship must cite evidence. Use client_id strings to link relationships to "
-                "summaries authored in the same payload. Prefer supersede_summary_ids over duplicates. "
-                "Cap each pass at ~5 summaries and ~5 relationships."
+                "summaries authored in the same payload. Shadow rules must cite >=2 claim_result ids, bind "
+                "to explicit concepts, and describe a changed-frame probe. Prefer supersede_summary_ids over "
+                "duplicates. Cap each pass at ~5 summaries, ~5 relationships, and ~3 shadow rules."
             ),
             "relationship_types": {
                 "confused_with": (
@@ -459,6 +494,11 @@ def build_curation_candidates(
                     "or confused_with/prerequisite graph edges from it."
                 )
             },
+            "shadow_rule_doctrine": (
+                "Author a shadow rule only for a coherent false decision rule that can leak across contexts. "
+                "Do not duplicate a single claim miss. Extinction is not a curation judgment: it requires "
+                "recorded changed-frame and multi-context transfer passes."
+            ),
             "doctrine_ref": ".agents/shared/commands/memory-curation.md#doctrine",
         },
     }
@@ -549,6 +589,42 @@ def _validate_relationship(rel: dict[str, Any], idx: int) -> None:
         _validate_int(eid, f"relationships[{idx}].evidence_claim_result_ids[{j}]")
 
 
+def _validate_shadow_rule(rule: dict[str, Any], idx: int) -> None:
+    _require(isinstance(rule, dict), f"shadow_rules[{idx}] must be an object")
+    for field in ("false_rule", "corrected_rule", "clinical_consequence", "probe_shape"):
+        _require(
+            isinstance(rule.get(field), str) and rule[field].strip(),
+            f"shadow_rules[{idx}].{field} must be a non-empty string",
+        )
+    severity = rule.get("severity", "medium")
+    _require(
+        severity in ALLOWED_SHADOW_SEVERITIES,
+        f"shadow_rules[{idx}].severity must be one of {sorted(ALLOWED_SHADOW_SEVERITIES)}",
+    )
+    evidence = rule.get("evidence_claim_result_ids") or []
+    _require(
+        isinstance(evidence, list) and len(evidence) >= 2,
+        f"shadow_rules[{idx}].evidence_claim_result_ids must list >=2 claim_result_ids (doctrine: evidence floor)",
+    )
+    for j, eid in enumerate(evidence):
+        _validate_int(eid, f"shadow_rules[{idx}].evidence_claim_result_ids[{j}]")
+    bindings = rule.get("bindings") or []
+    _require(isinstance(bindings, list) and bindings, f"shadow_rules[{idx}].bindings must not be empty")
+    for j, binding in enumerate(bindings):
+        _require(isinstance(binding, dict), f"shadow_rules[{idx}].bindings[{j}] must be an object")
+        _validate_int(binding.get("concept_id"), f"shadow_rules[{idx}].bindings[{j}].concept_id")
+        binding_type = binding.get("binding_type", "trigger")
+        _require(
+            binding_type in ALLOWED_SHADOW_BINDING_TYPES,
+            f"shadow_rules[{idx}].bindings[{j}].binding_type must be one of {sorted(ALLOWED_SHADOW_BINDING_TYPES)}",
+        )
+    evidence_summary_client = rule.get("evidence_summary_client_id") or ""
+    _require(
+        isinstance(evidence_summary_client, str),
+        f"shadow_rules[{idx}].evidence_summary_client_id must be a string when present",
+    )
+
+
 def apply_curation_payload(
     conn: sqlite3.Connection,
     payload: dict[str, Any],
@@ -563,13 +639,15 @@ def apply_curation_payload(
     _require(isinstance(payload, dict), "payload must be a JSON object")
     summaries = payload.get("summaries") or []
     relationships = payload.get("relationships") or []
+    shadow_rules = payload.get("shadow_rules") or []
     supersede_ids = payload.get("supersede_summary_ids") or []
     _require(isinstance(summaries, list), "summaries must be a list")
     _require(isinstance(relationships, list), "relationships must be a list")
+    _require(isinstance(shadow_rules, list), "shadow_rules must be a list")
     _require(isinstance(supersede_ids, list), "supersede_summary_ids must be a list")
     _require(
-        bool(summaries) or bool(relationships) or bool(supersede_ids),
-        "payload must contain at least one of: summaries, relationships, supersede_summary_ids",
+        bool(summaries) or bool(relationships) or bool(shadow_rules) or bool(supersede_ids),
+        "payload must contain at least one of: summaries, relationships, shadow_rules, supersede_summary_ids",
     )
 
     built_at_version = payload.get("built_at_version")
@@ -582,6 +660,8 @@ def apply_curation_payload(
         _validate_summary(s, i)
     for i, r in enumerate(relationships):
         _validate_relationship(r, i)
+    for i, rule in enumerate(shadow_rules):
+        _validate_shadow_rule(rule, i)
     for i, sid in enumerate(supersede_ids):
         _validate_int(sid, f"supersede_summary_ids[{i}]")
 
@@ -612,6 +692,9 @@ def apply_curation_payload(
         for r in relationships:
             for eid in r.get("evidence_claim_result_ids", []) or []:
                 evidence_ids.add(int(eid))
+        for rule in shadow_rules:
+            for eid in rule.get("evidence_claim_result_ids", []) or []:
+                evidence_ids.add(int(eid))
         if evidence_ids:
             placeholders = ",".join("?" * len(evidence_ids))
             existing = {
@@ -635,6 +718,9 @@ def apply_curation_payload(
         for r in relationships:
             concept_ids.add(int(r["source_concept_id"]))
             concept_ids.add(int(r["target_concept_id"]))
+        for rule in shadow_rules:
+            for binding in rule.get("bindings", []):
+                concept_ids.add(int(binding["concept_id"]))
         if concept_ids:
             placeholders = ",".join("?" * len(concept_ids))
             existing_concepts = {
@@ -756,6 +842,55 @@ def apply_curation_payload(
                     (rel_id, int(eid)),
                 )
 
+        new_shadow_rule_ids: list[int] = []
+        for i, rule in enumerate(shadow_rules):
+            evidence_client = rule.get("evidence_summary_client_id") or ""
+            evidence_summary_id = client_to_summary_id.get(evidence_client) if evidence_client else None
+            _require(
+                not evidence_client or evidence_summary_id is not None,
+                f"shadow_rules[{i}].evidence_summary_client_id={evidence_client!r} does not match any summary in this payload",
+            )
+            conn.execute(
+                """INSERT INTO shadow_rules
+                       (false_rule, corrected_rule, clinical_consequence, probe_shape, severity,
+                        status, evidence_summary_id, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?)
+                   ON CONFLICT(false_rule, corrected_rule) DO UPDATE SET
+                       clinical_consequence = excluded.clinical_consequence,
+                       probe_shape = excluded.probe_shape,
+                       severity = excluded.severity,
+                       status = CASE WHEN shadow_rules.status = 'extinguished' THEN 'regressed' ELSE shadow_rules.status END,
+                       evidence_summary_id = COALESCE(excluded.evidence_summary_id, shadow_rules.evidence_summary_id),
+                       updated_at = excluded.updated_at""",
+                (
+                    rule["false_rule"].strip(),
+                    rule["corrected_rule"].strip(),
+                    rule["clinical_consequence"].strip(),
+                    rule["probe_shape"].strip(),
+                    rule.get("severity", "medium"),
+                    evidence_summary_id,
+                    ts,
+                    ts,
+                ),
+            )
+            rule_row = conn.execute(
+                "SELECT id FROM shadow_rules WHERE false_rule = ? AND corrected_rule = ?",
+                (rule["false_rule"].strip(), rule["corrected_rule"].strip()),
+            ).fetchone()
+            shadow_rule_id = int(rule_row["id"])
+            new_shadow_rule_ids.append(shadow_rule_id)
+            for eid in rule.get("evidence_claim_result_ids", []):
+                conn.execute(
+                    "INSERT OR IGNORE INTO shadow_rule_evidence (shadow_rule_id, claim_result_id) VALUES (?, ?)",
+                    (shadow_rule_id, int(eid)),
+                )
+            for binding in rule.get("bindings", []):
+                conn.execute(
+                    """INSERT OR IGNORE INTO shadow_rule_bindings
+                       (shadow_rule_id, concept_id, binding_type) VALUES (?, ?, ?)""",
+                    (shadow_rule_id, int(binding["concept_id"]), binding.get("binding_type", "trigger")),
+                )
+
         conn.execute(
             """UPDATE curation_state
                   SET sessions_since_last_curation = 0,
@@ -776,6 +911,7 @@ def apply_curation_payload(
         "new_version": new_version,
         "summaries_created": new_summary_ids,
         "relationships_upserted": new_relationship_ids,
+        "shadow_rules_upserted": new_shadow_rule_ids,
         "superseded": superseded_applied,
         "applied_at": ts,
     }
@@ -945,3 +1081,60 @@ def graph_signals_for_summary(
                 "evidence_summary_id": int(r["evidence_summary_id"]) if r["evidence_summary_id"] is not None else None,
             })
     return signals
+
+
+def shadow_rule_signals_for_summary(
+    conn: sqlite3.Connection,
+    *,
+    relevant_concept_ids: Iterable[int] = (),
+    limit: int = 4,
+) -> list[dict[str, Any]]:
+    """Surface bounded active false-rule probes linked to today's concepts."""
+    concept_ids = sorted({int(value) for value in relevant_concept_ids})
+    params: list[Any] = []
+    where = "WHERE sr.status IN ('active', 'repaired', 'regressed')"
+    if concept_ids:
+        placeholders = ",".join("?" * len(concept_ids))
+        where += f" AND srb.concept_id IN ({placeholders})"
+        params.extend(concept_ids)
+    rows = conn.execute(
+        f"""SELECT DISTINCT sr.id, sr.false_rule, sr.corrected_rule, sr.clinical_consequence,
+                   sr.probe_shape, sr.severity, sr.status, sr.updated_at
+              FROM shadow_rules sr
+              JOIN shadow_rule_bindings srb ON srb.shadow_rule_id = sr.id
+              {where}
+             ORDER BY CASE sr.severity WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,
+                      CASE sr.status WHEN 'regressed' THEN 0 WHEN 'active' THEN 1 ELSE 2 END,
+                      sr.updated_at DESC
+             LIMIT ?""",
+        [*params, max(0, limit)],
+    ).fetchall()
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        bindings = conn.execute(
+            """SELECT srb.concept_id, srb.binding_type, c.display_name AS concept
+                 FROM shadow_rule_bindings srb
+                 JOIN concepts c ON c.id = srb.concept_id
+                WHERE srb.shadow_rule_id = ?
+                ORDER BY srb.binding_type, c.display_name""",
+            (int(row["id"]),),
+        ).fetchall()
+        out.append({
+            "shadow_rule_id": int(row["id"]),
+            "false_rule": row["false_rule"],
+            "corrected_rule": row["corrected_rule"],
+            "clinical_consequence": row["clinical_consequence"],
+            "probe_shape": row["probe_shape"],
+            "severity": row["severity"],
+            "status": row["status"],
+            "bindings": [
+                {
+                    "concept_id": int(binding["concept_id"]),
+                    "concept": binding["concept"],
+                    "binding_type": binding["binding_type"],
+                }
+                for binding in bindings
+            ],
+            "next_action": "Inject one changed-frame discriminator probe. Do not telegraph the false rule.",
+        })
+    return out

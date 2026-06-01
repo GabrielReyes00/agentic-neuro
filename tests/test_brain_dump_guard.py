@@ -14,9 +14,11 @@ A postoperative patient with an external ventricular drain required transport pl
 
 ## Extraction Map
 
-| Raw fragment | Interpreted question | Verification target | Final teaching point |
-|---|---|---|---|
-| EVD transport teaching | What transport detail changes action? | Local protocol plus source-grounded mechanism | Confirm drain state and leveling before movement |
+- EVD transport teaching --> transport action? --> local protocol + mechanism --> confirm drain state
+
+## Priority Takeaways
+
+- Confirm drain state before transport; do not trust unverified local memory.
 
 ## Reported Teaching
 
@@ -128,17 +130,59 @@ class BrainDumpGuardTests(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertIn("Sources must label evidence type for each support item", result.errors)
 
-    def test_rejects_missing_extraction_map_table(self) -> None:
+    def test_rejects_extraction_map_table(self) -> None:
         note = _valid_note().replace(
+            "- EVD transport teaching --> transport action? --> local protocol + mechanism --> confirm drain state\n",
             "| Raw fragment | Interpreted question | Verification target | Final teaching point |\n"
             "|---|---|---|---|\n"
             "| EVD transport teaching | What transport detail changes action? | Local protocol plus source-grounded mechanism | Confirm drain state and leveling before movement |\n",
-            "- No table.\n",
         )
         result = guard.validate_text(note, path=Path("draft.md"))
         self.assertFalse(result.ok)
         self.assertIn(
-            "Extraction Map must include Raw fragment, Interpreted question, Verification target, and Final teaching point columns",
+            "Extraction Map must use terse '-->' flow lines, not a markdown table",
+            result.errors,
+        )
+
+    def test_rejects_missing_extraction_map_flow(self) -> None:
+        note = _valid_note().replace(
+            "- EVD transport teaching --> transport action? --> local protocol + mechanism --> confirm drain state\n",
+            "- No flow.\n",
+        )
+        result = guard.validate_text(note, path=Path("draft.md"))
+        self.assertFalse(result.ok)
+        self.assertIn("Extraction Map must include at least one '-->' flow line", result.errors)
+
+    def test_rejects_verbose_extraction_map_node(self) -> None:
+        note = _valid_note().replace(
+            "local protocol + mechanism",
+            "local protocol and the detailed source grounded mechanism that explains pressure gradients",
+        )
+        result = guard.validate_text(note, path=Path("draft.md"))
+        self.assertFalse(result.ok)
+        self.assertTrue(
+            any(error.startswith("extraction flow node too long") for error in result.errors),
+            result.errors,
+        )
+
+    def test_rejects_missing_priority_takeaways_bullets(self) -> None:
+        note = _valid_note().replace(
+            "- Confirm drain state before transport; do not trust unverified local memory.\n",
+            "No bullet.\n",
+        )
+        result = guard.validate_text(note, path=Path("draft.md"))
+        self.assertFalse(result.ok)
+        self.assertIn("Priority Takeaways must include 1 to 3 bullet takeaways", result.errors)
+
+    def test_rejects_verbose_priority_takeaways(self) -> None:
+        note = _valid_note().replace(
+            "Confirm drain state before transport; do not trust unverified local memory.",
+            "Confirm drain state before transport and then carefully think through every possible source of pressure gradient error before moving any patient anywhere",
+        )
+        result = guard.validate_text(note, path=Path("draft.md"))
+        self.assertFalse(result.ok)
+        self.assertTrue(
+            any(error.startswith("Priority Takeaways bullets must be succinct") for error in result.errors),
             result.errors,
         )
 

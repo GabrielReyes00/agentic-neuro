@@ -25,7 +25,7 @@ Context-pulling is mode-conditional. The wrong command at the wrong time causes 
 **Topic-anchored sessions**: user named a topic, document, or clinical question, including `/consult`, `/brain-dump`, `/study-material`, doc-anchored `/study-review`, and procedure-specific workflows.
 
 ```bash
-python3 src/study_memory.py summary --topic "<topic>" --limit 8 --scaffold-limit 2 --include-curated
+python3 src/study_memory.py summary --topic "<topic>" --limit 8 --scaffold-limit 2 --include-curated --include-model
 ```
 
 This command is topic-scoped. Do not run global retrieval in this mode. Unrelated open errors must not influence a chosen-topic session.
@@ -33,10 +33,10 @@ This command is topic-scoped. Do not run global retrieval in this mode. Unrelate
 **Memory-driven custom review only**: user asked what to study, to drill weak spots, to build a custom session, to go after open errors, or a similar memory-first request with no named topic.
 
 ```bash
-python3 src/study_memory.py summary --limit 12 --scaffold-limit 0 --include-curated
+python3 src/study_memory.py summary --limit 12 --scaffold-limit 0 --include-curated --include-model
 ```
 
-Global `summary` surfaces high-signal active retest cards and recent session handoff state while suppressing scaffolds by default. Use `--include-global-scaffolds` only if no stronger due gaps dominate and broad target selection needs scaffold context.
+Global `summary` surfaces high-signal active retest cards, due conceptual checks, learner-model profiles, and recent session handoff state while suppressing scaffolds by default. Use `--include-global-scaffolds` only if no stronger due gaps dominate and broad target selection needs scaffold context.
 
 In all modes, read output silently. Do not paste it into chat, summarize it as a menu, or telegraph prior misses. The data shapes questioning; it does not shape narration.
 
@@ -79,6 +79,8 @@ python3 src/study_memory.py log-answer \
   [--curriculum-unit "<compact unit label when useful>"] \
   [--answer-mode "<unaided|prompted|after_hint|after_teaching|self_corrected>"] \
   [--confidence-observed "<low|medium|high|hesitant|fluent>"] \
+  [--teaching-move "<initial_probe|contrastive_drill|mechanism_first|order_set|premortem|visual_probe|changed_frame_retest|other>"] \
+  [--strict-telemetry] \
   [--priority "<urgent|high|medium|low>"] \
   [--match-claim-state-id <id>] [--new-claim] \
   [--repairs-claim-state-ids "<id,id,...>"]
@@ -88,6 +90,7 @@ Correctness: `2` = correct without hints | `1` = right direction, missing detail
 
 Agent judgment fields are required when applicable:
 
+- For assessed learning exchanges, always pass `--strict-telemetry`, `--answer-mode`, `--confidence-observed`, and `--teaching-move`. Strict mode also requires `--tested-claim` (or `--corrected-rule`/`--correction`) so the stored claim is a real testable statement rather than auto-generated boilerplate. It rejects incomplete or uncontrolled telemetry before writing. Do not use strict mode for quick-answer or artifact-anchor bookkeeping.
 - Use `--priority` when clinical or educational stakes are clearer than fallback heuristics. Default to `urgent` for safety-critical intern errors, `high` for active management-changing gaps, `medium` for partial/lower-stakes gaps, and `low` only for durable scaffolds or low-stakes context.
 - Use `--match-claim-state-id` for intentional retests of existing `must_retest` or `recent_repair` cards.
 - Use `--new-claim` when wording overlaps an existing claim but the cognitive target is genuinely different.
@@ -110,7 +113,7 @@ Always pass `--json`. Read the returned `curation.recommended` flag silently, th
 After `end-session`, verify:
 
 1. **Exchange count**: run `python3 src/study_memory.py status` or inspect session rows if needed. If the count is low, re-run missing `log-answer` calls before proceeding.
-2. **Summary cross-check**: run `python3 src/study_memory.py summary --topic "<topic>" --limit 8 --scaffold-limit 2 --include-curated` and verify the `session_handoff` reflects the summary and next strategy.
+2. **Summary cross-check**: run `python3 src/study_memory.py summary --topic "<topic>" --limit 8 --scaffold-limit 2 --include-curated --include-model` and verify the `session_handoff` reflects the summary and next strategy.
 3. **Next-strategy quality**: it must name specific concepts, error types, and teaching moves. If generic, rewrite and re-run `end-session`.
 
 ## Entry Formatting
@@ -126,6 +129,8 @@ Bad: `ICP`, `EVD Management in the ICU for External Ventricular Drain Patients`
 Good: `cpp target 60-70 mmhg`, `lundberg a vs b wave distinction`
 
 Bad: `CPP`, `waves`
+
+Never log a tracked concept for a session-synthesis, self-assessment, or "consolidate what you learned" prompt. A closing metacognitive question is a teaching move, not an assessed clinical claim — its substance belongs in the `end-session` summary, never as a `log-answer` concept. Tracked concepts must name a clinical fact a future agent can retest.
 
 **ERROR_TYPE**: one of `conceptual_confusion`, `numerical_recall`, `cross_contamination`, `application_failure`, `reasoning_gap`, `omission`.
 
