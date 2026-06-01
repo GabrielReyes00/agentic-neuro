@@ -58,7 +58,7 @@ Violations of this rule are the #1 source of transcript noise in Gemini sessions
 
 ## §2 Gemini CLI Rules
 
-The Gemini CLI requires strict sequential tool invocation: one call, wait, then next. Shell `&&` chaining inside a single call is fine. No parallel tool calls.
+Batch independent tool calls in a single turn for speed; serialize only when one call depends on another's output. Exception: run local RAG retrieval (`lance_retriever.py compare`) serially — the local embedding stack contends and stalls if multiple retrieval calls run at once. Shell `&&` chaining inside a single call is fine.
 
 Use explicit branch targets in command workflows: `If X -> skip to Step N` / `If not X -> continue`. Avoid prose-only branching when the workflow needs deterministic control flow.
 
