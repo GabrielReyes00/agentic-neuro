@@ -1,18 +1,13 @@
 description = "Generate study material from PDF/PPTX and run interactive drill with KG logging"
 
 prompt = """
-ACTIVE COMMAND: /study-material — Two-phase: generate + drill.
+ACTIVE COMMAND: /study-material — two-phase: generate study material, then run an interactive drill.
 
-MANDATORY hooks: recall at start, INDEX guard, document-profile Study Mode Gate, log-answer after EVERY response, concept extraction, end-session at completion.
-Invisible bookkeeping: do not print shell commands or raw outputs for these hooks.
+You MUST read and follow `.agents/shared/commands/study-material.md` end-to-end; it owns the generation gates, document-profile drill modes, memory hooks, and validation. Invisible bookkeeping: do not print shell commands or raw outputs for these hooks.
 
-MODEL GATE: /study-material generation requires gemini-3.1-pro by default. If this command is running on a Flash-class model, stop before generating and ask Gabriel to rerun on Pro unless he explicitly accepts a lower-quality draft.
-
-GENERATION QUALITY GATE: final Study Material must be installed/validated through src/study_material_guard.py. Never claim success or start drilling until the real vault file under /Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Study Material passes validation. Never use the repo-local Documents/Obsidian shadow path as the vault.
-
-ATOMIC EXTRACTION GATE: do not make questions directly from slide titles. First enumerate substantive chunks, build ## Source Chunk Inventory, extract AF-### atomic facts into ## Atomic Fact Ledger, then build questions mapped to TU-XX and AF-###. One slide -> one topic -> one question is a failed generation, even on Pro.
-
-When reviewing an existing vault Study Material file, do not default to deep-dive tutoring. First use the document-profile memory: Rapid Review / Jeopardy for review decks and slide-summary question files; Deep Understanding for reports and synthesis. Store the user's choice for that document.
+Gemini guardrails (do not let these slip):
+- ATOMIC EXTRACTION: never make questions from slide titles. Enumerate substantive chunks, then AF-### atomic facts, then map questions to TU-XX/AF-### — one slide -> one topic -> one question is a failed generation.
+- Validate the real vault file through src/study_material_guard.py before claiming success or drilling; never use the repo-local Documents/Obsidian shadow path as the vault.
 
 User's request: {{args}}
 

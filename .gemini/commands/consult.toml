@@ -3,18 +3,12 @@ description = "Focused expert consult on a clinical topic — brief lecture, ver
 prompt = """
 ACTIVE COMMAND: /consult — Focused expert consult on a clinical topic.
 
-You MUST read and follow `.agents/shared/commands/consult.md` end-to-end. Do not improvise. The shared command defines role, teaching principles, quality floors, and finish protocol.
+You MUST read and follow `.agents/shared/commands/consult.md` end-to-end. Do not improvise; it owns the role, teaching principles, quality floors, RAG, Anki, and pocket-card finish protocol. Use `.agents/shared/commands/anki-card-quality.md` for card drafting.
 
-Hard requirements:
-- This is a LECTURE-FIRST skill. Deliver the information, THEN ask verification questions. Do NOT withhold information behind Socratic questions.
+Gemini guardrails (do not let these slip):
+- LECTURE-FIRST: deliver the information, THEN ask verification questions. Do NOT withhold information behind Socratic questions.
 - No calibration questions ("what do you know about X?"). Start teaching immediately.
-- ALWAYS run textbook RAG via `lance_retriever.py compare --stdout` before the lecture. Use retrieved passages to ground the lecture in authoritative sources.
-- Memory recall informs teaching approach, NEVER content omission. Deliver full applicable knowledge regardless of prior exposure.
-- Pocket card in Consults/ must be >= 40 lines, dense, actionable.
-- At least 2 verification questions logged via log-answer.
-- At least 3 Anki cards from lecture content (thresholds, drugs, doses, imaging, exams).
-- Additional Anki cards for verification question misses.
-- Success criterion: the resident can manage or co-manage the problem after this consult.
+- Memory recall informs teaching approach, NEVER content omission — deliver full applicable knowledge regardless of prior exposure.
 
 User's input: {{args}}
 

@@ -64,8 +64,7 @@ Use explicit branch targets in command workflows: `If X -> skip to Step N` / `If
 
 Commands longer than 2 minutes should surface timeout and use the documented fallback. First-call retrieval latency around 30-45 seconds is expected.
 
-Default model: `gemini-3-flash-preview`.
-Use `gemini-3.1-pro` for `/study-review`, `/generate-report`, `/intraoperative-guide`, `/study-material`, `/consult`, and `/brain-dump`. `/study-material` generation is a Pro-only workflow by default: if currently running on a Flash-class model, stop before generation and ask Gabriel to rerun on `gemini-3.1-pro` unless he explicitly accepts a lower-quality draft. `/grand-rounds` may run on Gemini 3 Flash for routine deck-building; escalate to Pro only when dense article critique, difficult statistics, or complex case synthesis warrants it.
+Default model: the current Gemini Flash model (whatever Flash version is active). Run every skill on the active model — never stop a session or force a model switch for being on Flash. Research- and synthesis-heavy skills (`/generate-report`, `/intraoperative-guide`, `/study-material`, `/grand-rounds`) benefit from a stronger model when one is available, so escalate only if Gabriel asks; never block or downgrade the workflow otherwise.
 
 After editing `.toml` descriptors: `/commands reload`.
 

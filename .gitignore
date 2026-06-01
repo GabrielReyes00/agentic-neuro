@@ -12,8 +12,6 @@ data/chromadb_store_anki_memory/
 data/study_memory_backup_*.db
 data/*.memory_cleanup_backup_*.db
 data/*.pre_stability_backup*
-knowledge_graph.db*
-data/knowledge_graph.db*
 
 # === Ephemeral Session Files (regenerated per session) ===
 data/Sessions/

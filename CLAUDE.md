@@ -198,6 +198,7 @@ Follow `.agents/shared/commands/study-review.md` for the full workflow and `.age
 |------|----------|
 | Study memory (claim-centered learner model) | `data/study_memory.db` |
 | Textbook chunks + embeddings | `neurosurgery_v4.lance` (46,714 rows, 22 books) |
+| Citation source allowlist (regenerate via `python3 src/gen_citation_allowlist.py` when the RAG corpus changes) | `data/rag_textbook_sources.json` |
 | Anki advisory overlap cache rebuilt from live Anki | `data/chromadb_store_anki_memory` |
 | Anki card queue (per-session) | `data/Sessions/anki_queue.jsonl` |
 | Reports, guides, study docs, concepts, consults, brain dumps | Obsidian vault |

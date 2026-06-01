@@ -3,49 +3,11 @@ description = "Encyclopedic neurosurgical reference report — textbook-chapter 
 prompt = """
 ACTIVE COMMAND: /generate-report — Produce an encyclopedic, citation-dense reference report on a neurosurgical topic.
 
-You MUST read and follow `.agents/shared/commands/generate-report.md` end-to-end. Do not improvise. The shared command is principle-driven, not phase-driven — exercise judgment on scope, source weighting, and structure within the contract.
+You MUST read and follow `.agents/shared/commands/generate-report.md` end-to-end. Do not improvise. It is principle-driven, not phase-driven — exercise judgment on scope, source weighting, and structure within the contract, which owns the provenance tiers, quality floors, coverage ledger, YAML metadata rules, and finish protocol.
 
-================================================================================
-⚠ MANDATORY CRITICAL PROVENANCE TIERING & CITATION VALIDATION LOOP
-================================================================================
-To prevent citation laundering, fabricated references, or unverified claims, you MUST strictly adhere to the following E2E verification loop:
-
-1. THE THREE PROVENANCE TIERS:
-   - TIER 1: Source-Grounded — Direct RAG retrieval from loaded textbooks or verified PubMed articles. Cite inline at point of claim.
-   - TIER 2: Model Knowledge - Verified — Claims initially supplied from your training data, then actively searched and confirmed in RAG/PubMed. Cite the confirming source.
-   - TIER 3: Model Knowledge - Needs Verification — Non-RAG, clinically valuable model knowledge. You must:
-     a) Label it inline explicitly as "model knowledge — verify".
-     b) NEVER pair it with a fake/fabricated PMID, DOI, or book page.
-     c) Flag high-stakes specifics (drug doses, targets, limits, outcomes) with a warning "⚠" icon.
-     d) For the Key Numbers table, use "model est. — verify" in the Source cell.
-
-2. RUN A SYSTEMATIC SELF-AUDIT BEFORE WRITING:
-   - Scan every single quantitative claim, drug dose, physiological target, and clinical target.
-   - Check if you have a real, semantic-matching citation. If not, label it Tier 3.
-   - Perform a RAG lookup for any Tier 3 item containing high-stakes details to try to upgrade it to Tier 2.
-
-3. MANDATORY BOTTOM YAML METADATA METRICS:
-   - You MUST include 'internal_knowledge_used: true|false' (set to 'true' if any Tier 3 content remains in the report).
-   - You MUST include 'provenance: "<summary>"' (a 1-2 sentence description explaining the exact mix of textbook RAG, PubMed, and model knowledge).
-   Example bottom YAML block:
-   ---
-   tags:
-     - skill/report
-     - domain/...
-     - type/reference
-     - source/agent
-   provenance: "Synthesized from 106 clinical source cards extracted from Youmans & Winn, Greenberg, and recent GRADE clinical guidelines."
-   internal_knowledge_used: false
-   ---
-
-Failure to follow this logic loop violates the Quality Contract.
-================================================================================
-
-Hard requirements before you write the file:
-- Match or exceed the structural and citation density of the reference exemplar at `Reports/Sphenoid Wing Meningiomas.md` in the vault.
-- Meet every Quality Floor in the shared command (Key Numbers Table ≥10 rows, Differentiator ≥5 entities, Failure Modes ≥6 specific pitfalls, ≥8 unique citations, ≥3 inline wikilinks, ≥200 lines body).
-- Self-audit the draft against the Quality Contract before writing. If any floor fails, run more research and rewrite — do not write a deficient file.
-- Anchor the report in memory via the two-step `log-answer` + `end-session` sequence in the shared command.
+Gemini guardrails (do not let these slip):
+- Provenance tiering is mandatory and enforced. Never fabricate or launder a citation. Label non-RAG model knowledge inline as "model knowledge — verify" and flag high-stakes specifics (doses, targets, limits, outcomes) with ⚠ — never pair them with a fabricated PMID/DOI/page.
+- Self-audit every quantitative/dose/target claim against the shared Quality Floors before writing. If any floor fails, research more and rewrite — do not write a deficient file.
 
 User's topic: {{args}}
 

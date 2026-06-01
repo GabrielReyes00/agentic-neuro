@@ -29,7 +29,7 @@ This command is not complete when the model has merely drafted prose. It is comp
 
 Hard rules:
 
-- Use the stronger available model for generation. Do not use Flash-class models for `/study-material` generation unless Gabriel explicitly accepts a lower-quality draft.
+- Prefer the strongest available model for generation; lighter/Flash-class models are acceptable when that is what is running. Do not stop or downgrade the workflow over model choice.
 - The final file must live at `/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Study Material/<Topic Title>.md`.
 - Never treat `Documents/Obsidian/...` inside the repo as the vault. That is a workspace shadow path and is a failure.
 - If a write tool cannot write outside the workspace, draft to `data/Sessions/study_material_<slug>.md`, then install it with `src/study_material_guard.py`.
