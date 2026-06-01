@@ -58,13 +58,11 @@ Violations of this rule are the #1 source of transcript noise in Gemini sessions
 
 ## §2 Gemini CLI Rules
 
-Gemini 2.x requires strict sequential tool invocation: one call, wait, then next. Shell `&&` chaining inside a single call is fine. No parallel tool calls.
+The Gemini CLI requires strict sequential tool invocation: one call, wait, then next. Shell `&&` chaining inside a single call is fine. No parallel tool calls.
 
 Use explicit branch targets in command workflows: `If X -> skip to Step N` / `If not X -> continue`. Avoid prose-only branching when the workflow needs deterministic control flow.
 
 Commands longer than 2 minutes should surface timeout and use the documented fallback. First-call retrieval latency around 30-45 seconds is expected.
-
-Default model: the current Gemini Flash model (whatever Flash version is active). Run every skill on the active model — never stop a session or force a model switch for being on Flash. Research- and synthesis-heavy skills (`/generate-report`, `/intraoperative-guide`, `/study-material`, `/grand-rounds`) benefit from a stronger model when one is available, so escalate only if Gabriel asks; never block or downgrade the workflow otherwise.
 
 After editing `.toml` descriptors: `/commands reload`.
 

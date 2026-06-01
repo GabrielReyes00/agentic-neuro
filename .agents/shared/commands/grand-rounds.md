@@ -25,9 +25,9 @@ Do not use this command for ordinary clinical questions, oral-board drilling, or
 8. Protect privacy: scrub names, MRNs, DOBs, exact dates, room numbers, contact information, and unnecessary identifiers from case decks and vault notes. Use relative timing such as hospital day, POD, or age decade when possible.
 9. The attending angle is first-class. Every deck needs a thesis shaped around the reason the attending picked the case or article.
 
-## Model Compatibility
+## Agent Compatibility
 
-This command must work for Claude/Sonnet and Gemini/Flash:
+This command must work across all agent CLIs (Claude, Gemini, Codex):
 - Keep durable workflow logic in this shared command file.
 - Use `src/grand_rounds_writer.py` for vault persistence and index upsert.
 - For deck creation, use the model's available PowerPoint/PPTX capability:

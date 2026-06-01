@@ -3,7 +3,7 @@ description = "Build a neurosurgery grand rounds, case presentation, or journal 
 prompt = """
 ACTIVE COMMAND: /grand-rounds — neurosurgery presentation deck builder for grand rounds, case conference, case presentation, or journal club.
 
-You MUST read and follow `.agents/shared/commands/grand-rounds.md` end-to-end; it owns the full workflow, writer-script usage, quality gate, manifest, and finish protocol. Must run under the active Gemini Flash model and Claude/Sonnet — use available model-specific PPTX tooling for deck creation.
+You MUST read and follow `.agents/shared/commands/grand-rounds.md` end-to-end; it owns the full workflow, writer-script usage, quality gate, manifest, and finish protocol. Use the available PPTX tooling for deck creation.
 
 Gemini guardrails (do not let these slip):
 - Generate exactly 3 candidate titles and wait for the user's selection before writing any file.
