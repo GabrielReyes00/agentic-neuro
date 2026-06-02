@@ -1,6 +1,6 @@
 # Memory Retrieval Intelligence
 
-Single-purpose contract for interpreting `study_memory.py summary --include-curated --include-model` output.
+Single-purpose contract for interpreting `study_memory.py startup-recall` output. Raw `summary` remains available for deeper audits.
 
 The database stores facts. The agent supplies judgment. Memory is evidence for teaching design, not a rigid routing table and not learner-facing narration.
 
@@ -9,26 +9,42 @@ The database stores facts. The agent supplies judgment. Memory is evidence for t
 Use a staged agent-facing read path:
 
 ```bash
-python3 src/study_memory.py summary --topic "<topic>" --limit 8 --scaffold-limit 2 --include-curated --include-model
+python3 src/study_memory.py startup-recall --topic "<topic>" [--doc "<folder>/<file>.md"]
 ```
 
 For memory-driven global review only:
 
 ```bash
-python3 src/study_memory.py summary --limit 12 --scaffold-limit 0 --include-curated --include-model
+python3 src/study_memory.py startup-recall --global
 ```
 
-Always read `counts`, `omitted`, and `retrieval_guidance` before teaching. If `retrieval_guidance.omitted_high_signal` is non-empty, run one of the suggested expansion commands before designing the session.
+Always read `startup_recall`, `planning_brief`, `counts`, `omitted`, and `retrieval_guidance` before teaching. `planning_brief` is the ordered first-read tutor context. Topic-scoped `startup-recall` resolves identity and expands omitted high-signal cards automatically. Global startup stays compact and returns `ready_to_teach = false`: use `startup_recall.deferred_high_signal` as a prompt for candidate selection, then run topic-scoped startup recall for each chosen topic. If a topic-scoped result still omits high-signal cards, stop and troubleshoot before designing the session.
+
+If `planning_brief.resolution_warning` is present, do not begin teaching from an empty or guessed topic envelope. Validate one of `resolution_candidates` as the intended existing learner-state anchor, rerun topic-scoped recall with that anchor, and clarify with the learner only when the correct curriculum scope remains ambiguous.
 
 If scaffold cards were omitted, expand `--scaffold-limit` only when you need a coverage map or transfer-question premises. Scaffolds are confirmed knowledge, not primary drill targets. For memory-driven global review, use `--include-global-scaffolds` only when no stronger due gaps dominate.
 
-Inspect raw exchange or claim rows only when compact cards are ambiguous or when auditing the learner model.
+Inspect the full non-brief summary, raw exchange rows, or claim rows only when the compact brief is ambiguous, when truncation requires expansion, or when auditing the learner model.
+
+## Planning Brief
+
+Read `planning_brief` in order:
+
+1. **`handoff`**: the latest learner-session directive. Artifact-generation anchors do not compete with this surface.
+2. **`open_first`**: unresolved claims that deserve the first questions.
+3. **`recent_repairs`** and **`known_scaffolds_due`**: changed-frame retention checks and stale premises.
+4. **`domain_patterns`** and **`misconception_rules`**: curated cross-session fault lines and evidence-backed false rules.
+5. **`contextual_frontier`**: bounded neighboring foundations from learner graph edges, reviewed reference-graph paths, report-local scaffolds, and cautious cross-topic overlap.
+6. **`question_design_bias`**: confidence calibration, weak cognitive operations, and teaching-move evidence.
+7. **`low_confidence_leads`**: curiosity and artifact hints only.
+
+Before teaching, execute `agent_validation_checkpoint` silently. Accept only 1-3 frontier candidates that are clinically central, within the requested curriculum boundary, and likely to explain an active gap or deepen transfer. Reject tangents. Frontier candidates shape questions; they never override urgent open claims.
 
 ## Retrieval Surfaces
 
 Read the JSON in this order:
 
-1. **`cards`**: per-claim-state retrieval cards: `must_retest`, `recent_repair`, `scaffold`, `session_handoff`. This is the triage surface: the exact claim open now.
+1. **`cards`**: per-claim-state retrieval cards: `must_retest`, `recent_repair`, `scaffold`, `session_handoff`. This is the raw triage evidence behind `planning_brief`.
 2. **`curated_summaries`**: agent-authored cross-session synthesis. This is the strategic surface: recurring patterns across sessions.
 3. **Learner graph surfaces**: `graph_signals` and `shadow_rule_signals`. These are evidence-backed discrimination and false-rule repair inputs.
 4. **Model surfaces**: `due_claims`, `calibration_profile`, `operation_profile`, `teaching_move_profile`, `telemetry_profile`, `tutor_efficacy_profile`, `coverage_frontier`, and `shadow_queue`.
@@ -78,6 +94,7 @@ Quick-answer entries normally do not appear as `cards` because they do not creat
 - `tutor_efficacy_profile`: repair-episode outcomes. Treat `evidence_level = insufficient` as instrumentation only; use directional preferences only after the returned gate is satisfied.
 - `coverage_frontier`: read-only ACGME coverage map, populated only in memory-driven/global review — it is emitted empty during a topic-anchored drill, where the global map is irrelevant. Coverage is tiered by token overlap against tested learner topics: `tested_catalog_topics` counts catalog topics with strong overlap, `frontier_candidates` are adjacent untested topics (a single shared term), and `blind_spots` are high-yield topics with no overlap. Untested means unknown, not weak.
 - `shadow_queue`: low-weight implied interest from quick answers and generated artifacts. Probe later, but never treat it as mastery or a miss until tested.
+- `contextual_frontier`: bounded candidate foundations for agent validation. It is intentionally broader than the final session plan. Reject weakly connected candidates rather than treating lexical or graph adjacency as a teaching mandate.
 - `context_focus`: only appears when the command includes `--context "<case/rotation/upcoming focus>"`; use it to weight, not override, due and safety-critical gaps.
 - `context_graph_focus`: reviewed reference-graph paths, capped at two hops and filtered by context predicates. Verify the path makes clinical sense before using it. Learner graph edges and the reference graph are separate layers.
 

@@ -143,7 +143,7 @@ The active memory layer is `data/study_memory.db` via `src/study_memory.py`. The
 - `.agents/shared/commands/adaptive-teaching-doctrine.md` controls teaching behavior.
 - `.agents/shared/commands/anki-session-workflow.md` and `.agents/shared/commands/anki-card-quality.md` control routine Anki generation and flush.
 
-Invariant summary: topic-anchored sessions use only topic-scoped `summary --include-curated --include-model`; memory-driven custom review is the only mode that uses global summary. Skills never write directly to the curated layer; curation is post-flush bookkeeping.
+Invariant summary: skill-driven sessions start with `study_memory.py startup-recall`, using `--topic` plus `--doc` whenever an artifact is known; memory-driven custom review is the only mode that uses `startup-recall --global`. Read `startup_recall` and `planning_brief` before teaching. Raw `summary` is for dashboard or audit reads. Skills never write directly to the curated layer; curation is post-flush bookkeeping.
 
 ## §9 Capability Router
 
@@ -209,8 +209,9 @@ Follow `.agents/shared/commands/study-review.md` for the full workflow and `.age
 
 ```bash
 # study_memory.py — active session memory (see §7d for full usage)
-summary --topic "T" --limit 8 --scaffold-limit 2 --include-curated --include-model  # topic-specific retrieval
-summary --limit 12 --scaffold-limit 0 --include-curated --include-model             # MEMORY-DRIVEN CUSTOM REVIEW ONLY
+startup-recall --topic "T" [--doc "<folder>/X.md"]                      # topic-specific startup retrieval; canonicalizes identity and auto-expands high-signal cards
+startup-recall --global                                                 # MEMORY-DRIVEN CUSTOM REVIEW ONLY
+summary --topic "T" --limit 8 --scaffold-limit 2 --include-curated --include-model  # raw audit/post-session integrity read
 log-answer ... --strict-telemetry ...                                  # assessed learning: follow memory-operations.md; omit strict mode for quick-answer/artifact anchors
 end-session --session "TS" --summary "..." --next-strategy "..." --json   # --json surfaces curation.recommended for the optional post-flush curation pass
 status

@@ -37,10 +37,12 @@ When invoked without a document, compose the session from memory state.
 
 ```bash
 cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
-python3 src/study_memory.py summary --limit 12 --scaffold-limit 0 --include-curated --include-model
+python3 src/study_memory.py startup-recall --global
 ```
 
 Read the global picture: active `must_retest` cards, due claims, session handoffs, recent repairs, curated cross-session summaries, learner graph signals, model surfaces, and `retrieval_guidance`.
+
+Global startup recall is intentionally compact and returns `startup_recall.ready_to_teach = false`. Read `startup_recall.deferred_high_signal`, then use the per-candidate topic summaries below to load complete high-signal context only for the topics selected for this session. Do not bulk-expand the global envelope or begin teaching directly from it.
 
 If Gabriel names an upcoming case, rotation, service context, or board persona, add `--context "<brief context>"` to summary commands. Use `context_focus` and the reviewed `context_graph_focus` paths during planning when present: they shape thematic order, while urgent safety-critical due claims remain gatekeepers. Verify that a graph path is clinically applicable before using it.
 
@@ -49,7 +51,7 @@ If Gabriel names an upcoming case, rotation, service context, or board persona, 
 For each candidate topic the status output surfaces (top weak concepts, recent open errors, stale-but-PGY-relevant areas, anything the learner named):
 
 ```bash
-python3 src/study_memory.py summary --topic "<candidate topic>" --limit 8 --scaffold-limit 2 --include-curated --include-model
+python3 src/study_memory.py startup-recall --topic "<candidate topic>"
 ```
 
 Read each summary output per `.agents/shared/commands/memory-retrieval.md`. Note session handoff, active retest cards, recent repairs, and scaffold premises per topic.
@@ -98,7 +100,7 @@ If the document contains `## Mastery Objectives`, extract them only after readin
 
 ```bash
 cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
-python3 src/study_memory.py summary --topic "<doc topic>" --limit 8 --scaffold-limit 2 --include-curated --include-model
+python3 src/study_memory.py startup-recall --topic "<doc topic>" --doc "<folder>/<file>.md"
 ```
 
 Follow the pre-session verification protocol from `memory-operations.md` before proceeding. `SESSION_TS` is set per `memory-operations.md` at the first learner-facing question.
@@ -107,17 +109,19 @@ Use the memory summary output to build your teaching plan per `memory-retrieval.
 
 **Requested-Document Priority**: The requested document is the primary curriculum. Related-topic context and prior memory should inform your question design and probe strategy, but never displace forward progress through the document's material.
 
-### Step 3: Related-topic scouting (silent)
+### Step 3: Contextual-frontier validation (silent)
 
-After primary summary, identify 3-5 topics that are clinically prerequisite to, mechanistically intertwined with, or commonly confused with the study topic. Use your medical knowledge — these should be topics where a gap would undermine understanding of the primary material. For EVD management, examples: CPP physiology, hydrocephalus, ICP monitoring, CSF dynamics. For TBI management: cerebral autoregulation, herniation syndromes, ICP treatment tiers.
+Read `planning_brief.contextual_frontier`. It is a bounded candidate set, not a teaching mandate. Candidates may come from learner graph edges, reviewed reference-graph paths, confirmed report-local scaffolds, or cautious cross-topic learner-state overlap.
 
-Run `summary --topic "<related topic>"` for each. Read the output and note:
+Validate candidates with your clinical judgment before teaching. Accept only 1-3 candidates that are:
 
-- **Prior knowledge**: concepts the learner has confirmed — these are scaffolding for transfer questions ("You know CPP targets from our ICP work. This EVD patient's CPP is 52 — what do you do?")
-- **Prior errors or gaps**: misconceptions or weak concepts in related areas — these are high-value probe targets because a wrong belief about CPP physiology will produce wrong EVD management decisions
-- **No prior data**: the learner has never been tested on this related topic — if the topic is essential to the primary material, plan to probe it during the session and log the result under the related topic name so future sessions on either topic benefit
+- **Clinically central**: the candidate provides a prerequisite, discriminator, mechanism, or transfer principle that materially affects understanding of the requested content.
+- **Scope-compatible**: the probe advances the requested document rather than diverting into a neighboring curriculum.
+- **Learner-relevant**: existing evidence suggests a missing foundation, unstable repair, recurring false rule, or useful scaffold for a harder transfer question.
 
-Distill your scouting into a brief internal teaching note (not shown to the learner): what related knowledge exists, what related gaps could undermine today's material, and 1-2 related concepts worth weaving into the session. This note shapes your question design — it does not replace the primary document as curriculum.
+Reject tangential adjacency, generic lexical overlap, and interesting-but-noncentral topics. Distill the accepted and rejected candidate ids into a brief internal teaching note (not shown to the learner): what foundations exist, what gaps could undermine today's material, which 1-2 concepts are worth weaving into the session, and why the first question is the highest-yield opening.
+
+If a validated candidate remains ambiguous, inspect the full summary or run topic-scoped expansion for that canonical related topic. Do not run blind phrase-based `summary --topic` scouting commands: concepts inside an umbrella report topic are not guaranteed to exist as independent topic identities.
 
 When you probe a related concept during the session, log it under the related topic's canonical name, not the primary session topic:
 
@@ -133,7 +137,7 @@ python3 src/study_memory.py log-answer \
   [--repairs-claim-state-ids "id,id,..."]
 ```
 
-This builds the cross-topic knowledge graph naturally: a future session on the related topic will find this data, and a future session on the primary topic will find it again through scouting.
+This builds the cross-topic knowledge graph naturally: a future session on the related topic will find this data, and a future session on the primary topic will find it again through contextual-frontier retrieval.
 
 ---
 
@@ -194,7 +198,7 @@ After 5-6 evaluated exchanges, pause and ask the learner: "Want to wrap up here 
 
 ### Scope of Probes
 
-Probes beyond the primary document should stay clinically adjacent and management-relevant to the current topic. Use your judgment about what's connected — the related-topic scouting gives you the map of where knowledge and gaps exist in adjacent areas.
+Probes beyond the primary document should stay clinically adjacent and management-relevant to the current topic. Use your judgment about what's connected — the validated contextual frontier gives you the map of where knowledge and gaps exist in adjacent areas.
 
 ---
 

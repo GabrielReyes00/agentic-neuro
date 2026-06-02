@@ -16,4 +16,4 @@ When this skill triggers:
 3. Do not duplicate or reinterpret the canonical command here.
 4. If the shared command conflicts with general agent posture, the shared command wins for `/study-review`.
 
-Codex-specific note: there is no Gemini/Claude autologging hook in this runtime unless one is explicitly configured. Follow the shared contract directly: run memory summary at session start, log every evaluated answer with the current claim-state judgment flags, enqueue Anki cards per turn when warranted, and close with `end-session --json`.
+Codex-specific note: there is no Gemini/Claude autologging hook in this runtime unless one is explicitly configured. Follow the shared contract directly: run `study_memory.py startup-recall` at session start and read `startup_recall` plus `planning_brief`, log every evaluated answer with the current claim-state judgment flags, enqueue Anki cards per turn when warranted, and close with `end-session --json`.

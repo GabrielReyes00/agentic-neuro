@@ -22,32 +22,33 @@ Every memory command in this contract must be executed, not simulated. Do not re
 
 Context-pulling is mode-conditional. The wrong command at the wrong time causes topic drift.
 
-**Topic-anchored sessions**: user named a topic, document, or clinical question, including `/consult`, `/brain-dump`, `/study-material`, doc-anchored `/study-review`, and procedure-specific workflows.
+**Topic-anchored sessions**: user named a topic, document, or clinical question, including `/consult`, `/brain-dump`, `/study-material`, doc-anchored `/study-review`, and procedure-specific workflows. Pass `--doc` whenever a vault document is known so document-family identity is resolved before recall.
 
 ```bash
-python3 src/study_memory.py summary --topic "<topic>" --limit 8 --scaffold-limit 2 --include-curated --include-model
+python3 src/study_memory.py startup-recall --topic "<topic>" [--doc "<folder>/<file>.md"]
 ```
 
-This command is topic-scoped. Do not run global retrieval in this mode. Unrelated open errors must not influence a chosen-topic session.
+This command is topic-scoped. It resolves canonical topic identity, loads the compact personalized planning brief, and automatically expands omitted high-signal cards before returning. Do not run global retrieval in this mode. Unrelated open errors must not influence a chosen-topic session.
 
 **Memory-driven custom review only**: user asked what to study, to drill weak spots, to build a custom session, to go after open errors, or a similar memory-first request with no named topic.
 
 ```bash
-python3 src/study_memory.py summary --limit 12 --scaffold-limit 0 --include-curated --include-model
+python3 src/study_memory.py startup-recall --global
 ```
 
-Global `summary` surfaces high-signal active retest cards, due conceptual checks, learner-model profiles, and recent session handoff state while suppressing scaffolds by default. Use `--include-global-scaffolds` only if no stronger due gaps dominate and broad target selection needs scaffold context.
+Global startup recall surfaces a compact high-signal candidate set, due conceptual checks, learner-model profiles, and recent session handoff state while suppressing scaffolds by default. It intentionally returns `startup_recall.ready_to_teach = false`: read `startup_recall.deferred_high_signal`, select candidate topics, then run topic-scoped `startup-recall --topic "<candidate>"` for each chosen topic. Use `--include-global-scaffolds` only if no stronger due gaps dominate and broad target selection needs scaffold context.
 
-In all modes, read output silently. Do not paste it into chat, summarize it as a menu, or telegraph prior misses. The data shapes questioning; it does not shape narration.
+In all modes, read output silently. Start from `planning_brief`, then inspect raw surfaces only when the brief is ambiguous, diagnostics require audit, or `retrieval_guidance.omitted_high_signal` requires expansion. Do not paste recall into chat, summarize it as a menu, or telegraph prior misses. The data shapes questioning; it does not shape narration.
 
 ## Pre-Session Verification
 
 After running `summary`, read the full JSON and verify:
 
-1. **Retrieval completeness**: inspect `counts`, `omitted`, and `retrieval_guidance`. If `retrieval_guidance.omitted_high_signal` is non-empty, run a suggested expansion command before teaching.
-2. **Returning session**: if this is a known topic but `cards`, `counts`, and `omitted` are empty, run `python3 src/study_memory.py resolve-topic --topic "<topic>" [--doc "<folder>/<file>.md"]`, fix the topic, and re-run summary.
-3. **Coherence**: card topics, claims, and session handoffs must relate to the requested topic. If output is unrelated, resolve the topic and re-run summary.
-4. **New topic**: if no review file exists and summary is genuinely empty, proceed with calibration.
+1. **Retrieval completeness**: inspect `startup_recall`, `counts`, `omitted`, and `retrieval_guidance`. Topic-scoped `startup-recall` automatically expands omitted high-signal cards; if any remain, stop and troubleshoot before teaching. Global startup intentionally keeps `startup_recall.deferred_high_signal` compact: select candidate topics and run topic-scoped startup recall before teaching.
+2. **Planning-brief validation**: read `planning_brief.agent_validation_checkpoint`. Accept only 1-3 `contextual_frontier` candidates that are clinically central, scope-compatible, and useful for explaining an active gap or deepening transfer. Reject tangents. Record the accepted and rejected candidate ids in a silent internal note.
+3. **Returning session**: if `startup_recall.routing_required = true`, validate a returned `resolution_candidate`, then rerun `startup-recall --topic "<canonical candidate>" [--doc "<folder>/<file>.md"]`. Clarify with the learner only if the intended curriculum remains ambiguous.
+4. **Coherence**: handoff, open claims, repairs, and accepted frontier candidates must relate to the requested topic. If output is unrelated, resolve the topic and re-run summary.
+5. **New topic**: if no review file exists and summary is genuinely empty, proceed with calibration.
 
 Set one `SESSION_TS` at the first learner-facing question and reuse it for the whole session:
 
@@ -113,7 +114,7 @@ Always pass `--json`. Read the returned `curation.recommended` flag silently, th
 After `end-session`, verify:
 
 1. **Exchange count**: run `python3 src/study_memory.py status` or inspect session rows if needed. If the count is low, re-run missing `log-answer` calls before proceeding.
-2. **Summary cross-check**: run `python3 src/study_memory.py summary --topic "<topic>" --limit 8 --scaffold-limit 2 --include-curated --include-model` and verify the `session_handoff` reflects the summary and next strategy.
+2. **Summary cross-check**: run `python3 src/study_memory.py summary --topic "<topic>" --limit 8 --scaffold-limit 2 --include-curated --include-model` and verify the `session_handoff` reflects the summary and next strategy. Raw `summary` is appropriate here because this is an integrity audit, not startup recall.
 3. **Next-strategy quality**: it must name specific concepts, error types, and teaching moves. If generic, rewrite and re-run `end-session`.
 
 ## Entry Formatting
@@ -125,6 +126,8 @@ Good: `evd management in icu`, `icp monitoring in tbi`
 Bad: `ICP`, `EVD Management in the ICU for External Ventricular Drain Patients`
 
 **CONCEPT**: lowercase, specific testable fact or distinction.
+
+Under `--strict-telemetry`, concept labels must stay at `<=16` words and `<=140` characters. Put the full clinical rule in `--tested-claim`, not `--concept`.
 
 Good: `cpp target 60-70 mmhg`, `lundberg a vs b wave distinction`
 

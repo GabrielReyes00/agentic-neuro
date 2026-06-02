@@ -9,6 +9,10 @@ Gemini runtime wrapper for `/study-review`. The canonical contract lives in `.ag
 
 ## Gemini Runtime Constraints
 
+### Session Start
+
+Execute the shared `study_memory.py startup-recall` command exactly as specified. Read `startup_recall` and `planning_brief` before teaching. Do not substitute a raw `summary` call or skip the returned routing checkpoint.
+
 ### Per-Turn Sequence (mandatory, after every evaluated answer)
 
 After the learner answers and you grade/correct, execute this two-step sequence silently before asking the next question:

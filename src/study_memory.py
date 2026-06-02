@@ -85,6 +85,8 @@ VALID_TEACHING_MOVES = frozenset({
     "premortem",
     "visual_probe",
 })
+MAX_CONCEPT_LABEL_CHARS = 140
+MAX_CONCEPT_LABEL_WORDS = 16
 
 STOPWORDS = frozenset(
     "the a an of in for with and or to on by is at as it its from that this "
@@ -448,6 +450,42 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     if "stability" not in columns:
         conn.execute("ALTER TABLE claim_state ADD COLUMN stability REAL NOT NULL DEFAULT 1.0")
     _backfill_memory_schedule(conn)
+    _normalize_session_cards(conn)
+
+
+def _normalize_session_cards(conn: sqlite3.Connection) -> None:
+    """Separate legacy artifact anchors and keep one active card per handoff class."""
+    rows = conn.execute(
+        """SELECT rc.id, rc.card_type, rc.detail_json, s.skill
+             FROM retrieval_cards rc
+             LEFT JOIN sessions s
+               ON s.session_id = json_extract(rc.detail_json, '$.session_id')
+            WHERE rc.claim_state_id IS NULL
+              AND rc.card_type = 'session_handoff'"""
+    ).fetchall()
+    for row in rows:
+        if row["skill"] in ARTIFACT_ANCHOR_SKILLS:
+            conn.execute(
+                "UPDATE retrieval_cards SET card_type = 'artifact_anchor', priority = 'low' WHERE id = ?",
+                (int(row["id"]),),
+            )
+    groups = conn.execute(
+        """SELECT topic_id, card_type
+             FROM retrieval_cards
+            WHERE claim_state_id IS NULL
+              AND card_type IN ('session_handoff', 'artifact_anchor')
+            GROUP BY topic_id, card_type"""
+    ).fetchall()
+    for group in groups:
+        cards = conn.execute(
+            """SELECT id
+                 FROM retrieval_cards
+                WHERE topic_id = ? AND claim_state_id IS NULL AND card_type = ?
+                ORDER BY updated_ts DESC, id DESC""",
+            (int(group["topic_id"]), group["card_type"]),
+        ).fetchall()
+        for stale in cards[1:]:
+            conn.execute("UPDATE retrieval_cards SET status = 'inactive' WHERE id = ?", (int(stale["id"]),))
 
 
 def _backfill_memory_schedule(conn: sqlite3.Connection) -> None:
@@ -506,6 +544,7 @@ def _controlled_value(value: str) -> str:
 
 def _validate_strict_telemetry(
     *,
+    concept: str,
     score: int,
     error_type: str,
     misconception: str,
@@ -525,6 +564,13 @@ def _validate_strict_telemetry(
         raise ValueError(
             "strict telemetry requires tested_claim (or corrected_rule/correction) "
             "so the stored claim is a real testable statement, not boilerplate"
+        )
+    concept_words = concept.strip().split()
+    if len(concept.strip()) > MAX_CONCEPT_LABEL_CHARS or len(concept_words) > MAX_CONCEPT_LABEL_WORDS:
+        raise ValueError(
+            "strict telemetry requires a succinct concept label "
+            f"(<= {MAX_CONCEPT_LABEL_WORDS} words and <= {MAX_CONCEPT_LABEL_CHARS} characters); "
+            "store the full clinical rule in tested_claim"
         )
     controlled = {
         "answer_mode": (_controlled_value(answer_mode), VALID_ANSWER_MODES),
@@ -546,6 +592,35 @@ def _validate_strict_telemetry(
 
 def _doc_alias(doc_path: str) -> str:
     return _normalize(Path(doc_path).stem.replace("_", " ")) if doc_path else ""
+
+
+def _doc_family_alias(doc_path: str) -> str:
+    """Normalize versioned report paths so one artifact family keeps one topic identity."""
+    alias = _doc_alias(doc_path)
+    return re.sub(r"\s+v\d+$", "", alias).strip()
+
+
+def _topic_row_for_doc_family(conn: sqlite3.Connection, doc_path: str) -> sqlite3.Row | None:
+    family = _doc_family_alias(doc_path)
+    if not family:
+        return None
+    rows = conn.execute(
+        """SELECT t.*,
+                  (SELECT COUNT(*) FROM claim_results cr WHERE cr.topic_id = t.id) AS claim_result_count
+             FROM topics t
+            WHERE COALESCE(t.primary_doc_path, '') != ''"""
+    ).fetchall()
+    matches = [row for row in rows if _doc_family_alias(str(row["primary_doc_path"])) == family]
+    if not matches:
+        return None
+    matches.sort(
+        key=lambda row: (
+            -int(row["claim_result_count"] or 0),
+            1 if re.search(r"_v\d+\.md$", str(row["primary_doc_path"]), re.IGNORECASE) else 0,
+            int(row["id"]),
+        )
+    )
+    return matches[0]
 
 
 CURRICULUM_CATALOG_PATH = DATA_DIR / "acgme_curriculum.json"
@@ -572,6 +647,13 @@ CONTEXT_GENERIC_TOKENS = frozenset({
     "acute", "anterior", "care", "classification", "critical", "management",
     "medical", "posterior", "surgical",
 })
+SCOUT_GENERIC_TOKENS = CONTEXT_GENERIC_TOKENS | frozenset({
+    "above", "baseline", "clinical", "decompression", "definitive", "emergencies",
+    "edema", "first", "lesion", "line", "management", "mmhg", "neurologic",
+    "hypotension", "iv", "norepinephrine", "occur", "patient", "perfusion",
+    "phenylephrine", "preserve", "prevent", "pressure", "reflex", "target", "than",
+    "timing", "treat", "vasogenic",
+})
 
 
 def _topic_tokens(text: str) -> set[str]:
@@ -592,6 +674,57 @@ def _topic_overlap(left: str, right: str) -> dict[str, object]:
         "containment": round(containment, 3),
         "f1": round(f1, 3),
     }
+
+
+def _related_topic_matches_for_hint(
+    conn: sqlite3.Connection,
+    topic_hint: str,
+    *,
+    limit: int = 5,
+) -> list[dict[str, object]]:
+    """Return existing learner topics whose tracked concepts overlap an unresolved hint."""
+    hint_tokens = _topic_tokens(topic_hint)
+    if not hint_tokens:
+        return []
+    rows = conn.execute(
+        """SELECT t.canonical_slug AS topic, t.display_name AS topic_name,
+                  c.display_name AS concept, cs.state, cs.priority, cs.claim_text
+             FROM claim_state cs
+             JOIN topics t ON t.id = cs.topic_id
+             JOIN concepts c ON c.id = cs.concept_id"""
+    ).fetchall()
+    by_topic: dict[str, dict[str, object]] = {}
+    for row in rows:
+        text = f"{row['topic']} {row['topic_name']} {row['concept']} {row['claim_text']}"
+        matched = hint_tokens & _topic_tokens(text)
+        if not matched:
+            continue
+        topic = str(row["topic"])
+        item = by_topic.setdefault(topic, {
+            "topic": topic,
+            "topic_name": row["topic_name"],
+            "matched_tokens": set(),
+            "matching_concepts": [],
+        })
+        item["matched_tokens"].update(matched)  # type: ignore[union-attr]
+        concepts = item["matching_concepts"]
+        if len(concepts) < 3:  # type: ignore[arg-type]
+            concepts.append({  # type: ignore[union-attr]
+                "concept": row["concept"],
+                "state": row["state"],
+                "priority": row["priority"],
+            })
+    out = []
+    for item in by_topic.values():
+        matched_tokens = sorted(item["matched_tokens"])  # type: ignore[arg-type]
+        out.append({
+            **item,
+            "matched_tokens": matched_tokens,
+            "overlap": len(matched_tokens),
+            "next_action": "Use agent judgment to choose the best existing topic anchor, then rerun topic-scoped recall.",
+        })
+    out.sort(key=lambda item: (-int(item["overlap"]), str(item["topic"])))
+    return out[: max(0, limit)]
 
 
 # Migration path: study topics that existed under the previous hardcoded resolver
@@ -761,6 +894,11 @@ def _resolve_topic_patterns(hay: str) -> TopicResolution | None:
 def resolve_topic(conn: sqlite3.Connection, topic_hint: str, doc_path: str = "") -> TopicResolution:
     hint = _normalize(topic_hint)
     doc_alias = _doc_alias(doc_path)
+    doc_family_row = _topic_row_for_doc_family(conn, doc_path)
+    doc_family_overlap = _topic_overlap(hint, _doc_family_alias(doc_path)) if hint and doc_path else {"overlap": 0}
+    if doc_family_row and (not hint or int(doc_family_overlap["overlap"]) >= 2):
+        aliases = tuple(r["alias"] for r in conn.execute("SELECT alias FROM topic_aliases WHERE topic_id = ?", (doc_family_row["id"],)))
+        return TopicResolution(doc_family_row["canonical_slug"], doc_family_row["display_name"], doc_family_row["domain"], aliases, 1.0)
     if hint:
         row = conn.execute(
             """SELECT t.* FROM topic_redirects r
@@ -829,21 +967,27 @@ def _ensure_topic(conn: sqlite3.Connection, resolution: TopicResolution, doc_pat
 def identity_audit(conn: sqlite3.Connection) -> dict[str, object]:
     """Return reviewable topic and claim-state identity collision candidates."""
     topics = conn.execute(
-        "SELECT id, canonical_slug, display_name, domain FROM topics ORDER BY canonical_slug"
+        "SELECT id, canonical_slug, display_name, domain, primary_doc_path FROM topics ORDER BY canonical_slug"
     ).fetchall()
     duplicate_topics: list[dict[str, object]] = []
     for idx, left in enumerate(topics):
         for right in topics[idx + 1:]:
             metrics = _topic_overlap(left["display_name"], right["display_name"])
+            shared_doc_family = bool(
+                left["primary_doc_path"]
+                and right["primary_doc_path"]
+                and _doc_family_alias(str(left["primary_doc_path"])) == _doc_family_alias(str(right["primary_doc_path"]))
+            )
             if int(metrics["overlap"]) < 2:
                 continue
-            if float(metrics["containment"]) < 0.75 and float(metrics["f1"]) < 0.72:
+            if not shared_doc_family and float(metrics["containment"]) < 0.75 and float(metrics["f1"]) < 0.72:
                 continue
             duplicate_topics.append({
                 "source_topic": left["canonical_slug"],
                 "target_topic": right["canonical_slug"],
                 "source_domain": left["domain"],
                 "target_domain": right["domain"],
+                "shared_doc_family": shared_doc_family,
                 **metrics,
             })
     duplicate_topics.sort(
@@ -1167,7 +1311,8 @@ def _claim_state_for_score(
 
 def _parse_ts(value: str) -> datetime | None:
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
     except (TypeError, ValueError):
         return None
 
@@ -1213,6 +1358,8 @@ def _retrievability(last_seen_ts: str, stability: float, as_of: datetime | None 
     if last is None:
         return 0.0
     now = as_of or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
     elapsed_days = max(0.0, (now - last).total_seconds() / 86400.0)
     return round(math.exp(-elapsed_days / max(float(stability or 0.1), 0.1)), 3)
 
@@ -1717,6 +1864,7 @@ def log_answer(
 ) -> int:
     if strict_telemetry:
         _validate_strict_telemetry(
+            concept=concept,
             score=correct,
             error_type=error_type,
             misconception=misconception,
@@ -1819,11 +1967,10 @@ def end_session(conn: sqlite3.Connection, *, session_id: str, summary: str, next
     is_low_stakes_reference = session_skill in LOW_STAKES_REFERENCE_SKILLS
     is_artifact_anchor = session_skill in ARTIFACT_ANCHOR_SKILLS
     excluded_from_count = session_skill in CURATION_EXCLUDED_SKILLS
-    # Artifact-anchor skills still get a session_handoff card so /study-review can
-    # discover the file; the card's text (agent-authored) states it is generated
-    # and not yet reviewed. Only quick-answer suppresses the card entirely.
+    # Artifact anchors remain discoverable without competing with learner handoffs.
     if session_row and session_row["primary_topic_id"] and not is_low_stakes_reference:
-        _upsert_session_card(conn, int(session_row["primary_topic_id"]), session_id, summary, next_strategy, now)
+        card_type = "artifact_anchor" if is_artifact_anchor else "session_handoff"
+        _upsert_session_card(conn, int(session_row["primary_topic_id"]), session_id, summary, next_strategy, now, card_type=card_type)
     newly_counted = False if excluded_from_count else mark_session_counted(conn, session_id, now)
     conn.commit()
     status_payload = curation_status(conn)
@@ -1837,30 +1984,49 @@ def end_session(conn: sqlite3.Connection, *, session_id: str, summary: str, next
     }
 
 
-def _upsert_session_card(conn: sqlite3.Connection, topic_id: int, session_id: str, summary: str, next_strategy: str, now: str) -> None:
+def _upsert_session_card(
+    conn: sqlite3.Connection,
+    topic_id: int,
+    session_id: str,
+    summary: str,
+    next_strategy: str,
+    now: str,
+    *,
+    card_type: str = "session_handoff",
+) -> None:
+    if card_type not in {"session_handoff", "artifact_anchor"}:
+        raise ValueError(f"unsupported session card type: {card_type!r}")
     existing = conn.execute(
         """SELECT id FROM retrieval_cards
-           WHERE topic_id = ? AND claim_state_id IS NULL AND card_type = 'session_handoff'
+           WHERE topic_id = ? AND claim_state_id IS NULL AND card_type = ?
            ORDER BY updated_ts DESC LIMIT 1""",
-        (topic_id,),
+        (topic_id, card_type),
     ).fetchone()
     payload = json.dumps({"session_id": session_id}, sort_keys=True)
+    priority = "low" if card_type == "artifact_anchor" else "medium"
     if existing:
         conn.execute(
             """UPDATE retrieval_cards
-               SET status = 'active', priority = 'medium', summary = ?, next_action = ?,
+               SET status = 'active', priority = ?, summary = ?, next_action = ?,
                    evidence_result_id = NULL, updated_ts = ?, detail_json = ?
                WHERE id = ?""",
-            (_compact_text(summary), _compact_text(next_strategy), now, payload, existing["id"]),
+            (priority, _compact_text(summary), _compact_text(next_strategy), now, payload, existing["id"]),
         )
     else:
         conn.execute(
             """INSERT INTO retrieval_cards
                (topic_id, claim_state_id, card_type, status, priority, summary, next_action,
                 evidence_result_id, updated_ts, detail_json)
-               VALUES (?, NULL, 'session_handoff', 'active', 'medium', ?, ?, NULL, ?, ?)""",
-            (topic_id, _compact_text(summary), _compact_text(next_strategy), now, payload),
+               VALUES (?, NULL, ?, 'active', ?, ?, ?, NULL, ?, ?)""",
+            (topic_id, card_type, priority, _compact_text(summary), _compact_text(next_strategy), now, payload),
         )
+    conn.execute(
+        """UPDATE retrieval_cards
+              SET status = 'inactive'
+            WHERE topic_id = ? AND claim_state_id IS NULL AND card_type = ?
+              AND id != ?""",
+        (topic_id, card_type, int(existing["id"]) if existing else int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])),
+    )
 
 
 def _retrieval_card_payload(row: sqlite3.Row) -> dict[str, str | None]:
@@ -2174,6 +2340,17 @@ def _shadow_queue_for_summary(
               JOIN topics t ON t.id = ex.topic_id
               JOIN concepts c ON c.id = ex.concept_id
               WHERE ex.skill IN ({placeholders}) {artifact_filter}
+                AND NOT EXISTS (
+                    SELECT 1
+                      FROM exchanges review
+                     WHERE review.topic_id = ex.topic_id
+                       AND review.ts > ex.ts
+                       AND EXISTS (
+                           SELECT 1
+                             FROM claim_results reviewed_claim
+                            WHERE reviewed_claim.exchange_id = review.id
+                       )
+                )
               ORDER BY ex.ts DESC
               LIMIT ?""",
         [*artifact_params, max(0, limit)],
@@ -2402,6 +2579,299 @@ def _context_focus_for_summary(
     ]
 
 
+def _scouting_candidates_for_summary(
+    conn: sqlite3.Connection,
+    *,
+    topic_id: int | None,
+    topic: str,
+    cards: list[dict[str, object]],
+    due_claims: list[dict[str, object]],
+    graph_signals: list[dict[str, object]],
+    context_graph_focus: list[dict[str, object]],
+    limit: int,
+) -> list[dict[str, object]]:
+    """Generate bounded neighboring-foundation candidates for agent validation."""
+    if topic_id is None:
+        return []
+    focus_text = " ".join(
+        [
+            topic,
+            *(
+                " ".join(str(card.get(key, "")) for key in ("concept", "claim", "summary"))
+                for card in cards
+            ),
+        ]
+    )
+    focus_tokens = _topic_tokens(focus_text)
+    seen: set[tuple[str, str]] = set()
+    candidates: list[dict[str, object]] = []
+
+    def add(
+        *,
+        source: str,
+        candidate_key: str,
+        topic_slug: str,
+        concept: str,
+        relationship: str,
+        rationale: str,
+        evidence: dict[str, object],
+        score: float,
+        recommended_use: str,
+    ) -> None:
+        key = (source, candidate_key)
+        if key in seen:
+            return
+        seen.add(key)
+        candidates.append({
+            "candidate_id": f"{source}:{candidate_key}",
+            "source_surface": source,
+            "topic": topic_slug,
+            "concept": concept,
+            "relationship": relationship,
+            "relevance_reason": rationale,
+            "evidence": evidence,
+            "score": round(score, 3),
+            "recommended_use": recommended_use,
+            "agent_validation_required": True,
+        })
+
+    for signal in graph_signals:
+        add(
+            source="learner_graph",
+            candidate_key=str(signal["relationship_id"]),
+            topic_slug=topic,
+            concept=str(signal["to_concept"]),
+            relationship=str(signal["relation_type"]),
+            rationale=(
+                "Evidence-backed learner graph neighbor of an active retest concept; "
+                f"direction={signal['direction']}."
+            ),
+            evidence={
+                "relationship_id": signal["relationship_id"],
+                "from_concept_id": signal["from_concept_id"],
+                "to_concept_id": signal["to_concept_id"],
+                "strength": signal["strength"],
+            },
+            score=100 + float(signal["strength"]),
+            recommended_use="Validate as a prerequisite or bounded discrimination probe before weaving it into the review.",
+        )
+
+    for path in context_graph_focus:
+        hops = int(path.get("hops", 0))
+        matched_context_tokens = list(path.get("matched_context_tokens", []))
+        if hops == 0 and len(matched_context_tokens) < 3:
+            continue
+        add(
+            source="reviewed_reference_graph",
+            candidate_key=str(path["node_key"]),
+            topic_slug=topic,
+            concept=str(path["node_label"]),
+            relationship="reviewed_context_seed" if hops == 0 else "reviewed_context_path",
+            rationale=(
+                "Reviewed clinical graph seed matched the requested report and active learner-state context."
+                if hops == 0
+                else "Reviewed clinical graph path from the requested report and active learner-state context."
+            ),
+            evidence={
+                "node_key": path["node_key"],
+                "node_type": path["node_type"],
+                "hops": hops,
+                "path_weight": path["path_weight"],
+                "matched_context_tokens": matched_context_tokens,
+                "path": path["path"],
+            },
+            score=80 + float(path["path_weight"]) + (len(path.get("matched_context_tokens", [])) / 10),
+            recommended_use="Validate that this path is central to the current report section before probing it.",
+        )
+
+    active_claim_ids = {
+        int(card["claim_state_id"])
+        for card in cards
+        if card.get("claim_state_id") is not None
+    }
+    due_claim_ids = {int(item["claim_state_id"]) for item in due_claims}
+    rows = conn.execute(
+        """SELECT cs.id, cs.claim_text, cs.state, cs.priority,
+                  t.canonical_slug AS topic, c.display_name AS concept
+             FROM claim_state cs
+             JOIN topics t ON t.id = cs.topic_id
+             JOIN concepts c ON c.id = cs.concept_id
+            WHERE cs.topic_id = ?
+              AND cs.state IN ('durable', 'repaired_same_session')
+            ORDER BY CASE cs.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,
+                     cs.last_seen_ts DESC""",
+        (topic_id,),
+    ).fetchall()
+    for row in rows:
+        claim_state_id = int(row["id"])
+        if claim_state_id in active_claim_ids or claim_state_id in due_claim_ids:
+            continue
+        add(
+            source="same_topic_scaffold",
+            candidate_key=str(claim_state_id),
+            topic_slug=str(row["topic"]),
+            concept=str(row["concept"]),
+            relationship="report_local_foundation",
+            rationale="Confirmed report-local knowledge that may serve as a transfer premise for an active gap.",
+            evidence={
+                "claim_state_id": claim_state_id,
+                "state": row["state"],
+                "priority": row["priority"],
+                "claim": row["claim_text"],
+            },
+            score=60,
+            recommended_use="Use only if it sharpens transfer or exposes a missing foundation; do not re-drill by default.",
+        )
+
+    rows = conn.execute(
+        """SELECT cs.id, cs.claim_text, cs.state, cs.priority,
+                  t.canonical_slug AS topic, c.display_name AS concept
+             FROM claim_state cs
+             JOIN topics t ON t.id = cs.topic_id
+             JOIN concepts c ON c.id = cs.concept_id
+            WHERE cs.topic_id != ?
+              AND cs.state IN ('missed', 'partially_repaired', 'regressed', 'durable', 'repaired_same_session')
+            ORDER BY CASE cs.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,
+                     cs.last_seen_ts DESC""",
+        (topic_id,),
+    ).fetchall()
+    for row in rows:
+        matched = focus_tokens & _topic_tokens(f"{row['topic']} {row['concept']} {row['claim_text']}")
+        specific = {
+            token for token in matched
+            if token.isalpha() and len(token) >= 4 and token not in SCOUT_GENERIC_TOKENS
+        }
+        if len(specific) < 2:
+            continue
+        add(
+            source="cross_topic_overlap",
+            candidate_key=str(row["id"]),
+            topic_slug=str(row["topic"]),
+            concept=str(row["concept"]),
+            relationship="candidate_foundation_or_transfer",
+            rationale=f"Cross-topic learner-state overlap on: {', '.join(sorted(matched))}.",
+            evidence={
+                "claim_state_id": int(row["id"]),
+                "state": row["state"],
+                "priority": row["priority"],
+                "claim": row["claim_text"],
+                "matched_tokens": sorted(matched),
+            },
+            score=40 + len(specific) + (len(matched) / 10),
+            recommended_use="Agent must verify the clinical connection and curriculum scope before using this candidate.",
+        )
+
+    candidates.sort(key=lambda item: (-float(item["score"]), str(item["concept"])))
+    return candidates[: max(0, limit)]
+
+
+def _planning_brief_for_summary(
+    *,
+    cards: list[dict[str, object]],
+    curated_summaries: list[dict[str, object]],
+    graph_signals: list[dict[str, object]],
+    shadow_rule_signals: list[dict[str, object]],
+    due_claims: list[dict[str, object]],
+    calibration_profile: dict[str, object],
+    operation_profile: list[dict[str, object]],
+    teaching_move_profile: list[dict[str, object]],
+    telemetry_profile: dict[str, object],
+    tutor_efficacy_profile: list[dict[str, object]],
+    coverage_frontier: dict[str, object],
+    contextual_frontier: list[dict[str, object]],
+    low_confidence_leads: list[dict[str, object]],
+) -> dict[str, object]:
+    """Return a first-read tutor brief while preserving raw evidence surfaces."""
+    def compact_card(card: dict[str, object]) -> dict[str, object]:
+        return {
+            "claim_state_id": card.get("claim_state_id"),
+            "topic": card.get("topic"),
+            "concept": card.get("concept"),
+            "priority": card.get("priority"),
+            "state": card.get("state"),
+            "summary": card.get("summary"),
+            "next_action": card.get("next_action"),
+        }
+
+    def compact_due(item: dict[str, object]) -> dict[str, object]:
+        return {
+            "claim_state_id": item.get("claim_state_id"),
+            "topic": item.get("topic"),
+            "concept": item.get("concept"),
+            "priority": item.get("priority"),
+            "retrievability": item.get("retrievability"),
+            "next_action": item.get("next_action"),
+        }
+
+    def compact_high_confidence_miss(item: dict[str, object]) -> dict[str, object]:
+        return {
+            "claim_result_id": item.get("claim_result_id"),
+            "topic": item.get("topic"),
+            "concept": item.get("concept"),
+            "score": item.get("score"),
+            "teaching_note": item.get("teaching_note"),
+        }
+
+    def compact_operation(item: dict[str, object]) -> dict[str, object]:
+        return {
+            "domain": item.get("domain"),
+            "operation": item.get("operation"),
+            "attempts": item.get("attempts"),
+            "miss_rate": item.get("miss_rate"),
+            "open_gaps": item.get("open_gaps"),
+            "teaching_note": item.get("teaching_note"),
+        }
+
+    handoffs = [card for card in cards if card.get("type") == "session_handoff"]
+    must_retest = [card for card in cards if card.get("type") == "must_retest"]
+    repairs = [card for card in cards if card.get("type") == "recent_repair"]
+    high_confidence_misses = list(calibration_profile.get("high_confidence_misses", []))
+    weak_operations = [
+        item for item in operation_profile
+        if float(item.get("miss_rate", 0) or 0) > 0
+    ]
+    return {
+        "read_first": True,
+        "handoff": {
+            "topic": handoffs[0].get("topic"),
+            "summary": handoffs[0].get("summary"),
+            "next_action": handoffs[0].get("next_action"),
+        } if handoffs else {},
+        "open_first": [compact_card(card) for card in must_retest],
+        "recent_repairs": [compact_card(card) for card in repairs],
+        "known_scaffolds_due": [compact_due(item) for item in due_claims],
+        "domain_patterns": curated_summaries,
+        "misconception_rules": shadow_rule_signals,
+        "coverage_frontier": coverage_frontier,
+        "contextual_frontier": contextual_frontier,
+        "low_confidence_leads": low_confidence_leads,
+        "question_design_bias": {
+            "high_confidence_misses": [compact_high_confidence_miss(item) for item in high_confidence_misses],
+            "weak_operations": [compact_operation(item) for item in weak_operations],
+            "teaching_move_observations": teaching_move_profile,
+            "tutor_efficacy": tutor_efficacy_profile,
+        },
+        "diagnostics": {
+            "learner_graph_signal_count": len(graph_signals),
+            "assessed_claim_results": telemetry_profile.get("assessed_claim_results", 0),
+            "telemetry_field_completeness": telemetry_profile.get("field_completeness", {}),
+        },
+        "agent_validation_checkpoint": {
+            "required_before_teaching": True,
+            "task": (
+                "Review contextual_frontier candidates and accept only 1-3 that are clinically central, "
+                "scope-compatible with the requested document, and likely to explain an active gap or deepen transfer. "
+                "Reject tangential neighbors. The frontier informs question design; it never overrides urgent open_first items."
+            ),
+            "record_in_internal_note": [
+                "accepted candidate ids and why they matter",
+                "rejected candidate ids that are tangential or weakly supported",
+                "the first question and which learner-state signal justifies it",
+            ],
+        },
+    }
+
+
 def _summary_command(
     *,
     topic: str,
@@ -2412,6 +2882,7 @@ def _summary_command(
     include_due: bool = False,
     include_model: bool = False,
     context: str = "",
+    brief_only: bool = False,
 ) -> str:
     parts = ["python3 src/study_memory.py summary"]
     if topic:
@@ -2429,6 +2900,8 @@ def _summary_command(
     if context:
         safe_context = context.replace('"', "'")
         parts.append(f'--context "{safe_context}"')
+    if brief_only:
+        parts.append("--brief-only")
     return " ".join(parts)
 
 
@@ -2444,6 +2917,7 @@ def _retrieval_guidance(
     include_due: bool = False,
     include_model: bool = False,
     context: str = "",
+    brief_only: bool = False,
 ) -> dict[str, object]:
     high_signal_types = ("must_retest", "session_handoff", "recent_repair")
     omitted_high_signal = {k: omitted[k] for k in high_signal_types if omitted.get(k, 0)}
@@ -2460,6 +2934,7 @@ def _retrieval_guidance(
                 include_due=include_due,
                 include_model=include_model,
                 context=context,
+                brief_only=brief_only,
             )
         )
     if topic and omitted.get("scaffold", 0):
@@ -2472,6 +2947,7 @@ def _retrieval_guidance(
                 include_due=include_due,
                 include_model=include_model,
                 context=context,
+                brief_only=brief_only,
             )
         )
     if not topic and omitted.get("scaffold", 0) and not include_global_scaffolds:
@@ -2485,6 +2961,7 @@ def _retrieval_guidance(
                 include_due=include_due,
                 include_model=include_model,
                 context=context,
+                brief_only=brief_only,
             )
         )
 
@@ -2516,6 +2993,7 @@ def retrieval_summary(
     include_due: bool = False,
     include_model: bool = False,
     context: str = "",
+    brief_only: bool = False,
 ) -> str:
     limit = max(0, limit)
     scaffold_limit = max(0, scaffold_limit)
@@ -2526,6 +3004,7 @@ def retrieval_summary(
         resolution = resolve_topic(conn, topic)
         topic_row = conn.execute("SELECT id FROM topics WHERE canonical_slug = ?", (resolution.slug,)).fetchone()
         if not topic_row:
+            related_topics = _related_topic_matches_for_hint(conn, topic)
             base: dict[str, object] = {
                 "cards": [],
                 "counts": {},
@@ -2561,6 +3040,40 @@ def retrieval_summary(
                 if context:
                     base["context_focus"] = []
                     base["context_graph_focus"] = []
+                base["planning_brief"] = {
+                    "read_first": True,
+                    "resolution_warning": (
+                        f"No stored learner topic resolved for {topic!r}. "
+                        "Choose a related existing topic anchor or clarify the intended curriculum before teaching."
+                    ),
+                    "resolution_candidates": related_topics,
+                    "handoff": {},
+                    "open_first": [],
+                    "recent_repairs": [],
+                    "known_scaffolds_due": [],
+                    "domain_patterns": [],
+                    "misconception_rules": [],
+                    "coverage_frontier": base["coverage_frontier"],
+                    "contextual_frontier": [],
+                    "low_confidence_leads": [],
+                    "question_design_bias": {},
+                    "diagnostics": {},
+                    "agent_validation_checkpoint": {
+                        "required_before_teaching": True,
+                        "task": "Resolve the requested topic to the correct existing learner-state anchor before teaching.",
+                        "record_in_internal_note": [
+                            "selected existing topic anchor or clarification need",
+                            "why the selected anchor matches the requested curriculum",
+                        ],
+                    },
+                }
+            if brief_only and "planning_brief" in base:
+                base = {
+                    "planning_brief": base["planning_brief"],
+                    "counts": base["counts"],
+                    "omitted": base["omitted"],
+                    "retrieval_guidance": base["retrieval_guidance"],
+                }
             return json.dumps(base, indent=2)
         resolved_topic_id = int(topic_row["id"])
         topic_filter = "AND rc.topic_id = ?"
@@ -2571,7 +3084,7 @@ def retrieval_summary(
         for row in conn.execute(
             f"""SELECT rc.card_type, COUNT(*) AS n
                 FROM retrieval_cards rc
-                WHERE rc.status = 'active' {topic_filter}
+                WHERE rc.status = 'active' AND rc.card_type != 'artifact_anchor' {topic_filter}
                 GROUP BY rc.card_type""",
             params,
         ).fetchall()
@@ -2585,7 +3098,7 @@ def retrieval_summary(
            JOIN topics t ON t.id = rc.topic_id
            LEFT JOIN claim_state cs ON cs.id = rc.claim_state_id
            LEFT JOIN concepts c ON c.id = cs.concept_id
-           WHERE rc.status = 'active' {topic_filter}"""
+           WHERE rc.status = 'active' AND rc.card_type != 'artifact_anchor' {topic_filter}"""
     order_sql = """ORDER BY CASE rc.priority
                WHEN 'urgent' THEN 0
                WHEN 'high' THEN 1
@@ -2643,6 +3156,7 @@ def retrieval_summary(
             include_due=include_due,
             include_model=include_model,
             context=context,
+            brief_only=brief_only,
         ),
     }
 
@@ -2756,7 +3270,158 @@ def retrieval_summary(
                 limit=min(8, max(4, limit)),
                 max_hops=2,
             )
+        scouting_context = context or " ".join(
+            [
+                topic,
+                *(
+                    " ".join(str(card.get(key, "")) for key in ("concept", "claim", "summary"))
+                    for card in payload["cards"]  # type: ignore[union-attr]
+                ),
+            ]
+        )
+        reviewed_paths = payload.get("context_graph_focus")
+        if not isinstance(reviewed_paths, list):
+            reviewed_paths = context_graph_focus_for_summary(
+                conn,
+                context=scouting_context,
+                due_claims=payload["due_claims"],  # type: ignore[arg-type]
+                limit=min(8, max(4, limit)),
+                max_hops=2,
+            )
+        contextual_frontier = _scouting_candidates_for_summary(
+            conn,
+            topic_id=resolved_topic_id,
+            topic=topic,
+            cards=payload["cards"],  # type: ignore[arg-type]
+            due_claims=payload["due_claims"],  # type: ignore[arg-type]
+            graph_signals=payload.get("graph_signals", []),  # type: ignore[arg-type]
+            context_graph_focus=reviewed_paths,
+            limit=min(6, max(4, limit)),
+        )
+        payload["planning_brief"] = _planning_brief_for_summary(
+            cards=payload["cards"],  # type: ignore[arg-type]
+            curated_summaries=payload.get("curated_summaries", []),  # type: ignore[arg-type]
+            graph_signals=payload.get("graph_signals", []),  # type: ignore[arg-type]
+            shadow_rule_signals=payload.get("shadow_rule_signals", []),  # type: ignore[arg-type]
+            due_claims=payload["due_claims"],  # type: ignore[arg-type]
+            calibration_profile=payload["calibration_profile"],  # type: ignore[arg-type]
+            operation_profile=payload["operation_profile"],  # type: ignore[arg-type]
+            teaching_move_profile=payload["teaching_move_profile"],  # type: ignore[arg-type]
+            telemetry_profile=payload["telemetry_profile"],  # type: ignore[arg-type]
+            tutor_efficacy_profile=payload["tutor_efficacy_profile"],  # type: ignore[arg-type]
+            coverage_frontier=payload["coverage_frontier"],  # type: ignore[arg-type]
+            contextual_frontier=contextual_frontier,
+            low_confidence_leads=payload["shadow_queue"],  # type: ignore[arg-type]
+        )
 
+    if brief_only and "planning_brief" in payload:
+        payload = {
+            "planning_brief": payload["planning_brief"],
+            "counts": payload["counts"],
+            "omitted": payload["omitted"],
+            "retrieval_guidance": payload["retrieval_guidance"],
+        }
+    return json.dumps(payload, indent=2)
+
+
+def startup_recall(
+    conn: sqlite3.Connection,
+    *,
+    topic: str = "",
+    doc_path: str = "",
+    global_mode: bool = False,
+    limit: int | None = None,
+    scaffold_limit: int | None = None,
+    include_global_scaffolds: bool = False,
+    context: str = "",
+) -> str:
+    """Return the deterministic first-read brief used by every learning workflow."""
+    if global_mode and (topic or doc_path):
+        raise ValueError("startup-recall --global cannot be combined with --topic or --doc")
+    if not global_mode and not (topic or doc_path):
+        raise ValueError("startup-recall requires --topic, --doc, or --global")
+
+    requested_topic = topic
+    resolved: TopicResolution | None = None
+    recall_topic = ""
+    if not global_mode:
+        resolved = resolve_topic(conn, topic, doc_path)
+        stored_topic = conn.execute(
+            "SELECT 1 FROM topics WHERE canonical_slug = ?",
+            (resolved.slug,),
+        ).fetchone()
+        recall_topic = resolved.slug if stored_topic else (topic or _doc_alias(doc_path))
+
+    initial_limit = max(0, limit if limit is not None else (12 if global_mode else 8))
+    final_limit = initial_limit
+    resolved_scaffold_limit = max(
+        0,
+        scaffold_limit if scaffold_limit is not None else (0 if global_mode else 2),
+    )
+    expansions: list[dict[str, object]] = []
+
+    while True:
+        payload = json.loads(
+            retrieval_summary(
+                conn,
+                topic=recall_topic,
+                limit=final_limit,
+                scaffold_limit=resolved_scaffold_limit,
+                include_global_scaffolds=include_global_scaffolds,
+                include_curated=True,
+                include_model=True,
+                context=context,
+                brief_only=True,
+            )
+        )
+        omitted_high_signal = payload.get("retrieval_guidance", {}).get("omitted_high_signal", {})
+        if not isinstance(omitted_high_signal, dict) or not omitted_high_signal:
+            break
+        if global_mode:
+            break
+        additional = sum(int(value) for value in omitted_high_signal.values())
+        if additional <= 0:
+            break
+        next_limit = final_limit + additional
+        expansions.append({
+            "from_limit": final_limit,
+            "to_limit": next_limit,
+            "omitted_high_signal": omitted_high_signal,
+        })
+        final_limit = next_limit
+
+    brief = payload.get("planning_brief", {})
+    routing_required = bool(isinstance(brief, dict) and brief.get("resolution_warning"))
+    deferred_high_signal = payload.get("retrieval_guidance", {}).get("omitted_high_signal", {})
+    payload["startup_recall"] = {
+        "mode": "global" if global_mode else "topic",
+        "requested_topic": requested_topic,
+        "requested_doc": doc_path,
+        "resolved_topic": resolved.slug if resolved else "",
+        "resolver_confidence": resolved.confidence if resolved else None,
+        "initial_limit": initial_limit,
+        "final_limit": final_limit,
+        "auto_expanded": bool(expansions),
+        "expansions": expansions,
+        "expansion_policy": (
+            "global_compact_then_topic_drilldown"
+            if global_mode
+            else "topic_complete_high_signal"
+        ),
+        "deferred_high_signal": deferred_high_signal if global_mode else {},
+        "candidate_selection_required": global_mode,
+        "routing_required": routing_required,
+        "ready_to_teach": not routing_required and not global_mode,
+        "next_action": (
+            "Select candidate topics from the compact global brief, then run topic-scoped startup-recall for each chosen topic before teaching."
+            if global_mode
+            else (
+                "Validate a resolution candidate and rerun topic-scoped startup-recall before teaching."
+                if routing_required
+                else "Validate the planning brief and begin the topic-anchored workflow."
+            )
+        ),
+    }
     return json.dumps(payload, indent=2)
 
 
@@ -2837,6 +3502,16 @@ def main() -> None:
     p_summary.add_argument("--include-due", action="store_true")
     p_summary.add_argument("--include-model", action="store_true")
     p_summary.add_argument("--context", default="", help="Optional upcoming case/rotation/context string for relevance weighting")
+    p_summary.add_argument("--brief-only", action="store_true", help="Return the synthesized planning brief plus truncation diagnostics")
+
+    p_startup = sub.add_parser("startup-recall")
+    p_startup.add_argument("--topic", default="")
+    p_startup.add_argument("--doc", default="")
+    p_startup.add_argument("--global", dest="global_mode", action="store_true")
+    p_startup.add_argument("--limit", type=int, default=None)
+    p_startup.add_argument("--scaffold-limit", type=int, default=None)
+    p_startup.add_argument("--include-global-scaffolds", action="store_true")
+    p_startup.add_argument("--context", default="", help="Optional upcoming case/rotation/context string for relevance weighting")
 
     sub.add_parser("status")
     sub.add_parser("identity-audit")
@@ -2938,8 +3613,26 @@ def main() -> None:
                     include_due=args.include_due,
                     include_model=args.include_model,
                     context=args.context,
+                    brief_only=args.brief_only,
                 )
             )
+        elif args.command == "startup-recall":
+            try:
+                print(
+                    startup_recall(
+                        conn,
+                        topic=args.topic,
+                        doc_path=args.doc,
+                        global_mode=args.global_mode,
+                        limit=args.limit,
+                        scaffold_limit=args.scaffold_limit,
+                        include_global_scaffolds=args.include_global_scaffolds,
+                        context=args.context,
+                    )
+                )
+            except ValueError as exc:
+                print(json.dumps({"ok": False, "error": str(exc)}, indent=2), file=sys.stderr)
+                sys.exit(2)
         elif args.command == "status":
             print(status(conn))
         elif args.command == "identity-audit":

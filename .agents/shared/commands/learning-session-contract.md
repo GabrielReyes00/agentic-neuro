@@ -22,8 +22,8 @@ Read the modules that apply to the workflow before acting:
 
 For full learning workflows, execute the modules in this order:
 
-1. **Session start**: follow `memory-operations.md` for topic-scoped versus global retrieval. Always use `--include-curated --include-model` for skill-driven summaries.
-2. **Memory interpretation**: follow `memory-retrieval.md` before designing questions. If high-signal cards were omitted, run a suggested expansion command before teaching.
+1. **Session start**: follow `memory-operations.md` for topic-scoped versus global `study_memory.py startup-recall`. Pass `--doc` whenever a vault artifact is known.
+2. **Memory interpretation**: read `startup_recall` and `planning_brief` first, then follow `memory-retrieval.md` before designing questions. Validate bounded contextual-frontier candidates silently. Topic startup auto-expands high-signal cards; global startup intentionally defers bulk expansion until candidate topics are selected.
 3. **Teaching loop**: follow `adaptive-teaching-doctrine.md`. Ask one question, stop, wait for the learner, evaluate, reveal progressively, and choose the next teaching move.
 4. **After each answer**: log the evaluated exchange with `study_memory.py log-answer` per `memory-operations.md`; then decide whether to enqueue Anki cards per `anki-session-workflow.md` and `anki-card-quality.md`.
 5. **Session end**: run `study_memory.py end-session --json` and the post-session integrity checks per `memory-operations.md`.

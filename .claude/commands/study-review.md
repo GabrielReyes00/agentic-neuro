@@ -6,3 +6,5 @@ description: Socratic review from an existing vault document (Reports/, Study Ma
 # Study Review
 
 Read and follow `.agents/shared/commands/study-review.md` for the full workflow and `.agents/shared/commands/learning-session-contract.md` for shared pedagogy and memory operations.
+
+At session start, execute the shared `study_memory.py startup-recall` command exactly as specified. Read `startup_recall` and `planning_brief` before teaching. Do not substitute a raw `summary` call or skip the returned routing checkpoint.

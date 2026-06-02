@@ -72,7 +72,7 @@ Detailed memory mechanics now live in focused modules:
 - Use `.agents/shared/commands/memory-curation.md` for the optional post-Anki curation pass.
 - Use `.agents/shared/commands/memory-maintenance.md` only for deliberate audits or reviewed graph maintenance, never inside routine teaching loops.
 
-Invariant summary: topic-anchored sessions use only topic-scoped `summary --include-curated --include-model`; memory-driven custom review is the only mode that uses global summary. Memory writes occur only inside explicit memory-enabled workflows or when the user asks to save/capture memory. Quick-answer entries are low-stakes reference captures, not demonstrated mastery.
+Invariant summary: skill-driven sessions start with `study_memory.py startup-recall`, using `--topic` plus `--doc` whenever an artifact is known; memory-driven custom review is the only mode that uses `startup-recall --global`. Read `startup_recall` and `planning_brief` first and validate bounded contextual-frontier candidates before teaching. Raw `summary` is for dashboard or audit reads. Memory writes occur only inside explicit memory-enabled workflows or when the user asks to save/capture memory. Quick-answer entries are low-stakes reference captures, not demonstrated mastery.
 
 ## Capability Router
 

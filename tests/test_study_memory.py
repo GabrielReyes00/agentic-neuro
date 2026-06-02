@@ -140,7 +140,7 @@ class StudyMemoryTests(unittest.TestCase):
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM claim_state").fetchone()[0], 0)
             rows = conn.execute("SELECT card_type, summary FROM retrieval_cards").fetchall()
             self.assertEqual(len(rows), 1)
-            self.assertEqual(rows[0]["card_type"], "session_handoff")
+            self.assertEqual(rows[0]["card_type"], "artifact_anchor")
             self.assertIn("report written", rows[0]["summary"])
         finally:
             conn.close()
@@ -190,6 +190,58 @@ class StudyMemoryTests(unittest.TestCase):
             )
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM claim_results").fetchone()[0], 1)
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM claim_state").fetchone()[0], 1)
+        finally:
+            conn.close()
+
+    def test_artifact_anchor_does_not_compete_with_learning_handoff_retrieval(self) -> None:
+        conn = self._memory_conn()
+        try:
+            study_memory.log_answer(
+                conn,
+                session_id="report-visibility",
+                topic="evd management",
+                concept="report coverage anchor",
+                question="What is covered in the report?",
+                answer="EVD management.",
+                correct=2,
+                skill="generate-report",
+                doc_path="Reports/EVD Management in the ICU.md",
+            )
+            study_memory.end_session(
+                conn,
+                session_id="report-visibility",
+                summary="Generated EVD report.",
+                next_strategy="Review the EVD report.",
+            )
+            study_memory.log_answer(
+                conn,
+                session_id="review-visibility",
+                topic="evd management",
+                concept="evd leveling",
+                question="Where do you level the EVD?",
+                answer="Tragus.",
+                correct=2,
+                tested_claim="Level the EVD at the tragus.",
+                doc_path="Reports/EVD Management in the ICU.md",
+            )
+            study_memory.end_session(
+                conn,
+                session_id="review-visibility",
+                summary="Reviewed EVD leveling.",
+                next_strategy="Retest leveling after transport.",
+            )
+            payload = json.loads(
+                study_memory.retrieval_summary(
+                    conn,
+                    topic="evd management",
+                    include_model=True,
+                )
+            )
+            handoffs = [card for card in payload["cards"] if card["type"] == "session_handoff"]
+            self.assertEqual(len(handoffs), 1)
+            self.assertEqual(handoffs[0]["summary"], "Reviewed EVD leveling.")
+            self.assertNotIn("artifact_anchor", payload["counts"])
+            self.assertFalse(any(item["type"] == "artifact_review_anchor" for item in payload["shadow_queue"]))
         finally:
             conn.close()
 
@@ -483,6 +535,15 @@ class StudyMemoryTests(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_retrievability_accepts_legacy_timezone_naive_timestamp(self) -> None:
+        retrievability = study_memory._retrievability(
+            "2026-04-22T00:00:00",
+            3.0,
+            as_of=datetime(2026, 4, 23, tzinfo=timezone.utc),
+        )
+        self.assertGreater(retrievability, 0)
+        self.assertLess(retrievability, 1)
+
     def test_model_summary_surfaces_calibration_and_operation_profile(self) -> None:
         conn = self._memory_conn()
         try:
@@ -624,6 +685,90 @@ class StudyMemoryTests(unittest.TestCase):
         self.assertEqual(candidates[0]["item"]["topic"], "cervical-spine-fractures")
         self.assertEqual(candidates[0]["matched_tokens"], ["cervical"])
 
+    def test_topic_summary_emits_planning_brief_with_bounded_agent_validated_frontier(self) -> None:
+        conn = self._memory_conn()
+        try:
+            seed_path = Path(__file__).resolve().parents[1] / "data" / "reference_graph_seed.json"
+            load_reference_graph_payload(conn, json.loads(seed_path.read_text()), apply=True)
+            study_memory.log_answer(
+                conn,
+                session_id="spine-frontier",
+                topic="spine emergencies acute spinal cord injury critical care",
+                concept="cervical sci respiratory mechanics",
+                question="What predicts respiratory collapse after cervical SCI?",
+                answer="I am not sure.",
+                correct=0,
+                correction="Trend FVC and NIF; accessory muscle fatigue can precede collapse.",
+                error_type="reasoning_gap",
+                tested_claim="Cervical SCI respiratory collapse requires trending FVC, NIF, and accessory muscle fatigue.",
+                missing_edge="respiratory mechanics and elective intubation thresholds",
+                doc_path="Reports/Spine Emergencies, Acute Spinal Cord Injury, and Critical Care.md",
+            )
+            payload = json.loads(
+                study_memory.retrieval_summary(
+                    conn,
+                    topic="spine emergencies acute spinal cord injury critical care",
+                    include_curated=True,
+                    include_model=True,
+                )
+            )
+            brief = payload["planning_brief"]
+            self.assertTrue(brief["read_first"])
+            self.assertTrue(brief["open_first"])
+            self.assertTrue(brief["agent_validation_checkpoint"]["required_before_teaching"])
+            frontier = brief["contextual_frontier"]
+            self.assertTrue(frontier)
+            self.assertLessEqual(len(frontier), 8)
+            self.assertTrue(all(item["agent_validation_required"] for item in frontier))
+            self.assertTrue(any(item["source_surface"] == "reviewed_reference_graph" for item in frontier))
+
+            brief_only = json.loads(
+                study_memory.retrieval_summary(
+                    conn,
+                    topic="spine emergencies acute spinal cord injury critical care",
+                    include_curated=True,
+                    include_model=True,
+                    brief_only=True,
+                )
+            )
+            self.assertEqual(
+                set(brief_only),
+                {"planning_brief", "counts", "omitted", "retrieval_guidance"},
+            )
+        finally:
+            conn.close()
+
+    def test_unresolved_topic_summary_routes_to_existing_learner_state_before_teaching(self) -> None:
+        conn = self._memory_conn()
+        try:
+            study_memory.log_answer(
+                conn,
+                session_id="evd-icp-routing",
+                topic="evd management",
+                concept="icp waveform interpretation",
+                question="What ICP waveform change suggests reduced compliance?",
+                answer="P2 becomes greater than P1.",
+                correct=2,
+                tested_claim="Reduced intracranial compliance is suggested when ICP waveform P2 exceeds P1.",
+            )
+            payload = json.loads(
+                study_memory.retrieval_summary(
+                    conn,
+                    topic="icp management",
+                    include_curated=True,
+                    include_model=True,
+                    brief_only=True,
+                )
+            )
+            brief = payload["planning_brief"]
+            self.assertTrue(brief["read_first"])
+            self.assertIn("No stored learner topic resolved", brief["resolution_warning"])
+            self.assertTrue(brief["resolution_candidates"])
+            self.assertEqual(brief["resolution_candidates"][0]["topic"], "evd-management-icu")
+            self.assertTrue(brief["agent_validation_checkpoint"]["required_before_teaching"])
+        finally:
+            conn.close()
+
     def test_identity_audit_and_guarded_topic_merge(self) -> None:
         conn = self._memory_conn()
         try:
@@ -675,6 +820,32 @@ class StudyMemoryTests(unittest.TestCase):
             self.assertEqual(concept_topic, target)
             resolved = study_memory.resolve_topic(conn, "spine-emergencies-sci-critical-care")
             self.assertEqual(resolved.slug, "spine-emergencies-sci-and-critical-care")
+        finally:
+            conn.close()
+
+    def test_identity_audit_flags_shared_document_family_even_when_titles_diverge(self) -> None:
+        conn = self._memory_conn()
+        try:
+            conn.execute(
+                """INSERT INTO topics (canonical_slug, display_name, domain, primary_doc_path, created_at)
+                   VALUES ('spine-emergencies-acute-spinal-cord-injury-critical-care',
+                           'Spine Emergencies Acute Spinal Cord Injury Critical Care',
+                           'spine',
+                           'Reports/Spine Emergencies, Acute Spinal Cord Injury, and Critical Care.md',
+                           '')"""
+            )
+            conn.execute(
+                """INSERT INTO topics (canonical_slug, display_name, domain, primary_doc_path, created_at)
+                   VALUES ('acute-spinal-cord-injury-classification-asia-medical-and-surgical-management',
+                           'Acute Spinal Cord Injury Classification Asia Medical And Surgical Management',
+                           'spine',
+                           'Reports/Spine Emergencies, Acute Spinal Cord Injury, and Critical Care_v5.md',
+                           '')"""
+            )
+            conn.commit()
+            audit = study_memory.identity_audit(conn)
+            self.assertEqual(audit["counts"]["duplicate_topic_candidates"], 1)
+            self.assertTrue(audit["duplicate_topic_candidates"][0]["shared_doc_family"])
         finally:
             conn.close()
 
@@ -918,6 +1089,113 @@ class StudyMemoryTests(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_session_handoff_deactivates_legacy_duplicates(self) -> None:
+        conn = self._memory_conn()
+        try:
+            topic_id = study_memory._ensure_topic(
+                conn,
+                study_memory.resolve_topic(conn, "hypertension management"),
+            )
+            conn.execute(
+                """INSERT INTO retrieval_cards
+                   (topic_id, claim_state_id, card_type, status, priority, summary, next_action, updated_ts)
+                   VALUES (?, NULL, 'session_handoff', 'active', 'medium', 'Old A.', 'Old A.', '2026-01-01')""",
+                (topic_id,),
+            )
+            conn.execute(
+                """INSERT INTO retrieval_cards
+                   (topic_id, claim_state_id, card_type, status, priority, summary, next_action, updated_ts)
+                   VALUES (?, NULL, 'session_handoff', 'active', 'medium', 'Old B.', 'Old B.', '2026-01-02')""",
+                (topic_id,),
+            )
+            study_memory._upsert_session_card(
+                conn,
+                topic_id,
+                "session-new",
+                "Current handoff.",
+                "Retest current edge.",
+                "2026-01-03",
+            )
+            active = conn.execute(
+                """SELECT summary FROM retrieval_cards
+                    WHERE topic_id = ? AND card_type = 'session_handoff' AND status = 'active'""",
+                (topic_id,),
+            ).fetchall()
+            self.assertEqual([row["summary"] for row in active], ["Current handoff."])
+        finally:
+            conn.close()
+
+    def test_doc_family_resolution_prefers_existing_review_topic_over_versioned_catalog_topic(self) -> None:
+        conn = self._memory_conn()
+        try:
+            established = study_memory.TopicResolution(
+                "spine-emergencies-acute-spinal-cord-injury-critical-care",
+                "Spine Emergencies Acute Spinal Cord Injury Critical Care",
+                "spine",
+                ("spine emergencies acute spinal cord injury and critical care",),
+                1.0,
+            )
+            established_id = study_memory._ensure_topic(
+                conn,
+                established,
+                "Reports/Spine Emergencies, Acute Spinal Cord Injury, and Critical Care.md",
+            )
+            conn.execute(
+                """INSERT INTO topics (canonical_slug, display_name, domain, primary_doc_path, created_at)
+                   VALUES ('acute-spinal-cord-injury-classification-asia-medical-and-surgical-management',
+                           'Acute Spinal Cord Injury Classification Asia Medical And Surgical Management',
+                           'spine',
+                           'Reports/Spine Emergencies, Acute Spinal Cord Injury, and Critical Care_v5.md',
+                           '')"""
+            )
+            study_memory.log_answer(
+                conn,
+                session_id="spine-review",
+                topic="spine emergencies acute spinal cord injury and critical care",
+                concept="map augmentation target",
+                question="MAP target?",
+                answer="75-80",
+                correct=2,
+                tested_claim="Modern traumatic SCI MAP target is 75-80 mmHg.",
+                doc_path="Reports/Spine Emergencies, Acute Spinal Cord Injury, and Critical Care.md",
+            )
+            resolved = study_memory.resolve_topic(
+                conn,
+                "acute spinal cord injury classification asia medical and surgical management",
+                "Reports/Spine Emergencies, Acute Spinal Cord Injury, and Critical Care_v5.md",
+            )
+            self.assertEqual(resolved.slug, established.slug)
+            self.assertEqual(
+                conn.execute("SELECT topic_id FROM claim_results").fetchone()["topic_id"],
+                established_id,
+            )
+        finally:
+            conn.close()
+
+    def test_strict_telemetry_rejects_sentence_length_concept_label(self) -> None:
+        conn = self._memory_conn()
+        try:
+            with self.assertRaisesRegex(ValueError, "succinct concept label"):
+                study_memory.log_answer(
+                    conn,
+                    session_id="strict-long-concept",
+                    topic="spine emergencies",
+                    concept=(
+                        "dexamethasone bolus dose is 10 mg iv then 16 mg per day divided every "
+                        "six hours to treat vasogenic edema in metastatic spinal cord compression"
+                    ),
+                    question="What steroid protocol?",
+                    answer="10 mg IV then 16 mg/day.",
+                    correct=2,
+                    tested_claim="MSCC dexamethasone protocol starts with 10 mg IV then 16 mg/day.",
+                    answer_mode="unaided",
+                    confidence_observed="high",
+                    teaching_move="changed_frame_retest",
+                    strict_telemetry=True,
+                )
+        finally:
+            conn.close()
+
     def test_session_handoff_compacts_without_mid_sentence_truncation(self) -> None:
         conn = self._memory_conn()
         try:
@@ -1016,6 +1294,118 @@ class StudyMemoryTests(unittest.TestCase):
             self.assertTrue(model_commands)
             self.assertTrue(all("--include-model" in command for command in model_commands))
             self.assertTrue(all("--context" in command for command in model_commands))
+        finally:
+            conn.close()
+
+    def test_startup_recall_auto_expands_omitted_high_signal_cards(self) -> None:
+        conn = self._memory_conn()
+        try:
+            for idx in range(5):
+                study_memory.log_answer(
+                    conn,
+                    session_id=f"gap-{idx}",
+                    topic="hypertension management",
+                    concept=f"bp management gap {idx}",
+                    question=f"BP management question {idx}?",
+                    answer="I am not sure.",
+                    correct=0,
+                    correction="Use the condition-specific blood pressure target.",
+                    error_type="omission",
+                    tested_claim=f"BP management claim {idx}.",
+                    missing_edge=f"condition-specific target {idx}",
+                    force_new_claim=True,
+                )
+            payload = json.loads(
+                study_memory.startup_recall(
+                    conn,
+                    topic="hypertension management",
+                    limit=2,
+                )
+            )
+            self.assertTrue(payload["startup_recall"]["auto_expanded"])
+            self.assertEqual(payload["startup_recall"]["initial_limit"], 2)
+            self.assertEqual(payload["startup_recall"]["final_limit"], 5)
+            self.assertEqual(payload["retrieval_guidance"]["omitted_high_signal"], {})
+            self.assertEqual(len(payload["planning_brief"]["open_first"]), 5)
+        finally:
+            conn.close()
+
+    def test_startup_recall_uses_doc_family_to_resolve_canonical_topic(self) -> None:
+        conn = self._memory_conn()
+        try:
+            study_memory.log_answer(
+                conn,
+                session_id="spine-v4",
+                topic="spine emergencies acute spinal cord injury critical care",
+                concept="neurogenic shock distinction",
+                question="How do you distinguish neurogenic shock?",
+                answer="Hypotension and bradycardia from sympathetic uncoupling.",
+                correct=2,
+                tested_claim="Neurogenic shock is hypotension and bradycardia from sympathetic uncoupling.",
+                doc_path="Reports/Spine Emergencies, Acute Spinal Cord Injury, and Critical Care_v4.md",
+            )
+            payload = json.loads(
+                study_memory.startup_recall(
+                    conn,
+                    topic="acute spinal cord injury classification asia medical and surgical management",
+                    doc_path="Reports/Spine Emergencies, Acute Spinal Cord Injury, and Critical Care_v5.md",
+                )
+            )
+            self.assertEqual(
+                payload["startup_recall"]["resolved_topic"],
+                "spine-emergencies-acute-spinal-cord-injury-critical-care",
+            )
+            self.assertEqual(payload["startup_recall"]["resolver_confidence"], 1.0)
+            self.assertTrue(payload["startup_recall"]["ready_to_teach"])
+        finally:
+            conn.close()
+
+    def test_startup_recall_blocks_teaching_when_topic_requires_routing(self) -> None:
+        conn = self._memory_conn()
+        try:
+            study_memory.log_answer(
+                conn,
+                session_id="evd-icp-startup",
+                topic="evd management",
+                concept="icp waveform interpretation",
+                question="What ICP waveform change suggests reduced compliance?",
+                answer="P2 becomes greater than P1.",
+                correct=2,
+                tested_claim="Reduced intracranial compliance is suggested when ICP waveform P2 exceeds P1.",
+            )
+            payload = json.loads(study_memory.startup_recall(conn, topic="icp management"))
+            self.assertTrue(payload["startup_recall"]["routing_required"])
+            self.assertFalse(payload["startup_recall"]["ready_to_teach"])
+            self.assertTrue(payload["planning_brief"]["resolution_candidates"])
+        finally:
+            conn.close()
+
+    def test_global_startup_recall_defers_bulk_expansion_to_topic_drilldown(self) -> None:
+        conn = self._memory_conn()
+        try:
+            for idx in range(5):
+                study_memory.log_answer(
+                    conn,
+                    session_id=f"global-gap-{idx}",
+                    topic=f"global topic {idx}",
+                    concept=f"global gap {idx}",
+                    question=f"Global question {idx}?",
+                    answer="I am not sure.",
+                    correct=0,
+                    correction="Use the topic-specific rule.",
+                    error_type="omission",
+                    tested_claim=f"Global claim {idx}.",
+                    missing_edge=f"topic-specific rule {idx}",
+                )
+            payload = json.loads(study_memory.startup_recall(conn, global_mode=True, limit=2))
+            startup = payload["startup_recall"]
+            self.assertFalse(startup["auto_expanded"])
+            self.assertEqual(startup["final_limit"], 2)
+            self.assertEqual(startup["expansion_policy"], "global_compact_then_topic_drilldown")
+            self.assertTrue(startup["deferred_high_signal"])
+            self.assertTrue(startup["candidate_selection_required"])
+            self.assertFalse(startup["ready_to_teach"])
+            self.assertTrue(all(item["topic"] for item in payload["planning_brief"]["open_first"]))
         finally:
             conn.close()
 

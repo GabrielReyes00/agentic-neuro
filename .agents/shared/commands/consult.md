@@ -29,10 +29,10 @@ Parse the user's input into a topic slug. Freeform input is expected — the use
 ```bash
 cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
 SESSION_TS=$(date -u +%Y-%m-%dT%H:%M:%S+00:00) && \
-python3 src/study_memory.py summary --topic "<topic>" --limit 8 --scaffold-limit 2 --include-curated --include-model
+python3 src/study_memory.py startup-recall --topic "<topic>"
 ```
 
-Read the output, including `counts`, `omitted`, and `retrieval_guidance`. Use it to shape verification questions and lecture framing — NOT to omit content. If prior errors exist, note them for targeted verification and natural correction within the lecture. If no prior data, this is a new topic.
+Read `planning_brief`, `counts`, `omitted`, and `retrieval_guidance`. Validate contextual-frontier candidates silently. Use the brief to shape verification questions and lecture framing — NOT to omit content. If prior errors exist, note them for targeted verification and natural correction within the lecture. If no prior data, this is a new topic.
 
 **Critical rule: memory informs teaching approach, never content omission.** Every consult delivers the full applicable knowledge regardless of prior exposure.
 
