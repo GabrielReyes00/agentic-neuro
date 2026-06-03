@@ -77,12 +77,19 @@ class RecallContractReferenceTests(unittest.TestCase):
         self.assertIn("service", implementation)
 
     def test_root_agent_instructions_route_service_log(self) -> None:
+        contract = (ROOT / ".agents/shared/commands/service-log.md").read_text()
+        for fragment in (
+            "startup-recall --lens service",
+            "Neurosurgery::Service Learning",
+            "service_primary_formal_capped",
+        ):
+            with self.subTest(contract_fragment=fragment):
+                self.assertIn(fragment, contract)
         for relative_path in ("AGENTS.md", "CLAUDE.md", "GEMINI.md"):
             with self.subTest(path=relative_path):
                 text = (ROOT / relative_path).read_text()
                 self.assertIn("service-log", text)
-                self.assertIn("startup-recall --lens service", text)
-                self.assertIn("Neurosurgery::Service Learning", text)
+                self.assertIn(".agents/shared/commands/service-log.md", text)
 
 
 if __name__ == "__main__":

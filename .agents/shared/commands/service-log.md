@@ -1,179 +1,97 @@
 # Service Log
 
-Capture the day's learning on a service rotation in one pass: log it to the service-rotation
-memory layer AND immediately find the gap and teach it. One voice dictation should produce both
-durable memory and a short, high-yield learning moment. This is the daily front door to
-continuous, service-anchored growth — the texture of a rotation (recurring orders, imaging,
-consults, corrections, the day's case mix) turned into tracked competence.
+Daily service-rotation capture: one de-identified dictation becomes service-origin memory plus one short teaching/quiz turn. No vault artifact is written; `data/study_memory.db` is the durable record.
 
-Follow `.agents/shared/commands/adaptive-teaching-doctrine.md` for the teaching turn,
-`memory-operations.md`/`memory-retrieval.md` for memory semantics, and
-`anki-card-quality.md` for any explicitly requested cards. This contract wins for `/service-log`.
+Use for `/service-log`, "today on <service> at <site>...", or short daily service debriefs. Use `/brain-dump` for artifact-producing ward teaching capture, `/consult` for direct management questions, and `/study-review` for formal review.
 
-## When To Use
+Follow:
+- `adaptive-teaching-doctrine.md` for the probe/teaching turn.
+- `memory-operations.md` and `memory-retrieval.md` for session and recall semantics.
+- `anki-card-quality.md` for explicitly requested cards.
 
-- Explicit `/service-log`.
-- A dictation that opens with the service-rotation frame, e.g. "today on tumor service at
-  MD Anderson, I managed / learned / got corrected on...".
-- Any short daily debrief of what was managed, ordered, followed up, consulted, or taught on a
-  specific service rotation.
+## Boundaries
 
-Do not use for:
-- A de-identified one-off ward teaching point for later review with full source verification: that
-  is `/brain-dump` (heavier, artifact-producing, RAG-verified).
-- A direct management question needing an answer or pocket card: `/consult`.
-- Formal document/topic review or weak-spot drilling: `/study-review`.
-
-`/service-log` and `/brain-dump` are siblings. `/brain-dump` produces a verified vault artifact for
-exposure capture and writes only a memory anchor. `/service-log` produces no vault artifact, is
-ultra-light, and DOES write tracked service-origin learner state (gaps, competency progress) so the
-rotation compounds day over day.
-
-## Success Criterion
-
-In one short exchange Gabriel has (1) the day's learning logged to the active rotation as
-provenance-isolated service memory, and (2) at least one targeted teaching/quiz moment on the gap
-the dictation revealed — not a lecture, a probe and a correction.
-
-## Hard Boundaries
-
-1. **De-identify before any processing or persistence.** Strip names, MRNs, room/bed identifiers,
-   full dates of birth, and unique patient timelines before retrieval, teaching, or memory writes.
-   Generalize to clinically necessary descriptors ("post-op posterior fossa patient"). If
-   de-identification removes the educational meaning, ask for a sanitized restatement first.
-2. **Service memory is provenance-isolated.** Every memory write uses `--origin service` and binds
-   to the active rotation. Service-origin gaps must never be logged as `assessed`, and never leak
-   into formal review. The seal is enforced in code; do not work around it.
-3. **Capture clinical gaps and conventions distinctly.** A portable clinical gap (mechanism,
-   threshold, management consequence) keys to the *service* and carries across sites and years. An
-   institutional habit / order set / workflow preference is a `--convention` and keys to
-   (service x site) — it must not be taught as universal truth.
-4. **Memory remains invisible.** Never narrate stored gaps, rubric state, or inferred learner level
-   to Gabriel. Surface only the teaching and a concise confirmation.
-5. **Exposure is not mastery.** A reported lesson is evidence of encounter. Only the answer Gabriel
-   actually gives in the teaching turn is graded; log that result honestly (`--correct 0/1/2`).
-6. **Stay light.** No report-scale RAG campaign. At most one focused verification query for a
-   single management-changing claim, and only when needed.
+- De-identify before retrieval, teaching, memory writes, or Anki: remove names, MRNs, room/bed IDs, full DOBs, exact unique timelines, and other patient identifiers. Ask for a sanitized restatement if meaning is lost.
+- Every service memory write uses `--origin service` and a valid active or explicit rotation. Never log service material as `assessed`.
+- Clinical gaps key to the service and carry across sites/years. Institutional habits, order sets, and workflow preferences use `--convention` and stay local to service x site.
+- Memory reads/writes are invisible bookkeeping. Never print commands, raw stdout/stderr, or recall payloads into the learner transcript.
+- Exposure is not mastery. Grade only the answer Gabriel gives in the teaching turn.
+- Stay light: no report-scale RAG. Run at most one focused verification query for a management-changing claim when needed.
 
 ## Workflow
 
-### 1. Resolve The Rotation
-
-Parse the service and site from the dictation. Ensure the active rotation matches:
+1. Resolve rotation.
 
 ```bash
-cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
 python3 src/study_memory.py rotation-current
-```
-
-- If no active rotation, or the dictation names a different service/site, open one (this also
-  seeds the service competency rubric from the ACGME catalog on first touch):
-
-```bash
 python3 src/study_memory.py rotation-start --service "<service>" --site "<site>" [--pgy <n>] [--block "<label>"]
 ```
 
-Capture the returned `rotation_id`; service-origin writes default to the active rotation when
-`--rotation` is omitted. A service-origin write without a valid active or explicit rotation is
-invalid and must be fixed by opening/resolving the rotation first.
+Use `rotation-start` only when no active rotation exists or the dictation names a different service/site. Capture `rotation_id` when returned; `log-answer --origin service` may otherwise use the active rotation.
 
-### 2. Silent Service-Lens Context
+2. Run silent service recall.
 
 ```bash
-python3 src/study_memory.py startup-recall --lens service --service "<service>" --site "<site>"
+python3 src/study_memory.py startup-recall --lens service --service "<service>" --site "<site>" [--rotation <id>] [--context "<upcoming/context>"]
 ```
 
-Read `service_gaps` (primary), `conventions` (site-local), `formal_secondary` (capped,
-domain-matched assessed study — let it inform depth, never dominate), and `rubric_open`. Use this to
-decide what to probe and at what level. Do not state what memory returned. Honor the
-`weighting_policy` in the payload.
+Interpret the payload as:
+- `service_gaps`: primary queue.
+- `conventions`: site-local reminders, not universal teaching.
+- `formal_secondary`: capped domain-matched assessed study, useful for depth but not priority.
+- `rubric_open`: competency targets worth steering toward.
+- `weighting_policy: service_primary_formal_capped`: lead with service gaps; formal material can inform, not dominate.
 
-### 3. Extract The Teaching Edge
+3. Extract one teaching edge from the dictation: trigger, reported action/rule, and the mechanism/threshold/discriminator/management consequence. Identify whether it is a portable clinical gap or a local convention.
 
-From the de-identified dictation, identify for each point:
+4. Teach briefly. Ask one calibrated probe and stop. After Gabriel answers, grade briefly, reveal the next useful layer, and avoid a broad lecture unless asked.
 
-- **Trigger**: the situation, order, imaging, consult, or correction.
-- **Reported rule / action**: what was done or taught.
-- **Edge**: the mechanism, threshold, discriminator, or management consequence that is the actual
-  learning — and whether it is a portable clinical gap or an institutional convention.
-
-Detect recurring patterns ("I keep placing this order / following this imaging"): the learning is
-the principle behind the repetition and the variation Gabriel is not yet seeing.
-
-### 4. Teach In One Pass (the second bird)
-
-Pick the single highest-yield edge. Ask one calibrated probe per
-`adaptive-teaching-doctrine.md` — stop and let Gabriel answer (cognitive friction is mandatory; do
-not append the answer). Then grade briefly and reveal the next useful layer. This is a short
-moment, not a lecture.
-
-### 5. Log Service-Origin Memory
-
-`SESSION_TS` is set at the first learner-facing question per `memory-operations.md`. For each
-genuine gap surfaced (use the graded result of the teaching turn):
+5. Log the graded result.
 
 ```bash
 python3 src/study_memory.py log-answer \
   --session "$SESSION_TS" \
   --topic "<clinical topic>" \
   --concept "<concept>" \
-  --question "<the probe asked>" \
-  --answer "<learner answer, de-identified>" \
+  --question "<probe>" \
+  --answer "<de-identified learner answer>" \
   --correct <0|1|2> \
-  --skill "service-log" \
+  --skill service-log \
   --origin service \
   [--rotation <rotation_id>] \
   [--competency-target "<rubric slug>"] \
-  --tested-claim "<the claim being tested>" \
-  --corrected-rule "<the correct rule, when missed>" \
-  --clinical-consequence "<why it changes management>"
+  [--convention] \
+  --tested-claim "<claim tested>" \
+  --corrected-rule "<correct rule>" \
+  --clinical-consequence "<management consequence>"
 ```
 
-- Add `--convention` for institutional/order-set/workflow points so they stay (service x site)
-  local and are never taught as universal fact.
-- Link `--competency-target` when the point maps to a rubric item (advances it off `open`).
-- Do not log identifiable patient detail in any field.
+Link `--competency-target` when a rubric target clearly maps. Use `--convention` only for site-local practice, and do not encode identifiers in any field.
 
-Close the session:
+6. Close the session.
 
 ```bash
 python3 src/study_memory.py end-session \
   --session "$SESSION_TS" \
-  --summary "<sanitized: what was learned/corrected on the rotation today>" \
-  --next-strategy "<what to probe next shift, or which rubric edge to steer toward>" \
+  --summary "<sanitized daily service learning>" \
+  --next-strategy "<next shift probe or rubric edge>" \
   --json
 ```
 
-### 6. Optional Anki (only if requested)
+## Optional Anki
 
-Do not auto-card. If Gabriel asks, route every card to the provenance-isolated deck:
+Do not auto-card. If explicitly requested, route cards to `Neurosurgery::Service Learning` with `service-learning`, `service/<service>`, and `site/<site>` tags. Do not card conventions or unverified high-stakes specifics as settled universal facts.
 
-`Neurosurgery::Service Learning`
+## Anticipatory Review
 
-Tag `service-learning` plus appropriate domain/service tags. Do not encode a `--convention` point or
-an unverified high-stakes specific as settled fact; if a number is load-bearing and unverified, run
-the one focused RAG check first or omit it.
-
-## Anticipatory Mode (manual)
-
-When Gabriel asks "what should I review to stay sharp on <service>" or "what's coming on this
-rotation", run the service lens with an optional upcoming-case context string and blend service +
-capped formal:
+For "what should I review to stay sharp on <service>", run:
 
 ```bash
 python3 src/study_memory.py startup-recall --lens service --service "<service>" --context "<upcoming case/topic>"
 ```
 
-Lead with `service_gaps` and `rubric_open`; let `formal_secondary` inform depth. This is manual in
-v1 — not tied to the calendar.
+Lead with `service_gaps` and `rubric_open`; use `formal_secondary` only as capped support.
 
 ## Completion
 
-Surface concisely:
-
-- the de-identified teaching edge and the one-line correction;
-- the active rotation (service @ site) the learning was logged to;
-- whether any point was marked a local convention or remains verification-worthy;
-- card count only if cards were explicitly created.
-
-Never print memory commands, payloads, or raw stdout/stderr into the transcript.
+Surface only the de-identified teaching edge/correction, active rotation, convention or verification caveat if relevant, and card count if cards were created.

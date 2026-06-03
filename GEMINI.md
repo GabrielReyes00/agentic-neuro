@@ -21,7 +21,7 @@ Key shared contracts:
 - `.agents/shared/commands/study-review.md` — doc-anchored and memory-driven review.
 - `.agents/shared/commands/consult.md` — lecture-first clinical consult, verification, Anki, pocket-card write.
 - `.agents/shared/commands/brain-dump.md` — de-identified service-teaching capture, targeted verification, artifact-anchor memory logging, and optional later review.
-- `.agents/shared/commands/service-log.md` — ultra-light daily service-rotation capture: resolve the active rotation, log provenance-isolated service-origin learning, and teach the surfaced gap in one pass.
+- `.agents/shared/commands/service-log.md` — daily service-rotation capture with provenance-isolated memory and one-pass teaching.
 - `.agents/shared/commands/quick-answer.md` — brief direct answers with lightweight memory logging, no startup recall, and optional Anki.
 - `.agents/shared/commands/generate-report.md` — citation-dense report generation with structured research plan, source cards, coverage ledger, synthesis map, Mastery Objectives, and report validation.
 - `.agents/shared/commands/intraoperative-guide.md` — deep-research operative rehearsal guides with procedure decomposition, serial RAG, operative knowledge maps, verified Obsidian wikilinks, restrained readable formatting, adversarial expert review, gap repair, structural validation, procedure-specific Anki decks, and Mastery Objectives.
@@ -96,14 +96,14 @@ At 12+ turns in study sessions, notify user and offer digest before continuing. 
 | `Presentations/` | `/grand-rounds` | Grand rounds, case presentation, and journal club artifacts. Cases in `Presentations/Cases/`; articles in `Presentations/Articles/`; generated decks on Desktop |
 | `Consults/` | `/consult` | Focused clinical consult pocket cards for ward reference. If a prior consult on the same topic exists, a dated encounter section is appended rather than creating a duplicate |
 | `Brain Dumps/` | `/brain-dump` | De-identified teaching encountered on service; compact verified artifacts for optional active review |
-| No vault artifact | `/service-log` | Memory-durable daily service-rotation learning; uses service lens, rotation/rubric state, and one-pass teaching |
+| No vault artifact | `/service-log` | Memory-durable daily service-rotation learning; see shared contract |
 | `Reference/` | Agent (on request) | Curated reference notes (e.g., `Oral Boards Topic Bank.md`) used to seed memory-driven sessions |
 | `Concepts/` | Agent | Glossary of atomic concepts extracted by skills per `.agents/shared/commands/concept-extraction.md`. `INDEX.md` is auto-regenerated. **Protected** (never overwrite): `Neurosurgery Consult Workflow.md`, `Neurosurgery Consult Checklists by Pathology.md`, `Peripheral Nerve Injury Classifications (Seddon & Sunderland).md` |
 | `Dashboard.md` | `study_memory.py summary` | Live learner-state context: coverage, open errors, weak concepts, stale knowledge, recent sessions. **Do not hand-edit generated views.** |
 | `ACGME Readiness.md` | `study_memory.py summary` | Active readiness context comes from the learner-memory summary. **Do not hand-edit generated views.** |
 
 
-**Tags**: `skill/{report,guide,study-material,study-review,rag,consult,brain-dump,service-log,quick-answer,grand-rounds}` | `domain/{vascular,spine,tumor,trauma,functional,pediatric,peripheral-nerve,general,anatomy}` | `type/{reference,session,case,article,concept}` | `source/{agent,user}` | `service-learning` + `service/{tumor,spine,vascular,trauma,functional,pediatric,...}` + `site/{va,texas-childrens,ben-taub,md-anderson,st-lukes}` for service-rotation cards
+**Tags**: `skill/{report,guide,study-material,study-review,rag,consult,brain-dump,service-log,quick-answer,grand-rounds}` | `domain/{vascular,spine,tumor,trauma,functional,pediatric,peripheral-nerve,general,anatomy}` | `type/{reference,session,case,article,concept}` | `source/{agent,user}`
 
 ## §5 Skill -> Vault Write Rules
 
@@ -113,7 +113,7 @@ At 12+ turns in study sessions, notify user and offer digest before continuing. 
 - **grand-rounds**: `Presentations/Cases/<Title>.md` or `Presentations/Articles/<Title>.md` via `src/grand_rounds_writer.py` with `--require-quality-gate`. Scrub PHI before case writes.
 - **consult**: `Consults/<Topic Title>.md`. Focused pocket-card vault note for ward reference -- brief lecture model, not encyclopedic. Agent writes the pocket card directly. If a prior consult on the same topic exists, append an `## Encounter -- YYYY-MM-DD` section. Provenance tiering applies: source-grounded points are cited, clinical-knowledge points are labelled and high-stakes specifics carry a `⚠` verify flag (never fake-cited); pocket-card YAML records `internal_knowledge_used` + `provenance`. Dual-source Anki cards follow `anki-session-workflow.md` and `anki-card-quality.md`: lecture content + verification question misses; do not card `⚠` verify-tier specifics as settled fact. Memory recall informs teaching approach, never content omission. Include compact `## Mastery Objectives`. No H1, YAML at bottom.
 - **brain-dump**: `Brain Dumps/<Topic Title>.md`. De-identify before RAG, memory, Anki, or vault persistence; preserve teaching as `Source-grounded`, `Service teaching - locally confirm`, or `Clinical knowledge - verify`. Validate/install through `src/brain_dump_guard.py`. Its memory entry is an artifact anchor, not learner performance. Do not generate cards automatically; explicitly requested cards and later `study-review` cards anchored to this artifact route to `Neurosurgery::Brain Dumps` with tag `brain-dump`.
-- **service-log**: No vault artifact. De-identify before any processing or persistence. Resolve the active rotation, retrieve with `startup-recall --lens service`, teach the surfaced gap in one pass, then write graded service-origin answers with `log-answer --origin service`. Service-origin material is sealed out of formal review. Portable clinical gaps key to the service; `--convention` points are site-local. Explicitly requested cards route to `Neurosurgery::Service Learning` with tag `service-learning`.
+- **service-log**: No vault artifact; memory is the durable record. Follow `.agents/shared/commands/service-log.md` for rotation resolution, service-lens recall, service-origin logging, conventions, and card routing.
 - **study-review**: No vault artifact in either invocation mode (doc-anchored or memory-driven) -- the memory layer (`study_memory.py`) is the durable record. `log-answer` after each answer (with `--doc` only when reviewing a vault file); `end-session` at close.
 
 Before writing to any vault folder: ensure `INDEX.md` exists and scan existing vault files for valid wikilinks.
@@ -169,7 +169,7 @@ Default: answer directly from model knowledge. Skills are opt-in -- never auto-t
 
 ### Anki
 
-Card creation is inline in every learning skill via `anki_queue.py enqueue/check/flush` per `.agents/shared/commands/anki-session-workflow.md`. Before drafting or validating cards, read `.agents/shared/commands/anki-card-quality.md` for focused card-quality, cloze, taxonomy, and duplicate rules. There is no separate Anki runtime skill -- when the user asks to "save to Anki" or "make cards", do it inline from the current session context. `brain-dump` and `study-review` anchored to a `Brain Dumps/` artifact use the dedicated `Neurosurgery::Brain Dumps` deck to isolate institution- and experience-origin material. `service-log` cards, only when explicitly requested, route to `Neurosurgery::Service Learning` with tag `service-learning`.
+Card creation is inline in every learning skill via `anki_queue.py enqueue/check/flush` per `.agents/shared/commands/anki-session-workflow.md`. Before drafting or validating cards, read `.agents/shared/commands/anki-card-quality.md` for focused card-quality, cloze, taxonomy, and duplicate rules. There is no separate Anki runtime skill -- when the user asks to "save to Anki" or "make cards", do it inline from the current session context. Special deck routing for `brain-dump` and `service-log` lives in those shared contracts.
 
 For current-deck cleanup, rewriting, taxonomy reorganization, or Chroma rebuilds, use `.agents/shared/commands/anki-deck-maintenance.md`. Anki is ground truth; Chroma is only rebuilt from live Anki.
 
@@ -211,13 +211,9 @@ cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate &&
 # study_memory.py — active session memory (see §6 for full usage)
 startup-recall --topic "T" [--doc "<folder>/X.md"]                      # topic-specific startup retrieval; canonicalizes identity and auto-expands high-signal cards
 startup-recall --global                                                 # MEMORY-DRIVEN CUSTOM REVIEW ONLY
-startup-recall --lens service --service "S" [--site "Y"] [--rotation N] [--context "upcoming case"]  # SERVICE-LOG / service-rotation lens
-rotation-start --service "S" --site "Y" [--pgy N] [--block "label"]     # open a rotation; seeds service rubric on first touch
-rotation-current | rotation-list | rotation-end --rotation N            # rotation lifecycle
-service-rubric --service "S" [--seed] [--pgy N]                         # show or seed competency targets
+# service-log rotation/rubric commands: see .agents/shared/commands/service-log.md
 summary --topic "T" --limit 8 --scaffold-limit 2 --include-curated --include-model  # raw audit/post-session integrity read
 log-answer ... --strict-telemetry ...                                  # assessed learning: follow memory-operations.md; omit strict mode for quick-answer/artifact anchors
-log-answer ... --skill service-log --origin service [--rotation N] [--competency-target "slug"] [--convention]
 end-session --session "TS" --summary "..." --next-strategy "..." --json
 curation-status
 curate-candidates [--mode compact|detailed] [--topic "T"] [--recent-sessions N] [--limit N]

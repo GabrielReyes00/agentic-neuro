@@ -21,7 +21,7 @@ Key shared contracts:
 - `.agents/shared/commands/study-review.md` — doc-anchored and memory-driven review.
 - `.agents/shared/commands/consult.md` — lecture-first clinical consult, verification, Anki, pocket-card write.
 - `.agents/shared/commands/brain-dump.md` — de-identified service-teaching capture, targeted verification, artifact-anchor memory logging, and optional later review.
-- `.agents/shared/commands/service-log.md` — ultra-light daily service-rotation capture: resolve the active rotation, log provenance-isolated service-origin learning, and teach the surfaced gap in one pass. Anchors the service-rotation learning layer (rotations, ACGME-seeded service competency rubrics, the asymmetric service retrieval lens).
+- `.agents/shared/commands/service-log.md` — daily service-rotation capture with provenance-isolated memory and one-pass teaching.
 - `.agents/shared/commands/quick-answer.md` — brief direct answers with lightweight memory logging, no startup recall, and optional Anki.
 - `.agents/shared/commands/generate-report.md` — citation-dense report generation with structured research plan, source cards, coverage ledger, synthesis map, Mastery Objectives, and report validation.
 - `.agents/shared/commands/intraoperative-guide.md` — deep-research operative rehearsal guides with procedure decomposition, serial RAG, operative knowledge maps, verified Obsidian wikilinks, restrained readable formatting, adversarial expert review, gap repair, structural validation, procedure-specific Anki decks, and Mastery Objectives.
@@ -95,7 +95,7 @@ After Gabriel commits to an answer, reveal progressively. Grade the answer brief
 
 **Concept File Schema**: Concept files in `Concepts/` follow `.agents/shared/commands/concept-extraction.md`. The bottom YAML block is retained only for tags/aliases.
 
-**Tags**: `skill/{report,guide,study-material,study-review,rag,consult,brain-dump,service-log,quick-answer,grand-rounds}` | `domain/{vascular,spine,tumor,trauma,functional,pediatric,peripheral-nerve,general,anatomy}` | `type/{reference,session,case,article,concept}` | `source/{agent,user}` | `service-learning` + `service/{tumor,spine,vascular,trauma,functional,pediatric,...}` + `site/{va,texas-childrens,ben-taub,md-anderson,st-lukes}` (Anki service-rotation cards)
+**Tags**: `skill/{report,guide,study-material,study-review,rag,consult,brain-dump,service-log,quick-answer,grand-rounds}` | `domain/{vascular,spine,tumor,trauma,functional,pediatric,peripheral-nerve,general,anatomy}` | `type/{reference,session,case,article,concept}` | `source/{agent,user}`
 
 ## §5 Skill → Vault Write Rules
 
@@ -105,7 +105,7 @@ After Gabriel commits to an answer, reveal progressively. Grade the answer brief
 - **grand-rounds**: `Presentations/Cases/<Title>.md` or `Presentations/Articles/<Title>.md` via `src/grand_rounds_writer.py`, plus `Presentations/INDEX.md` and `data/Sessions/grand_rounds_<slug>_manifest.json`. Generated `.pptx` lives on Desktop. No H1, bottom YAML. Scrub PHI before case writes. Run the deck quality gate with `--require-quality-gate`. Rehearsal is optional; memory logging begins only if rehearsal starts.
 - **consult**: `Consults/<Topic Title>.md`. Focused pocket-card vault note for ward reference — brief lecture model, not encyclopedic. Agent writes the pocket card directly (no dedicated writer script). If a prior consult on the same topic exists, append an `## Encounter — YYYY-MM-DD` section rather than creating a duplicate. Provenance tiering applies: source-grounded points are cited, clinical-knowledge points are labelled and high-stakes specifics carry a `⚠` verify flag (never fake-cited); pocket-card YAML records `internal_knowledge_used` + `provenance`. Dual-source Anki cards follow `anki-session-workflow.md` and `anki-card-quality.md`: lecture content + verification question misses; do not card `⚠` verify-tier specifics as settled fact. Memory recall informs teaching approach, never content omission. Include compact `## Mastery Objectives`. No H1, YAML at bottom.
 - **brain-dump**: `Brain Dumps/<Topic Title>.md`. De-identify before RAG, memory, Anki, or vault persistence; preserve teaching as `Source-grounded`, `Service teaching - locally confirm`, or `Clinical knowledge - verify`. Validate/install through `src/brain_dump_guard.py`. Its memory entry is an artifact anchor, not learner performance. Do not generate cards automatically; explicitly requested cards and later `study-review` cards anchored to this artifact route to `Neurosurgery::Brain Dumps` with tag `brain-dump`.
-- **service-log**: No vault artifact — the memory layer is the durable record. De-identify before any processing or persistence (same boundaries as `brain-dump`). Resolve the active rotation (`rotation-start`/`rotation-current`), retrieve with the service lens (`startup-recall --lens service`), teach the surfaced gap in one pass, then log assessed answers with `log-answer --origin service` bound to the rotation. Service-origin memory is provenance-isolated: it never appears in the formal lens (`/study-review`, `/generate-report`, Dashboard) and never registers as `assessed` learner state. Portable clinical gaps key to the service (carry across sites/years); institutional `--convention` points key to (service x site) and are never taught as universal fact. Requested cards route to `Neurosurgery::Service Learning` with tag `service-learning`; no auto-carding, and no `--convention`/unverified high-stakes specific encoded as settled fact.
+- **service-log**: No vault artifact; memory is the durable record. Follow `.agents/shared/commands/service-log.md` for rotation resolution, service-lens recall, service-origin logging, conventions, and card routing.
 - **study-review**: No vault artifact in either invocation mode — the memory layer (`study_memory.py`) is the durable record. Doc-anchored mode reads from `Reports/`, `Study Material/`, or `Brain Dumps/`; memory-driven mode composes the session from memory summary output. Use `log-answer` after each answer; `end-session` at close.
 
 ## §6 Naming Conventions
@@ -179,7 +179,7 @@ Invariant summary: skill-driven sessions start with `study_memory.py startup-rec
 
 ### Anki
 
-Card creation is inline in every learning skill via `anki_queue.py enqueue/check/flush` per `.agents/shared/commands/anki-session-workflow.md`. Before drafting or validating cards, read `.agents/shared/commands/anki-card-quality.md` for focused card-quality, cloze, taxonomy, and duplicate rules. There is no separate Anki runtime skill — when the user asks to "save to Anki" or "make cards", do it inline from the current session context. `brain-dump` and `study-review` anchored to a `Brain Dumps/` artifact use the dedicated `Neurosurgery::Brain Dumps` deck to isolate institution- and experience-origin material. `service-log` cards (only when explicitly requested) route to `Neurosurgery::Service Learning` with tag `service-learning` to isolate daily service-rotation learning.
+Card creation is inline in every learning skill via `anki_queue.py enqueue/check/flush` per `.agents/shared/commands/anki-session-workflow.md`. Before drafting or validating cards, read `.agents/shared/commands/anki-card-quality.md` for focused card-quality, cloze, taxonomy, and duplicate rules. There is no separate Anki runtime skill — when the user asks to "save to Anki" or "make cards", do it inline from the current session context. Special deck routing for `brain-dump` and `service-log` lives in those shared contracts.
 
 For current-deck cleanup, rewriting, taxonomy reorganization, or Chroma rebuilds, use `.agents/shared/commands/anki-deck-maintenance.md`. Anki is ground truth; Chroma is only rebuilt from live Anki.
 
@@ -220,13 +220,9 @@ Follow `.agents/shared/commands/study-review.md` for the full workflow and `.age
 # study_memory.py — active session memory (see §7d for full usage)
 startup-recall --topic "T" [--doc "<folder>/X.md"]                      # topic-specific startup retrieval; canonicalizes identity and auto-expands high-signal cards
 startup-recall --global                                                 # MEMORY-DRIVEN CUSTOM REVIEW ONLY
-startup-recall --lens service --service "S" [--site "Y"] [--rotation N] [--context "upcoming case"]  # SERVICE-LOG / service-rotation lens: service gaps primary + capped domain-matched formal
-rotation-start --service "S" --site "Y" [--pgy N] [--block "label"]     # open a rotation (sole active); seeds the service rubric from ACGME on first touch
-rotation-current | rotation-list | rotation-end --rotation N            # rotation lifecycle
-service-rubric --service "S" [--seed] [--pgy N]                         # show competency targets; --seed pulls the ACGME domain slice
+# service-log rotation/rubric commands: see .agents/shared/commands/service-log.md
 summary --topic "T" --limit 8 --scaffold-limit 2 --include-curated --include-model  # raw audit/post-session integrity read
 log-answer ... --strict-telemetry ...                                  # assessed learning: follow memory-operations.md; omit strict mode for quick-answer/artifact anchors
-log-answer ... --skill service-log --origin service [--rotation N] [--competency-target "slug"] [--convention]  # provenance-isolated service-rotation learning (see service-log.md)
 end-session --session "TS" --summary "..." --next-strategy "..." --json   # --json surfaces curation.recommended for the optional post-flush curation pass
 status
 resolve-topic --topic "T" [--doc "<folder>/X.md"]

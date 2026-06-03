@@ -13,7 +13,6 @@ from pathlib import Path
 
 DEFAULT_VAULT_ROOT = Path("/Users/gabrielreyes/Documents/Obsidian/agentic-neuro")
 BRAIN_DUMP_DIRNAME = "Brain Dumps"
-INDEX_FILENAME = "INDEX.md"
 REQUIRED_HEADINGS = (
     "De-identified Teaching Trigger",
     "Extraction Map",
@@ -213,7 +212,7 @@ def validate_file(path: Path) -> ValidationResult:
     return validate_text(path.read_text(encoding="utf-8"), path=path)
 
 
-def _update_index(vault_root: Path, title: str) -> None:
+def _update_index(vault_root: Path) -> None:
     try:
         import index_builder
     except ModuleNotFoundError:  # imported as part of the `src` package
@@ -232,7 +231,7 @@ def install_draft(draft: Path, title: str, *, vault_root: Path = DEFAULT_VAULT_R
     target.write_text(draft.read_text(encoding="utf-8"), encoding="utf-8")
     installed_result = validate_file(target)
     if installed_result.ok:
-        _update_index(vault_root, safe_title)
+        _update_index(vault_root)
     return installed_result
 
 
