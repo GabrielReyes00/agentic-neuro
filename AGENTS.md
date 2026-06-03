@@ -23,6 +23,7 @@ Key shared contracts:
 - `.agents/shared/commands/study-review.md` — doc-anchored and memory-driven review.
 - `.agents/shared/commands/consult.md` — lecture-first clinical consult, verification, Anki, pocket-card write, provenance-tiered citations.
 - `.agents/shared/commands/brain-dump.md` — de-identified service-teaching capture, targeted verification, artifact-anchor memory logging, and optional later review.
+- `.agents/shared/commands/service-log.md` — ultra-light daily service-rotation capture: resolve the active rotation, log provenance-isolated service-origin learning, and teach the surfaced gap in one pass.
 - `.agents/shared/commands/quick-answer.md` — brief direct answers with lightweight memory logging, no startup recall, and optional Anki.
 - `.agents/shared/commands/generate-report.md` — citation-dense report generation with structured research plan, source cards, coverage ledger, synthesis map, provenance tiering, Mastery Objectives, and validator gate.
 - `.agents/shared/commands/intraoperative-guide.md` — deep-research operative rehearsal guides with procedure decomposition, serial RAG, operative knowledge maps, verified Obsidian wikilinks, restrained readable formatting, adversarial expert review, gap repair, structural validation, procedure-specific Anki decks, and Mastery Objectives.
@@ -92,11 +93,13 @@ Explicit or obvious workflow trigger:
 - Study material or quiz from a file -> `study-material`
 - Research report, comprehensive review, deep-dive on a topic -> `generate-report` (produces an encyclopedic, citation-dense reference document; not learner-tailored)
 - Focused clinical question, ward knowledge gap, curbside consult, or management question that should produce a reusable pocket card -> `consult` (brief expert lecture + verification questions + pocket-card vault note; not encyclopedic)
+- `/service-log`, "today on [service] at [site], I managed/learned...", daily service-rotation debrief, or "log my day on service" -> `service-log` (memory-durable service learning, no vault artifact; service lens + one-pass teaching)
 - `/brain-dump`, "capture what I learned on shift", "senior corrected me on service", or "ward teaching lesson" -> `brain-dump` (de-identify first; verified compact artifact for later review; capture is not mastery)
 - Grand rounds, case presentation, or journal club deck -> `grand-rounds`
 
 Anki: card creation is inline in every learning skill via `anki_queue.py enqueue/check/flush` and follows `.agents/shared/commands/anki-session-workflow.md` plus `.agents/shared/commands/anki-card-quality.md`. There is no separate Anki runtime skill.
 Cards originating from `brain-dump` capture or later review of a `Brain Dumps/` artifact route to the dedicated `Neurosurgery::Brain Dumps` deck with `brain-dump` provenance tags, rather than topic-based textbook/reference decks.
+Cards explicitly requested from `service-log` route to `Neurosurgery::Service Learning` with tag `service-learning`; do not card local conventions or unverified high-stakes specifics as settled universal fact.
 
 Current-deck cleanup, card rewriting, taxonomy reorganization, and Chroma rebuilds use the separate `.agents/shared/commands/anki-deck-maintenance.md` workflow. Do not let Chroma suppress cards as ground truth; rebuild it from live Anki after approved deck edits.
 
@@ -132,3 +135,7 @@ If the user exits abruptly, finalize with available data and do not claim full c
 ## Artifact Mastery Objectives
 
 Generated `Reports/`, `Consults/`, `Brain Dumps/`, and `Operative Guides/` artifacts include a `## Mastery Objectives` section per their shared command contracts. `study-review --doc` must read the full document first and use Mastery Objectives only as a coverage checksum, never as a substitute for the source body.
+
+## Service-Rotation Commands
+
+Service learning lives in the same `data/study_memory.db` but is provenance-isolated from formal review. Use `startup-recall --lens service --service "<service>" [--site "<site>"] [--rotation N] [--context "..."]` only for `/service-log` or manual anticipatory service review. Use `rotation-start --service "<service>" --site "<site>" [--pgy N] [--block "..."]`, `rotation-current`, `rotation-list`, `rotation-end --rotation N`, and `service-rubric --service "<service>" [--seed] [--pgy N]` for rotation/rubric lifecycle. Service-origin writes use `log-answer ... --skill service-log --origin service [--rotation N] [--competency-target "<slug>"] [--convention]`.

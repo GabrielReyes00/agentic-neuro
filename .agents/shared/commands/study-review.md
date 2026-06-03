@@ -103,6 +103,8 @@ cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
 python3 src/study_memory.py startup-recall --topic "<doc topic>" --doc "<folder>/<file>.md"
 ```
 
+This is the **formal lens** (the default). Doc-anchored and memory-driven study review read standardized, assessed learner state only; service-rotation material is sealed out and must not surface here. Never pass `--lens service` from `/study-review` — service-origin gaps and institutional conventions belong to `/service-log`, not to formal document review.
+
 Follow the pre-session verification protocol from `memory-operations.md` before proceeding. `SESSION_TS` is set per `memory-operations.md` at the first learner-facing question.
 
 Use the memory summary output to build your teaching plan per `memory-retrieval.md`. If this is a returning session, open with a one-sentence recap and move directly to questioning — do not re-explain known material. If this is a new topic, start at the beginning of the document.

@@ -71,10 +71,10 @@ mkdir -p "data/Sessions/<Title>"
 
 ```bash
 cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
-python3 src/study_memory.py summary --topic "<topic>" --limit 8 --scaffold-limit 2 --include-curated
+python3 src/study_memory.py summary --lens formal --topic "<topic>" --limit 8 --scaffold-limit 2 --include-curated
 ```
 
-The sole purpose of memory summary here is to surface existing related memory/report anchors on overlapping subject matter so the new report can reference them via wikilink rather than duplicate their coverage. `--include-curated` lets curated cross-session summaries also surface — useful for noticing if a thematic pattern (e.g., "stroke BP thresholds remain a fault line") suggests the new report should foreground that material. Do not use summary to assess what the learner knows or to compress depth — these reports are not learner-tailored.
+The sole purpose of memory summary here is to surface existing related memory/report anchors on overlapping subject matter so the new report can reference them via wikilink rather than duplicate their coverage. This is the formal lens: service-origin gaps and site conventions are excluded from report discovery. `--include-curated` lets curated cross-session summaries also surface — useful for noticing if a thematic pattern (e.g., "stroke BP thresholds remain a fault line") suggests the new report should foreground that material. Do not use summary to assess what the learner knows or to compress depth — these reports are not learner-tailored.
 
 ### Step 2: Vault scan for cross-citation targets (silent)
 

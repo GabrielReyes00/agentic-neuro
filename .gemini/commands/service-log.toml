@@ -1,0 +1,13 @@
+description = "Ultra-light daily service-rotation capture with service memory and one-pass teaching"
+
+prompt = """
+ACTIVE COMMAND: /service-log - Capture service-rotation learning and teach the surfaced gap.
+
+You MUST read and follow `.agents/shared/commands/service-log.md`.
+
+User's input: {{args}}
+
+---
+
+@{.gemini/commands/service-log.md}
+"""

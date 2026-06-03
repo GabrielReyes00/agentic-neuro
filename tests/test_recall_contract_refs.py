@@ -44,6 +44,46 @@ class RecallContractReferenceTests(unittest.TestCase):
                 self.assertIn("startup-recall", text)
                 self.assertIn("Raw `summary`", text)
 
+    def test_service_log_adapters_point_to_shared_contract(self) -> None:
+        paths = (
+            ".agents/codex/skills/service-log/SKILL.md",
+            ".claude/commands/service-log.md",
+            ".gemini/commands/service-log.md",
+            ".gemini/commands/service-log.toml",
+            "plugins/agentic-neuro/commands/service-log.md",
+        )
+        for relative_path in paths:
+            with self.subTest(path=relative_path):
+                text = (ROOT / relative_path).read_text()
+                self.assertIn(".agents/shared/commands/service-log.md", text)
+
+    def test_service_log_contract_references_real_memory_commands(self) -> None:
+        contract = (ROOT / ".agents/shared/commands/service-log.md").read_text()
+        implementation = (ROOT / "src/study_memory.py").read_text()
+        for command in (
+            "rotation-current",
+            "rotation-start",
+            "startup-recall",
+            "log-answer",
+            "end-session",
+        ):
+            with self.subTest(command=command):
+                self.assertIn(command, contract)
+                self.assertIn(command, implementation)
+        for flag in ("--lens", "--origin"):
+            with self.subTest(flag=flag):
+                self.assertIn(flag, contract)
+                self.assertIn(flag, implementation)
+        self.assertIn("service", implementation)
+
+    def test_root_agent_instructions_route_service_log(self) -> None:
+        for relative_path in ("AGENTS.md", "CLAUDE.md", "GEMINI.md"):
+            with self.subTest(path=relative_path):
+                text = (ROOT / relative_path).read_text()
+                self.assertIn("service-log", text)
+                self.assertIn("startup-recall --lens service", text)
+                self.assertIn("Neurosurgery::Service Learning", text)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -181,6 +181,8 @@ CREATE TABLE IF NOT EXISTS exchanges (
     doc_path TEXT DEFAULT '',
     skill TEXT DEFAULT '',
     source_json TEXT NOT NULL DEFAULT '{}',
+    origin TEXT NOT NULL DEFAULT 'assessed',
+    rotation_id INTEGER,
     FOREIGN KEY(topic_id) REFERENCES topics(id),
     FOREIGN KEY(concept_id) REFERENCES concepts(id)
 );
@@ -204,6 +206,8 @@ CREATE TABLE IF NOT EXISTS claim_results (
     learning_operation TEXT NOT NULL DEFAULT '',
     agent_signal_json TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL DEFAULT '',
+    origin TEXT NOT NULL DEFAULT 'assessed',
+    rotation_id INTEGER,
     FOREIGN KEY(exchange_id) REFERENCES exchanges(id),
     FOREIGN KEY(topic_id) REFERENCES topics(id),
     FOREIGN KEY(concept_id) REFERENCES concepts(id)
@@ -228,6 +232,8 @@ CREATE TABLE IF NOT EXISTS claim_state (
     difficulty REAL NOT NULL DEFAULT 0.3,
     stability REAL NOT NULL DEFAULT 1.0,
     reason TEXT NOT NULL DEFAULT '',
+    origin TEXT NOT NULL DEFAULT 'assessed',
+    rotation_id INTEGER,
     UNIQUE(topic_id, concept_id, claim_slug),
     FOREIGN KEY(topic_id) REFERENCES topics(id),
     FOREIGN KEY(concept_id) REFERENCES concepts(id),
@@ -417,6 +423,54 @@ CREATE TABLE IF NOT EXISTS shadow_rule_checks (
     FOREIGN KEY(claim_result_id) REFERENCES claim_results(id)
 );
 CREATE INDEX IF NOT EXISTS idx_shadow_rule_checks_rule ON shadow_rule_checks(shadow_rule_id);
+
+CREATE TABLE IF NOT EXISTS sites (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    slug TEXT NOT NULL UNIQUE,
+    display_name TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS services (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    slug TEXT NOT NULL UNIQUE,
+    display_name TEXT NOT NULL,
+    domain TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS rotations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    service_id INTEGER NOT NULL,
+    site_id INTEGER NOT NULL,
+    pgy INTEGER,
+    block_label TEXT NOT NULL DEFAULT '',
+    started TEXT NOT NULL DEFAULT '',
+    ended TEXT NOT NULL DEFAULT '',
+    active INTEGER NOT NULL DEFAULT 1,
+    FOREIGN KEY(service_id) REFERENCES services(id),
+    FOREIGN KEY(site_id) REFERENCES sites(id)
+);
+CREATE INDEX IF NOT EXISTS idx_memory_rotations_service ON rotations(service_id);
+CREATE INDEX IF NOT EXISTS idx_memory_rotations_active ON rotations(active);
+
+CREATE TABLE IF NOT EXISTS competency_targets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    service_id INTEGER NOT NULL,
+    slug TEXT NOT NULL,
+    text TEXT NOT NULL,
+    domain TEXT NOT NULL DEFAULT '',
+    origin TEXT NOT NULL DEFAULT 'acgme' CHECK(origin IN ('acgme', 'chief', 'attending', 'emergent')),
+    pgy_target INTEGER,
+    priority TEXT NOT NULL DEFAULT 'core',
+    status TEXT NOT NULL DEFAULT 'open',
+    site_id INTEGER,
+    created_at TEXT NOT NULL DEFAULT '',
+    UNIQUE(service_id, slug),
+    FOREIGN KEY(service_id) REFERENCES services(id),
+    FOREIGN KEY(site_id) REFERENCES sites(id)
+);
+CREATE INDEX IF NOT EXISTS idx_memory_competency_targets_service ON competency_targets(service_id);
 """
 
 
@@ -449,6 +503,16 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE claim_state ADD COLUMN difficulty REAL NOT NULL DEFAULT 0.3")
     if "stability" not in columns:
         conn.execute("ALTER TABLE claim_state ADD COLUMN stability REAL NOT NULL DEFAULT 1.0")
+    # Provenance discriminator for the service-rotation learning layer. Existing rows
+    # backfill to 'assessed' so the formal lens (and every pre-existing query that reads
+    # claim_state) is unchanged; service-origin gaps are added with origin='service'.
+    for table in ("claim_state", "claim_results", "exchanges"):
+        cols = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if "origin" not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN origin TEXT NOT NULL DEFAULT 'assessed'")
+        if "rotation_id" not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN rotation_id INTEGER")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_claim_state_origin ON claim_state(origin)")
     _backfill_memory_schedule(conn)
     _normalize_session_cards(conn)
 
@@ -827,6 +891,382 @@ def _load_curriculum_catalog() -> list[tuple[str, str, set[str]]]:
         out = []
     _CATALOG_CACHE = out
     return out
+
+
+# ---------------------------------------------------------------------------
+# Service-rotation learning layer
+#
+# A rotation is a lived instance = (service x site x time block). Competencies
+# and clinical service-origin gaps key to the *service* (so they carry across
+# sites and PGY years); local conventions key to (service x site). Service
+# learning lives in the same DB as formal/assessed study but is provenance-
+# isolated via claim_state.origin so it never leaks into formal doc/topic review.
+# ---------------------------------------------------------------------------
+
+SERVICE_ALIASES = {
+    "onc": "tumor", "oncology": "tumor", "neuro onc": "tumor",
+    "neuro oncology": "tumor", "neurooncology": "tumor", "brain tumor": "tumor",
+    "peds": "pediatric", "pediatrics": "pediatric", "pediatric": "pediatric",
+    "neurocritical care": "critical-care", "neurocritical": "critical-care",
+    "nccu": "critical-care", "icu": "critical-care", "critical care": "critical-care",
+    "epilepsy": "functional", "movement": "functional",
+    "movement disorders": "functional", "dbs": "functional", "stereotactic": "functional",
+    "nerve": "peripheral-nerve", "peripheral nerve": "peripheral-nerve",
+    "endovascular": "vascular", "cerebrovascular": "vascular", "open vascular": "vascular",
+}
+
+SITE_ALIASES = {
+    "va": "va", "michael e debakey va": "va", "debakey va": "va", "debakey": "va", "mevamc": "va",
+    "tch": "texas-childrens", "texas children s": "texas-childrens",
+    "texas childrens": "texas-childrens", "childrens": "texas-childrens",
+    "ben taub": "ben-taub", "bt": "ben-taub", "bentaub": "ben-taub",
+    "md anderson": "md-anderson", "mda": "md-anderson", "anderson": "md-anderson",
+    "st luke s": "st-lukes", "st lukes": "st-lukes", "saint lukes": "st-lukes",
+    "st luke": "st-lukes", "baylor st lukes": "st-lukes", "bslmc": "st-lukes",
+}
+
+SITE_DISPLAY = {
+    "va": "Michael E. DeBakey VA Medical Center",
+    "texas-childrens": "Texas Children's Hospital",
+    "ben-taub": "Ben Taub Hospital",
+    "md-anderson": "MD Anderson Cancer Center",
+    "st-lukes": "Baylor St. Luke's Medical Center",
+}
+
+
+def _normalize_service(raw: str) -> str:
+    """Return a canonical service/domain slug for a free-text service name."""
+    base = re.sub(r"\b(service|rotation|team)\b", " ", _normalize(raw))
+    base = re.sub(r"\s+", " ", base).strip()
+    if base in SERVICE_ALIASES:
+        return SERVICE_ALIASES[base]
+    domain = _domain_from_catalog(base)
+    if domain != "general":
+        return domain
+    return _slug(base)
+
+
+def _normalize_site(raw: str) -> str:
+    base = re.sub(r"\b(hospital|medical center|the)\b", " ", _normalize(raw))
+    base = re.sub(r"\s+", " ", base).strip()
+    return SITE_ALIASES.get(base, _slug(base))
+
+
+def _resolve_or_create_service(conn: sqlite3.Connection, raw: str, now: str) -> sqlite3.Row:
+    slug = _normalize_service(raw)
+    row = conn.execute("SELECT * FROM services WHERE slug = ?", (slug,)).fetchone()
+    if row:
+        return row
+    conn.execute(
+        "INSERT INTO services (slug, display_name, domain, created_at) VALUES (?, ?, ?, ?)",
+        (slug, _display(slug), slug, now),
+    )
+    return conn.execute("SELECT * FROM services WHERE slug = ?", (slug,)).fetchone()
+
+
+def _resolve_or_create_site(conn: sqlite3.Connection, raw: str, now: str) -> sqlite3.Row:
+    slug = _normalize_site(raw)
+    row = conn.execute("SELECT * FROM sites WHERE slug = ?", (slug,)).fetchone()
+    if row:
+        return row
+    conn.execute(
+        "INSERT INTO sites (slug, display_name, created_at) VALUES (?, ?, ?)",
+        (slug, SITE_DISPLAY.get(slug, _display(slug)), now),
+    )
+    return conn.execute("SELECT * FROM sites WHERE slug = ?", (slug,)).fetchone()
+
+
+def _service_for_rotation(conn: sqlite3.Connection, rotation_id: int) -> sqlite3.Row | None:
+    return conn.execute(
+        """SELECT s.* FROM services s
+             JOIN rotations r ON r.service_id = s.id
+            WHERE r.id = ?""",
+        (int(rotation_id),),
+    ).fetchone()
+
+
+def _site_for_rotation(conn: sqlite3.Connection, rotation_id: int) -> sqlite3.Row | None:
+    return conn.execute(
+        """SELECT st.* FROM sites st
+             JOIN rotations r ON r.site_id = st.id
+            WHERE r.id = ?""",
+        (int(rotation_id),),
+    ).fetchone()
+
+
+def _seed_service_rubric(
+    conn: sqlite3.Connection, *, service_id: int, service_domain: str, pgy: int | None, now: str
+) -> int:
+    """Seed competency_targets for a service from the ACGME catalog domain slice.
+
+    Targets key to the service (origin='acgme'); idempotent via UNIQUE(service_id, slug).
+    """
+    try:
+        data = json.loads(CURRICULUM_CATALOG_PATH.read_text())
+    except (OSError, json.JSONDecodeError):
+        return 0
+    seeded = 0
+    for milestone in data.get("milestones", {}).values():
+        for topic in milestone.get("topics", []):
+            title = str(topic.get("title") or "").strip()
+            if not title:
+                continue
+            if _domain_from_catalog(str(topic.get("domain") or "")) != service_domain:
+                continue
+            target = topic.get("pgy_target")
+            if pgy is not None and isinstance(target, int) and target > pgy:
+                continue
+            cur = conn.execute(
+                """INSERT OR IGNORE INTO competency_targets
+                   (service_id, slug, text, domain, origin, pgy_target, priority, status, created_at)
+                   VALUES (?, ?, ?, ?, 'acgme', ?, ?, 'open', ?)""",
+                (
+                    service_id, _slug(title), title, service_domain,
+                    target if isinstance(target, int) else None,
+                    str(topic.get("priority") or "core"), now,
+                ),
+            )
+            seeded += cur.rowcount
+    return seeded
+
+
+def _rotation_view(conn: sqlite3.Connection, row: sqlite3.Row | None) -> dict[str, object] | None:
+    if row is None:
+        return None
+    service = conn.execute("SELECT slug, display_name, domain FROM services WHERE id = ?", (row["service_id"],)).fetchone()
+    site = conn.execute("SELECT slug, display_name FROM sites WHERE id = ?", (row["site_id"],)).fetchone()
+    return {
+        "rotation_id": int(row["id"]),
+        "service": service["slug"] if service else "",
+        "service_display": service["display_name"] if service else "",
+        "domain": service["domain"] if service else "",
+        "site": site["slug"] if site else "",
+        "site_display": site["display_name"] if site else "",
+        "pgy": row["pgy"],
+        "block_label": row["block_label"],
+        "started": row["started"],
+        "ended": row["ended"],
+        "active": bool(row["active"]),
+    }
+
+
+def start_rotation(
+    conn: sqlite3.Connection, *, service: str, site: str,
+    pgy: int | None = None, block_label: str = "", now: str | None = None,
+) -> dict[str, object]:
+    """Open a rotation, make it the sole active one, and seed its service rubric on first touch."""
+    now = now or datetime.now(timezone.utc).isoformat()
+    service_row = _resolve_or_create_service(conn, service, now)
+    site_row = _resolve_or_create_site(conn, site, now)
+    existing_targets = int(
+        conn.execute("SELECT COUNT(*) FROM competency_targets WHERE service_id = ?", (service_row["id"],)).fetchone()[0]
+    )
+    seeded = 0
+    if existing_targets == 0:
+        seeded = _seed_service_rubric(
+            conn, service_id=int(service_row["id"]), service_domain=service_row["domain"], pgy=pgy, now=now
+        )
+    conn.execute("UPDATE rotations SET active = 0 WHERE active = 1")
+    conn.execute(
+        """INSERT INTO rotations (service_id, site_id, pgy, block_label, started, active)
+           VALUES (?, ?, ?, ?, ?, 1)""",
+        (service_row["id"], site_row["id"], pgy, block_label, now),
+    )
+    rotation_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+    conn.commit()
+    view = _rotation_view(conn, conn.execute("SELECT * FROM rotations WHERE id = ?", (rotation_id,)).fetchone())
+    assert view is not None
+    view["rubric_seeded"] = seeded
+    view["rubric_total"] = existing_targets + seeded
+    return view
+
+
+def current_rotation(conn: sqlite3.Connection) -> dict[str, object] | None:
+    row = conn.execute("SELECT * FROM rotations WHERE active = 1 ORDER BY id DESC LIMIT 1").fetchone()
+    return _rotation_view(conn, row)
+
+
+def list_rotations(conn: sqlite3.Connection) -> list[dict[str, object]]:
+    rows = conn.execute("SELECT * FROM rotations ORDER BY active DESC, id DESC").fetchall()
+    return [view for view in (_rotation_view(conn, r) for r in rows) if view is not None]
+
+
+def end_rotation(conn: sqlite3.Connection, *, rotation_id: int, now: str | None = None) -> dict[str, object] | None:
+    now = now or datetime.now(timezone.utc).isoformat()
+    conn.execute("UPDATE rotations SET active = 0, ended = ? WHERE id = ?", (now, int(rotation_id)))
+    conn.commit()
+    return _rotation_view(conn, conn.execute("SELECT * FROM rotations WHERE id = ?", (int(rotation_id),)).fetchone())
+
+
+def service_rubric_view(
+    conn: sqlite3.Connection, *, service: str, seed: bool = False, pgy: int | None = None
+) -> dict[str, object]:
+    now = datetime.now(timezone.utc).isoformat()
+    service_row = _resolve_or_create_service(conn, service, now)
+    seeded = 0
+    if seed:
+        seeded = _seed_service_rubric(
+            conn, service_id=int(service_row["id"]), service_domain=service_row["domain"], pgy=pgy, now=now
+        )
+        conn.commit()
+    targets = conn.execute(
+        """SELECT slug, text, origin, pgy_target, priority, status, site_id
+             FROM competency_targets WHERE service_id = ?
+            ORDER BY CASE status WHEN 'open' THEN 0 WHEN 'developing' THEN 1 ELSE 2 END,
+                     CASE priority WHEN 'core' THEN 0 WHEN 'important' THEN 1 ELSE 2 END,
+                     pgy_target ASC, slug ASC""",
+        (service_row["id"],),
+    ).fetchall()
+    return {
+        "service": service_row["slug"],
+        "service_display": service_row["display_name"],
+        "domain": service_row["domain"],
+        "rubric_seeded": seeded,
+        "competency_targets": [
+            {
+                "slug": t["slug"], "text": t["text"], "origin": t["origin"],
+                "pgy_target": t["pgy_target"], "priority": t["priority"], "status": t["status"],
+            }
+            for t in targets
+        ],
+    }
+
+
+def service_recall(
+    conn: sqlite3.Connection, *, service: str = "", site: str = "",
+    rotation_id: int | None = None, context: str = "", limit: int = 8,
+) -> str:
+    """Service-lens retrieval: service-origin gaps primary, capped domain-matched formal secondary.
+
+    The asymmetric counterpart to retrieval_summary (the formal lens). Clinical service
+    gaps carry across sites/years (keyed to the service); conventions are site-local;
+    domain-matched assessed weaknesses are admitted but capped so they inform, not dominate.
+    """
+    limit = max(0, limit)
+    rotation = None
+    if rotation_id:
+        rotation = conn.execute("SELECT * FROM rotations WHERE id = ?", (int(rotation_id),)).fetchone()
+    elif not service:
+        rotation = conn.execute("SELECT * FROM rotations WHERE active = 1 ORDER BY id DESC LIMIT 1").fetchone()
+    if rotation is not None:
+        service_row = conn.execute("SELECT * FROM services WHERE id = ?", (rotation["service_id"],)).fetchone()
+        site_row = conn.execute("SELECT * FROM sites WHERE id = ?", (rotation["site_id"],)).fetchone()
+    else:
+        service_row = (
+            conn.execute("SELECT * FROM services WHERE slug = ?", (_normalize_service(service),)).fetchone()
+            if service else None
+        )
+        site_row = (
+            conn.execute("SELECT * FROM sites WHERE slug = ?", (_normalize_site(site),)).fetchone()
+            if site else None
+        )
+    if service_row is None:
+        return json.dumps({
+            "lens": "service",
+            "resolution_warning": f"No service resolved for {service or 'active rotation'!r}. "
+                                  "Start a rotation with rotation-start or pass --service.",
+            "service_gaps": [], "conventions": [], "formal_secondary": [], "rubric_open": [],
+            "counts": {"service_gaps": 0, "conventions": 0, "formal_secondary": 0, "rubric_open": 0},
+        }, indent=2)
+
+    service_id = int(service_row["id"])
+    domain = service_row["domain"]
+    current_site_id = int(site_row["id"]) if site_row else None
+
+    gap_rows = conn.execute(
+        """SELECT cs.id, cs.claim_text, cs.state, cs.priority, cs.next_due_ts,
+                  cs.rotation_id, t.canonical_slug AS topic, c.display_name AS concept
+             FROM claim_state cs
+             JOIN rotations r ON r.id = cs.rotation_id
+             JOIN topics t ON t.id = cs.topic_id
+             JOIN concepts c ON c.id = cs.concept_id
+            WHERE cs.origin = 'service' AND r.service_id = ? AND cs.gap_type != 'convention'
+            ORDER BY CASE cs.state WHEN 'missed' THEN 0 WHEN 'regressed' THEN 0
+                                   WHEN 'partially_repaired' THEN 1 ELSE 2 END,
+                     CASE cs.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1
+                                      WHEN 'medium' THEN 2 ELSE 3 END,
+                     COALESCE(NULLIF(cs.next_due_ts, ''), '9999') ASC
+            LIMIT ?""",
+        (service_id, limit),
+    ).fetchall()
+
+    convention_rows: list[sqlite3.Row] = []
+    if current_site_id is not None:
+        convention_rows = conn.execute(
+            """SELECT cs.id, cs.claim_text, cs.state, cs.priority,
+                      t.canonical_slug AS topic, c.display_name AS concept
+                 FROM claim_state cs
+                 JOIN rotations r ON r.id = cs.rotation_id
+                 JOIN topics t ON t.id = cs.topic_id
+                 JOIN concepts c ON c.id = cs.concept_id
+                WHERE cs.origin = 'service' AND cs.gap_type = 'convention'
+                  AND r.service_id = ? AND r.site_id = ?
+                ORDER BY cs.last_seen_ts DESC LIMIT ?""",
+            (service_id, current_site_id, limit),
+        ).fetchall()
+
+    cap = max(0, min(5, limit))
+    formal_rows = conn.execute(
+        """SELECT cs.id, cs.claim_text, cs.state, cs.priority,
+                  t.canonical_slug AS topic, c.display_name AS concept
+             FROM claim_state cs
+             JOIN topics t ON t.id = cs.topic_id
+             JOIN concepts c ON c.id = cs.concept_id
+            WHERE cs.origin = 'assessed' AND t.domain = ?
+              AND cs.state IN ('missed', 'partially_repaired', 'regressed')
+            ORDER BY CASE cs.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1
+                                      WHEN 'medium' THEN 2 ELSE 3 END,
+                     cs.last_seen_ts DESC
+            LIMIT ?""",
+        (domain, cap),
+    ).fetchall()
+
+    rubric_rows = conn.execute(
+        """SELECT slug, text, origin, pgy_target, priority, status
+             FROM competency_targets
+            WHERE service_id = ? AND status IN ('open', 'developing')
+            ORDER BY CASE status WHEN 'developing' THEN 0 ELSE 1 END,
+                     CASE priority WHEN 'core' THEN 0 WHEN 'important' THEN 1 ELSE 2 END,
+                     pgy_target ASC LIMIT ?""",
+        (service_id, limit),
+    ).fetchall()
+
+    def _gap(row: sqlite3.Row, gap_origin: str) -> dict[str, object]:
+        return {
+            "claim_state_id": int(row["id"]), "origin": gap_origin,
+            "topic": row["topic"], "concept": row["concept"], "claim": row["claim_text"],
+            "state": row["state"], "priority": row["priority"],
+        }
+
+    payload = {
+        "lens": "service",
+        "service": service_row["slug"],
+        "service_display": service_row["display_name"],
+        "domain": domain,
+        "site": site_row["slug"] if site_row else "",
+        "site_display": site_row["display_name"] if site_row else "",
+        "rotation_id": int(rotation["id"]) if rotation else None,
+        "context": context,
+        "weighting_policy": (
+            "Lead with service_gaps (primary). conventions are site-local practice. "
+            "formal_secondary is capped, domain-matched assessed study admitted to inform "
+            "question design and depth but never to dominate the session. rubric_open lists "
+            "untouched or developing competencies worth steering toward."
+        ),
+        "service_gaps": [_gap(r, "service") for r in gap_rows],
+        "conventions": [_gap(r, "service") for r in convention_rows],
+        "formal_secondary": [_gap(r, "assessed") for r in formal_rows],
+        "rubric_open": [
+            {"slug": r["slug"], "text": r["text"], "origin": r["origin"],
+             "priority": r["priority"], "status": r["status"]}
+            for r in rubric_rows
+        ],
+        "counts": {
+            "service_gaps": len(gap_rows), "conventions": len(convention_rows),
+            "formal_secondary": len(formal_rows), "rubric_open": len(rubric_rows),
+        },
+    }
+    return json.dumps(payload, indent=2)
 
 
 def _catalog_match(hint_tokens: set[str]) -> tuple[float, str, str] | None:
@@ -1474,13 +1914,17 @@ def _find_matching_claim_state(
     claim_text: str,
     corrected_rule: str,
     agent_signal: dict[str, str],
+    origin: str = "assessed",
+    claim_slug_prefix: str = "",
 ) -> sqlite3.Row | None:
+    # Matching is scoped to the same provenance: a service-origin gap never binds
+    # to an assessed claim (or vice versa), even when they share a topic and tokens.
     exact = conn.execute(
         """SELECT id, claim_slug, claim_text, state, reason, difficulty, stability
            FROM claim_state
-           WHERE topic_id = ? AND claim_slug = ?
+           WHERE topic_id = ? AND claim_slug = ? AND origin = ?
            ORDER BY last_seen_ts DESC LIMIT 1""",
-        (topic_id, claim_slug),
+        (topic_id, claim_slug, origin),
     ).fetchone()
     if exact:
         return exact
@@ -1491,12 +1935,17 @@ def _find_matching_claim_state(
         return None
     if not expected_edge and len(_tokens(corrected_rule)) < 5:
         return None
+    params: list[object] = [topic_id, origin]
+    prefix_filter = ""
+    if claim_slug_prefix:
+        prefix_filter = " AND claim_slug LIKE ?"
+        params.append(f"{claim_slug_prefix}%")
     rows = conn.execute(
-        """SELECT id, claim_slug, claim_text, state, reason, difficulty, stability
-           FROM claim_state
-           WHERE topic_id = ?
-           ORDER BY last_seen_ts DESC LIMIT 30""",
-        (topic_id,),
+        f"""SELECT id, claim_slug, claim_text, state, reason, difficulty, stability
+            FROM claim_state
+            WHERE topic_id = ? AND origin = ?{prefix_filter}
+            ORDER BY last_seen_ts DESC LIMIT 30""",
+        params,
     ).fetchall()
     best: tuple[float, sqlite3.Row] | None = None
     for row in rows:
@@ -1591,9 +2040,25 @@ def _log_claim_result(
     match_claim_state_id: int | None = None,
     force_new_claim: bool = False,
     repairs_claim_state_ids: tuple[int, ...] = (),
+    origin: str = "assessed",
+    rotation_id: int | None = None,
+    service_slug: str = "",
+    site_slug: str = "",
+    convention: bool = False,
 ) -> int:
     claim_text = _derive_claim(concept=concept, tested_claim=tested_claim, corrected_rule=corrected_rule, correction=correction)
     claim_slug = _slug(claim_text)
+    # Service-origin claims live in a separate identity namespace so they never
+    # collide with assessed claims on UNIQUE(topic_id, concept_id, claim_slug) and
+    # never bind to them. Conventions are (service x site) local practice, tagged so
+    # the service lens can keep them from carrying to another site.
+    claim_slug_prefix = ""
+    if origin == "service":
+        if convention:
+            claim_slug_prefix = f"svc-{service_slug}-{site_slug}-convention-"
+        else:
+            claim_slug_prefix = f"svc-{service_slug}-"
+        claim_slug = f"{claim_slug_prefix}{claim_slug}"
     learner = learner_claim.strip() or _first_sentence(answer, "No learner answer captured.")
     missing = missing_edge.strip()
     fixed_rule = corrected_rule.strip() or correction.strip()
@@ -1603,7 +2068,7 @@ def _log_claim_result(
         missing = misconception.strip() or _first_sentence(correction)
     if score < 2 and not consequence:
         consequence = "Future review should target this missing edge because it changes management or discrimination."
-    gap_type = _normalize_gap_type(error_type, score, missing)
+    gap_type = "convention" if convention else _normalize_gap_type(error_type, score, missing)
     # Claim identity is the agent's call when it knows. The agent assesses whether
     # this answer revisits a tracked claim or opens a new one — token overlap
     # cannot reliably make that distinction. Resolution order:
@@ -1630,6 +2095,8 @@ def _log_claim_result(
             claim_text=claim_text,
             corrected_rule=fixed_rule,
             agent_signal=agent_signal,
+            origin=origin,
+            claim_slug_prefix=claim_slug_prefix,
         )
     if existing and existing["claim_slug"] != claim_slug:
         claim_slug = existing["claim_slug"]
@@ -1637,8 +2104,9 @@ def _log_claim_result(
         """INSERT INTO claim_results
            (exchange_id, topic_id, concept_id, claim_slug, claim_text, score, gap_type,
             learner_claim, missing_edge, corrected_rule, clinical_consequence,
-            retest_prompt_shape, learning_operation, agent_signal_json, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            retest_prompt_shape, learning_operation, agent_signal_json, created_at,
+            origin, rotation_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             exchange_id,
             topic_id,
@@ -1655,6 +2123,8 @@ def _log_claim_result(
             _learning_operation(concept, claim_text, learning_operation),
             json.dumps(agent_signal, sort_keys=True),
             now,
+            origin,
+            rotation_id,
         ),
     )
     result_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
@@ -1682,17 +2152,19 @@ def _log_claim_result(
             """UPDATE claim_state
                SET claim_text = ?, state = ?, priority = ?, gap_type = ?,
                    last_result_id = ?, source_result_id = COALESCE(source_result_id, ?),
-                   last_seen_ts = ?, next_due_ts = ?, difficulty = ?, stability = ?, reason = ?
+                   last_seen_ts = ?, next_due_ts = ?, difficulty = ?, stability = ?, reason = ?,
+                   rotation_id = COALESCE(?, rotation_id)
                WHERE id = ?""",
-            (claim_text, state, priority, gap_type, result_id, result_id, now, next_due_ts, difficulty, stability, reason, state_id),
+            (claim_text, state, priority, gap_type, result_id, result_id, now, next_due_ts, difficulty, stability, reason, rotation_id, state_id),
         )
     else:
         conn.execute(
             """INSERT INTO claim_state
                (topic_id, concept_id, claim_slug, claim_text, state, priority, gap_type,
-                last_result_id, source_result_id, last_seen_ts, next_due_ts, difficulty, stability, reason)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (topic_id, concept_id, claim_slug, claim_text, state, priority, gap_type, result_id, result_id, now, next_due_ts, difficulty, stability, reason),
+                last_result_id, source_result_id, last_seen_ts, next_due_ts, difficulty, stability, reason,
+                origin, rotation_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (topic_id, concept_id, claim_slug, claim_text, state, priority, gap_type, result_id, result_id, now, next_due_ts, difficulty, stability, reason, origin, rotation_id),
         )
         state_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
     conn.execute(
@@ -1861,6 +2333,10 @@ def log_answer(
     match_claim_state_id: int | None = None,
     force_new_claim: bool = False,
     repairs_claim_state_ids: tuple[int, ...] = (),
+    origin: str = "assessed",
+    rotation_id: int | None = None,
+    competency_target: str = "",
+    convention: bool = False,
 ) -> int:
     if strict_telemetry:
         _validate_strict_telemetry(
@@ -1877,6 +2353,21 @@ def log_answer(
             teaching_move=teaching_move,
         )
     now = ts or datetime.now(timezone.utc).isoformat()
+    # Default the rotation context from the active rotation when service-origin and
+    # no rotation was explicitly supplied, so /service-log stays a one-line capture.
+    if origin == "service" and rotation_id is None:
+        active = conn.execute("SELECT id FROM rotations WHERE active = 1 ORDER BY id DESC LIMIT 1").fetchone()
+        if active:
+            rotation_id = int(active["id"])
+    service_row = _service_for_rotation(conn, rotation_id) if (origin == "service" and rotation_id) else None
+    site_row = _site_for_rotation(conn, rotation_id) if (origin == "service" and rotation_id) else None
+    if origin == "service" and (rotation_id is None or service_row is None or site_row is None):
+        raise ValueError(
+            "service-origin memory requires an active or explicit valid rotation; "
+            "run rotation-start or pass --rotation"
+        )
+    service_slug = service_row["slug"] if service_row else ""
+    site_slug = site_row["slug"] if site_row else ""
     resolution = resolve_topic(conn, topic, doc_path)
     topic_id = _ensure_topic(conn, resolution, doc_path)
     concept_id = _ensure_concept(conn, topic_id, resolution.slug, concept, question, correction)
@@ -1897,8 +2388,8 @@ def log_answer(
     conn.execute(
         """INSERT INTO exchanges
            (session_id, ts, turn, topic_id, concept_id, raw_question, raw_answer,
-            doc_path, skill, source_json)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            doc_path, skill, source_json, origin, rotation_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             session_id,
             now,
@@ -1910,6 +2401,8 @@ def log_answer(
             doc_path,
             skill,
             json.dumps(source, sort_keys=True),
+            origin,
+            rotation_id,
         ),
     )
     exchange_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
@@ -1942,6 +2435,18 @@ def log_answer(
             repairs_claim_state_ids=repairs_claim_state_ids,
             agent_signal={k: v for k, v in source.items() if v},
             now=now,
+            origin=origin,
+            rotation_id=rotation_id,
+            service_slug=service_slug,
+            site_slug=site_slug,
+            convention=convention,
+        )
+    if competency_target and service_row:
+        # Touching a rubric target during service learning advances it off 'open'.
+        conn.execute(
+            """UPDATE competency_targets SET status = 'developing'
+               WHERE service_id = ? AND slug = ? AND status = 'open'""",
+            (int(service_row["id"]), _slug(competency_target)),
         )
     conn.commit()
     return exchange_id
@@ -2051,7 +2556,8 @@ def _due_claims_for_summary(
     limit: int,
     exclude_claim_state_ids: set[int] | None = None,
 ) -> list[dict[str, object]]:
-    where = "WHERE COALESCE(cs.next_due_ts, '') != '' AND cs.next_due_ts <= ?"
+    where = ("WHERE COALESCE(cs.next_due_ts, '') != '' AND cs.next_due_ts <= ?"
+             " AND (cs.origin IS NULL OR cs.origin = 'assessed')")
     params: list[object] = [datetime.now(timezone.utc).isoformat()]
     if topic_id is not None:
         where += " AND cs.topic_id = ?"
@@ -3084,7 +3590,9 @@ def retrieval_summary(
         for row in conn.execute(
             f"""SELECT rc.card_type, COUNT(*) AS n
                 FROM retrieval_cards rc
-                WHERE rc.status = 'active' AND rc.card_type != 'artifact_anchor' {topic_filter}
+                LEFT JOIN claim_state cs ON cs.id = rc.claim_state_id
+                WHERE rc.status = 'active' AND rc.card_type != 'artifact_anchor'
+                  AND (cs.origin IS NULL OR cs.origin = 'assessed') {topic_filter}
                 GROUP BY rc.card_type""",
             params,
         ).fetchall()
@@ -3098,7 +3606,8 @@ def retrieval_summary(
            JOIN topics t ON t.id = rc.topic_id
            LEFT JOIN claim_state cs ON cs.id = rc.claim_state_id
            LEFT JOIN concepts c ON c.id = cs.concept_id
-           WHERE rc.status = 'active' AND rc.card_type != 'artifact_anchor' {topic_filter}"""
+           WHERE rc.status = 'active' AND rc.card_type != 'artifact_anchor'
+             AND (cs.origin IS NULL OR cs.origin = 'assessed') {topic_filter}"""
     order_sql = """ORDER BY CASE rc.priority
                WHEN 'urgent' THEN 0
                WHEN 'high' THEN 1
@@ -3334,8 +3843,26 @@ def startup_recall(
     scaffold_limit: int | None = None,
     include_global_scaffolds: bool = False,
     context: str = "",
+    lens: str = "formal",
+    service: str = "",
+    site: str = "",
+    rotation_id: int | None = None,
 ) -> str:
-    """Return the deterministic first-read brief used by every learning workflow."""
+    """Return the deterministic first-read brief used by every learning workflow.
+
+    lens='formal' (default) is the standardized doc/topic surface and seals out
+    service-origin material. lens='service' delegates to the service lens, which
+    leads with service-rotation gaps and admits capped, domain-matched formal study.
+    """
+    if lens == "service":
+        return service_recall(
+            conn,
+            service=service or topic,
+            site=site,
+            rotation_id=rotation_id,
+            context=context,
+            limit=limit if limit is not None else 8,
+        )
     if global_mode and (topic or doc_path):
         raise ValueError("startup-recall --global cannot be combined with --topic or --doc")
     if not global_mode and not (topic or doc_path):
@@ -3484,6 +4011,10 @@ def main() -> None:
     p_log.add_argument("--match-claim-state-id", type=int, default=None, help="Bind this answer to an existing open claim (agent-asserted recurrence)")
     p_log.add_argument("--new-claim", action="store_true", help="Force a new claim_state even if a similar one exists")
     p_log.add_argument("--repairs-claim-state-ids", default="", help="Comma-separated open claim_state ids this correct answer repairs")
+    p_log.add_argument("--origin", choices=["assessed", "service"], default="assessed", help="Provenance: 'service' for service-rotation learning (isolated from formal review)")
+    p_log.add_argument("--rotation", type=int, default=None, help="Rotation id this service-origin answer belongs to (defaults to the active rotation)")
+    p_log.add_argument("--competency-target", default="", help="Service competency_target slug this answer advances")
+    p_log.add_argument("--convention", action="store_true", help="Mark as a (service x site) local convention rather than a portable clinical gap")
 
     p_end = sub.add_parser("end-session")
     p_end.add_argument("--session", required=True)
@@ -3503,6 +4034,27 @@ def main() -> None:
     p_summary.add_argument("--include-model", action="store_true")
     p_summary.add_argument("--context", default="", help="Optional upcoming case/rotation/context string for relevance weighting")
     p_summary.add_argument("--brief-only", action="store_true", help="Return the synthesized planning brief plus truncation diagnostics")
+    p_summary.add_argument("--lens", choices=["formal", "service"], default="formal", help="formal (default) audit surface; service routes to the service-rotation lens")
+    p_summary.add_argument("--service", default="", help="Service slug for --lens service")
+    p_summary.add_argument("--site", default="", help="Site slug for --lens service convention scoping")
+    p_summary.add_argument("--rotation", type=int, default=None, help="Rotation id for --lens service")
+
+    p_rotation_start = sub.add_parser("rotation-start")
+    p_rotation_start.add_argument("--service", required=True)
+    p_rotation_start.add_argument("--site", required=True)
+    p_rotation_start.add_argument("--pgy", type=int, default=None)
+    p_rotation_start.add_argument("--block", default="")
+
+    sub.add_parser("rotation-current")
+    sub.add_parser("rotation-list")
+
+    p_rotation_end = sub.add_parser("rotation-end")
+    p_rotation_end.add_argument("--rotation", type=int, required=True)
+
+    p_rubric = sub.add_parser("service-rubric")
+    p_rubric.add_argument("--service", required=True)
+    p_rubric.add_argument("--seed", action="store_true", help="Seed/refresh competency targets from the ACGME catalog domain slice")
+    p_rubric.add_argument("--pgy", type=int, default=None, help="Restrict seeding to targets at or below this PGY")
 
     p_startup = sub.add_parser("startup-recall")
     p_startup.add_argument("--topic", default="")
@@ -3512,6 +4064,10 @@ def main() -> None:
     p_startup.add_argument("--scaffold-limit", type=int, default=None)
     p_startup.add_argument("--include-global-scaffolds", action="store_true")
     p_startup.add_argument("--context", default="", help="Optional upcoming case/rotation/context string for relevance weighting")
+    p_startup.add_argument("--lens", choices=["formal", "service"], default="formal", help="formal (default) seals out service material; service leads with rotation gaps")
+    p_startup.add_argument("--service", default="", help="Service slug for --lens service (defaults to the active rotation)")
+    p_startup.add_argument("--site", default="", help="Site slug for --lens service convention scoping")
+    p_startup.add_argument("--rotation", type=int, default=None, help="Rotation id for --lens service")
 
     sub.add_parser("status")
     sub.add_parser("identity-audit")
@@ -3592,6 +4148,10 @@ def main() -> None:
                 repairs_claim_state_ids=tuple(
                     int(x) for x in args.repairs_claim_state_ids.split(",") if x.strip()
                 ),
+                origin=args.origin,
+                rotation_id=args.rotation,
+                competency_target=args.competency_target,
+                convention=args.convention,
             )
             print(f"OK exchange_id={exchange_id}")
         elif args.command == "end-session":
@@ -3601,21 +4161,25 @@ def main() -> None:
             else:
                 print("OK session closed")
         elif args.command == "summary":
-            print(
-                retrieval_summary(
-                    conn,
-                    topic=args.topic,
-                    limit=args.limit,
-                    scaffold_limit=args.scaffold_limit,
-                    include_scaffolds=not args.no_scaffolds,
-                    include_global_scaffolds=args.include_global_scaffolds,
-                    include_curated=args.include_curated,
-                    include_due=args.include_due,
-                    include_model=args.include_model,
-                    context=args.context,
-                    brief_only=args.brief_only,
+            if args.lens == "service":
+                print(service_recall(conn, service=args.service or args.topic, site=args.site,
+                                     rotation_id=args.rotation, context=args.context, limit=args.limit))
+            else:
+                print(
+                    retrieval_summary(
+                        conn,
+                        topic=args.topic,
+                        limit=args.limit,
+                        scaffold_limit=args.scaffold_limit,
+                        include_scaffolds=not args.no_scaffolds,
+                        include_global_scaffolds=args.include_global_scaffolds,
+                        include_curated=args.include_curated,
+                        include_due=args.include_due,
+                        include_model=args.include_model,
+                        context=args.context,
+                        brief_only=args.brief_only,
+                    )
                 )
-            )
         elif args.command == "startup-recall":
             try:
                 print(
@@ -3628,11 +4192,26 @@ def main() -> None:
                         scaffold_limit=args.scaffold_limit,
                         include_global_scaffolds=args.include_global_scaffolds,
                         context=args.context,
+                        lens=args.lens,
+                        service=args.service,
+                        site=args.site,
+                        rotation_id=args.rotation,
                     )
                 )
             except ValueError as exc:
                 print(json.dumps({"ok": False, "error": str(exc)}, indent=2), file=sys.stderr)
                 sys.exit(2)
+        elif args.command == "rotation-start":
+            print(json.dumps(start_rotation(
+                conn, service=args.service, site=args.site, pgy=args.pgy, block_label=args.block), indent=2))
+        elif args.command == "rotation-current":
+            print(json.dumps(current_rotation(conn) or {"active_rotation": None}, indent=2))
+        elif args.command == "rotation-list":
+            print(json.dumps(list_rotations(conn), indent=2))
+        elif args.command == "rotation-end":
+            print(json.dumps(end_rotation(conn, rotation_id=args.rotation) or {"error": "rotation not found"}, indent=2))
+        elif args.command == "service-rubric":
+            print(json.dumps(service_rubric_view(conn, service=args.service, seed=args.seed, pgy=args.pgy), indent=2))
         elif args.command == "status":
             print(status(conn))
         elif args.command == "identity-audit":
