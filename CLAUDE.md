@@ -124,9 +124,13 @@ ls "$VAULT/Reports/"*.md "$VAULT/Operative Guides/"*.md "$VAULT/Study Material/"
 
 Match filenames + `key_terms:` frontmatter against topic. Generate wikilinks: `[[folder/note_name|Display Title]]`.
 
-### §7b INDEX.md Pre-Write Guard
+### §7b INDEX.md Domain-Grouped Indexes
 
-Before any skill writes primary output, verify the folder's `INDEX.md` exists. Create with standard table header if absent.
+Every folder `INDEX.md` is a domain-grouped navigation surface rendered by `src/index_builder.py` (a tool, not an LLM): files are grouped under `## <Domain>` headings in canonical order (Vascular, Skull Base, Tumor, Spine, Trauma, Neurocritical Care, Functional, Pediatric, Peripheral Nerve, Anatomy, General, then Uncategorized), each shown as a **bold wikilink** with its one-line summary on an indented line beneath. A file is listed once under its primary domain; further domains trail as `· also: X`. No tables, no auto-generated header line.
+
+Grouping is driven by each note's **bottom YAML**: a `domain:` field (canonical slug, may be a list or `/`-separated) or `domain/<slug>` entries in `tags:`, plus a one-line `summary:` and optional `display:` (overrides the filename as the index title; `aliases:` are search terms, never display titles). Every vault note must close its bottom YAML with a final `---` — an unterminated block parses as no metadata and the file drops to `Uncategorized`.
+
+Script-written indexes (Study Material, Brain Dumps, Presentations) regenerate automatically through their guards. Agent-written indexes (Reports, Operative Guides, Concepts, Consults, Reference) are regenerated with `python3 src/index_builder.py <Folder>` (or `--all`) after the artifact's frontmatter is set.
 
 ### §7c Concept Extraction Protocol
 
@@ -203,6 +207,7 @@ Follow `.agents/shared/commands/study-review.md` for the full workflow and `.age
 | Anki card queue (per-session) | `data/Sessions/anki_queue.jsonl` |
 | Reports, guides, study docs, concepts, consults, brain dumps | Obsidian vault |
 | ACGME curriculum catalog (265 topics) | `data/acgme_curriculum.json` |
+| Domain-grouped vault index renderer | `python3 src/index_builder.py <Folder>` or `--all` (see §7b) |
 | Learner memory interface | `python3 src/study_memory.py summary --limit 12 --scaffold-limit 0 --include-curated --include-model` |
 
 ## §12 Command Reference
@@ -233,4 +238,8 @@ remove --claim-id "ID"           # drop a confirmed duplicate from queue
 compare "q" --stdout [--no-frontier]   # retrieve + rerank + distill, print context to stdout (preferred)
 compare "q" [--output path] [--no-frontier]  # file-based output (rare)
 list_textbooks
+
+# index_builder.py — domain-grouped vault INDEX.md renderer (see §7b)
+python3 src/index_builder.py Reports                 # regenerate one folder's index from note frontmatter
+python3 src/index_builder.py --all                   # regenerate every known index folder
 ```

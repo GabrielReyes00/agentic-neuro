@@ -135,9 +135,9 @@ Content (agent selects what applies — no fixed scaffold):
 - Related in This Vault (wikilinks verified against Step 2 scan)
 - YAML at bottom
 
-Carry the same provenance tiering into the pocket card: source-grounded points cite their source; clinical-knowledge points are labelled and high-stakes specifics carry a `⚠` verify flag. Never attach a textbook citation to a number that did not come from the retrieved passages. Add `internal_knowledge_used: true|false` and a one-line `provenance:` summary to the bottom YAML.
+Carry the same provenance tiering into the pocket card: source-grounded points cite their source; clinical-knowledge points are labelled and high-stakes specifics carry a `⚠` verify flag. Never attach a textbook citation to a number that did not come from the retrieved passages. Add `internal_knowledge_used: true|false` and a one-line `provenance:` summary to the bottom YAML. Also add `domain:` (a canonical slug: vascular, skull-base, tumor, spine, trauma, neurocritical-care, functional, pediatric, peripheral-nerve, anatomy, general) and a one-line `summary:` so the card groups correctly in the domain-grouped `Consults/INDEX.md`.
 
-**Merge semantics:** If `Consults/<Topic>.md` already exists, read the file and append an `## Encounter — YYYY-MM-DD` section with the new teaching points. Do not overwrite existing content.
+**Merge semantics:** If `Consults/<Topic>.md` already exists, read the file and insert an `## Encounter — YYYY-MM-DD` section with the new teaching points **above the bottom YAML block** (encounters are body content; the closed `---` YAML block stays at the very end of the file). Do not overwrite existing content.
 
 **Anti-patterns — do NOT:**
 - Use a fixed 10-slot scaffold (pathology, mechanism, imaging, labs, consults, preop, intraop, postop, red flags, priorities)
@@ -151,7 +151,7 @@ Carry the same provenance tiering into the pocket card: source-grounded points c
 
 ## Finish
 
-1. **Write the pocket card** to `Consults/<Topic Title>.md` (or append if merge target exists). No H1, YAML at bottom.
+1. **Write the pocket card** to `Consults/<Topic Title>.md` (or append if merge target exists). No H1, YAML at bottom. Then regenerate the domain-grouped index: `python3 src/index_builder.py Consults`.
 
 2. **End session** with a specific `--next-strategy`:
 

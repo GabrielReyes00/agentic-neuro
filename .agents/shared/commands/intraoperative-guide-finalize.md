@@ -77,7 +77,7 @@ The validator also rejects unverified wikilinks when the Obsidian vault is avail
 
 For real runs:
 
-1. Update `Operative Guides/INDEX.md`.
+1. Ensure the guide's bottom YAML carries `domain:` (canonical slug) and a one-line `summary:`, then regenerate the domain-grouped index: `python3 src/index_builder.py "Operative Guides"`.
 2. Extract 2-5 atomic concepts worth future review.
 3. Log the guide to memory using the shared learning-session contract.
 4. Queue Anki cards only when durable spaced-repetition facts are present.

@@ -148,7 +148,7 @@ class StudyMaterialGuardTests(unittest.TestCase):
             index = vault / "Study Material" / "INDEX.md"
             self.assertTrue(result.ok)
             self.assertTrue(target.exists())
-            self.assertIn("[[Lab 9 - Test]]", index.read_text(encoding="utf-8"))
+            self.assertIn("[[Study Material/Lab 9 - Test|Lab 9 - Test]]", index.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

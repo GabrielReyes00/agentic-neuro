@@ -73,7 +73,7 @@ class BrainDumpGuardTests(unittest.TestCase):
 
             self.assertTrue(result.ok)
             self.assertTrue(target.exists())
-            self.assertIn("[[Brain Dumps/EVD Transport Management]]", index.read_text(encoding="utf-8"))
+            self.assertIn("[[Brain Dumps/EVD Transport Management|", index.read_text(encoding="utf-8"))
 
     def test_existing_note_can_be_reinstalled_with_preserved_body_and_new_encounter(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -8,7 +8,6 @@ import json
 import re
 import sys
 from dataclasses import dataclass
-from datetime import date
 from pathlib import Path
 
 
@@ -215,26 +214,11 @@ def validate_file(path: Path) -> ValidationResult:
 
 
 def _update_index(vault_root: Path, title: str) -> None:
-    directory = vault_root / BRAIN_DUMP_DIRNAME
-    index_path = directory / INDEX_FILENAME
-    header = "## Brain Dumps Index\n\n| Topic | Last Updated |\n|---|---|\n"
-    row = f"| [[Brain Dumps/{title}]] | {date.today().isoformat()} |"
-    if index_path.exists():
-        lines = index_path.read_text(encoding="utf-8").splitlines()
-        prefix = f"| [[Brain Dumps/{title}]] |"
-        replaced = False
-        out: list[str] = []
-        for line in lines:
-            if line.startswith(prefix):
-                out.append(row)
-                replaced = True
-            else:
-                out.append(line)
-        if not replaced:
-            out.append(row)
-        index_path.write_text("\n".join(out).rstrip() + "\n", encoding="utf-8")
-    else:
-        index_path.write_text(header + row + "\n", encoding="utf-8")
+    try:
+        import index_builder
+    except ModuleNotFoundError:  # imported as part of the `src` package
+        from . import index_builder
+    index_builder.write_index(vault_root / BRAIN_DUMP_DIRNAME, vault_root=vault_root)
 
 
 def install_draft(draft: Path, title: str, *, vault_root: Path = DEFAULT_VAULT_ROOT) -> ValidationResult:

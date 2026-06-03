@@ -103,8 +103,9 @@ class CreatePresentationTests(unittest.TestCase):
             index = vault / "Presentations" / "INDEX.md"
             self.assertTrue(note.exists())
             text = index.read_text(encoding="utf-8")
-            self.assertIn("| Presentation |", text)
-            self.assertIn("[[Presentations/Articles/Flow Diversion For Distal Aneurysms]]", text)
+            self.assertIn(
+                "[[Presentations/Articles/Flow Diversion For Distal Aneurysms|", text
+            )
             self.assertIn("article", text)
 
     def test_rejects_h1(self):

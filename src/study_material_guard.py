@@ -306,10 +306,11 @@ def _title_to_filename(title: str) -> str:
 
 
 def _upsert_index(study_dir: Path) -> None:
-    files = sorted(p for p in study_dir.glob("*.md") if p.name != "INDEX.md")
-    lines = ["## Study Material Index", ""]
-    lines.extend(f"- [[{p.stem}]]" for p in files)
-    (study_dir / "INDEX.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    try:
+        import index_builder
+    except ModuleNotFoundError:  # imported as part of the `src` package
+        from . import index_builder
+    index_builder.write_index(study_dir, vault_root=study_dir.parent)
 
 
 def install_draft(

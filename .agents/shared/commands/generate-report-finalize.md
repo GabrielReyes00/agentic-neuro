@@ -66,9 +66,9 @@ The validator is a structural and ledger gate, not a substitute for agent self-a
 
 ## Finish Steps
 
-1. Write `Reports/<Title Case Title>.md`.
+1. Write `Reports/<Title Case Title>.md`. Ensure its bottom YAML carries `domain:` (one or more canonical slugs: vascular, skull-base, tumor, spine, trauma, neurocritical-care, functional, pediatric, peripheral-nerve, anatomy, general) and a one-line `summary:`; add `display:` if a shorter index title is wanted.
 2. Run `report_validator.py` with `--coverage-ledger`.
-3. Update `Reports/INDEX.md`.
+3. Regenerate the domain-grouped index: `python3 src/index_builder.py Reports`.
 4. Extract 2-5 concept stubs when appropriate per `.agents/shared/commands/concept-extraction.md`.
 5. Log the report anchor to memory with `skill="generate-report"`.
 6. Surface to the user: TL;DR, file path, source mix, Quality Contract result, coverage-ledger result, validator result, and wikilinks added.

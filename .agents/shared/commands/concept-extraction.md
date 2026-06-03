@@ -41,4 +41,4 @@ tags: [type/concept, domain/<domain>, source/agent]
 
 ## Index
 
-After writing concept stubs, update `Concepts/INDEX.md` if the current workflow maintains it. The index is a navigational surface; do not duplicate full concept definitions there.
+After writing concept stubs, regenerate the domain-grouped index with `python3 src/index_builder.py Concepts`. The builder groups by the `domain/<domain>` tag, so every stub must keep that tag and close its bottom YAML with a final `---` (an unterminated block parses as no metadata and the concept drops to `Uncategorized`). The index is a navigational surface; do not duplicate full concept definitions there.

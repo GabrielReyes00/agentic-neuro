@@ -32,10 +32,6 @@ PRESENTATIONS_DIRNAME = "Presentations"
 CASES_DIRNAME = "Cases"
 ARTICLES_DIRNAME = "Articles"
 INDEX_FILENAME = "INDEX.md"
-INDEX_HEADER = (
-    "| Presentation | Mode | Topic | Date | Deck | Summary |\n"
-    "|--------------|------|-------|------|------|---------|\n"
-)
 
 _BOTTOM_YAML_RE = re.compile(
     r"(?P<body>.*?)(?P<yaml>^---\s*$\n.*?^---\s*$\n?)\Z",
@@ -222,11 +218,6 @@ def _atomic_write(path: Path, text: str) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(text, encoding="utf-8")
     tmp.replace(path)
-
-
-def _table_cell(text: str | None) -> str:
-    value = (text or "").replace("\n", " ").replace("|", "\\|").strip()
-    return value or "-"
 
 
 def _ensure_dirs(vault_root: Path) -> None:
@@ -446,20 +437,6 @@ def append_rehearsal_notes(
     return abs_path
 
 
-def _read_index_rows(index_path: Path) -> list[str]:
-    if not index_path.exists():
-        return []
-    rows: list[str] = []
-    for line in index_path.read_text(encoding="utf-8").splitlines():
-        if not line.strip().startswith("|"):
-            continue
-        stripped = line.strip()
-        if stripped.startswith("| Presentation") or stripped.startswith("|--------------"):
-            continue
-        rows.append(line)
-    return rows
-
-
 def upsert_index(
     *,
     vault_root: Path,
@@ -471,7 +448,12 @@ def upsert_index(
     relative_path: Path | None = None,
     date: str | None = None,
 ) -> Path:
-    """Insert or replace a row in Presentations/INDEX.md."""
+    """Regenerate Presentations/INDEX.md from note frontmatter.
+
+    The presentation note's bottom YAML is the source of truth for the
+    domain-grouped index, so this first syncs the passed mode/topic/deck/summary
+    into that note, then rebuilds the whole index via the shared index_builder.
+    """
     _ensure_dirs(vault_root)
     mode_lower = mode.strip().lower()
     normalized_mode = "article" if mode_lower in {"journal", "journal-club"} else mode_lower
@@ -480,22 +462,26 @@ def upsert_index(
         / _subdir_for_mode(normalized_mode)
         / f"{_title_case_slug(title)}.md"
     )
-    index_path = vault_root / PRESENTATIONS_DIRNAME / INDEX_FILENAME
-    existing = _read_index_rows(index_path)
-    link_target = str(rel.with_suffix(""))
-    marker = f"[[{link_target}]]"
-    deck_label = Path(deck_path).name
-    new_row = (
-        f"| {marker} | {normalized_mode} | {_table_cell(topic)} | "
-        f"{date or _utc_today()} | [{_table_cell(deck_label)}](<{deck_path}>) | "
-        f"{_table_cell(summary)} |"
+    note_path = vault_root / rel
+    if note_path.exists():
+        body, meta = _split_bottom_yaml(note_path.read_text(encoding="utf-8"))
+        meta = meta or {}
+        meta["mode"] = normalized_mode
+        meta["topic"] = topic
+        meta["deck_path"] = str(deck_path)
+        if summary:
+            meta["summary"] = summary
+        if date:
+            meta["presentation_date"] = date
+        _atomic_write(note_path, body.rstrip() + "\n\n" + _render_bottom_yaml(meta))
+
+    try:
+        import index_builder
+    except ModuleNotFoundError:  # imported as part of the `src` package
+        from . import index_builder
+    return index_builder.write_index(
+        vault_root / PRESENTATIONS_DIRNAME, vault_root=vault_root, recursive=True
     )
-    kept = [row for row in existing if marker not in row]
-    kept.append(new_row)
-    kept.sort()
-    content = INDEX_HEADER + "\n".join(kept) + "\n"
-    _atomic_write(index_path, content)
-    return index_path
 
 
 def main(argv: list[str] | None = None) -> int:
