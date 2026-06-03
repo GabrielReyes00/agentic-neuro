@@ -83,10 +83,10 @@ Run topic-scoped retrieval only:
 
 ```bash
 cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
-python3 src/study_memory.py startup-recall --topic "<topic>" --doc "Brain Dumps/<Topic Title>.md"
+python3 src/study_memory.py startup-recall --profile doc --topic "<topic>" --doc "Brain Dumps/<Topic Title>.md"
 ```
 
-Read `planning_brief`, `counts`, `omitted`, and `retrieval_guidance` per `memory-retrieval.md`; expand only when high-signal items were omitted. Use this context to choose explanation depth and future review suggestions. Do not state what memory returned.
+Read `planning_brief`, `counts`, `omitted`, and `retrieval_guidance` per `memory-retrieval.md`; expand with `--profile audit` only if the compact brief is ambiguous or safety-critical context is missing. Use this context to choose explanation depth and future review suggestions. Do not state what memory returned.
 
 ### 4. Targeted Source Verification
 

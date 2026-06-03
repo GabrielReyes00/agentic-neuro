@@ -100,20 +100,20 @@ If the document contains `## Mastery Objectives`, extract them only after readin
 
 ```bash
 cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
-python3 src/study_memory.py startup-recall --topic "<doc topic>" --doc "<folder>/<file>.md"
+python3 src/study_memory.py startup-recall --profile doc --topic "<doc topic>" --doc "<folder>/<file>.md"
 ```
 
 This is the **formal lens** (the default). Doc-anchored and memory-driven study review read standardized, assessed learner state only; service-rotation material is sealed out and must not surface here. Never pass `--lens service` from `/study-review` — service-origin gaps and institutional conventions belong to `/service-log`, not to formal document review.
 
 Follow the pre-session verification protocol from `memory-operations.md` before proceeding. `SESSION_TS` is set per `memory-operations.md` at the first learner-facing question.
 
-Use the memory summary output to build your teaching plan per `memory-retrieval.md`. If this is a returning session, open with a one-sentence recap and move directly to questioning — do not re-explain known material. If this is a new topic, start at the beginning of the document.
+Use the compact doc-review startup brief to build your teaching plan per `memory-retrieval.md`. If this is a returning session, open with a one-sentence recap and move directly to questioning — do not re-explain known material. If this is a new topic, start at the beginning of the document. Run `startup-recall --profile audit ...` only if the compact brief is ambiguous, safety-critical context is omitted, or you are auditing the learner model.
 
 **Requested-Document Priority**: The requested document is the primary curriculum. Related-topic context and prior memory should inform your question design and probe strategy, but never displace forward progress through the document's material.
 
 ### Step 3: Contextual-frontier validation (silent)
 
-Read `planning_brief.contextual_frontier`. It is a bounded candidate set, not a teaching mandate. Candidates may come from learner graph edges, reviewed reference-graph paths, confirmed report-local scaffolds, or cautious cross-topic learner-state overlap.
+Read `planning_brief.contextual_frontier`. In the compact doc profile this is already capped and stripped to the clinically relevant fields. It is a candidate set, not a teaching mandate. Candidates may come from learner graph edges, reviewed reference-graph paths, confirmed report-local scaffolds, or cautious cross-topic learner-state overlap.
 
 Validate candidates with your clinical judgment before teaching. Accept only 1-3 candidates that are:
 

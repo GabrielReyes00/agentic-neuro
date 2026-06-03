@@ -129,7 +129,7 @@ mkdir -p "data/Sessions/<Title>/verdicts"
 
 ```bash
 cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
-python3 src/study_memory.py startup-recall --topic "<procedure/topic>" --doc "Operative Guides/<Title>.md"
+python3 src/study_memory.py startup-recall --profile doc --topic "<procedure/topic>" --doc "Operative Guides/<Title>.md"
 ```
 
 Use memory only to discover related anchors and prior weaknesses worth supporting in the guide. Do not compress or omit content because the learner may already know it.

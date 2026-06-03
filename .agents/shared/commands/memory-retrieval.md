@@ -9,7 +9,7 @@ The database stores facts. The agent supplies judgment. Memory is evidence for t
 Use a staged agent-facing read path:
 
 ```bash
-python3 src/study_memory.py startup-recall --topic "<topic>" [--doc "<folder>/<file>.md"]
+python3 src/study_memory.py startup-recall --profile doc --topic "<topic>" --doc "<folder>/<file>.md"
 ```
 
 For memory-driven global review only:
@@ -18,7 +18,15 @@ For memory-driven global review only:
 python3 src/study_memory.py startup-recall --global
 ```
 
-Always read `startup_recall`, `planning_brief`, `counts`, `omitted`, and `retrieval_guidance` before teaching. `planning_brief` is the ordered first-read tutor context. Topic-scoped `startup-recall` resolves identity and expands omitted high-signal cards automatically. Global startup stays compact and returns `ready_to_teach = false`: use `startup_recall.deferred_high_signal` as a prompt for candidate selection, then run topic-scoped startup recall for each chosen topic. If a topic-scoped result still omits high-signal cards, stop and troubleshoot before designing the session.
+Always read `startup_recall`, `planning_brief`, `counts`, `omitted`, and `retrieval_guidance` before teaching. `planning_brief` is the ordered first-read tutor context.
+
+Startup profiles:
+- `--profile doc`: default for document-anchored review. It is compact and document-primary: it returns handoff, top open gaps, top recent repairs, due scaffolds, capped related-context candidates, and a fallback `full_evidence_command`. Use this for `/study-review --doc`.
+- `--profile memory`: topic/global review planning. Topic-scoped memory recall expands omitted high-signal cards automatically; global startup stays compact and returns `ready_to_teach = false`.
+- `--profile audit`: full rich startup surface for troubleshooting, learner-model audits, or ambiguous/safety-critical compact briefs.
+- `--profile auto`: chooses `doc` when `--doc` is present, otherwise `memory`.
+
+For doc review, do not expand just because `counts` or `omitted` are nonzero. Expand only when the compact brief is ambiguous, safety-critical high-signal material appears omitted, or the learner explicitly asks for a memory-driven detour. For memory-driven global review, use `startup_recall.deferred_high_signal` as a prompt for candidate selection, then run topic-scoped startup recall for selected topics.
 
 If `planning_brief.resolution_warning` is present, do not begin teaching from an empty or guessed topic envelope. Validate one of `resolution_candidates` as the intended existing learner-state anchor, rerun topic-scoped recall with that anchor, and clarify with the learner only when the correct curriculum scope remains ambiguous.
 
@@ -28,7 +36,15 @@ Inspect the full non-brief summary, raw exchange rows, or claim rows only when t
 
 ## Planning Brief
 
-Read `planning_brief` in order:
+In `profile=doc`, read `planning_brief` as a compact session-start contract:
+
+1. **`handoff`**: the previous session directive, if any.
+2. **`teaching_priorities`**: the ranked blend of open gaps, recent repairs, and stale scaffolds.
+3. **`contextual_frontier`**: capped related-context candidates. Accept only candidates central to the requested document.
+4. **`question_design_bias`** and **`domain_patterns`**: small shaping signals, not a mandate.
+5. **`fallback.full_evidence_command`**: use only when compact startup is insufficient.
+
+In `profile=memory` or `profile=audit`, read `planning_brief` in order:
 
 1. **`handoff`**: the latest learner-session directive. Artifact-generation anchors do not compete with this surface.
 2. **`open_first`**: unresolved claims that deserve the first questions.

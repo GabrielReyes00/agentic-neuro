@@ -1360,6 +1360,56 @@ class StudyMemoryTests(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_doc_startup_recall_defaults_to_compact_profile_with_audit_fallback(self) -> None:
+        conn = self._memory_conn()
+        try:
+            doc = "Reports/Hypertension Management in Neuro Emergencies.md"
+            for idx in range(5):
+                study_memory.log_answer(
+                    conn,
+                    session_id=f"doc-gap-{idx}",
+                    topic="hypertension management",
+                    concept=f"doc bp gap {idx}",
+                    question=f"BP doc question {idx}?",
+                    answer="I am not sure.",
+                    correct=0,
+                    correction="Use the condition-specific blood pressure target.",
+                    error_type="omission",
+                    tested_claim=f"Doc BP management claim {idx}.",
+                    missing_edge=f"condition-specific doc target {idx}",
+                    doc_path=doc,
+                    force_new_claim=True,
+                )
+            compact_raw = study_memory.startup_recall(
+                conn,
+                topic="hypertension management",
+                doc_path=doc,
+                limit=2,
+            )
+            audit_raw = study_memory.startup_recall(
+                conn,
+                topic="hypertension management",
+                doc_path=doc,
+                limit=2,
+                profile="audit",
+            )
+            compact = json.loads(compact_raw)
+            audit = json.loads(audit_raw)
+            self.assertLess(len(compact_raw), len(audit_raw))
+            self.assertEqual(compact["startup_recall"]["profile"], "doc")
+            self.assertFalse(compact["startup_recall"]["auto_expanded"])
+            self.assertEqual(compact["startup_recall"]["final_limit"], 2)
+            self.assertEqual(compact["planning_brief"]["profile"], "doc_review_compact")
+            self.assertLessEqual(len(compact["planning_brief"]["teaching_priorities"]), 2)
+            self.assertIn("full_evidence_command", compact["retrieval_guidance"])
+            self.assertIn("--profile audit", compact["retrieval_guidance"]["full_evidence_command"])
+            self.assertNotIn("cards", compact)
+            self.assertEqual(audit["startup_recall"]["profile"], "audit")
+            self.assertTrue(audit["startup_recall"]["auto_expanded"])
+            self.assertGreater(len(audit["planning_brief"]["open_first"]), len(compact["planning_brief"]["teaching_priorities"]))
+        finally:
+            conn.close()
+
     def test_startup_recall_blocks_teaching_when_topic_requires_routing(self) -> None:
         conn = self._memory_conn()
         try:

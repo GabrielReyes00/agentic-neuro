@@ -2967,6 +2967,118 @@ def _planning_brief_for_summary(
     }
 
 
+def _compact_doc_review_payload(
+    payload: dict[str, object],
+    *,
+    startup_meta: dict[str, object],
+    full_evidence_command: str,
+) -> dict[str, object]:
+    """Collapse rich learner-model surfaces into a fast doc-review startup brief."""
+    brief = payload.get("planning_brief") if isinstance(payload.get("planning_brief"), dict) else {}
+    assert isinstance(brief, dict)
+
+    def top_list(key: str, cap: int) -> list[dict[str, object]]:
+        raw = brief.get(key, [])
+        if not isinstance(raw, list):
+            return []
+        return [item for item in raw[:cap] if isinstance(item, dict)]
+
+    def compact_card(item: dict[str, object], source: str) -> dict[str, object]:
+        return {
+            "source": source,
+            "id": item.get("claim_state_id"),
+            "concept": item.get("concept"),
+            "priority": item.get("priority"),
+            "state": item.get("state"),
+            "action": item.get("next_action"),
+        }
+
+    def compact_frontier(item: dict[str, object]) -> dict[str, object]:
+        return {
+            "candidate_id": item.get("candidate_id"),
+            "source_surface": item.get("source_surface"),
+            "concept": item.get("concept"),
+            "relationship": item.get("relationship"),
+            "reason": item.get("relevance_reason"),
+        }
+
+    def compact_pattern(item: dict[str, object]) -> dict[str, object]:
+        return {
+            "summary_type": item.get("summary_type"),
+            "content": item.get("content"),
+            "importance_score": item.get("importance_score"),
+        }
+
+    open_first = top_list("open_first", 5)
+    recent_repairs = top_list("recent_repairs", 2)
+    known_scaffolds_due = top_list("known_scaffolds_due", 2)
+    contextual_frontier = top_list("contextual_frontier", 2)
+    domain_patterns = top_list("domain_patterns", 1)
+    misconception_rules = top_list("misconception_rules", 1)
+
+    teaching_priorities = [
+        *(compact_card(item, "open_gap") for item in open_first),
+        *(compact_card(item, "recent_repair") for item in recent_repairs),
+        *(compact_card(item, "stale_scaffold") for item in known_scaffolds_due),
+    ]
+    bias = brief.get("question_design_bias") if isinstance(brief.get("question_design_bias"), dict) else {}
+    assert isinstance(bias, dict)
+    compact_bias = {
+        "high_confidence_misses": top_list_from(bias, "high_confidence_misses", 2),
+        "weak_operations": top_list_from(bias, "weak_operations", 2),
+    }
+
+    counts = payload.get("counts", {})
+    omitted = payload.get("omitted", {})
+    retrieval_guidance = {
+        "scope": "topic",
+        "is_truncated": bool(omitted),
+        "omitted_high_signal": (
+            payload.get("retrieval_guidance", {}).get("omitted_high_signal", {})
+            if isinstance(payload.get("retrieval_guidance"), dict)
+            else {}
+        ),
+        "policy": "doc_primary_compact",
+        "full_evidence_command": full_evidence_command,
+    }
+
+    doc_brief = {
+        "read_first": True,
+        "profile": "doc_review_compact",
+        "document_priority": "requested_doc_primary",
+        "resolution_warning": brief.get("resolution_warning", ""),
+        "resolution_candidates": top_list("resolution_candidates", 5),
+        "handoff": brief.get("handoff", {}),
+        "teaching_priorities": teaching_priorities,
+        "domain_patterns": [compact_pattern(item) for item in domain_patterns],
+        "misconception_rules": misconception_rules,
+        "contextual_frontier": [compact_frontier(item) for item in contextual_frontier],
+        "question_design_bias": compact_bias,
+        "agent_validation_checkpoint": {
+            "required_before_teaching": bool(contextual_frontier),
+            "task": "Accept only compact contextual candidates central to the requested document.",
+        },
+        "fallback": {
+            "when_to_expand": "ambiguous_or_safety_critical",
+            "full_evidence_command": full_evidence_command,
+        },
+    }
+    return {
+        "startup_recall": startup_meta,
+        "planning_brief": doc_brief,
+        "counts": counts,
+        "omitted": omitted,
+        "retrieval_guidance": retrieval_guidance,
+    }
+
+
+def top_list_from(container: dict[str, object], key: str, cap: int) -> list[dict[str, object]]:
+    raw = container.get(key, [])
+    if not isinstance(raw, list):
+        return []
+    return [item for item in raw[:cap] if isinstance(item, dict)]
+
+
 def _summary_command(
     *,
     topic: str,
@@ -2997,6 +3109,29 @@ def _summary_command(
         parts.append(f'--context "{safe_context}"')
     if brief_only:
         parts.append("--brief-only")
+    return " ".join(parts)
+
+
+def _startup_recall_command(
+    *,
+    topic: str,
+    doc_path: str = "",
+    global_mode: bool = False,
+    context: str = "",
+    profile: str = "audit",
+) -> str:
+    parts = ["python3 src/study_memory.py startup-recall"]
+    if global_mode:
+        parts.append("--global")
+    elif topic:
+        parts.append(f'--topic "{topic}"')
+    if doc_path:
+        parts.append(f'--doc "{doc_path}"')
+    if context:
+        safe_context = context.replace('"', "'")
+        parts.append(f'--context "{safe_context}"')
+    if profile:
+        parts.append(f"--profile {profile}")
     return " ".join(parts)
 
 
@@ -3436,6 +3571,7 @@ def startup_recall(
     service: str = "",
     site: str = "",
     rotation_id: int | None = None,
+    profile: str = "auto",
 ) -> str:
     """Return the deterministic first-read brief used by every learning workflow.
 
@@ -3456,6 +3592,10 @@ def startup_recall(
         raise ValueError("startup-recall --global cannot be combined with --topic or --doc")
     if not global_mode and not (topic or doc_path):
         raise ValueError("startup-recall requires --topic, --doc, or --global")
+    if profile not in {"auto", "doc", "memory", "audit"}:
+        raise ValueError("startup-recall profile must be one of: auto, doc, memory, audit")
+    if global_mode and profile == "doc":
+        raise ValueError("startup-recall --profile doc cannot be combined with --global")
 
     requested_topic = topic
     resolved: TopicResolution | None = None
@@ -3468,6 +3608,9 @@ def startup_recall(
         ).fetchone()
         recall_topic = resolved.slug if stored_topic else (topic or _doc_alias(doc_path))
 
+    effective_profile = profile
+    if profile == "auto":
+        effective_profile = "doc" if (doc_path and not global_mode) else "memory"
     initial_limit = max(0, limit if limit is not None else (12 if global_mode else 8))
     final_limit = initial_limit
     resolved_scaffold_limit = max(
@@ -3491,6 +3634,8 @@ def startup_recall(
             )
         )
         omitted_high_signal = payload.get("retrieval_guidance", {}).get("omitted_high_signal", {})
+        if effective_profile == "doc":
+            break
         if not isinstance(omitted_high_signal, dict) or not omitted_high_signal:
             break
         if global_mode:
@@ -3515,6 +3660,7 @@ def startup_recall(
         "requested_doc": doc_path,
         "resolved_topic": resolved.slug if resolved else "",
         "resolver_confidence": resolved.confidence if resolved else None,
+        "profile": effective_profile,
         "initial_limit": initial_limit,
         "final_limit": final_limit,
         "auto_expanded": bool(expansions),
@@ -3538,6 +3684,21 @@ def startup_recall(
             )
         ),
     }
+    if effective_profile == "doc":
+        full_evidence_command = _startup_recall_command(
+            topic=recall_topic or requested_topic,
+            doc_path=doc_path,
+            context=context,
+            profile="audit",
+        )
+        return json.dumps(
+            _compact_doc_review_payload(
+                payload,
+                startup_meta=payload["startup_recall"],  # type: ignore[arg-type]
+                full_evidence_command=full_evidence_command,
+            ),
+            indent=2,
+        )
     return json.dumps(payload, indent=2)
 
 
@@ -3657,6 +3818,12 @@ def main() -> None:
     p_startup.add_argument("--service", default="", help="Service slug for --lens service (defaults to the active rotation)")
     p_startup.add_argument("--site", default="", help="Site slug for --lens service convention scoping")
     p_startup.add_argument("--rotation", type=int, default=None, help="Rotation id for --lens service")
+    p_startup.add_argument(
+        "--profile",
+        choices=["auto", "doc", "memory", "audit"],
+        default="auto",
+        help="auto chooses compact doc review when --doc is present; audit returns the full rich startup surface",
+    )
 
     sub.add_parser("status")
     sub.add_parser("identity-audit")
@@ -3785,6 +3952,7 @@ def main() -> None:
                         service=args.service,
                         site=args.site,
                         rotation_id=args.rotation,
+                        profile=args.profile,
                     )
                 )
             except ValueError as exc:

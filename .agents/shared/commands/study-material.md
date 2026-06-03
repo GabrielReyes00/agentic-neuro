@@ -7,7 +7,7 @@ Follow `.agents/shared/commands/learning-session-contract.md` for the module map
 ## Phase 1: Generate Material
 
 1. Infer a clean Title Case topic from the filename.
-2. Run `study_memory.py startup-recall --topic "<topic>" --doc "Study Material/<Title>.md"` to load learner context.
+2. Run `study_memory.py startup-recall --profile doc --topic "<topic>" --doc "Study Material/<Title>.md"` to load compact learner context.
 3. If the source is already marked `Generation Mode: [+RAG]`, skip the RAG opt-in prompt. Otherwise ask whether to enrich with local RAG.
 4. Enumerate all chunks before extraction:
    - PPTX: slides, titles, body, notes, image descriptions.
@@ -133,10 +133,10 @@ Notify with counts only after the guard passes, then offer: start drilling, revi
 Before drilling:
 
 ```bash
-python3 src/study_memory.py startup-recall --topic "<topic>" --doc "Study Material/<Title>.md"
+python3 src/study_memory.py startup-recall --profile doc --topic "<topic>" --doc "Study Material/<Title>.md"
 ```
 
-The selected document is the curriculum. New documents start at TU-01. Returning documents prioritize previously missed concepts from this same document, then continue forward. Use memory summary output to identify scaffold, must-retest, recent-repair, and handoff concepts for this document. Prior misses from other sessions may appear only under the Requested-Document Priority rule: directly related, close confuser, safety-critical, or one brief due bridge.
+The selected document is the curriculum. New documents start at TU-01. Returning documents prioritize previously missed concepts from this same document, then continue forward. Use the compact doc-review startup brief to identify scaffold, must-retest, recent-repair, and handoff concepts for this document. Prior misses from other sessions may appear only under the Requested-Document Priority rule: directly related, close confuser, safety-critical, or one brief due bridge.
 
 ## Study Mode Gate
 

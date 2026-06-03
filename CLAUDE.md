@@ -149,7 +149,7 @@ The active memory layer is `data/study_memory.db` via `src/study_memory.py`. The
 - `.agents/shared/commands/adaptive-teaching-doctrine.md` controls teaching behavior.
 - `.agents/shared/commands/anki-session-workflow.md` and `.agents/shared/commands/anki-card-quality.md` control routine Anki generation and flush.
 
-Invariant summary: skill-driven sessions start with `study_memory.py startup-recall`, using `--topic` plus `--doc` whenever an artifact is known; memory-driven custom review is the only mode that uses `startup-recall --global`. Read `startup_recall` and `planning_brief` before teaching. Raw `summary` is for dashboard or audit reads. Skills never write directly to the curated layer; curation is post-flush bookkeeping.
+Invariant summary: skill-driven document sessions start with `study_memory.py startup-recall --profile doc --topic ... --doc ...`; memory-driven custom review is the only mode that uses `startup-recall --global`. Read `startup_recall` and `planning_brief` before teaching. Use `--profile audit` only for ambiguous compact briefs or learner-model audits. Raw `summary` is for dashboard or audit reads. Skills never write directly to the curated layer; curation is post-flush bookkeeping.
 
 ## §9 Capability Router
 
@@ -218,7 +218,9 @@ Follow `.agents/shared/commands/study-review.md` for the full workflow and `.age
 
 ```bash
 # study_memory.py — active session memory (see §7d for full usage)
-startup-recall --topic "T" [--doc "<folder>/X.md"]                      # topic-specific startup retrieval; canonicalizes identity and auto-expands high-signal cards
+startup-recall --profile doc --topic "T" --doc "<folder>/X.md"          # compact doc-review startup
+startup-recall --topic "T"                                              # memory/topic startup; auto-expands high-signal cards
+startup-recall --profile audit --topic "T" [--doc "<folder>/X.md"]      # full rich startup surface for audits/ambiguity
 startup-recall --global                                                 # MEMORY-DRIVEN CUSTOM REVIEW ONLY
 # service-log rotation/rubric commands: see .agents/shared/commands/service-log.md
 summary --topic "T" --limit 8 --scaffold-limit 2 --include-curated --include-model  # raw audit/post-session integrity read

@@ -22,13 +22,21 @@ Every memory command in this contract must be executed, not simulated. Do not re
 
 Context-pulling is mode-conditional. The wrong command at the wrong time causes topic drift.
 
-**Topic-anchored sessions**: user named a topic, document, or clinical question, including `/consult`, `/brain-dump`, `/study-material`, doc-anchored `/study-review`, and procedure-specific workflows. Pass `--doc` whenever a vault document is known so document-family identity is resolved before recall.
+**Document-anchored sessions**: user named a vault document, including doc-anchored `/study-review`, `/study-material` drill, brain-dump review, and procedure-specific workflows. Pass `--profile doc --doc` so document-family identity is resolved and the agent receives the compact document-primary startup brief.
 
 ```bash
-python3 src/study_memory.py startup-recall --topic "<topic>" [--doc "<folder>/<file>.md"]
+python3 src/study_memory.py startup-recall --profile doc --topic "<topic>" --doc "<folder>/<file>.md"
 ```
 
-This command is topic-scoped. It resolves canonical topic identity, loads the compact personalized planning brief, and automatically expands omitted high-signal cards before returning. Do not run global retrieval in this mode. Unrelated open errors must not influence a chosen-topic session.
+Do not expand just because counts or omitted fields are nonzero. Use `--profile audit` only when the compact brief is ambiguous, safety-critical context appears omitted, or you are auditing the learner model.
+
+**Topic-anchored sessions without a vault document**: user named a topic or clinical question but no artifact is known.
+
+```bash
+python3 src/study_memory.py startup-recall --topic "<topic>"
+```
+
+This command is topic-scoped. It resolves canonical topic identity, loads the personalized planning brief, and automatically expands omitted high-signal cards before returning. Do not run global retrieval in this mode. Unrelated open errors must not influence a chosen-topic session.
 
 **Memory-driven custom review only**: user asked what to study, to drill weak spots, to build a custom session, to go after open errors, or a similar memory-first request with no named topic.
 
@@ -44,9 +52,9 @@ In all modes, read output silently. Start from `planning_brief`, then inspect ra
 
 After running `summary`, read the full JSON and verify:
 
-1. **Retrieval completeness**: inspect `startup_recall`, `counts`, `omitted`, and `retrieval_guidance`. Topic-scoped `startup-recall` automatically expands omitted high-signal cards; if any remain, stop and troubleshoot before teaching. Global startup intentionally keeps `startup_recall.deferred_high_signal` compact: select candidate topics and run topic-scoped startup recall before teaching.
+1. **Retrieval completeness**: inspect `startup_recall`, `counts`, `omitted`, and `retrieval_guidance`. `profile=doc` is intentionally compact and may report omitted material; expand only when the compact brief is insufficient. Topic-only `startup-recall` automatically expands omitted high-signal cards; if any remain, stop and troubleshoot before teaching. Global startup intentionally keeps `startup_recall.deferred_high_signal` compact: select candidate topics and run topic-scoped startup recall before teaching.
 2. **Planning-brief validation**: read `planning_brief.agent_validation_checkpoint`. Accept only 1-3 `contextual_frontier` candidates that are clinically central, scope-compatible, and useful for explaining an active gap or deepening transfer. Reject tangents. Record the accepted and rejected candidate ids in a silent internal note.
-3. **Returning session**: if `startup_recall.routing_required = true`, validate a returned `resolution_candidate`, then rerun `startup-recall --topic "<canonical candidate>" [--doc "<folder>/<file>.md"]`. Clarify with the learner only if the intended curriculum remains ambiguous.
+3. **Returning session**: if `startup_recall.routing_required = true`, validate a returned `resolution_candidate`, then rerun `startup-recall --profile doc --topic "<canonical candidate>" --doc "<folder>/<file>.md"` for document review or `startup-recall --topic "<canonical candidate>"` for topic-only review. Clarify with the learner only if the intended curriculum remains ambiguous.
 4. **Coherence**: handoff, open claims, repairs, and accepted frontier candidates must relate to the requested topic. If output is unrelated, resolve the topic and re-run summary.
 5. **New topic**: if no review file exists and summary is genuinely empty, proceed with calibration.
 
