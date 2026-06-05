@@ -1,7 +1,7 @@
-description = "capture de-identified teaching learned on service"
+description = "capture de-identified teaching learned on service with atomic review candidates"
 
 prompt = """
-ACTIVE COMMAND: /brain-dump - Capture de-identified teaching learned on service.
+ACTIVE COMMAND: /brain-dump - Capture de-identified teaching learned on service, log atomic review candidates, and offer Socratic conversion.
 
 You MUST read and follow `.agents/shared/commands/brain-dump.md`.
 

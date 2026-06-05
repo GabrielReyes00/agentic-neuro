@@ -53,6 +53,10 @@ class GuardResult:
     warnings: list[str]
 
 
+def _json_dumps(payload: object) -> str:
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+
 def _is_under(path: Path, root: Path) -> bool:
     try:
         path.resolve().relative_to(root.resolve())
@@ -373,7 +377,7 @@ def install_draft(
 
 def _emit(result: GuardResult, json_output: bool) -> None:
     if json_output:
-        print(json.dumps(asdict(result), indent=2, sort_keys=True))
+        print(_json_dumps(asdict(result)))
         return
     status = "PASS" if result.ok else "FAIL"
     print(f"{status}: {result.path}")

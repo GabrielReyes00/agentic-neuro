@@ -8,6 +8,10 @@ import json
 from . import pipeline
 
 
+def _json_dumps(payload: object) -> str:
+    return json.dumps(payload, separators=(",", ":"))
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="LanceDB retrieval engine")
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
@@ -138,7 +142,7 @@ def main(argv: list[str] | None = None) -> int:
                     for h in result["hits"]
                 ],
             }
-            print(json.dumps(output, indent=2))
+            print(_json_dumps(output))
         else:
             lat = result["latency"]
             meta = result["metadata"]

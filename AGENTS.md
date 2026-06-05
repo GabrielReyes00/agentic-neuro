@@ -22,8 +22,8 @@ Key shared contracts:
 - `.agents/shared/commands/concept-extraction.md` — shared post-write concept-stub rules for artifact-generating workflows.
 - `.agents/shared/commands/study-review.md` — doc-anchored and memory-driven review.
 - `.agents/shared/commands/consult.md` — lecture-first clinical consult, verification, Anki, pocket-card write, provenance-tiered citations.
-- `.agents/shared/commands/brain-dump.md` — de-identified service-teaching capture, targeted verification, artifact-anchor memory logging, and optional later review.
-- `.agents/shared/commands/service-log.md` — daily service-rotation capture with provenance-isolated memory and one-pass teaching.
+- `.agents/shared/commands/brain-dump.md` — de-identified service-teaching capture, targeted verification, artifact-anchor memory logging, pending atomic review candidates, service-origin tagging, and optional Socratic review.
+- `.agents/shared/commands/service-log.md` — deprecated compatibility surface; `/brain-dump` owns service-experience capture while the service-memory backend remains active.
 - `.agents/shared/commands/quick-answer.md` — brief direct answers with lightweight memory logging, no startup recall, and optional Anki.
 - `.agents/shared/commands/generate-report.md` — citation-dense report generation with structured research plan, source cards, coverage ledger, synthesis map, provenance tiering, Mastery Objectives, and validator gate.
 - `.agents/shared/commands/intraoperative-guide.md` — deep-research operative rehearsal guides with procedure decomposition, serial RAG, operative knowledge maps, verified Obsidian wikilinks, restrained readable formatting, adversarial expert review, gap repair, structural validation, procedure-specific Anki decks, and Mastery Objectives.
@@ -43,6 +43,8 @@ After Gabriel commits to an answer, reveal progressively. Grade the answer brief
 
 When Gabriel asks to study a specific Obsidian document, that document stays primary. Prior missed concepts may be used only if directly related, prerequisite, confusable, safety-critical, or as one brief due bridge; otherwise defer them to future probes.
 
+When recall exposes `historical_misconceptions` or `repair_velocity`, use them silently to design high-friction distractors, bounded interleaving, and consequence-framed follow-ups. Do not quote prior answers or let interleaving override requested document priority.
+
 ## Universal Directives
 
 1. No bare "Done" or "Executed" — surface meaningful output, status, or a clarifying question.
@@ -53,7 +55,7 @@ When Gabriel asks to study a specific Obsidian document, that document stays pri
 
 ## Invisible Bookkeeping
 
-During learning workflows, memory logging, Obsidian writes, and concept extraction are internal bookkeeping. Do not print those commands, JSON payloads, raw stdout, or raw stderr into the learner-facing transcript. Surface only concise warnings when something fails.
+During learning workflows, memory logging, Anki queue review/check/flush, validation guards, Obsidian writes, and concept extraction are internal bookkeeping. Parse JSON/tool output silently; do not print commands, JSON payloads, raw stdout, or raw stderr into the learner-facing transcript. Surface only concise counts, file paths, success/failure status, and actionable warnings.
 
 ## Shell Prefix
 
@@ -73,7 +75,7 @@ Detailed memory mechanics now live in focused modules:
 - Use `.agents/shared/commands/memory-curation.md` for the optional post-Anki curation pass.
 - Use `.agents/shared/commands/memory-maintenance.md` only for deliberate audits or reviewed graph maintenance, never inside routine teaching loops.
 
-Invariant summary: skill-driven document sessions start with `study_memory.py startup-recall --profile doc --topic ... --doc ...`; memory-driven custom review is the only mode that uses `startup-recall --global`. Read `startup_recall` and `planning_brief` first. Use `--profile audit` only for ambiguous compact briefs or learner-model audits. Raw `summary` is for dashboard or audit reads. Memory writes occur only inside explicit memory-enabled workflows or when the user asks to save/capture memory. Quick-answer entries are low-stakes reference captures, not demonstrated mastery.
+Invariant summary: skill-driven document sessions start with `study_memory.py startup-recall --profile doc --topic ... --doc ...`; memory-driven custom review uses `startup-recall --global --lens general`, and topic-only review uses `startup-recall --topic ... --lens general`. Site/service-specific recall uses `--lens service`. Read `startup_recall` and `planning_brief` first. Use `--profile audit` only for ambiguous compact briefs or learner-model audits. Raw `summary` is for dashboard or audit reads. Memory writes occur only inside explicit memory-enabled workflows or when the user asks to save/capture memory. Quick-answer entries and pending Brain Dump candidates are low-stakes reference/review-interest captures, not demonstrated mastery.
 
 ## Capability Router
 
@@ -93,12 +95,12 @@ Explicit or obvious workflow trigger:
 - Study material or quiz from a file -> `study-material`
 - Research report, comprehensive review, deep-dive on a topic -> `generate-report` (produces an encyclopedic, citation-dense reference document; not learner-tailored)
 - Focused clinical question, ward knowledge gap, curbside consult, or management question that should produce a reusable pocket card -> `consult` (brief expert lecture + verification questions + pocket-card vault note; not encyclopedic)
-- `/service-log`, "today on [service] at [site], I managed/learned...", daily service-rotation debrief, or "log my day on service" -> `service-log` (memory-durable service learning, no vault artifact; service lens + one-pass teaching)
-- `/brain-dump`, "capture what I learned on shift", "senior corrected me on service", or "ward teaching lesson" -> `brain-dump` (de-identify first; verified compact artifact for later review; capture is not mastery)
+- `/service-log`, "today on [service] at [site], I managed/learned...", daily service-rotation debrief, or "log my day on service" -> deprecated compatibility route; follow `brain-dump`
+- `/brain-dump`, "capture what I learned on shift", "senior corrected me on service", or "ward teaching lesson" -> `brain-dump` (de-identify first; verified compact artifact, atomic review candidates, optional Socratic conversion; capture is not mastery)
 - Grand rounds, case presentation, or journal club deck -> `grand-rounds`
 
 Anki: card creation is inline in every learning skill via `anki_queue.py enqueue/check/flush` and follows `.agents/shared/commands/anki-session-workflow.md` plus `.agents/shared/commands/anki-card-quality.md`. There is no separate Anki runtime skill.
-Cards originating from `brain-dump` capture or later review of a `Brain Dumps/` artifact route to the dedicated `Neurosurgery::Brain Dumps` deck with `brain-dump` provenance tags. Service-log card routing is defined in `.agents/shared/commands/service-log.md`.
+No cards are created during initial `brain-dump` capture. Cards from evaluated Brain Dump Socratic review route to `Neurosurgery::Brain Dumps` with `brain-dump` provenance tags unless they are site-local service conventions, which use service-learning routing.
 
 Current-deck cleanup, card rewriting, taxonomy reorganization, and Chroma rebuilds use the separate `.agents/shared/commands/anki-deck-maintenance.md` workflow. Do not let Chroma suppress cards as ground truth; rebuild it from live Anki after approved deck edits.
 
@@ -113,8 +115,8 @@ For `/study-material` generation, final output must be validated before the agen
 Never treat repo-local `Documents/Obsidian/...` as the Obsidian vault. If a tool cannot write outside the workspace, draft to `data/Sessions/study_material_<slug>.md`, then install and validate through:
 
 ```bash
-python3 src/study_material_guard.py install --draft "data/Sessions/study_material_<slug>.md" --title "<Title>" --min-questions 25
-python3 src/study_material_guard.py validate "/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Study Material/<Title>.md" --min-questions 25
+python3 src/study_material_guard.py install --draft "data/Sessions/study_material_<slug>.md" --title "<Title>" --min-questions 25 --json
+python3 src/study_material_guard.py validate "/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Study Material/<Title>.md" --min-questions 25 --json
 ```
 
 For slide/PDF generation, use the density flags: `--min-questions-per-chunk 2 --min-facts-per-chunk 2 --min-fact-coverage 0.70`. Generated notes must include `## Source Chunk Inventory` and `## Atomic Fact Ledger`; questions must map to `TU-XX` and `AF-###`. One slide -> one topic -> one question is a failed generation, even if every slide has one question.
@@ -137,4 +139,4 @@ Generated `Reports/`, `Consults/`, `Brain Dumps/`, and `Operative Guides/` artif
 
 ## Service-Rotation Commands
 
-Service learning lives in `data/study_memory.db` and is sealed out of formal review. Use `/service-log` or manual anticipatory service review only; command details and Anki routing live in `.agents/shared/commands/service-log.md`.
+Service learning lives in `data/study_memory.db` and is sealed out of formal document review. Capture new service learning through `/brain-dump`; service/site-specific recall uses `startup-recall --lens service`.

@@ -51,6 +51,12 @@ HIGH_STAKES_SOURCE_RE = re.compile(
 )
 EXTRACTION_MAP_MAX_NODE_WORDS = 8
 PRIORITY_TAKEAWAY_MAX_WORDS = 16
+
+
+def _json_dumps(payload: object) -> str:
+    return json.dumps(payload, separators=(",", ":"))
+
+
 PHI_PATTERNS = (
     ("medical record number", re.compile(r"\b(?:mrn|medical record number)\s*[:#-]?\s*\d{4,}\b", re.I)),
     ("named patient", re.compile(r"\b(?:patient name|pt name)\s*:\s*\S+", re.I)),
@@ -254,7 +260,7 @@ def main() -> None:
     else:
         result = install_draft(Path(args.draft), args.title, vault_root=vault_root)
 
-    print(json.dumps(result.to_dict(), indent=2))
+    print(_json_dumps(result.to_dict()))
     if not result.ok:
         sys.exit(1)
 

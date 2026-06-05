@@ -1,5 +1,5 @@
 ---
-description: capture de-identified teaching learned on service for optional later review.
+description: capture de-identified teaching learned on service, log atomic review candidates, and offer Socratic conversion.
 argument-hint: [de-identified-shift-teaching-or-correction]
 ---
 

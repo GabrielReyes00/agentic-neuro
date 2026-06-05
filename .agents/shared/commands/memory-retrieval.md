@@ -12,17 +12,29 @@ Use a staged agent-facing read path:
 python3 src/study_memory.py startup-recall --profile doc --topic "<topic>" --doc "<folder>/<file>.md"
 ```
 
+For topic-only or memory-driven review:
+
+```bash
+python3 src/study_memory.py startup-recall --topic "<topic>" --lens general
+```
+
 For memory-driven global review only:
 
 ```bash
-python3 src/study_memory.py startup-recall --global
+python3 src/study_memory.py startup-recall --global --lens general
+```
+
+For service/site-specific review only:
+
+```bash
+python3 src/study_memory.py startup-recall --lens service --service "<service>" --site "<site>"
 ```
 
 Always read `startup_recall`, `planning_brief`, `counts`, `omitted`, and `retrieval_guidance` before teaching. `planning_brief` is the ordered first-read tutor context.
 
 Startup profiles:
 - `--profile doc`: default for document-anchored review. It is compact and document-primary: it returns handoff, top open gaps, top recent repairs, due scaffolds, capped related-context candidates, and a fallback `full_evidence_command`. Use this for `/study-review --doc`.
-- `--profile memory`: topic/global review planning. Topic-scoped memory recall expands omitted high-signal cards automatically; global startup stays compact and returns `ready_to_teach = false`.
+- `--profile memory`: topic/global review planning. With `--lens general`, topic-scoped memory recall includes assessed learner state plus pending Brain Dump review candidates and expands omitted high-signal cards automatically; global startup stays compact and returns `ready_to_teach = false`.
 - `--profile audit`: full rich startup surface for troubleshooting, learner-model audits, or ambiguous/safety-critical compact briefs.
 - `--profile auto`: chooses `doc` when `--doc` is present, otherwise `memory`.
 
@@ -63,7 +75,7 @@ Read the JSON in this order:
 1. **`cards`**: per-claim-state retrieval cards: `must_retest`, `recent_repair`, `scaffold`, `session_handoff`. This is the raw triage evidence behind `planning_brief`.
 2. **`curated_summaries`**: agent-authored cross-session synthesis. This is the strategic surface: recurring patterns across sessions.
 3. **Learner graph surfaces**: `graph_signals` and `shadow_rule_signals`. These are evidence-backed discrimination and false-rule repair inputs.
-4. **Model surfaces**: `due_claims`, `calibration_profile`, `operation_profile`, `teaching_move_profile`, `telemetry_profile`, `tutor_efficacy_profile`, `coverage_frontier`, and `shadow_queue`.
+4. **Model surfaces**: `due_claims`, `calibration_profile`, `operation_profile`, `teaching_move_profile`, `telemetry_profile`, `tutor_efficacy_profile`, `coverage_frontier`, `brain_dump_review_candidates`, and `shadow_queue`.
 5. **Context surfaces**: optional `context_focus` and `context_graph_focus` when `--context` is present. These weight session planning; they do not override urgent gaps.
 
 ## Cards
@@ -109,7 +121,8 @@ Quick-answer entries normally do not appear as `cards` because they do not creat
 - `telemetry_profile`: metadata completeness and controlled-value violations. Historical gaps remain visible but are not clean efficacy evidence.
 - `tutor_efficacy_profile`: repair-episode outcomes. Treat `evidence_level = insufficient` as instrumentation only; use directional preferences only after the returned gate is satisfied.
 - `coverage_frontier`: read-only ACGME coverage map, populated only in memory-driven/global review — it is emitted empty during a topic-anchored drill, where the global map is irrelevant. Coverage is tiered by token overlap against tested learner topics: `tested_catalog_topics` counts catalog topics with strong overlap, `frontier_candidates` are adjacent untested topics (a single shared term), and `blind_spots` are high-yield topics with no overlap. Untested means unknown, not weak.
-- `shadow_queue`: low-weight implied interest from quick answers and generated artifacts. Probe later, but never treat it as mastery or a miss until tested.
+- `brain_dump_review_candidates`: atomic concepts captured from Brain Dumps but not yet tested. They are outstanding review opportunities, not mastery evidence, misses, or durable claims. Ask a Socratic probe before assigning learner state, and pass the candidate id to `log-answer`.
+- `shadow_queue`: low-weight implied interest from quick answers, generated artifacts, and pending Brain Dump candidates. Probe later, but never treat it as mastery or a miss until tested.
 - `contextual_frontier`: bounded candidate foundations for agent validation. It is intentionally broader than the final session plan. Reject weakly connected candidates rather than treating lexical or graph adjacency as a teaching mandate.
 - `context_focus`: only appears when the command includes `--context "<case/rotation/upcoming focus>"`; use it to weight, not override, due and safety-critical gaps.
 - `context_graph_focus`: reviewed reference-graph paths, capped at two hops and filtered by context predicates. Verify the path makes clinical sense before using it. Learner graph edges and the reference graph are separate layers.

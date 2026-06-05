@@ -105,6 +105,13 @@ STOPWORDS = frozenset(
     .split()
 )
 
+
+def _json_dumps(payload: object, *, pretty: bool = False) -> str:
+    if pretty:
+        return json.dumps(payload, indent=2)
+    return json.dumps(payload, separators=(",", ":"))
+
+
 SCHEMA_SQL = """
 PRAGMA foreign_keys = ON;
 
@@ -312,6 +319,36 @@ CREATE TABLE IF NOT EXISTS retrieval_cards (
 CREATE INDEX IF NOT EXISTS idx_memory_retrieval_topic ON retrieval_cards(topic_id);
 CREATE INDEX IF NOT EXISTS idx_memory_retrieval_priority ON retrieval_cards(priority);
 CREATE INDEX IF NOT EXISTS idx_memory_retrieval_status ON retrieval_cards(status);
+
+CREATE TABLE IF NOT EXISTS brain_dump_review_candidates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL DEFAULT '',
+    topic_id INTEGER NOT NULL,
+    concept_id INTEGER NOT NULL,
+    doc_path TEXT NOT NULL,
+    candidate_slug TEXT NOT NULL,
+    prompt TEXT NOT NULL DEFAULT '',
+    claim_text TEXT NOT NULL DEFAULT '',
+    provenance_tier TEXT NOT NULL DEFAULT '',
+    origin TEXT NOT NULL DEFAULT 'assessed',
+    rotation_id INTEGER,
+    convention INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'reviewed', 'dismissed')),
+    reviewed_claim_state_id INTEGER,
+    reviewed_result_id INTEGER,
+    created_at TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT '',
+    reviewed_at TEXT NOT NULL DEFAULT '',
+    detail_json TEXT NOT NULL DEFAULT '{}',
+    UNIQUE(doc_path, topic_id, concept_id, candidate_slug),
+    FOREIGN KEY(topic_id) REFERENCES topics(id),
+    FOREIGN KEY(concept_id) REFERENCES concepts(id),
+    FOREIGN KEY(reviewed_claim_state_id) REFERENCES claim_state(id),
+    FOREIGN KEY(reviewed_result_id) REFERENCES claim_results(id)
+);
+CREATE INDEX IF NOT EXISTS idx_brain_dump_candidates_status ON brain_dump_review_candidates(status);
+CREATE INDEX IF NOT EXISTS idx_brain_dump_candidates_topic ON brain_dump_review_candidates(topic_id);
+CREATE INDEX IF NOT EXISTS idx_brain_dump_candidates_concept ON brain_dump_review_candidates(concept_id);
 
 CREATE TABLE IF NOT EXISTS curation_state (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -1926,6 +1963,7 @@ def log_answer(
     rotation_id: int | None = None,
     competency_target: str = "",
     convention: bool = False,
+    brain_dump_candidate_id: int | None = None,
 ) -> int:
     if strict_telemetry:
         _validate_strict_telemetry(
@@ -1999,7 +2037,7 @@ def log_answer(
     # but do not create a claim_result/claim_state — the learner has not been
     # tested on this content, so it must not register as known or as an open gap.
     if skill not in ARTIFACT_ANCHOR_SKILLS:
-        _log_claim_result(
+        result_id = _log_claim_result(
             conn,
             exchange_id=exchange_id,
             topic_id=topic_id,
@@ -2030,6 +2068,16 @@ def log_answer(
             site_slug=site_slug,
             convention=convention,
         )
+        if brain_dump_candidate_id is not None or doc_path.startswith("Brain Dumps/"):
+            _mark_brain_dump_candidate_reviewed(
+                conn,
+                result_id=result_id,
+                candidate_id=brain_dump_candidate_id,
+                topic_id=topic_id,
+                concept_id=concept_id,
+                doc_path=doc_path,
+                now=now,
+            )
     if competency_target and service_row:
         # Touching a rubric target during service learning advances it off 'open'.
         conn.execute(
@@ -2138,6 +2186,183 @@ def _retrieval_card_payload(row: sqlite3.Row) -> dict[str, str | None]:
     }
 
 
+def _candidate_claim_slug(concept: str, claim_text: str, prompt: str) -> str:
+    return _slug(claim_text.strip() or prompt.strip() or concept.strip())
+
+
+def add_brain_dump_candidate(
+    conn: sqlite3.Connection,
+    *,
+    session_id: str,
+    topic: str,
+    concept: str,
+    doc_path: str,
+    prompt: str,
+    claim_text: str,
+    provenance_tier: str = "",
+    origin: str = "assessed",
+    rotation_id: int | None = None,
+    convention: bool = False,
+    detail: dict[str, object] | None = None,
+    ts: str | None = None,
+) -> int:
+    if not doc_path.startswith("Brain Dumps/"):
+        raise ValueError("brain-dump candidates must use a Brain Dumps/<Title>.md doc path")
+    if origin not in {"assessed", "service"}:
+        raise ValueError("origin must be assessed or service")
+    now = ts or datetime.now(timezone.utc).isoformat()
+    if origin == "service" and rotation_id is None:
+        active = conn.execute("SELECT id FROM rotations WHERE active = 1 ORDER BY id DESC LIMIT 1").fetchone()
+        if active:
+            rotation_id = int(active["id"])
+    service_row = _service_for_rotation(conn, rotation_id) if (origin == "service" and rotation_id) else None
+    site_row = _site_for_rotation(conn, rotation_id) if (origin == "service" and rotation_id) else None
+    if origin == "service" and (rotation_id is None or service_row is None or site_row is None):
+        raise ValueError(
+            "service-origin brain-dump candidates require an active or explicit valid rotation"
+        )
+    resolution = resolve_topic(conn, topic, doc_path)
+    topic_id = _ensure_topic(conn, resolution, doc_path)
+    concept_id = _ensure_concept(conn, topic_id, resolution.slug, concept, prompt, "")
+    candidate_slug = _candidate_claim_slug(concept, claim_text, prompt)
+    payload = json.dumps(detail or {}, sort_keys=True)
+    conn.execute(
+        """INSERT INTO brain_dump_review_candidates
+           (session_id, topic_id, concept_id, doc_path, candidate_slug, prompt,
+            claim_text, provenance_tier, origin, rotation_id, convention, status,
+            created_at, updated_at, detail_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
+           ON CONFLICT(doc_path, topic_id, concept_id, candidate_slug) DO UPDATE SET
+             session_id = excluded.session_id,
+             prompt = excluded.prompt,
+             claim_text = excluded.claim_text,
+             provenance_tier = excluded.provenance_tier,
+             origin = excluded.origin,
+             rotation_id = excluded.rotation_id,
+             convention = excluded.convention,
+             status = CASE
+               WHEN brain_dump_review_candidates.status = 'reviewed' THEN 'reviewed'
+               ELSE 'pending'
+             END,
+             updated_at = excluded.updated_at,
+             detail_json = excluded.detail_json""",
+        (
+            session_id,
+            topic_id,
+            concept_id,
+            doc_path,
+            candidate_slug,
+            _compact_text(prompt, 500),
+            _compact_text(claim_text, 500),
+            provenance_tier,
+            origin,
+            rotation_id,
+            1 if convention else 0,
+            now,
+            now,
+            payload,
+        ),
+    )
+    row = conn.execute(
+        """SELECT id FROM brain_dump_review_candidates
+           WHERE doc_path = ? AND topic_id = ? AND concept_id = ? AND candidate_slug = ?""",
+        (doc_path, topic_id, concept_id, candidate_slug),
+    ).fetchone()
+    conn.commit()
+    return int(row["id"])
+
+
+def _brain_dump_candidates_for_summary(
+    conn: sqlite3.Connection,
+    *,
+    topic_id: int | None,
+    limit: int,
+    status: str = "pending",
+) -> list[dict[str, object]]:
+    topic_filter = ""
+    params: list[object] = [status]
+    if topic_id is not None:
+        topic_filter = "AND b.topic_id = ?"
+        params.append(topic_id)
+    rows = conn.execute(
+        f"""SELECT b.id, b.doc_path, b.prompt, b.claim_text, b.provenance_tier,
+                  b.origin, b.rotation_id, b.convention, b.status, b.updated_at,
+                  t.canonical_slug AS topic, c.display_name AS concept
+             FROM brain_dump_review_candidates b
+             JOIN topics t ON t.id = b.topic_id
+             JOIN concepts c ON c.id = b.concept_id
+            WHERE b.status = ? {topic_filter}
+            ORDER BY CASE b.origin WHEN 'service' THEN 1 ELSE 0 END,
+                     b.updated_at DESC
+            LIMIT ?""",
+        [*params, max(0, limit)],
+    ).fetchall()
+    return [
+        {
+            "candidate_id": int(row["id"]),
+            "type": "brain_dump_review_candidate",
+            "topic": row["topic"],
+            "concept": row["concept"],
+            "claim": row["claim_text"] or row["prompt"],
+            "doc": row["doc_path"],
+            "provenance_tier": row["provenance_tier"],
+            "origin": row["origin"],
+            "rotation_id": row["rotation_id"],
+            "convention": bool(row["convention"]),
+            "status": row["status"],
+            "updated_ts": row["updated_at"],
+            "weight": "low",
+            "next_action": "Offer a Socratic probe; do not infer learner state until Gabriel answers.",
+        }
+        for row in rows
+    ]
+
+
+def _mark_brain_dump_candidate_reviewed(
+    conn: sqlite3.Connection,
+    *,
+    result_id: int,
+    candidate_id: int | None = None,
+    topic_id: int | None = None,
+    concept_id: int | None = None,
+    doc_path: str = "",
+    now: str,
+) -> None:
+    state = conn.execute(
+        "SELECT id FROM claim_state WHERE last_result_id = ?",
+        (result_id,),
+    ).fetchone()
+    if state is None:
+        return
+    claim_state_id = int(state["id"])
+    if candidate_id is not None:
+        conn.execute(
+            """UPDATE brain_dump_review_candidates
+                  SET status = 'reviewed',
+                      reviewed_claim_state_id = ?,
+                      reviewed_result_id = ?,
+                      reviewed_at = ?,
+                      updated_at = ?
+                WHERE id = ?""",
+            (claim_state_id, result_id, now, now, int(candidate_id)),
+        )
+        return
+    if doc_path.startswith("Brain Dumps/") and topic_id is not None and concept_id is not None:
+        conn.execute(
+            """UPDATE brain_dump_review_candidates
+                  SET status = 'reviewed',
+                      reviewed_claim_state_id = ?,
+                      reviewed_result_id = ?,
+                      reviewed_at = ?,
+                      updated_at = ?
+                WHERE status = 'pending'
+                  AND doc_path = ?
+                  AND topic_id = ?
+                  AND concept_id = ?""",
+            (claim_state_id, result_id, now, now, doc_path, topic_id, concept_id),
+        )
+
+
 def _due_claims_for_summary(
     conn: sqlite3.Connection,
     *,
@@ -2156,7 +2381,7 @@ def _due_claims_for_summary(
         where += f" AND cs.id NOT IN ({placeholders})"
         params.extend(sorted(exclude_claim_state_ids))
     rows = conn.execute(
-        f"""SELECT cs.id, cs.claim_text, cs.state, cs.priority, cs.last_seen_ts,
+        f"""SELECT cs.id, cs.concept_id, cs.claim_text, cs.state, cs.priority, cs.last_seen_ts,
                    cs.next_due_ts, cs.difficulty, cs.stability,
                    t.canonical_slug AS topic, c.display_name AS concept
               FROM claim_state cs
@@ -2171,6 +2396,7 @@ def _due_claims_for_summary(
     return [
         {
             "claim_state_id": int(r["id"]),
+            "concept_id": int(r["concept_id"]),
             "topic": r["topic"],
             "concept": r["concept"],
             "claim": r["claim_text"],
@@ -2385,6 +2611,7 @@ def _shadow_queue_for_summary(
     *,
     topic_id: int | None,
     limit: int,
+    include_brain_dump_candidates: bool = False,
 ) -> list[dict[str, object]]:
     topic_filter = ""
     params: list[object] = []
@@ -2463,6 +2690,15 @@ def _shadow_queue_for_summary(
         }
         for row in artifact_rows
     )
+    if include_brain_dump_candidates:
+        items.extend(
+            _brain_dump_candidates_for_summary(
+                conn,
+                topic_id=topic_id,
+                limit=max(0, limit),
+                status="pending",
+            )
+        )
     items.sort(key=lambda x: str(x["updated_ts"]), reverse=True)
     return items[:limit]
 
@@ -2789,9 +3025,10 @@ def _scouting_candidates_for_summary(
         """SELECT cs.id, cs.claim_text, cs.state, cs.priority,
                   t.canonical_slug AS topic, c.display_name AS concept
              FROM claim_state cs
-             JOIN topics t ON t.id = cs.topic_id
-             JOIN concepts c ON c.id = cs.concept_id
+            JOIN topics t ON t.id = cs.topic_id
+            JOIN concepts c ON c.id = cs.concept_id
             WHERE cs.topic_id = ?
+              AND (cs.origin IS NULL OR cs.origin = 'assessed')
               AND cs.state IN ('durable', 'repaired_same_session')
             ORDER BY CASE cs.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,
                      cs.last_seen_ts DESC""",
@@ -2822,9 +3059,10 @@ def _scouting_candidates_for_summary(
         """SELECT cs.id, cs.claim_text, cs.state, cs.priority,
                   t.canonical_slug AS topic, c.display_name AS concept
              FROM claim_state cs
-             JOIN topics t ON t.id = cs.topic_id
-             JOIN concepts c ON c.id = cs.concept_id
+            JOIN topics t ON t.id = cs.topic_id
+            JOIN concepts c ON c.id = cs.concept_id
             WHERE cs.topic_id != ?
+              AND (cs.origin IS NULL OR cs.origin = 'assessed')
               AND cs.state IN ('missed', 'partially_repaired', 'regressed', 'durable', 'repaired_same_session')
             ORDER BY CASE cs.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,
                      cs.last_seen_ts DESC""",
@@ -2860,7 +3098,57 @@ def _scouting_candidates_for_summary(
     return candidates[: max(0, limit)]
 
 
+def _verbatim_misconceptions(
+    conn: sqlite3.Connection,
+    concept_id: int,
+    *,
+    limit: int = 2,
+    answer_limit: int = 180,
+    misconception_limit: int = 140,
+) -> list[dict[str, str]]:
+    rows = conn.execute(
+        """SELECT DISTINCT ex.raw_answer, cr.missing_edge
+           FROM claim_results cr
+           JOIN exchanges ex ON ex.id = cr.exchange_id
+           WHERE cr.concept_id = ? AND cr.score < 2
+             AND COALESCE(cr.origin, 'assessed') = 'assessed'
+             AND COALESCE(ex.origin, 'assessed') = 'assessed'
+             AND COALESCE(ex.skill, '') != 'quick-answer'
+             AND (COALESCE(ex.raw_answer, '') != '' OR COALESCE(cr.missing_edge, '') != '')
+           ORDER BY cr.id DESC LIMIT ?""",
+        (concept_id, max(0, limit)),
+    ).fetchall()
+    res = []
+    for r in rows:
+        item = {}
+        if r["raw_answer"]:
+            item["verbatim"] = _compact_text(r["raw_answer"], answer_limit)
+        if r["missing_edge"]:
+            item["misconception"] = _compact_text(r["missing_edge"], misconception_limit)
+        if item:
+            res.append(item)
+    return res
+
+
+def _claim_state_repair_stats(conn: sqlite3.Connection, claim_state_id: int) -> dict[str, int]:
+    rows = conn.execute(
+        """SELECT event_type, COUNT(*) as n
+           FROM state_events
+           WHERE claim_state_id = ?
+           GROUP BY event_type""",
+        (claim_state_id,),
+    ).fetchall()
+    counts = {r["event_type"]: int(r["n"]) for r in rows}
+    failures = counts.get("missed", 0) + counts.get("regressed", 0) + counts.get("partial", 0)
+    repairs = counts.get("repaired", 0) + counts.get("asserted_repair", 0) + counts.get("retention_passed", 0)
+    return {
+        "failures": failures,
+        "repairs": repairs,
+    }
+
+
 def _planning_brief_for_summary(
+    conn: sqlite3.Connection | None,
     *,
     cards: list[dict[str, object]],
     curated_summaries: list[dict[str, object]],
@@ -2878,8 +3166,11 @@ def _planning_brief_for_summary(
 ) -> dict[str, object]:
     """Return a first-read tutor brief while preserving raw evidence surfaces."""
     def compact_card(card: dict[str, object]) -> dict[str, object]:
-        return {
-            "claim_state_id": card.get("claim_state_id"),
+        state_id = card.get("claim_state_id")
+        concept_id = card.get("concept_id")
+        res = {
+            "claim_state_id": state_id,
+            "concept_id": concept_id,
             "topic": card.get("topic"),
             "concept": card.get("concept"),
             "priority": card.get("priority"),
@@ -2887,16 +3178,29 @@ def _planning_brief_for_summary(
             "summary": card.get("summary"),
             "next_action": card.get("next_action"),
         }
+        if conn and state_id is not None:
+            res["repair_velocity"] = _claim_state_repair_stats(conn, int(state_id))
+        if conn and concept_id is not None:
+            res["historical_misconceptions"] = _verbatim_misconceptions(conn, int(concept_id))
+        return res
 
     def compact_due(item: dict[str, object]) -> dict[str, object]:
-        return {
-            "claim_state_id": item.get("claim_state_id"),
+        state_id = item.get("claim_state_id")
+        concept_id = item.get("concept_id")
+        res = {
+            "claim_state_id": state_id,
+            "concept_id": concept_id,
             "topic": item.get("topic"),
             "concept": item.get("concept"),
             "priority": item.get("priority"),
             "retrievability": item.get("retrievability"),
             "next_action": item.get("next_action"),
         }
+        if conn and state_id is not None:
+            res["repair_velocity"] = _claim_state_repair_stats(conn, int(state_id))
+        if conn and concept_id is not None:
+            res["historical_misconceptions"] = _verbatim_misconceptions(conn, int(concept_id))
+        return res
 
     def compact_high_confidence_miss(item: dict[str, object]) -> dict[str, object]:
         return {
@@ -2984,7 +3288,7 @@ def _compact_doc_review_payload(
         return [item for item in raw[:cap] if isinstance(item, dict)]
 
     def compact_card(item: dict[str, object], source: str) -> dict[str, object]:
-        return {
+        res = {
             "source": source,
             "id": item.get("claim_state_id"),
             "concept": item.get("concept"),
@@ -2992,6 +3296,11 @@ def _compact_doc_review_payload(
             "state": item.get("state"),
             "action": item.get("next_action"),
         }
+        if "repair_velocity" in item:
+            res["repair_velocity"] = item["repair_velocity"]
+        if "historical_misconceptions" in item:
+            res["historical_misconceptions"] = item["historical_misconceptions"]
+        return res
 
     def compact_frontier(item: dict[str, object]) -> dict[str, object]:
         return {
@@ -3224,7 +3533,10 @@ def retrieval_summary(
     include_model: bool = False,
     context: str = "",
     brief_only: bool = False,
+    lens: str = "formal",
 ) -> str:
+    if lens not in {"formal", "general"}:
+        raise ValueError("retrieval_summary lens must be formal or general")
     limit = max(0, limit)
     scaffold_limit = max(0, scaffold_limit)
     topic_filter = ""
@@ -3304,7 +3616,7 @@ def retrieval_summary(
                     "omitted": base["omitted"],
                     "retrieval_guidance": base["retrieval_guidance"],
                 }
-            return json.dumps(base, indent=2)
+            return _json_dumps(base)
         resolved_topic_id = int(topic_row["id"])
         topic_filter = "AND rc.topic_id = ?"
         params.append(resolved_topic_id)
@@ -3392,6 +3704,17 @@ def retrieval_summary(
             brief_only=brief_only,
         ),
     }
+
+    if include_model and lens == "general":
+        brain_dump_candidates = _brain_dump_candidates_for_summary(
+            conn,
+            topic_id=resolved_topic_id,
+            limit=max(4, limit),
+            status="pending",
+        )
+        payload["brain_dump_review_candidates"] = brain_dump_candidates
+        if brain_dump_candidates:
+            counts["brain_dump_review_candidate"] = len(brain_dump_candidates)
 
     if include_curated:
         curated_limit = max(4, limit)
@@ -3487,6 +3810,7 @@ def retrieval_summary(
             conn,
             topic_id=resolved_topic_id,
             limit=max(4, limit),
+            include_brain_dump_candidates=(lens == "general"),
         )
         if context:
             payload["context_focus"] = _context_focus_for_summary(
@@ -3532,6 +3856,7 @@ def retrieval_summary(
             limit=min(6, max(4, limit)),
         )
         payload["planning_brief"] = _planning_brief_for_summary(
+            conn,
             cards=payload["cards"],  # type: ignore[arg-type]
             curated_summaries=payload.get("curated_summaries", []),  # type: ignore[arg-type]
             graph_signals=payload.get("graph_signals", []),  # type: ignore[arg-type]
@@ -3554,7 +3879,7 @@ def retrieval_summary(
             "omitted": payload["omitted"],
             "retrieval_guidance": payload["retrieval_guidance"],
         }
-    return json.dumps(payload, indent=2)
+    return _json_dumps(payload)
 
 
 def startup_recall(
@@ -3575,18 +3900,23 @@ def startup_recall(
 ) -> str:
     """Return the deterministic first-read brief used by every learning workflow.
 
-    lens='formal' (default) is the standardized doc/topic surface and seals out
-    service-origin material. lens='service' delegates to the service lens, which
-    leads with service-rotation gaps and admits capped, domain-matched formal study.
+    lens='formal' is the standardized document surface and seals out
+    service-origin material. lens='general' is for topic-only memory review and
+    includes low-weight brain-dump review candidates. lens='service' delegates
+    to the service lens, which leads with service-rotation gaps.
     """
     if lens == "service":
-        return service_recall(
-            conn,
-            service=service or topic,
-            site=site,
-            rotation_id=rotation_id,
-            context=context,
-            limit=limit if limit is not None else 8,
+        return _json_dumps(
+            json.loads(
+                service_recall(
+                    conn,
+                    service=service or topic,
+                    site=site,
+                    rotation_id=rotation_id,
+                    context=context,
+                    limit=limit if limit is not None else 8,
+                )
+            )
         )
     if global_mode and (topic or doc_path):
         raise ValueError("startup-recall --global cannot be combined with --topic or --doc")
@@ -3611,6 +3941,7 @@ def startup_recall(
     effective_profile = profile
     if profile == "auto":
         effective_profile = "doc" if (doc_path and not global_mode) else "memory"
+    retrieval_lens = "formal" if effective_profile == "doc" else lens
     initial_limit = max(0, limit if limit is not None else (12 if global_mode else 8))
     final_limit = initial_limit
     resolved_scaffold_limit = max(
@@ -3631,6 +3962,7 @@ def startup_recall(
                 include_model=True,
                 context=context,
                 brief_only=True,
+                lens=retrieval_lens,
             )
         )
         omitted_high_signal = payload.get("retrieval_guidance", {}).get("omitted_high_signal", {})
@@ -3691,15 +4023,14 @@ def startup_recall(
             context=context,
             profile="audit",
         )
-        return json.dumps(
+        return _json_dumps(
             _compact_doc_review_payload(
                 payload,
                 startup_meta=payload["startup_recall"],  # type: ignore[arg-type]
                 full_evidence_command=full_evidence_command,
-            ),
-            indent=2,
+            )
         )
-    return json.dumps(payload, indent=2)
+    return _json_dumps(payload)
 
 
 def status(conn: sqlite3.Connection) -> str:
@@ -3717,7 +4048,7 @@ def status(conn: sqlite3.Connection) -> str:
         "must_retest": conn.execute("SELECT COUNT(*) FROM claim_state WHERE state IN ('missed','partially_repaired','regressed')").fetchone()[0],
         "recent_repairs": conn.execute("SELECT COUNT(*) FROM claim_state WHERE state = 'repaired_same_session'").fetchone()[0],
     }
-    return json.dumps(rows, indent=2)
+    return _json_dumps(rows)
 
 
 def main() -> None:
@@ -3765,6 +4096,7 @@ def main() -> None:
     p_log.add_argument("--rotation", type=int, default=None, help="Rotation id this service-origin answer belongs to (defaults to the active rotation)")
     p_log.add_argument("--competency-target", default="", help="Service competency_target slug this answer advances")
     p_log.add_argument("--convention", action="store_true", help="Mark as a (service x site) local convention rather than a portable clinical gap")
+    p_log.add_argument("--brain-dump-candidate-id", type=int, default=None, help="Mark this pending brain-dump review candidate as reviewed by the logged answer")
 
     p_end = sub.add_parser("end-session")
     p_end.add_argument("--session", required=True)
@@ -3784,7 +4116,7 @@ def main() -> None:
     p_summary.add_argument("--include-model", action="store_true")
     p_summary.add_argument("--context", default="", help="Optional upcoming case/rotation/context string for relevance weighting")
     p_summary.add_argument("--brief-only", action="store_true", help="Return the synthesized planning brief plus truncation diagnostics")
-    p_summary.add_argument("--lens", choices=["formal", "service"], default="formal", help="formal (default) audit surface; service routes to the service-rotation lens")
+    p_summary.add_argument("--lens", choices=["formal", "general", "service"], default="formal", help="formal doc/audit surface; general includes brain-dump review candidates; service routes to service memory")
     p_summary.add_argument("--service", default="", help="Service slug for --lens service")
     p_summary.add_argument("--site", default="", help="Site slug for --lens service convention scoping")
     p_summary.add_argument("--rotation", type=int, default=None, help="Rotation id for --lens service")
@@ -3814,7 +4146,7 @@ def main() -> None:
     p_startup.add_argument("--scaffold-limit", type=int, default=None)
     p_startup.add_argument("--include-global-scaffolds", action="store_true")
     p_startup.add_argument("--context", default="", help="Optional upcoming case/rotation/context string for relevance weighting")
-    p_startup.add_argument("--lens", choices=["formal", "service"], default="formal", help="formal (default) seals out service material; service leads with rotation gaps")
+    p_startup.add_argument("--lens", choices=["formal", "general", "service"], default="formal", help="formal seals out service material; general includes brain-dump review candidates; service leads with rotation gaps")
     p_startup.add_argument("--service", default="", help="Service slug for --lens service (defaults to the active rotation)")
     p_startup.add_argument("--site", default="", help="Site slug for --lens service convention scoping")
     p_startup.add_argument("--rotation", type=int, default=None, help="Rotation id for --lens service")
@@ -3858,6 +4190,28 @@ def main() -> None:
     p_apply_src.add_argument("--input", dest="input_path", default=None, help="Path to apply payload JSON file")
     p_apply_src.add_argument("--stdin", action="store_true", help="Read apply payload from stdin")
 
+    p_bd_add = sub.add_parser("brain-dump-candidate-add")
+    p_bd_add.add_argument("--session", required=True)
+    p_bd_add.add_argument("--topic", required=True)
+    p_bd_add.add_argument("--concept", required=True)
+    p_bd_add.add_argument("--doc", required=True)
+    p_bd_add.add_argument("--prompt", required=True)
+    p_bd_add.add_argument("--claim", default="")
+    p_bd_add.add_argument("--provenance-tier", default="")
+    p_bd_add.add_argument("--origin", choices=["assessed", "service"], default="assessed")
+    p_bd_add.add_argument("--rotation", type=int, default=None)
+    p_bd_add.add_argument("--convention", action="store_true")
+    p_bd_add.add_argument("--detail-json", default="{}")
+
+    p_bd_list = sub.add_parser("brain-dump-candidate-list")
+    p_bd_list.add_argument("--topic", default="")
+    p_bd_list.add_argument("--status", choices=["pending", "reviewed", "dismissed"], default="pending")
+    p_bd_list.add_argument("--limit", type=int, default=20)
+
+    p_bd_mark = sub.add_parser("brain-dump-candidate-mark")
+    p_bd_mark.add_argument("--candidate-id", type=int, required=True)
+    p_bd_mark.add_argument("--status", choices=["pending", "dismissed"], required=True)
+
     args = parser.parse_args()
     if not args.command:
         parser.print_help()
@@ -3866,7 +4220,7 @@ def main() -> None:
     conn = _get_db()
     try:
         if args.command == "resolve-topic":
-            print(json.dumps(resolve_topic(conn, args.topic, args.doc).__dict__, indent=2))
+            print(_json_dumps(resolve_topic(conn, args.topic, args.doc).__dict__))
         elif args.command == "log-answer":
             exchange_id = log_answer(
                 conn,
@@ -3908,18 +4262,25 @@ def main() -> None:
                 rotation_id=args.rotation,
                 competency_target=args.competency_target,
                 convention=args.convention,
+                brain_dump_candidate_id=args.brain_dump_candidate_id,
             )
             print(f"OK exchange_id={exchange_id}")
         elif args.command == "end-session":
             result = end_session(conn, session_id=args.session, summary=args.summary, next_strategy=args.next_strategy, stats_json=args.stats_json)
             if args.as_json:
-                print(json.dumps(result, indent=2))
+                print(_json_dumps(result))
             else:
                 print("OK session closed")
         elif args.command == "summary":
             if args.lens == "service":
-                print(service_recall(conn, service=args.service or args.topic, site=args.site,
-                                     rotation_id=args.rotation, context=args.context, limit=args.limit))
+                print(_json_dumps(json.loads(service_recall(
+                    conn,
+                    service=args.service or args.topic,
+                    site=args.site,
+                    rotation_id=args.rotation,
+                    context=args.context,
+                    limit=args.limit,
+                ))))
             else:
                 print(
                     retrieval_summary(
@@ -3934,6 +4295,7 @@ def main() -> None:
                         include_model=args.include_model,
                         context=args.context,
                         brief_only=args.brief_only,
+                        lens=args.lens,
                     )
                 )
         elif args.command == "startup-recall":
@@ -3956,37 +4318,36 @@ def main() -> None:
                     )
                 )
             except ValueError as exc:
-                print(json.dumps({"ok": False, "error": str(exc)}, indent=2), file=sys.stderr)
+                print(_json_dumps({"ok": False, "error": str(exc)}), file=sys.stderr)
                 sys.exit(2)
         elif args.command == "rotation-start":
-            print(json.dumps(start_rotation(
-                conn, service=args.service, site=args.site, pgy=args.pgy, block_label=args.block), indent=2))
+            print(_json_dumps(start_rotation(
+                conn, service=args.service, site=args.site, pgy=args.pgy, block_label=args.block)))
         elif args.command == "rotation-current":
-            print(json.dumps(current_rotation(conn) or {"active_rotation": None}, indent=2))
+            print(_json_dumps(current_rotation(conn) or {"active_rotation": None}))
         elif args.command == "rotation-list":
-            print(json.dumps(list_rotations(conn), indent=2))
+            print(_json_dumps(list_rotations(conn)))
         elif args.command == "rotation-end":
-            print(json.dumps(end_rotation(conn, rotation_id=args.rotation) or {"error": "rotation not found"}, indent=2))
+            print(_json_dumps(end_rotation(conn, rotation_id=args.rotation) or {"error": "rotation not found"}))
         elif args.command == "service-rubric":
-            print(json.dumps(service_rubric_view(conn, service=args.service, seed=args.seed, pgy=args.pgy), indent=2))
+            print(_json_dumps(service_rubric_view(conn, service=args.service, seed=args.seed, pgy=args.pgy)))
         elif args.command == "status":
             print(status(conn))
         elif args.command == "identity-audit":
-            print(json.dumps(identity_audit(conn), indent=2))
+            print(_json_dumps(identity_audit(conn)))
         elif args.command == "telemetry-audit":
-            print(json.dumps(_telemetry_profile_for_summary(conn, topic_id=None), indent=2))
+            print(_json_dumps(_telemetry_profile_for_summary(conn, topic_id=None)))
         elif args.command == "merge-topics":
-            print(json.dumps(
+            print(_json_dumps(
                 merge_topics(
                     conn,
                     source_topic=args.from_topic,
                     target_topic=args.into_topic,
                     apply=args.apply,
-                ),
-                indent=2,
+                )
             ))
         elif args.command == "record-shadow-check":
-            print(json.dumps(
+            print(_json_dumps(
                 record_shadow_rule_check(
                     conn,
                     shadow_rule_id=args.rule_id,
@@ -3995,16 +4356,63 @@ def main() -> None:
                     check_type=args.check_type,
                     outcome=args.outcome,
                     apply=args.apply,
-                ),
-                indent=2,
+                )
             ))
         elif args.command == "load-reference-graph":
-            print(json.dumps(
+            print(_json_dumps(
                 load_reference_graph_file(conn, Path(args.input), apply=args.apply),
-                indent=2,
             ))
         elif args.command == "curation-status":
-            print(json.dumps(curation_status(conn), indent=2))
+            print(_json_dumps(curation_status(conn)))
+        elif args.command == "brain-dump-candidate-add":
+            try:
+                detail = json.loads(args.detail_json or "{}")
+            except json.JSONDecodeError as exc:
+                print(_json_dumps({"ok": False, "error": f"invalid --detail-json: {exc}"}), file=sys.stderr)
+                sys.exit(2)
+            candidate_id = add_brain_dump_candidate(
+                conn,
+                session_id=args.session,
+                topic=args.topic,
+                concept=args.concept,
+                doc_path=args.doc,
+                prompt=args.prompt,
+                claim_text=args.claim,
+                provenance_tier=args.provenance_tier,
+                origin=args.origin,
+                rotation_id=args.rotation,
+                convention=args.convention,
+                detail=detail if isinstance(detail, dict) else {"value": detail},
+            )
+            print(_json_dumps({"ok": True, "candidate_id": candidate_id}))
+        elif args.command == "brain-dump-candidate-list":
+            topic_id = None
+            if args.topic:
+                resolution = resolve_topic(conn, args.topic)
+                topic_row = conn.execute("SELECT id FROM topics WHERE canonical_slug = ?", (resolution.slug,)).fetchone()
+                if topic_row:
+                    topic_id = int(topic_row["id"])
+                else:
+                    print(_json_dumps([]))
+                    return
+            print(_json_dumps(
+                _brain_dump_candidates_for_summary(
+                    conn,
+                    topic_id=topic_id,
+                    limit=args.limit,
+                    status=args.status,
+                )
+            ))
+        elif args.command == "brain-dump-candidate-mark":
+            now = datetime.now(timezone.utc).isoformat()
+            conn.execute(
+                """UPDATE brain_dump_review_candidates
+                      SET status = ?, updated_at = ?
+                    WHERE id = ? AND status != 'reviewed'""",
+                (args.status, now, args.candidate_id),
+            )
+            conn.commit()
+            print(_json_dumps({"ok": True, "candidate_id": args.candidate_id, "status": args.status}))
         elif args.command == "curate-candidates":
             try:
                 packet = build_curation_candidates(
@@ -4015,7 +4423,7 @@ def main() -> None:
                     limit=args.limit,
                 )
             except CurationError as exc:
-                print(json.dumps({"ok": False, "error": str(exc)}, indent=2), file=sys.stderr)
+                print(_json_dumps({"ok": False, "error": str(exc)}), file=sys.stderr)
                 sys.exit(2)
             # Curation and maintenance bookkeeping fire together: the same pass that
             # synthesizes curated memory also surfaces topic-identity and telemetry
@@ -4024,7 +4432,7 @@ def main() -> None:
                 "identity_audit": identity_audit(conn),
                 "telemetry_audit": _telemetry_profile_for_summary(conn, topic_id=None),
             }
-            print(json.dumps(packet, indent=2))
+            print(_json_dumps(packet))
         elif args.command == "apply-curation":
             if args.stdin:
                 raw = sys.stdin.read()
@@ -4033,14 +4441,14 @@ def main() -> None:
             try:
                 payload = json.loads(raw)
             except json.JSONDecodeError as exc:
-                print(json.dumps({"ok": False, "error": f"invalid JSON: {exc}"}, indent=2), file=sys.stderr)
+                print(_json_dumps({"ok": False, "error": f"invalid JSON: {exc}"}), file=sys.stderr)
                 sys.exit(2)
             try:
                 result = apply_curation_payload(conn, payload)
             except CurationError as exc:
-                print(json.dumps({"ok": False, "error": str(exc)}, indent=2), file=sys.stderr)
+                print(_json_dumps({"ok": False, "error": str(exc)}), file=sys.stderr)
                 sys.exit(2)
-            print(json.dumps(result, indent=2))
+            print(_json_dumps(result))
     finally:
         conn.close()
 

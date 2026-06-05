@@ -1,8 +1,8 @@
 ---
 name: service-log
-description: Ultra-light daily service-rotation capture — log the day's learning and immediately find the gap and teach it.
+description: Deprecated compatibility route for service-rotation debriefs; follow brain-dump service-memory capture.
 ---
 
 # Service Log
 
-Read and follow `.agents/shared/commands/service-log.md` exactly as `/service-log`.
+Read `.agents/shared/commands/service-log.md`; it is a compatibility wrapper that redirects new capture behavior to `.agents/shared/commands/brain-dump.md`.

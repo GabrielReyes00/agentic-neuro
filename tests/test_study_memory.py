@@ -193,6 +193,105 @@ class StudyMemoryTests(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_brain_dump_candidates_surface_for_general_review_without_claim_state(self) -> None:
+        conn = self._memory_conn()
+        try:
+            study_memory.add_brain_dump_candidate(
+                conn,
+                session_id="brain-dump-candidates",
+                topic="spine stability",
+                concept="three column instability",
+                doc_path="Brain Dumps/Spine Stability Teaching.md",
+                prompt="What makes a thoracolumbar injury mechanically unstable?",
+                claim_text="Three-column thoracolumbar injury patterns should trigger concern for mechanical instability.",
+                provenance_tier="Source-grounded",
+            )
+
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM claim_results").fetchone()[0], 0)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM claim_state").fetchone()[0], 0)
+
+            formal = json.loads(
+                study_memory.retrieval_summary(
+                    conn,
+                    topic="spine stability",
+                    include_model=True,
+                    lens="formal",
+                )
+            )
+            general = json.loads(
+                study_memory.retrieval_summary(
+                    conn,
+                    topic="spine stability",
+                    include_model=True,
+                    lens="general",
+                )
+            )
+            self.assertNotIn("brain_dump_review_candidates", formal)
+            candidates = general["brain_dump_review_candidates"]
+            self.assertEqual(len(candidates), 1)
+            self.assertEqual(candidates[0]["concept"], "three column instability")
+            self.assertIn("brain_dump_review_candidate", general["counts"])
+            self.assertTrue(any(item["type"] == "brain_dump_review_candidate" for item in general["shadow_queue"]))
+        finally:
+            conn.close()
+
+    def test_brain_dump_candidate_review_reuses_existing_assessed_claim(self) -> None:
+        conn = self._memory_conn()
+        try:
+            claim = "Mannitol lowers intracranial pressure by creating an osmotic gradient and requires attention to hemodynamics and serum osmolality."
+            study_memory.log_answer(
+                conn,
+                session_id="study-review-mannitol",
+                topic="brain edema management",
+                concept="mannitol osmotic effect",
+                question="How does mannitol lower ICP?",
+                answer="It draws water out of the brain through an osmotic gradient.",
+                correct=2,
+                skill="study-review",
+                tested_claim=claim,
+                corrected_rule=claim,
+                expected_answer_edge="osmotic gradient; hemodynamics; serum osmolality",
+            )
+            original = conn.execute("SELECT id FROM claim_state").fetchone()
+            candidate_id = study_memory.add_brain_dump_candidate(
+                conn,
+                session_id="brain-dump-mannitol",
+                topic="brain edema management",
+                concept="mannitol osmotic therapy",
+                doc_path="Brain Dumps/Brain Edema Wards.md",
+                prompt="Why did the senior prefer mannitol in this edema scenario?",
+                claim_text=claim,
+                provenance_tier="Source-grounded",
+            )
+            study_memory.log_answer(
+                conn,
+                session_id="brain-dump-socratic-mannitol",
+                topic="brain edema management",
+                concept="mannitol osmotic therapy",
+                question="In this ward scenario, what is mannitol doing and what must you monitor?",
+                answer="It makes an osmotic gradient; watch pressure and osmolality.",
+                correct=2,
+                skill="study-review",
+                doc_path="Brain Dumps/Brain Edema Wards.md",
+                tested_claim=claim,
+                corrected_rule=claim,
+                expected_answer_edge="osmotic gradient; hemodynamics; serum osmolality",
+                brain_dump_candidate_id=candidate_id,
+            )
+
+            states = conn.execute("SELECT id, origin FROM claim_state").fetchall()
+            self.assertEqual(len(states), 1)
+            self.assertEqual(int(states[0]["id"]), int(original["id"]))
+            self.assertEqual(states[0]["origin"], "assessed")
+            candidate = conn.execute(
+                "SELECT status, reviewed_claim_state_id FROM brain_dump_review_candidates WHERE id = ?",
+                (candidate_id,),
+            ).fetchone()
+            self.assertEqual(candidate["status"], "reviewed")
+            self.assertEqual(int(candidate["reviewed_claim_state_id"]), int(original["id"]))
+        finally:
+            conn.close()
+
     def test_artifact_anchor_does_not_compete_with_learning_handoff_retrieval(self) -> None:
         conn = self._memory_conn()
         try:
@@ -1327,6 +1426,59 @@ class StudyMemoryTests(unittest.TestCase):
             self.assertEqual(payload["startup_recall"]["final_limit"], 5)
             self.assertEqual(payload["retrieval_guidance"]["omitted_high_signal"], {})
             self.assertEqual(len(payload["planning_brief"]["open_first"]), 5)
+        finally:
+            conn.close()
+
+    def test_recall_outputs_are_minified_json_without_payload_loss(self) -> None:
+        conn = self._memory_conn()
+        try:
+            study_memory.log_answer(
+                conn,
+                session_id="minified-recall",
+                topic="hypertension management",
+                concept="ischemic stroke bp threshold",
+                question="What is the no-reperfusion permissive BP ceiling?",
+                answer="220/120.",
+                correct=2,
+                tested_claim="No-reperfusion ischemic stroke permissive hypertension ceiling is 220/120.",
+            )
+            raw = study_memory.startup_recall(conn, topic="hypertension management")
+            payload = json.loads(raw)
+            pretty = json.dumps(payload, indent=2)
+            self.assertLess(len(raw), len(pretty))
+            self.assertNotIn("\n  ", raw)
+            self.assertEqual(json.loads(raw), json.loads(pretty))
+        finally:
+            conn.close()
+
+    def test_startup_recall_includes_bounded_learning_intelligence(self) -> None:
+        conn = self._memory_conn()
+        try:
+            long_answer = " ".join(["I would use the wrong threshold"] * 20)
+            long_missing_edge = " ".join(["missed the management-changing threshold"] * 12)
+            study_memory.log_answer(
+                conn,
+                session_id="learning-intelligence",
+                topic="hypertension management",
+                concept="ischemic stroke bp threshold",
+                question="What is the no-reperfusion permissive BP ceiling?",
+                answer=long_answer,
+                correct=0,
+                tested_claim="No-reperfusion ischemic stroke permissive hypertension ceiling is 220/120.",
+                missing_edge=long_missing_edge,
+                force_new_claim=True,
+            )
+
+            payload = json.loads(study_memory.startup_recall(conn, topic="hypertension management"))
+            card = payload["planning_brief"]["open_first"][0]
+
+            self.assertEqual(card["repair_velocity"]["failures"], 1)
+            self.assertEqual(card["repair_velocity"]["repairs"], 0)
+            self.assertEqual(len(card["historical_misconceptions"]), 1)
+            misconception = card["historical_misconceptions"][0]
+            self.assertLessEqual(len(misconception["verbatim"]), 183)
+            self.assertLessEqual(len(misconception["misconception"]), 143)
+            self.assertIn("wrong threshold", misconception["verbatim"])
         finally:
             conn.close()
 

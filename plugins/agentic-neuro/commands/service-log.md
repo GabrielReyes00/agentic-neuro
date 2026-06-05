@@ -1,5 +1,5 @@
 ---
-description: capture the day's learning on a service rotation, log it to service memory, and teach the gap in one pass.
+description: deprecated compatibility route for service-rotation debriefs; follow brain-dump service-memory capture.
 argument-hint: [today on <service> at <site>, I managed/learned...]
 ---
 
@@ -7,4 +7,4 @@ argument-hint: [today on <service> at <site>, I managed/learned...]
 
 The user invoked `/service-log` with: $ARGUMENTS
 
-Read and follow `.agents/shared/commands/service-log.md` exactly as `/service-log`.
+Read `.agents/shared/commands/service-log.md`; it is a compatibility wrapper that redirects new capture behavior to `.agents/shared/commands/brain-dump.md`.

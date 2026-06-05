@@ -30,6 +30,11 @@ COLLECTION_NAME = "anki_claim_memory"
 MAX_PROMPT_WORDS = 35
 MAX_QA_BACK_WORDS = 45
 
+
+def _json_dumps(payload: object) -> str:
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
 _FEEDBACK_RE = re.compile(
     r"\b("
     r"correct interpretation|correct core distinction|strong operational handoff|"
@@ -284,22 +289,54 @@ def enqueue(
 
 # ── review ──────────────────────────────────────────────────────────
 
-def review(session: str | None = None, queue_path: Path = QUEUE_PATH) -> list[dict]:
+def review(
+    session: str | None = None,
+    queue_path: Path = QUEUE_PATH,
+    json_output: bool = False,
+) -> list[dict]:
     entries = _read_queue(queue_path)
     if session:
         entries = [e for e in entries if e.get("session_ts") == session]
 
     if not entries:
-        print("Queue is empty.")
+        if json_output:
+            print(_json_dumps({"queue_size": 0, "deck_count": 0, "cards": []}))
+        else:
+            print("Queue is empty.")
         return entries
 
     decks = set()
+    cards = []
     for i, e in enumerate(entries, 1):
         deck = e.get("deck", "?")
         decks.add(deck)
         ctype = e.get("card_type", "?")
         text = _card_text(e)[:80]
         ans = _answer_text(e)[:60]
+        cards.append({
+            "index": i,
+            "card_type": ctype,
+            "deck": deck,
+            "claim_id": e.get("claim_id"),
+            "topic": e.get("topic", ""),
+            "concept": e.get("concept", ""),
+            "prompt": text,
+            "answer": ans,
+        })
+    if json_output:
+        print(_json_dumps({
+            "queue_size": len(entries),
+            "deck_count": len(decks),
+            "cards": cards,
+        }))
+        return entries
+
+    for card in cards:
+        i = card["index"]
+        ctype = card["card_type"]
+        deck = card["deck"]
+        text = card["prompt"]
+        ans = card["answer"]
         print(f"  [{i}] {ctype:5s} | {deck}")
         print(f"        {text}")
         print(f"        -> {ans}")
@@ -313,6 +350,7 @@ def review(session: str | None = None, queue_path: Path = QUEUE_PATH) -> list[di
 def check(
     session: str | None = None,
     queue_path: Path = QUEUE_PATH,
+    emit: bool = True,
 ) -> dict:
     """Surface quality warnings and overlap candidates for agent review.
 
@@ -326,8 +364,10 @@ def check(
         to_check = all_entries
 
     if not to_check:
-        print(json.dumps({"queue_size": 0, "duplicate_candidates": [], "quality_warnings": []}))
-        return {"queue_size": 0, "duplicate_candidates": [], "quality_warnings": []}
+        result = {"queue_size": 0, "duplicate_candidates": [], "quality_warnings": []}
+        if emit:
+            print(_json_dumps(result))
+        return result
 
     claims = []
     for e in to_check:
@@ -405,7 +445,8 @@ def check(
         "duplicates": duplicate_candidates,
         "quality_warnings": quality_warnings,
     }
-    print(json.dumps(result, indent=2))
+    if emit:
+        print(_json_dumps(result))
     return result
 
 
@@ -426,7 +467,7 @@ def flush(
         remaining = []
 
     if not to_flush:
-        print(json.dumps({"queue_size": 0}))
+        print(_json_dumps({"queue_size": 0}))
         return {"queue_size": 0}
 
     if not dry_run:
@@ -434,10 +475,10 @@ def flush(
         ok, err = client.check_connection()
         if not ok:
             print(f"AnkiConnect unavailable: {err}", file=sys.stderr)
-            print(json.dumps({"error": f"AnkiConnect unavailable: {err}"}))
+            print(_json_dumps({"error": f"AnkiConnect unavailable: {err}"}))
             return {"error": err}
 
-    preflight = check(session=session, queue_path=queue_path)
+    preflight = check(session=session, queue_path=queue_path, emit=False)
     duplicate_candidates = preflight.get("duplicate_candidates", [])
     if duplicate_candidates and not allow_duplicate_candidates:
         result = {
@@ -449,7 +490,7 @@ def flush(
                 "with --allow-duplicate-candidates only after judging all candidates false positives."
             ),
         }
-        print(json.dumps(result, indent=2))
+        print(_json_dumps(result))
         return result
 
     drafts = []
@@ -473,7 +514,7 @@ def flush(
             "duplicate_candidate_count": len(duplicate_candidates),
             "dry_run": True,
         }
-        print(json.dumps(metrics, indent=2))
+        print(_json_dumps(metrics))
         return metrics
 
     created = 0
@@ -519,7 +560,7 @@ def flush(
     if errors:
         metrics["errors"] = errors
 
-    print(json.dumps(metrics, indent=2))
+    print(_json_dumps(metrics))
     return metrics
 
 
@@ -544,6 +585,7 @@ def main(argv: list[str] | None = None) -> int:
 
     p_rev = sub.add_parser("review")
     p_rev.add_argument("--session", default=None)
+    p_rev.add_argument("--json", action="store_true", help="Emit compact machine-readable review output")
 
     p_check = sub.add_parser("check")
     p_check.add_argument("--session", default=None)
@@ -580,7 +622,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if ok else 1
 
     if args.command == "review":
-        review(session=args.session)
+        review(session=args.session, json_output=args.json)
         return 0
 
     if args.command == "check":

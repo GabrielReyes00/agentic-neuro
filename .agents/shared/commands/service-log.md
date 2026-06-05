@@ -1,26 +1,19 @@
 # Service Log
 
-Daily service-rotation capture: one de-identified dictation becomes service-origin memory plus one short teaching/quiz turn. No vault artifact is written; `data/study_memory.db` is the durable record.
+Deprecated compatibility surface. New clinical-experience capture should use `/brain-dump`, which now owns de-identified service teaching, Brain Dump artifacts, service-origin review candidates, optional Socratic conversion, and service/site memory logging.
 
-Use for `/service-log`, "today on <service> at <site>...", or short daily service debriefs. Use `/brain-dump` for artifact-producing ward teaching capture, `/consult` for direct management questions, and `/study-review` for formal review.
+Keep this file only so older wrappers still have a safe route. Do not add new behavior here. If `/service-log` is invoked, follow `.agents/shared/commands/brain-dump.md` and preserve these service-memory rules:
 
-Follow:
-- `adaptive-teaching-doctrine.md` for the probe/teaching turn.
-- `memory-operations.md` and `memory-retrieval.md` for session and recall semantics.
-- `anki-card-quality.md` for explicitly requested cards.
+- De-identify before retrieval, teaching, memory writes, Anki, or vault persistence.
+- Use the Brain Dump workflow's artifact write and atomic review-candidate logging.
+- For local service/site knowledge, resolve or start the rotation, then log candidates and evaluated Socratic answers with `--origin service`, `--rotation <id>`, and `--convention` when the teaching is a site-local habit, order set, workflow, or preference.
+- For portable clinical knowledge, use `--origin assessed` so general topic review can surface it.
+- Service-specific recall still uses `startup-recall --lens service --service "<service>" --site "<site>"`.
+- Do not create Anki cards during capture; create cards only after evaluated Socratic answers.
 
-## Boundaries
+## Backend Primitives Kept
 
-- De-identify before retrieval, teaching, memory writes, or Anki: remove names, MRNs, room/bed IDs, full DOBs, exact unique timelines, and other patient identifiers. Ask for a sanitized restatement if meaning is lost.
-- Every service memory write uses `--origin service` and a valid active or explicit rotation. Never log service material as `assessed`.
-- Clinical gaps key to the service and carry across sites/years. Institutional habits, order sets, and workflow preferences use `--convention` and stay local to service x site.
-- Memory reads/writes are invisible bookkeeping. Never print commands, raw stdout/stderr, or recall payloads into the learner transcript.
-- Exposure is not mastery. Grade only the answer Gabriel gives in the teaching turn.
-- Stay light: no report-scale RAG. Run at most one focused verification query for a management-changing claim when needed.
-
-## Workflow
-
-1. Resolve rotation.
+The service-memory backend remains active and is used by `/brain-dump` when needed:
 
 ```bash
 python3 src/study_memory.py rotation-current
@@ -29,8 +22,6 @@ python3 src/study_memory.py rotation-start --service "<service>" --site "<site>"
 
 Use `rotation-start` only when no active rotation exists or the dictation names a different service/site. Capture `rotation_id` when returned; `log-answer --origin service` may otherwise use the active rotation.
 
-2. Run silent service recall.
-
 ```bash
 python3 src/study_memory.py startup-recall --lens service --service "<service>" --site "<site>" [--rotation <id>] [--context "<upcoming/context>"]
 ```
@@ -38,60 +29,6 @@ python3 src/study_memory.py startup-recall --lens service --service "<service>" 
 Interpret the payload as:
 - `service_gaps`: primary queue.
 - `conventions`: site-local reminders, not universal teaching.
-- `formal_secondary`: capped domain-matched assessed study, useful for depth but not priority.
+- `formal_secondary`: legacy capped formal support; do not use it unless explicitly requested because current service-specific recall should stay service/local.
 - `rubric_open`: competency targets worth steering toward.
 - `weighting_policy: service_primary_formal_capped`: lead with service gaps; formal material can inform, not dominate.
-
-3. Extract one teaching edge from the dictation: trigger, reported action/rule, and the mechanism/threshold/discriminator/management consequence. Identify whether it is a portable clinical gap or a local convention.
-
-4. Teach briefly. Ask one calibrated probe and stop. After Gabriel answers, grade briefly, reveal the next useful layer, and avoid a broad lecture unless asked.
-
-5. Log the graded result.
-
-```bash
-python3 src/study_memory.py log-answer \
-  --session "$SESSION_TS" \
-  --topic "<clinical topic>" \
-  --concept "<concept>" \
-  --question "<probe>" \
-  --answer "<de-identified learner answer>" \
-  --correct <0|1|2> \
-  --skill service-log \
-  --origin service \
-  [--rotation <rotation_id>] \
-  [--competency-target "<rubric slug>"] \
-  [--convention] \
-  --tested-claim "<claim tested>" \
-  --corrected-rule "<correct rule>" \
-  --clinical-consequence "<management consequence>"
-```
-
-Link `--competency-target` when a rubric target clearly maps. Use `--convention` only for site-local practice, and do not encode identifiers in any field.
-
-6. Close the session.
-
-```bash
-python3 src/study_memory.py end-session \
-  --session "$SESSION_TS" \
-  --summary "<sanitized daily service learning>" \
-  --next-strategy "<next shift probe or rubric edge>" \
-  --json
-```
-
-## Optional Anki
-
-Do not auto-card. If explicitly requested, route cards to `Neurosurgery::Service Learning` with `service-learning`, `service/<service>`, and `site/<site>` tags. Do not card conventions or unverified high-stakes specifics as settled universal facts.
-
-## Anticipatory Review
-
-For "what should I review to stay sharp on <service>", run:
-
-```bash
-python3 src/study_memory.py startup-recall --lens service --service "<service>" --context "<upcoming case/topic>"
-```
-
-Lead with `service_gaps` and `rubric_open`; use `formal_secondary` only as capped support.
-
-## Completion
-
-Surface only the de-identified teaching edge/correction, active rotation, convention or verification caveat if relevant, and card count if cards were created.

@@ -32,7 +32,8 @@ The `log-answer` command prints `OK exchange_id=N`; use that N as `--exchange-id
 - QA backs must be self-contained.
 - Deck: `Neurosurgery::<Domain>::<Topic Title>`.
 - Exception: `/intraoperative-guide` uses `Neurosurgery::Procedures::<Operative Guide Title>`.
-- Exception: cards explicitly created from `/brain-dump`, or during `/study-review` anchored to a `Brain Dumps/` artifact, use `Neurosurgery::Brain Dumps` with tag `brain-dump` to keep institution- and lived-experience-origin teaching distinct from textbook/source-heavy decks.
+- Exception: portable cards from evaluated Brain Dump Socratic turns, or during `/study-review` anchored to a `Brain Dumps/` artifact, use `Neurosurgery::Brain Dumps` with tag `brain-dump` to keep lived-experience-origin teaching distinct from textbook/source-heavy decks. Site-local service conventions use the service-learning routing defined in `brain-dump.md`/`service-log.md`.
+- Do not create Anki cards during initial Brain Dump capture; pending candidates become card-eligible only after evaluated learner answers.
 - Tags: `<skill>,<error_type>` comma-separated, omitting error type if correct.
 
 ## Enqueue
@@ -74,10 +75,10 @@ Run this after `end-session --json`.
 2. Review queued cards:
 
    ```bash
-   python3 src/anki_queue.py review --session "$SESSION_TS"
+   python3 src/anki_queue.py review --session "$SESSION_TS" --json
    ```
 
-   Verify atomicity, numbers/thresholds/dosages, and match to discussed material. Rewrite or remove true problems before flushing.
+   Parse the compact JSON silently. Verify every queued card for atomicity, numbers/thresholds/dosages, and match to discussed material. Rewrite or remove true problems before flushing. Do not paste the review JSON into the learner-facing transcript.
 
 3. Run duplicate and quality check:
 
@@ -85,6 +86,7 @@ Run this after `end-session --json`.
    python3 src/anki_queue.py check --session "$SESSION_TS"
    ```
 
+   Parse the compact JSON silently and surface only actionable blockers or final counts.
    - **Duplicate Candidates**: If `duplicate_candidates` is non-empty, compare by tested memory trace, not wording. Remove true duplicates with `python3 src/anki_queue.py remove --claim-id "<id>"`. Keep false positives when the queued card tests something the existing card does not.
    - **Uncarded Misses Guardrail**: If `quality_warnings` contains `uncarded_missed_exchange`, this means a concept logged in SQLite as a miss (`score < 2`) lacks an enqueued card. **The agent is structurally blocked from completing the session** and MUST run the corresponding `enqueue` command for the missing exchange before proceeding.
 
@@ -94,6 +96,8 @@ Run this after `end-session --json`.
    python3 src/anki_queue.py flush --session "$SESSION_TS"
    ```
 
-   `flush` re-runs duplicate gates and refuses to proceed if unresolved duplicate candidates remain. Use `--allow-duplicate-candidates` only after reviewing every candidate from `check` and judging remaining candidates false positives.
+   `flush` re-runs duplicate gates silently and prints only its compact final JSON. It refuses to proceed if unresolved duplicate candidates remain. Use `--allow-duplicate-candidates` only after reviewing every candidate from `check` and judging remaining candidates false positives.
 
 5. If AnkiConnect is unavailable, note it; the queue persists and can flush next session.
+
+Anki queue stdout is internal bookkeeping. The learner-facing closeout should report only useful counts and blockers, for example queued, created, duplicates requiring review, failed, and unavailable AnkiConnect.

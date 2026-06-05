@@ -33,18 +33,26 @@ Do not expand just because counts or omitted fields are nonzero. Use `--profile 
 **Topic-anchored sessions without a vault document**: user named a topic or clinical question but no artifact is known.
 
 ```bash
-python3 src/study_memory.py startup-recall --topic "<topic>"
+python3 src/study_memory.py startup-recall --topic "<topic>" --lens general
 ```
 
-This command is topic-scoped. It resolves canonical topic identity, loads the personalized planning brief, and automatically expands omitted high-signal cards before returning. Do not run global retrieval in this mode. Unrelated open errors must not influence a chosen-topic session.
+This command is topic-scoped. It resolves canonical topic identity, loads the personalized planning brief, includes pending Brain Dump review candidates for that topic, and automatically expands omitted high-signal cards before returning. Do not run global retrieval in this mode. Unrelated open errors must not influence a chosen-topic session.
+
+**Service/site-specific sessions**: user asks how a condition is handled on a named service or site.
+
+```bash
+python3 src/study_memory.py startup-recall --lens service --service "<service>" --site "<site>" [--context "<case/topic>"]
+```
+
+Use only `service_gaps` and `conventions` unless the learner explicitly asks to compare local practice against formal study knowledge.
 
 **Memory-driven custom review only**: user asked what to study, to drill weak spots, to build a custom session, to go after open errors, or a similar memory-first request with no named topic.
 
 ```bash
-python3 src/study_memory.py startup-recall --global
+python3 src/study_memory.py startup-recall --global --lens general
 ```
 
-Global startup recall surfaces a compact high-signal candidate set, due conceptual checks, learner-model profiles, and recent session handoff state while suppressing scaffolds by default. It intentionally returns `startup_recall.ready_to_teach = false`: read `startup_recall.deferred_high_signal`, select candidate topics, then run topic-scoped `startup-recall --topic "<candidate>"` for each chosen topic. Use `--include-global-scaffolds` only if no stronger due gaps dominate and broad target selection needs scaffold context.
+Global startup recall surfaces a compact high-signal candidate set, due conceptual checks, pending Brain Dump candidates, learner-model profiles, and recent session handoff state while suppressing scaffolds by default. It intentionally returns `startup_recall.ready_to_teach = false`: read `startup_recall.deferred_high_signal`, select candidate topics, then run topic-scoped `startup-recall --topic "<candidate>" --lens general` for each chosen topic. Use `--include-global-scaffolds` only if no stronger due gaps dominate and broad target selection needs scaffold context.
 
 In all modes, read output silently. Start from `planning_brief`, then inspect raw surfaces only when the brief is ambiguous, diagnostics require audit, or `retrieval_guidance.omitted_high_signal` requires expansion. Do not paste recall into chat, summarize it as a menu, or telegraph prior misses. The data shapes questioning; it does not shape narration.
 
@@ -92,7 +100,8 @@ python3 src/study_memory.py log-answer \
   [--strict-telemetry] \
   [--priority "<urgent|high|medium|low>"] \
   [--match-claim-state-id <id>] [--new-claim] \
-  [--repairs-claim-state-ids "<id,id,...>"]
+  [--repairs-claim-state-ids "<id,id,...>"] \
+  [--brain-dump-candidate-id <id>]
 ```
 
 Correctness: `2` = correct without hints | `1` = right direction, missing details | `0` = wrong or misconception.
@@ -104,6 +113,29 @@ Agent judgment fields are required when applicable:
 - Use `--match-claim-state-id` for intentional retests of existing `must_retest` or `recent_repair` cards.
 - Use `--new-claim` when wording overlaps an existing claim but the cognitive target is genuinely different.
 - Use `--repairs-claim-state-ids` only when a correct answer explicitly repairs other open claim states.
+- Use `--brain-dump-candidate-id` when an evaluated answer tests a pending Brain Dump candidate. This marks the candidate reviewed and links it to the resulting claim state.
+
+## Brain Dump Review Candidates
+
+Initial `/brain-dump` capture logs unreviewed concepts with:
+
+```bash
+python3 src/study_memory.py brain-dump-candidate-add \
+  --session "$SESSION_TS" --topic "<topic>" --concept "<concept>" \
+  --doc "Brain Dumps/<Title>.md" \
+  --prompt "<future Socratic question>" \
+  --claim "<claim to test>" \
+  --provenance-tier "<tier>" \
+  --origin <assessed|service> [--rotation <id>] [--convention]
+```
+
+Candidates are review obligations/interests, not `claim_state`. List them with:
+
+```bash
+python3 src/study_memory.py brain-dump-candidate-list [--topic "<topic>"] [--status pending]
+```
+
+Only `log-answer --brain-dump-candidate-id <id>` converts a candidate into learner-state evidence.
 
 ## Session End
 
@@ -153,4 +185,4 @@ Bad: `incorrect`, `unsure`
 
 ## Invisible Bookkeeping
 
-Memory commands are internal. Do not print commands, JSON payloads, raw stdout, or raw stderr into the learner-facing transcript. You must still read and reason about every memory command's output. Silent means invisible to the learner, not invisible to the agent. Surface only concise warnings on failure.
+Memory commands are internal. Parse compact JSON silently; do not print commands, JSON payloads, raw stdout, or raw stderr into the learner-facing transcript. You must still read and reason about every memory command's output. Silent means invisible to the learner, not invisible to the agent. Surface only concise counts, status, and actionable warnings on failure.

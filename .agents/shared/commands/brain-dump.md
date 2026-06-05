@@ -4,7 +4,7 @@ Capture de-identified teaching received on service, connect it to mechanism and 
 
 This workflow is for exposure capture, not demonstrated mastery. A senior resident correction or lesson is valuable evidence of what Gabriel encountered; it is not evidence of what he can yet retrieve or apply.
 
-Follow `.agents/shared/commands/learning-session-contract.md` only where this contract invokes learner testing. Use `memory-operations.md` and `memory-retrieval.md` for silent learner-context retrieval and artifact-anchor logging, `review-artifacts.md` for the vault destination, and `anki-card-quality.md` for any explicitly requested cards.
+Follow `.agents/shared/commands/learning-session-contract.md` only where this contract invokes learner testing. Use `memory-operations.md` and `memory-retrieval.md` for silent learner-context retrieval, artifact-anchor logging, atomic review-candidate logging, and optional Socratic conversion. Use `review-artifacts.md` for the vault destination and `anki-card-quality.md` for cards generated only after evaluated answers.
 
 ## When To Use
 
@@ -29,6 +29,7 @@ The resident has a compact, de-identified, provenance-honest brain dump note tha
 4. **Do not universalize local practice.** Separate general clinical principles from institution/service conventions and patient-specific decisions.
 5. **Keep the artifact compact.** This is neither a report nor a consult pocket card. Capture the educational edge, not a comprehensive chapter.
 6. **Do not create concept glossary entries during capture.** Brain dumps deliberately preserve local and experiential provenance; generalizable concepts can be promoted through later verified report or review workflows.
+7. **Atomic candidates are not mastery.** Each canonical teaching point gets a pending review candidate so it can be found later, but it becomes learner-state evidence only after a Socratic answer is evaluated.
 
 ## Workflow
 
@@ -87,6 +88,12 @@ python3 src/study_memory.py startup-recall --profile doc --topic "<topic>" --doc
 ```
 
 Read `planning_brief`, `counts`, `omitted`, and `retrieval_guidance` per `memory-retrieval.md`; expand with `--profile audit` only if the compact brief is ambiguous or safety-critical context is missing. Use this context to choose explanation depth and future review suggestions. Do not state what memory returned.
+
+If the dump names a service/site-specific practice and an active service context is needed, also resolve the rotation and use service-lens recall only for local memory:
+
+```bash
+python3 src/study_memory.py startup-recall --lens service --service "<service>" --site "<site>" [--rotation <id>]
+```
 
 ### 4. Targeted Source Verification
 
@@ -229,7 +236,7 @@ python3 src/brain_dump_guard.py validate \
   "/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Brain Dumps/<Topic Title>.md"
 ```
 
-The guard enforces structure and rejects common direct identifiers. It is a final safety net, not permission to feed raw identified input into tools.
+Parse guard JSON silently. Surface only pass/fail, installed path, and actionable safety/structure errors. The guard enforces structure and rejects common direct identifiers. It is a final safety net, not permission to feed raw identified input into tools.
 
 ### 7. Artifact-Anchor Memory Write
 
@@ -262,14 +269,60 @@ python3 src/study_memory.py end-session \
 
 `brain-dump` must behave as an artifact anchor: it creates discoverability/session handoff context, but no assessed claim result, durable learner state, or curation evidence.
 
-### 8. Optional Review Or Anki
+### 8. Atomic Review Candidates
+
+After the artifact-anchor write, log one pending review candidate per canonical teaching point. Use portable `origin=assessed` for general clinical knowledge and `origin=service` only for site/service-specific conventions or service-origin operational habits. Service-origin candidates require an active or explicit rotation.
+
+```bash
+python3 src/study_memory.py brain-dump-candidate-add \
+  --session "$SESSION_TS" \
+  --topic "<canonical topic>" \
+  --concept "<atomic concept>" \
+  --doc "Brain Dumps/<Topic Title>.md" \
+  --prompt "<future Socratic question shape>" \
+  --claim "<portable or local claim to test>" \
+  --provenance-tier "<Source-grounded|Service teaching - locally confirm|Clinical knowledge - verify>" \
+  --origin <assessed|service> \
+  [--rotation <rotation_id>] \
+  [--convention]
+```
+
+These candidates power later prompts like "review outstanding brain dumps" or "review what we've covered about spinal stability." They must not create Anki cards or curation evidence.
+
+### 9. Optional Socratic Review Or Anki
 
 At completion, offer either:
 
 - immediate active review from the new note; or
 - leaving the artifact for later review.
 
-If Gabriel chooses testing, transition to doc-anchored `/study-review` using `Brain Dumps/<Topic Title>.md`. Only evaluated responses in that review count as learner evidence.
+End the response with exactly:
+
+`Do you want to complete a quick Socratic lesson on these items?`
+
+If Gabriel declines or does not answer, leave the candidates pending. If Gabriel chooses testing, ask one Socratic question at a time. For each evaluated answer, run `log-answer` with `--brain-dump-candidate-id <id>` so the pending candidate is marked reviewed and linked to the resulting claim state:
+
+```bash
+python3 src/study_memory.py log-answer \
+  --session "$SESSION_TS" \
+  --topic "<canonical topic>" \
+  --concept "<atomic concept>" \
+  --question "<your question, verbatim>" \
+  --answer "<Gabriel's answer, verbatim>" \
+  --correct <0|1|2> \
+  --doc "Brain Dumps/<Topic Title>.md" \
+  --skill "study-review" \
+  --brain-dump-candidate-id <id> \
+  --strict-telemetry \
+  --answer-mode "<unaided|prompted|after_hint|after_teaching|self_corrected>" \
+  --confidence-observed "<low|medium|high|hesitant|fluent>" \
+  --teaching-move "<initial_probe|contrastive_drill|mechanism_first|order_set|premortem|visual_probe|changed_frame_retest|other>" \
+  --tested-claim "<claim tested>" \
+  --corrected-rule "<replacement rule when needed>" \
+  [--origin service --rotation <rotation_id> --convention]
+```
+
+Before logging, inspect the startup recall/candidate context and use `--match-claim-state-id` when this answer is retesting an existing claim. The backend also has exact and near-duplicate matching within the same provenance namespace, but explicit matching is required when the agent can identify the prior claim. Service-origin claims never bind to assessed claims.
 
 **Dedicated provenance-isolated Anki deck:** any card generated directly from `/brain-dump`, or generated while `/study-review` is anchored to a `Brain Dumps/` note, must route to:
 
@@ -277,7 +330,7 @@ If Gabriel chooses testing, transition to doc-anchored `/study-review` using `Br
 
 Tag those cards `brain-dump` and include other appropriate tags. This deck intentionally isolates institution- and lived-experience-origin learning from textbook/report-derived topic decks.
 
-Do not automatically card capture content. Create cards only if Gabriel requests them during capture, or if the subsequent assessed review meets the ordinary Anki-generation criteria. Do not encode a `Service teaching - locally confirm` or `Clinical knowledge - verify` high-stakes specific as settled fact.
+Do not create cards during initial capture. Create cards only after evaluated Socratic turns meet the ordinary Anki-generation criteria. Portable Brain Dump-derived cards route to `Neurosurgery::Brain Dumps`; site-local service conventions route to `Neurosurgery::Service Learning` with `service-learning`, `service/<service>`, and `site/<site>` tags and must not encode local practice as a universal rule.
 
 ## Completion
 
@@ -287,5 +340,6 @@ Surface:
 - the brain-dump note path after successful install;
 - whether any points remain locally confirmable or source-unverified;
 - whether memory was recorded as an artifact anchor;
-- card count only if cards were explicitly created or produced during active review;
-- the option to begin active review now.
+- how many pending atomic review candidates were logged;
+- card count only if cards were produced during active Socratic review;
+- the Socratic lesson prompt.

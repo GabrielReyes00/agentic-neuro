@@ -112,6 +112,47 @@ class ServiceRotationTests(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_service_origin_misconceptions_do_not_leak_into_formal_recall(self) -> None:
+        conn = self._conn()
+        try:
+            study_memory.log_answer(
+                conn,
+                session_id="formal-miss",
+                topic="peritumoral edema",
+                concept="dexamethasone dosing",
+                question="What is the initial dexamethasone approach for symptomatic edema?",
+                answer="FORMAL WRONG ANSWER",
+                correct=0,
+                tested_claim="Dexamethasone dosing for symptomatic vasogenic edema should be individualized to acuity and service plan.",
+                missing_edge="formal missing edge",
+                force_new_claim=True,
+            )
+            rid = study_memory.start_rotation(conn, service="tumor", site="MD Anderson", pgy=1)["rotation_id"]
+            study_memory.log_answer(
+                conn,
+                session_id="service-miss",
+                topic="peritumoral edema",
+                concept="dexamethasone dosing",
+                question="What site-local edema convention was discussed?",
+                answer="SERVICE LOCAL WRONG ANSWER SHOULD NOT APPEAR",
+                correct=0,
+                skill="service-log",
+                origin="service",
+                rotation_id=rid,
+                convention=True,
+                tested_claim="Dexamethasone dosing for symptomatic vasogenic edema should be individualized to acuity and service plan.",
+                missing_edge="service missing edge",
+                force_new_claim=True,
+            )
+
+            formal = json.loads(study_memory.startup_recall(conn, topic="peritumoral edema", lens="formal"))
+            blob = json.dumps(formal)
+            self.assertIn("FORMAL WRONG ANSWER", blob)
+            self.assertNotIn("SERVICE LOCAL WRONG ANSWER SHOULD NOT APPEAR", blob)
+            self.assertNotIn("service missing edge", blob)
+        finally:
+            conn.close()
+
     def test_service_lens_primary_plus_capped_tagged_formal(self) -> None:
         conn = self._conn()
         try:
@@ -228,6 +269,52 @@ class ServiceRotationTests(unittest.TestCase):
             )
             origins = sorted(r["origin"] for r in conn.execute("SELECT origin FROM claim_state"))
             self.assertEqual(origins, ["assessed", "service"], "service and assessed gaps must stay distinct rows")
+        finally:
+            conn.close()
+
+    def test_brain_dump_service_candidate_reviews_as_site_local_convention(self) -> None:
+        conn = self._conn()
+        try:
+            rid = study_memory.start_rotation(conn, service="tumor", site="MD Anderson", pgy=1)["rotation_id"]
+            candidate_id = study_memory.add_brain_dump_candidate(
+                conn,
+                session_id="brain-dump-service",
+                topic="tumor edema service practice",
+                concept="local steroid taper order set",
+                doc_path="Brain Dumps/Tumor Edema Service Teaching.md",
+                prompt="Which steroid taper order-set detail needs local confirmation?",
+                claim_text="MDA uses a local postoperative dexamethasone taper order set for tumor edema.",
+                provenance_tier="Service teaching - locally confirm",
+                origin="service",
+                rotation_id=rid,
+                convention=True,
+            )
+            study_memory.log_answer(
+                conn,
+                session_id="brain-dump-service-review",
+                topic="tumor edema service practice",
+                concept="local steroid taper order set",
+                question="What is the status of the MDA tumor edema taper?",
+                answer="It is a local order set to confirm, not a universal rule.",
+                correct=2,
+                skill="study-review",
+                doc_path="Brain Dumps/Tumor Edema Service Teaching.md",
+                tested_claim="MDA uses a local postoperative dexamethasone taper order set for tumor edema.",
+                corrected_rule="Treat the taper as a site-local convention to confirm with the service.",
+                origin="service",
+                rotation_id=rid,
+                convention=True,
+                brain_dump_candidate_id=candidate_id,
+            )
+
+            state = conn.execute("SELECT origin, gap_type, rotation_id FROM claim_state").fetchone()
+            self.assertEqual(state["origin"], "service")
+            self.assertEqual(state["gap_type"], "convention")
+            self.assertEqual(int(state["rotation_id"]), int(rid))
+            formal = json.loads(study_memory.startup_recall(conn, topic="tumor edema service practice", lens="formal"))
+            self.assertNotIn("dexamethasone taper", json.dumps(formal).lower())
+            svc = json.loads(study_memory.startup_recall(conn, lens="service", service="tumor", site="md-anderson"))
+            self.assertTrue(any("taper" in item["concept"] for item in svc["conventions"]))
         finally:
             conn.close()
 

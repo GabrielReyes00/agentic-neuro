@@ -20,8 +20,8 @@ Key shared contracts:
 - `.agents/shared/commands/concept-extraction.md` — shared post-write concept-stub rules for artifact-generating workflows.
 - `.agents/shared/commands/study-review.md` — doc-anchored and memory-driven review.
 - `.agents/shared/commands/consult.md` — lecture-first clinical consult, verification, Anki, pocket-card write.
-- `.agents/shared/commands/brain-dump.md` — de-identified service-teaching capture, targeted verification, artifact-anchor memory logging, and optional later review.
-- `.agents/shared/commands/service-log.md` — daily service-rotation capture with provenance-isolated memory and one-pass teaching.
+- `.agents/shared/commands/brain-dump.md` — de-identified service-teaching capture, targeted verification, artifact-anchor memory logging, pending atomic review candidates, service-origin tagging, and optional Socratic review.
+- `.agents/shared/commands/service-log.md` — deprecated compatibility surface; `/brain-dump` owns service-experience capture while the service-memory backend remains active.
 - `.agents/shared/commands/quick-answer.md` — brief direct answers with lightweight memory logging, no startup recall, and optional Anki.
 - `.agents/shared/commands/generate-report.md` — citation-dense report generation with structured research plan, source cards, coverage ledger, synthesis map, Mastery Objectives, and report validation.
 - `.agents/shared/commands/intraoperative-guide.md` — deep-research operative rehearsal guides with procedure decomposition, serial RAG, operative knowledge maps, verified Obsidian wikilinks, restrained readable formatting, adversarial expert review, gap repair, structural validation, procedure-specific Anki decks, and Mastery Objectives.
@@ -41,7 +41,7 @@ Key shared contracts:
 11. Vault metadata at bottom — YAML `---` block at END of every vault file, never top.
 12. Title Case filenames with spaces — e.g., `Anterior Choroidal Artery Aneurysms.md`. No underscores, no dates in filenames.
 
-**Invisible bookkeeping**: Memory commands (`study_memory.py`) and Obsidian write commands are internal. Do not print those commands, JSON payloads, raw stdout, or raw stderr into the learner-facing transcript. **You must still read and reason about every memory command's output.** "Silent" means invisible to the learner, not invisible to you. Surface only concise warnings on failure.
+**Invisible bookkeeping**: Memory commands (`study_memory.py`), Anki queue review/check/flush, validation guards, and Obsidian write commands are internal. Parse JSON/tool output silently; do not print commands, JSON payloads, raw stdout, or raw stderr into the learner-facing transcript. **You must still read and reason about every tool result.** "Silent" means invisible to the learner, not invisible to you. Surface only concise counts, file paths, success/failure status, and actionable warnings.
 
 **NEVER**: dated filenames | YAML at top | emojis | H1 titles in vault files
 
@@ -82,6 +82,8 @@ Cognitive friction is mandatory during study. After asking a question, stop. Do 
 
 After Gabriel commits to an answer, reveal progressively. Grade the answer briefly, reveal only the next useful layer, then ask the follow-up that pulls him deeper. Do not dump the full disease/topic landscape after a first shallow correct answer. Save full maps for stage closure, explicit reveal requests, major misses requiring teaching, or session summaries.
 
+When recall exposes `historical_misconceptions` or `repair_velocity`, use them silently to design high-friction distractors, bounded interleaving, and consequence-framed follow-ups. Do not quote prior answers or let interleaving override requested document priority.
+
 ### Context Compression
 
 At 12+ turns in study sessions, notify user and offer digest before continuing. Never compress silently.
@@ -96,7 +98,7 @@ At 12+ turns in study sessions, notify user and offer digest before continuing. 
 | `Presentations/` | `/grand-rounds` | Grand rounds, case presentation, and journal club artifacts. Cases in `Presentations/Cases/`; articles in `Presentations/Articles/`; generated decks on Desktop |
 | `Consults/` | `/consult` | Focused clinical consult pocket cards for ward reference. If a prior consult on the same topic exists, a dated encounter section is appended rather than creating a duplicate |
 | `Brain Dumps/` | `/brain-dump` | De-identified teaching encountered on service; compact verified artifacts for optional active review |
-| No vault artifact | `/service-log` | Memory-durable daily service-rotation learning; see shared contract |
+| Deprecated compatibility | `/service-log` | Follow `/brain-dump`; service-memory backend remains active |
 | `Reference/` | Agent (on request) | Curated reference notes (e.g., `Oral Boards Topic Bank.md`) used to seed memory-driven sessions |
 | `Concepts/` | Agent | Glossary of atomic concepts extracted by skills per `.agents/shared/commands/concept-extraction.md`. `INDEX.md` is auto-regenerated. **Protected** (never overwrite): `Neurosurgery Consult Workflow.md`, `Neurosurgery Consult Checklists by Pathology.md`, `Peripheral Nerve Injury Classifications (Seddon & Sunderland).md` |
 | `Dashboard.md` | `study_memory.py summary` | Live learner-state context: coverage, open errors, weak concepts, stale knowledge, recent sessions. **Do not hand-edit generated views.** |
@@ -112,8 +114,8 @@ At 12+ turns in study sessions, notify user and offer digest before continuing. 
 - **study-material**: `Study Material/<Title>.md` + INDEX. Title Case from source doc name. Must pass `src/study_material_guard.py` before claiming success or starting a drill.
 - **grand-rounds**: `Presentations/Cases/<Title>.md` or `Presentations/Articles/<Title>.md` via `src/grand_rounds_writer.py` with `--require-quality-gate`. Scrub PHI before case writes.
 - **consult**: `Consults/<Topic Title>.md`. Focused pocket-card vault note for ward reference -- brief lecture model, not encyclopedic. Agent writes the pocket card directly. If a prior consult on the same topic exists, append an `## Encounter -- YYYY-MM-DD` section. Provenance tiering applies: source-grounded points are cited, clinical-knowledge points are labelled and high-stakes specifics carry a `⚠` verify flag (never fake-cited); pocket-card YAML records `internal_knowledge_used` + `provenance`. Dual-source Anki cards follow `anki-session-workflow.md` and `anki-card-quality.md`: lecture content + verification question misses; do not card `⚠` verify-tier specifics as settled fact. Memory recall informs teaching approach, never content omission. Include compact `## Mastery Objectives`. No H1, YAML at bottom.
-- **brain-dump**: `Brain Dumps/<Topic Title>.md`. De-identify before RAG, memory, Anki, or vault persistence; preserve teaching as `Source-grounded`, `Service teaching - locally confirm`, or `Clinical knowledge - verify`. Validate/install through `src/brain_dump_guard.py`. Its memory entry is an artifact anchor, not learner performance. Do not generate cards automatically; explicitly requested cards and later `study-review` cards anchored to this artifact route to `Neurosurgery::Brain Dumps` with tag `brain-dump`.
-- **service-log**: No vault artifact; memory is the durable record. Follow `.agents/shared/commands/service-log.md` for rotation resolution, service-lens recall, service-origin logging, conventions, and card routing.
+- **brain-dump**: `Brain Dumps/<Topic Title>.md`. De-identify before RAG, memory, Anki, or vault persistence; preserve teaching as `Source-grounded`, `Service teaching - locally confirm`, or `Clinical knowledge - verify`. Validate/install through `src/brain_dump_guard.py`. Capture logs an artifact anchor plus pending atomic review candidates, not learner performance. Offer the Socratic lesson; only evaluated answers create claim state and Anki candidates.
+- **service-log**: Deprecated compatibility route. Follow `.agents/shared/commands/brain-dump.md`; keep service-origin logging via `--origin service`, `--rotation`, and `--convention` when appropriate.
 - **study-review**: No vault artifact in either invocation mode (doc-anchored or memory-driven) -- the memory layer (`study_memory.py`) is the durable record. `log-answer` after each answer (with `--doc` only when reviewing a vault file); `end-session` at close.
 
 Before writing to any vault folder: ensure `INDEX.md` exists and scan existing vault files for valid wikilinks.
@@ -129,7 +131,7 @@ The active memory layer is `data/study_memory.db` via `src/study_memory.py`. The
 - `.agents/shared/commands/adaptive-teaching-doctrine.md` controls teaching behavior.
 - `.agents/shared/commands/anki-session-workflow.md` and `.agents/shared/commands/anki-card-quality.md` control routine Anki generation and flush.
 
-Invariant summary: skill-driven document sessions start with `study_memory.py startup-recall --profile doc --topic ... --doc ...`; memory-driven custom review is the only mode that uses `startup-recall --global`. Read `startup_recall` and `planning_brief` before teaching. Use `--profile audit` only for ambiguous compact briefs or learner-model audits. Raw `summary` is for dashboard or audit reads. Skills never write directly to the curated layer; curation is post-flush bookkeeping.
+Invariant summary: skill-driven document sessions start with `study_memory.py startup-recall --profile doc --topic ... --doc ...`; memory-driven custom review uses `startup-recall --global --lens general`, and topic-only review uses `startup-recall --topic ... --lens general`. Site/service-specific recall uses `--lens service`. Read `startup_recall` and `planning_brief` before teaching. Use `--profile audit` only for ambiguous compact briefs or learner-model audits. Raw `summary` is for dashboard or audit reads. Skills never write directly to the curated layer; curation is post-flush bookkeeping.
 
 ## §7 Session-End Protocol
 
@@ -163,13 +165,13 @@ Default: answer directly from model knowledge. Skills are opt-in -- never auto-t
 | `/study-material`, "make study material from [file]" | `study-material` |
 | `/generate-report`, "generate a report on" | `generate-report` |
 | `/consult`, "consult on", "how do I manage", "what should I know about" | `consult` |
-| `/service-log`, "today on [service] at [site], I managed/learned...", daily service-rotation debrief, "log my day on service" | `service-log` |
+| `/service-log`, "today on [service] at [site], I managed/learned...", daily service-rotation debrief, "log my day on service" | deprecated compatibility route; follow `brain-dump` |
 | `/brain-dump`, "capture what I learned on shift", "senior corrected me on service", "ward teaching lesson" | `brain-dump` |
 | `/grand-rounds`, "build my grand rounds", "put together a case presentation", "journal club presentation" | `grand-rounds` |
 
 ### Anki
 
-Card creation is inline in every learning skill via `anki_queue.py enqueue/check/flush` per `.agents/shared/commands/anki-session-workflow.md`. Before drafting or validating cards, read `.agents/shared/commands/anki-card-quality.md` for focused card-quality, cloze, taxonomy, and duplicate rules. There is no separate Anki runtime skill -- when the user asks to "save to Anki" or "make cards", do it inline from the current session context. Special deck routing for `brain-dump` and `service-log` lives in those shared contracts.
+Card creation is inline in every learning skill via `anki_queue.py enqueue/check/flush` per `.agents/shared/commands/anki-session-workflow.md`. Before drafting or validating cards, read `.agents/shared/commands/anki-card-quality.md` for focused card-quality, cloze, taxonomy, and duplicate rules. There is no separate Anki runtime skill -- when the user asks to "save to Anki" or "make cards", do it inline from the current session context. Brain Dump capture itself creates no cards; evaluated Brain Dump Socratic turns use Brain Dump or service-learning routing by provenance.
 
 For current-deck cleanup, rewriting, taxonomy reorganization, or Chroma rebuilds, use `.agents/shared/commands/anki-deck-maintenance.md`. Anki is ground truth; Chroma is only rebuilt from live Anki.
 
@@ -210,10 +212,10 @@ cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate &&
 
 # study_memory.py — active session memory (see §6 for full usage)
 startup-recall --profile doc --topic "T" --doc "<folder>/X.md"          # compact doc-review startup
-startup-recall --topic "T"                                              # memory/topic startup; auto-expands high-signal cards
+startup-recall --topic "T" --lens general                               # memory/topic startup; includes pending Brain Dump candidates
 startup-recall --profile audit --topic "T" [--doc "<folder>/X.md"]      # full rich startup surface for audits/ambiguity
-startup-recall --global                                                 # MEMORY-DRIVEN CUSTOM REVIEW ONLY
-# service-log rotation/rubric commands: see .agents/shared/commands/service-log.md
+startup-recall --global --lens general                                  # MEMORY-DRIVEN CUSTOM REVIEW ONLY
+startup-recall --lens service --service "S" --site "X"                  # service/site-specific memory
 summary --topic "T" --limit 8 --scaffold-limit 2 --include-curated --include-model  # raw audit/post-session integrity read
 log-answer ... --strict-telemetry ...                                  # assessed learning: follow memory-operations.md; omit strict mode for quick-answer/artifact anchors
 end-session --session "TS" --summary "..." --next-strategy "..." --json

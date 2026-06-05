@@ -25,7 +25,7 @@ Both steps use the same `SESSION_TS`. Do not defer enqueue to session end — ca
 ### Session End
 
 At session end, follow the shared contract's Anki Queue Validation and Flush protocol:
-1. `python3 src/anki_queue.py review --session "$SESSION_TS"`
+1. `python3 src/anki_queue.py review --session "$SESSION_TS" --json`
 2. `python3 src/anki_queue.py check --session "$SESSION_TS"` — mandatory duplicate-candidate and quality-warning review
 3. `python3 src/anki_queue.py flush --session "$SESSION_TS"`
 

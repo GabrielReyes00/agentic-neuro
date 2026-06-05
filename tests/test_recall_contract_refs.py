@@ -57,39 +57,43 @@ class RecallContractReferenceTests(unittest.TestCase):
                 text = (ROOT / relative_path).read_text()
                 self.assertIn(".agents/shared/commands/service-log.md", text)
 
-    def test_service_log_contract_references_real_memory_commands(self) -> None:
+    def test_service_log_contract_is_deprecated_compatibility_route(self) -> None:
         contract = (ROOT / ".agents/shared/commands/service-log.md").read_text()
         implementation = (ROOT / "src/study_memory.py").read_text()
         for command in (
             "rotation-current",
             "rotation-start",
             "startup-recall",
-            "log-answer",
-            "end-session",
         ):
             with self.subTest(command=command):
                 self.assertIn(command, contract)
                 self.assertIn(command, implementation)
-        for flag in ("--lens", "--origin"):
+        for flag in ("--lens", "--origin", "--convention"):
             with self.subTest(flag=flag):
                 self.assertIn(flag, contract)
                 self.assertIn(flag, implementation)
+        self.assertIn("Deprecated compatibility surface", contract)
+        self.assertIn(".agents/shared/commands/brain-dump.md", contract)
         self.assertIn("service", implementation)
 
-    def test_root_agent_instructions_route_service_log(self) -> None:
-        contract = (ROOT / ".agents/shared/commands/service-log.md").read_text()
+    def test_brain_dump_contract_owns_service_memory_and_candidates(self) -> None:
+        contract = (ROOT / ".agents/shared/commands/brain-dump.md").read_text()
         for fragment in (
+            "brain-dump-candidate-add",
+            "--brain-dump-candidate-id",
             "startup-recall --lens service",
             "Neurosurgery::Service Learning",
-            "service_primary_formal_capped",
+            "Do you want to complete a quick Socratic lesson on these items?",
         ):
             with self.subTest(contract_fragment=fragment):
                 self.assertIn(fragment, contract)
+
+    def test_root_agent_instructions_route_service_log_as_deprecated(self) -> None:
         for relative_path in ("AGENTS.md", "CLAUDE.md", "GEMINI.md"):
             with self.subTest(path=relative_path):
                 text = (ROOT / relative_path).read_text()
                 self.assertIn("service-log", text)
-                self.assertIn(".agents/shared/commands/service-log.md", text)
+                self.assertIn("deprecated compatibility", text)
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@ Adaptive Socratic study session. Two invocation modes:
 
 - **Doc-anchored**: review an existing vault document — a `Reports/<file>.md` (narrative with reasoning and citations), a `Study Material/<file>.md` (structured question bank), or a `Brain Dumps/<file>.md` (de-identified service-teaching artifact with explicit provenance limits).
 - **Memory-driven custom review**: no document supplied — agent composes the session from the learner's memory state (open errors, weak concepts, stale knowledge, cross-topic gaps, learner-requested focus).
+- **Service/site-specific review**: no document supplied and the learner asks how something is done on a named service or site. Use service memory only.
 
 Follow `.agents/shared/commands/learning-session-contract.md` for the module map. In particular, use `memory-operations.md` for memory writes, `memory-retrieval.md` for summary interpretation, `adaptive-teaching-doctrine.md` for teaching behavior, and `anki-session-workflow.md` plus `anki-card-quality.md` for cards.
 
@@ -37,21 +38,29 @@ When invoked without a document, compose the session from memory state.
 
 ```bash
 cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
-python3 src/study_memory.py startup-recall --global
+python3 src/study_memory.py startup-recall --global --lens general
 ```
 
 Read the global picture: active `must_retest` cards, due claims, session handoffs, recent repairs, curated cross-session summaries, learner graph signals, model surfaces, and `retrieval_guidance`.
 
 Global startup recall is intentionally compact and returns `startup_recall.ready_to_teach = false`. Read `startup_recall.deferred_high_signal`, then use the per-candidate topic summaries below to load complete high-signal context only for the topics selected for this session. Do not bulk-expand the global envelope or begin teaching directly from it.
 
-If Gabriel names an upcoming case, rotation, service context, or board persona, add `--context "<brief context>"` to summary commands. Use `context_focus` and the reviewed `context_graph_focus` paths during planning when present: they shape thematic order, while urgent safety-critical due claims remain gatekeepers. Verify that a graph path is clinically applicable before using it.
+If Gabriel names an upcoming case, rotation, or board persona, add `--context "<brief context>"` to summary commands. Use `context_focus` and the reviewed `context_graph_focus` paths during planning when present: they shape thematic order, while urgent safety-critical due claims remain gatekeepers. Verify that a graph path is clinically applicable before using it.
+
+If Gabriel asks for site/service-specific material ("how do we manage ICH at Ben Taub", "what steroid taper does MDA tumor use"), do not run global or formal recall. Run:
+
+```bash
+python3 src/study_memory.py startup-recall --lens service --service "<service>" --site "<site>" [--context "<upcoming case/topic>"]
+```
+
+Use `service_gaps` and `conventions` only. Do not mix in artifact-study memory unless Gabriel explicitly asks to compare local practice against formal knowledge.
 
 ### Step 1: Per-candidate summary
 
 For each candidate topic the status output surfaces (top weak concepts, recent open errors, stale-but-PGY-relevant areas, anything the learner named):
 
 ```bash
-python3 src/study_memory.py startup-recall --topic "<candidate topic>"
+python3 src/study_memory.py startup-recall --topic "<candidate topic>" --lens general
 ```
 
 Read each summary output per `.agents/shared/commands/memory-retrieval.md`. Note session handoff, active retest cards, recent repairs, and scaffold premises per topic.
@@ -66,6 +75,7 @@ Order the queue by clinical/educational priority, drawing from:
 - **Cross-topic gaps**: concepts surfaced by scouting in one session but never followed up under their own topic.
 - **Frontier/blind spots**: untested ACGME catalog regions that are adjacent to mastered material or high-yield for PGY-1 readiness.
 - **Shadow interests**: quick answers or generated artifacts that signal possible curiosity or uncertainty; probe lightly before assigning learner state.
+- **Outstanding Brain Dumps**: pending atomic candidates from prior brain-dump captures. Treat them as untested review opportunities, not learner-state evidence, until Gabriel answers.
 - **Learner-requested focus**: if the user names a domain, scenario, persona, or filter ("vascular weak spots", "ICU management", "intern-style firefight on neurotrauma"), filter and shape the queue accordingly.
 
 ### Step 3: Present and confirm
@@ -103,7 +113,7 @@ cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
 python3 src/study_memory.py startup-recall --profile doc --topic "<doc topic>" --doc "<folder>/<file>.md"
 ```
 
-This is the **formal lens** (the default). Doc-anchored and memory-driven study review read standardized, assessed learner state only; service-rotation material is sealed out and must not surface here. Never pass `--lens service` from `/study-review` — service-origin gaps and institutional conventions belong to `/service-log`, not to formal document review.
+This is the **formal document lens**. Doc-anchored review reads standardized, assessed learner state only; service-rotation material is sealed out and must not surface here. Never pass `--lens service` from doc-anchored review.
 
 Follow the pre-session verification protocol from `memory-operations.md` before proceeding. `SESSION_TS` is set per `memory-operations.md` at the first learner-facing question.
 
@@ -177,7 +187,7 @@ In both cases, the document is the curriculum boundary — the agent's questions
 
 Use the document's structure as a scaffold, not a script. `adaptive-teaching-doctrine.md` defines what questions should achieve: every question has a purpose, targets a specific mastery operation, and prioritizes the edge of the learner's competence.
 
-Your recall output, scouting notes, and medical knowledge should drive question selection. Prior errors and gaps from this and related topics are high-priority targets. New document sections should be covered. Known concepts should be used as building blocks for deeper questions, not re-drilled.
+Your recall output, scouting notes, and medical knowledge should drive question selection. Prior errors and gaps from this and related topics are high-priority targets. Use `historical_misconceptions` and `repair_velocity` as internal design inputs for high-friction distractors; do not quote prior answers. Use bounded interleaving from `contextual_frontier` or adjacent `teaching_priorities` only when it tests transfer, a validated confuser, or a prerequisite, and do not let it override the document or topic. After a suboptimal choice, use one consequence-framed follow-up that forces rescue planning, then repair directly.
 
 Ask one question per turn, then stop. Start with active recall or a clinical decision — never lecture before the learner answers.
 
@@ -244,7 +254,7 @@ Correctness: `2` = correct | `1` = partial (right direction, missing key detail)
 
 Follow `.agents/shared/commands/anki-session-workflow.md` after each `log-answer` call. Use `.agents/shared/commands/anki-card-quality.md` when drafting and validating cards.
 
-If `--doc` begins with `Brain Dumps/`, route all cards from that doc-anchored session to `Neurosurgery::Brain Dumps` and tag them `brain-dump` in addition to the usual review/error tags.
+If the question is drawn from a `brain_dump_review_candidate`, pass `--brain-dump-candidate-id <id>` so the pending item is marked reviewed and linked to the resulting claim state. If `--doc` begins with `Brain Dumps/`, route portable cards to `Neurosurgery::Brain Dumps` and tag them `brain-dump` in addition to the usual review/error tags. If the evaluated answer is a site-local service convention, log it with `--origin service --rotation <id> --convention` and use service-learning card routing instead.
 
 ---
 

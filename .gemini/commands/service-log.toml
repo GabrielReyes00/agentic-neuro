@@ -1,9 +1,9 @@
-description = "Ultra-light daily service-rotation capture with service memory and one-pass teaching"
+description = "Deprecated compatibility route for service-rotation debriefs; follow brain-dump service-memory capture"
 
 prompt = """
-ACTIVE COMMAND: /service-log - Capture service-rotation learning and teach the surfaced gap.
+ACTIVE COMMAND: /service-log - Deprecated compatibility route for service-rotation learning.
 
-You MUST read and follow `.agents/shared/commands/service-log.md`.
+You MUST read `.agents/shared/commands/service-log.md`; it redirects new capture behavior to the brain-dump service-memory workflow.
 
 User's input: {{args}}
 

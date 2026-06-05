@@ -1,6 +1,6 @@
 ---
 name: brain-dump
-description: Use when Gabriel asks for a brain dump from shift, ward teaching, or a senior-resident correction for de-identified synthesis, provenance verification, and optional later study review.
+description: Use when Gabriel asks for a brain dump from shift, ward teaching, or a senior-resident correction for de-identified synthesis, provenance verification, atomic review-candidate logging, service-origin tagging, and optional Socratic conversion.
 ---
 
 # Brain Dump

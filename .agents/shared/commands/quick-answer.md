@@ -89,10 +89,12 @@ Do not create Anki cards automatically.
 If the answer contained durable high-yield material, ask briefly at the end whether to make cards. If the user says no or does not respond, stop. If the user says yes, create 1-3 atomic cards using `.agents/shared/commands/anki-card-quality.md`, then run:
 
 ```bash
-python3 src/anki_queue.py review --session "$SESSION_TS"
+python3 src/anki_queue.py review --session "$SESSION_TS" --json
 python3 src/anki_queue.py check --session "$SESSION_TS"
 python3 src/anki_queue.py flush --session "$SESSION_TS"
 ```
+
+Parse Anki JSON silently and surface only card counts or actionable blockers.
 
 Use deck format `Neurosurgery::<Domain>::<Topic Title>` and tag `quick-answer`.
 

@@ -2925,7 +2925,7 @@ if __name__ == "__main__":
                     for h in result["hits"]
                 ],
             }
-            print(json.dumps(output, indent=2))
+            print(json.dumps(output, separators=(",", ":")))
         else:
             lat = result["latency"]
             meta = result["metadata"]

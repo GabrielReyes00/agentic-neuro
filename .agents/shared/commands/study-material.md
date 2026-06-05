@@ -51,9 +51,11 @@ Minimum generated-note contract:
 Install/validate flow:
 
 ```bash
-python3 src/study_material_guard.py install --draft "data/Sessions/study_material_<slug>.md" --title "<Topic Title>" --min-questions 25 --min-questions-per-chunk 2 --min-facts-per-chunk 2 --min-fact-coverage 0.70
-python3 src/study_material_guard.py validate "/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Study Material/<Topic Title>.md" --min-questions 25 --min-questions-per-chunk 2 --min-facts-per-chunk 2 --min-fact-coverage 0.70
+python3 src/study_material_guard.py install --draft "data/Sessions/study_material_<slug>.md" --title "<Topic Title>" --min-questions 25 --min-questions-per-chunk 2 --min-facts-per-chunk 2 --min-fact-coverage 0.70 --json
+python3 src/study_material_guard.py validate "/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Study Material/<Topic Title>.md" --min-questions 25 --min-questions-per-chunk 2 --min-facts-per-chunk 2 --min-fact-coverage 0.70 --json
 ```
+
+Parse guard JSON silently. Surface only pass/fail, path, question/fact/chunk counts, and actionable errors.
 
 ### Atomic Extraction Protocol
 
