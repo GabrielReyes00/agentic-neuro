@@ -36,10 +36,7 @@ When invoked without a document, compose the session from memory state.
 
 ### Step 0: Global memory summary
 
-```bash
-cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
-python3 src/study_memory.py startup-recall --global --lens general
-```
+Retrieve the learner's global memory using the global `startup-recall` command from `memory-operations.md`.
 
 Read the global picture: active `must_retest` cards, due claims, session handoffs, recent repairs, curated cross-session summaries, learner graph signals, model surfaces, and `retrieval_guidance`.
 
@@ -47,21 +44,13 @@ Global startup recall is intentionally compact and returns `startup_recall.ready
 
 If Gabriel names an upcoming case, rotation, or board persona, add `--context "<brief context>"` to summary commands. Use `context_focus` and the reviewed `context_graph_focus` paths during planning when present: they shape thematic order, while urgent safety-critical due claims remain gatekeepers. Verify that a graph path is clinically applicable before using it.
 
-If Gabriel asks for site/service-specific material ("how do we manage ICH at Ben Taub", "what steroid taper does MDA tumor use"), do not run global or formal recall. Run:
-
-```bash
-python3 src/study_memory.py startup-recall --lens service --service "<service>" --site "<site>" [--context "<upcoming case/topic>"]
-```
+If Gabriel asks for site/service-specific material ("how do we manage ICH at Ben Taub", "what steroid taper does MDA tumor use"), do not run global or formal recall. Instead, retrieve the service-specific memory using the service-anchored `startup-recall` command from `memory-operations.md`.
 
 Use `service_gaps` and `conventions` only. Do not mix in artifact-study memory unless Gabriel explicitly asks to compare local practice against formal knowledge.
 
 ### Step 1: Per-candidate summary
 
-For each candidate topic the status output surfaces (top weak concepts, recent open errors, stale-but-PGY-relevant areas, anything the learner named):
-
-```bash
-python3 src/study_memory.py startup-recall --topic "<candidate topic>" --lens general
-```
+For each candidate topic the status output surfaces (top weak concepts, recent open errors, stale-but-PGY-relevant areas, anything the learner named), retrieve the topic-specific memory using the topic-anchored `startup-recall` command from `memory-operations.md`.
 
 Read each summary output per `.agents/shared/commands/memory-retrieval.md`. Note session handoff, active retest cards, recent repairs, and scaffold premises per topic.
 
@@ -108,10 +97,7 @@ If the document contains `## Mastery Objectives`, extract them only after readin
 
 ### Step 2: Retrieve prior memory context (silent)
 
-```bash
-cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
-python3 src/study_memory.py startup-recall --profile doc --topic "<doc topic>" --doc "<folder>/<file>.md"
-```
+Retrieve the learner's document memory using the doc-profile `startup-recall` command from `memory-operations.md`.
 
 This is the **formal document lens**. Doc-anchored review reads standardized, assessed learner state only; service-rotation material is sealed out and must not surface here. Never pass `--lens service` from doc-anchored review.
 
@@ -135,19 +121,7 @@ Reject tangential adjacency, generic lexical overlap, and interesting-but-noncen
 
 If a validated candidate remains ambiguous, inspect the full summary or run topic-scoped expansion for that canonical related topic. Do not run blind phrase-based `summary --topic` scouting commands: concepts inside an umbrella report topic are not guaranteed to exist as independent topic identities.
 
-When you probe a related concept during the session, log it under the related topic's canonical name, not the primary session topic:
-
-```bash
-python3 src/study_memory.py log-answer \
-  --session "$SESSION_TS" --topic "<related topic>" --concept "<concept>" \
-  --question "..." --answer "..." --correct <0|1|2> \
-  --skill "study-review" \
-  --strict-telemetry --answer-mode "<mode>" \
-  --confidence-observed "<observation>" --teaching-move "<move>" \
-  [--priority "urgent|high|medium|low"] \
-  [--match-claim-state-id <id>] [--new-claim] \
-  [--repairs-claim-state-ids "id,id,..."]
-```
+When you probe a related concept during the session, log it under the related topic's canonical name (not the primary session topic) using the `log-answer` command from `memory-operations.md` (with `skill="study-review"`).
 
 This builds the cross-topic knowledge graph naturally: a future session on the related topic will find this data, and a future session on the primary topic will find it again through contextual-frontier retrieval.
 
@@ -175,7 +149,7 @@ The source document shapes how the agent designs questions, not what the session
 
 **Study Material** provides a structured question inventory with atomic facts and pre-designed questions organized by teaching unit. The agent should use the question bank as a coverage scaffold — ensuring systematic testing across all sections — while adapting questions to the learner's current state rather than reading them verbatim. Pre-designed questions are starting points, not scripts: rephrase, combine, contextualize, or replace them based on what recall and real-time performance reveal about where the learner needs to be pushed.
 
-**Brain Dumps** provide compact, de-identified teaching captured from clinical experience. The agent should test whether the learner can apply the operational edge and explain its mechanism while preserving its provenance tier. Points labelled `Service teaching - locally confirm` must be tested as local practice knowledge or clarification targets, not recast as universal standards.
+**Brain Dumps** provide compact, de-identified teaching captured from clinical experience. The agent should test whether the learner can apply the operational edge and explain its mechanism while preserving provenance boundaries. Use `## Institutional & Local Clarifications` and any `brain_dump_review_candidate.provenance_tier` values to distinguish local practice knowledge or clarification targets from universal standards.
 
 In both cases, the document is the curriculum boundary — the agent's questions should be grounded in and traceable to the document's content, with related-topic probes as targeted supplements rather than tangents.
 
@@ -183,30 +157,19 @@ In both cases, the document is the curriculum boundary — the agent's questions
 
 ## Session Execution
 
-### Question Design
+### Question Design & Pacing
 
-Use the document's structure as a scaffold, not a script. `adaptive-teaching-doctrine.md` defines what questions should achieve: every question has a purpose, targets a specific mastery operation, and prioritizes the edge of the learner's competence.
-
-Your recall output, scouting notes, and medical knowledge should drive question selection. Prior errors and gaps from this and related topics are high-priority targets. Use `historical_misconceptions` and `repair_velocity` as internal design inputs for high-friction distractors; do not quote prior answers. Use bounded interleaving from `contextual_frontier` or adjacent `teaching_priorities` only when it tests transfer, a validated confuser, or a prerequisite, and do not let it override the document or topic. After a suboptimal choice, use one consequence-framed follow-up that forces rescue planning, then repair directly.
-
-Ask one question per turn, then stop. Start with active recall or a clinical decision — never lecture before the learner answers.
-
-### Post-Answer Flow
-
-After each answer: grade it, then choose the next teaching move using `adaptive-teaching-doctrine.md`. Cognitive friction, progressive reveal, minimum effective explanation, and correct-but-shallow-as-partial govern how much to reveal and when. Keep responses concise — the goal is to spend session time on the learner's thinking, not the agent's explanations.
-
-### Adaptive Pacing
-
-Let real-time performance compress or expand time-on-concept, but do not create a second local decision tree here. Use `adaptive-teaching-doctrine.md` for wrong, partial, shallow-correct, repaired-miss, and repeated-error behavior.
-
-The goal is to spend the maximum proportion of session time at the learner's frontier — the boundary between what they can and cannot do. Questions below the frontier waste time; questions far above it produce noise instead of learning. Strong performance should move quickly toward harder transfer or uncovered material; unrepaired misses should narrow the session until the false rule is removed.
+Use the document's structure as a scaffold, not a script. Every question must have a purpose, prioritize the learner's frontier of competence, and target a specific mastery operation per `adaptive-teaching-doctrine.md`.
+- **Vignettes & Distractors**: Design high-friction distractors using `historical_misconceptions` and `repair_velocity`. Introduce bounded interleaving from `contextual_frontier` only when it tests transfer, a validated confuser, or a prerequisite (do not let it override topic/document priority).
+- **Misconception Rescue**: After a suboptimal answer, present one consequence-framed follow-up (Socratic premortem) to force rescue planning, then repair the misconception directly.
+- **Flow**: Ask one question per turn; never lecture before the learner commits.
+- **Response Rules**: Grade briefly and progressively reveal per `adaptive-teaching-doctrine.md`. Let performance dictate pacing (accelerate on correct answers; narrow down on misses to remove false rules).
 
 ### Session Length Checkpoint
 
-After 5-6 evaluated exchanges, pause and ask the learner: "Want to wrap up here as a quick review, or keep going?" This is not a formality — it determines the session's trajectory:
-
-- **End here**: Proceed immediately to Session End (synthesis challenge, end-session, Anki flush). This gives the learner a lightweight probe of the topic with full memory persistence.
-- **Keep going**: Take this as a signal to increase depth and intensity. Escalate to harder application, transfer, and complication questions. Push toward the learner's frontier aggressively. Continue until the learner says they are done — do not ask again or impose a cap.
+After 5-6 evaluated exchanges, ask: *"Want to wrap up here as a quick review, or keep going?"*
+- **Wrap up**: Proceed immediately to Session End (synthesis challenge, end-session, Anki flush).
+- **Keep going**: Escalate depth, intensity, and complexity (harder application, complications, and transfer) at the learner's frontier until the learner signals completion.
 
 ### Scope of Probes
 
@@ -216,35 +179,7 @@ Probes beyond the primary document should stay clinically adjacent and managemen
 
 ## Memory Logging (silent, after every evaluated answer)
 
-```bash
-cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
-python3 src/study_memory.py log-answer \
-  --session "$SESSION_TS" \
-  --topic "<topic>" \
-  --concept "<specific concept tested>" \
-  --question "<your question, verbatim>" \
-  --answer "<Gabriel's answer, verbatim>" \
-  --correct <0|1|2> \
-  --doc "<folder>/<slug>.md" \
-  --skill "study-review" \
-  --strict-telemetry \
-  --answer-mode "<unaided|prompted|after_hint|after_teaching|self_corrected>" \
-  --confidence-observed "<low|medium|high|hesitant|fluent>" \
-  --teaching-move "<initial_probe|contrastive_drill|mechanism_first|order_set|premortem|visual_probe|changed_frame_retest|other>" \
-  [--correction "<corrected fact>"] \
-  [--error-type "<type>"] \
-  [--misconception "<specific wrong belief>"] \
-  [--tested-claim "<what was tested>"] \
-  [--learner-claim "<compact committed answer>"] \
-  [--missing-edge "<missing discriminator/threshold/step>"] \
-  [--corrected-rule "<replacement rule>"] \
-  [--clinical-consequence "<why it matters>"] \
-  [--retest-prompt-shape "<future probe shape>"] \
-  [--learning-operation "<recall|discrimination|quantification|sequencing|mechanism|transfer>"] \
-  [--priority "urgent|high|medium|low"] \
-  [--match-claim-state-id <id>] [--new-claim] \
-  [--repairs-claim-state-ids "id,id,..."]
-```
+Log every evaluated answer using the `log-answer` command from `memory-operations.md` (with `skill="study-review"`).
 
 **Topic assignment**: use the primary doc topic for concepts native to the document. When probing a related concept surfaced through scouting, use the related topic's canonical name instead — this ensures the exchange is discoverable in future sessions on either topic.
 
@@ -266,15 +201,7 @@ When the learner requests to end the session, the session length checkpoint trig
 
 2. **Summarize**: what was retested, what new material was covered, what gaps remain, one learner-pattern insight. Compare your assessment against the learner's synthesis — discrepancies (learner thinks they know X but you scored it partial, or learner flags uncertainty on Y that you marked correct) are the most valuable signal for the next session.
 
-3. **Run end-session** (silent):
-```bash
-cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
-python3 src/study_memory.py end-session \
-  --session "$SESSION_TS" \
-  --summary "<1-3 sentence recap>" \
-  --next-strategy "<specific directive for next session>" \
-  --json
-```
+3. **Run end-session** (silent): Run the `end-session` command with `--json` from `memory-operations.md`.
 Read the JSON output silently. If `curation.recommended` is `true`, follow `.agents/shared/commands/memory-curation.md` after Anki flush.
 
 `--next-strategy` must be actionable: name the concept, the error type, and the teaching move.

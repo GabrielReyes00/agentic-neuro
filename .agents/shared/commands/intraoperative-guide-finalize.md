@@ -78,7 +78,7 @@ The validator also rejects unverified wikilinks when the Obsidian vault is avail
 For real runs:
 
 1. Ensure the guide's bottom YAML carries `domain:` (canonical slug) and a one-line `summary:`, then regenerate the domain-grouped index: `python3 src/index_builder.py "Operative Guides"`.
-2. Extract 2-5 atomic concepts worth future review.
+2. Extract 2-5 concept cards per `.agents/shared/commands/concept-extraction.md` when the guide contains reusable anatomy, corridor, bailout, complication, or decision concepts worth future wikilinking.
 3. Log the guide to memory using the shared learning-session contract.
 4. Queue Anki cards only when durable spaced-repetition facts are present.
 
@@ -90,12 +90,7 @@ Neurosurgery::Procedures::<Title>
 
 Do not scatter operative-guide cards into ordinary domain decks.
 
-For dry runs:
-
-- Do not update vault indexes.
-- Do not extract/write concept stubs.
-- Do not log memory.
-- Do not create or flush Anki cards.
+Dry-run finalization stops after dry-run validation and rehearsal artifacts. Vault indexing, concept-card extraction, memory logging, and Anki writes are reserved for real runs.
 
 ## Wikilink Verification
 

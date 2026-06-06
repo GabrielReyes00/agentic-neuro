@@ -1,8 +1,8 @@
 # Service Log
 
-Deprecated compatibility surface. New clinical-experience capture should use `/brain-dump`, which now owns de-identified service teaching, Brain Dump artifacts, service-origin review candidates, optional Socratic conversion, and service/site memory logging.
+`/service-log` is the service-debrief entry point for clinical experience capture. It uses the `/brain-dump` artifact workflow and preserves service/site memory primitives for local conventions, operational habits, and rotation-specific learning.
 
-Keep this file only so older wrappers still have a safe route. Do not add new behavior here. If `/service-log` is invoked, follow `.agents/shared/commands/brain-dump.md` and preserve these service-memory rules:
+If `/service-log` is invoked, follow `.agents/shared/commands/brain-dump.md` and apply these service-memory rules:
 
 - De-identify before retrieval, teaching, memory writes, Anki, or vault persistence.
 - Use the Brain Dump workflow's artifact write and atomic review-candidate logging.
@@ -22,13 +22,11 @@ python3 src/study_memory.py rotation-start --service "<service>" --site "<site>"
 
 Use `rotation-start` only when no active rotation exists or the dictation names a different service/site. Capture `rotation_id` when returned; `log-answer --origin service` may otherwise use the active rotation.
 
-```bash
-python3 src/study_memory.py startup-recall --lens service --service "<service>" --site "<site>" [--rotation <id>] [--context "<upcoming/context>"]
-```
+Retrieve service memory using the service-specific `startup-recall` command from `memory-operations.md`.
 
 Interpret the payload as:
 - `service_gaps`: primary queue.
 - `conventions`: site-local reminders, not universal teaching.
-- `formal_secondary`: legacy capped formal support; do not use it unless explicitly requested because current service-specific recall should stay service/local.
+- `formal_secondary`: capped formal support available when Gabriel explicitly asks to compare local practice against formal knowledge.
 - `rubric_open`: competency targets worth steering toward.
 - `weighting_policy: service_primary_formal_capped`: lead with service gaps; formal material can inform, not dominate.

@@ -14,16 +14,14 @@ from pathlib import Path
 DEFAULT_VAULT_ROOT = Path("/Users/gabrielreyes/Documents/Obsidian/agentic-neuro")
 BRAIN_DUMP_DIRNAME = "Brain Dumps"
 REQUIRED_HEADINGS = (
-    "De-identified Teaching Trigger",
-    "Extraction Map",
+    "Clinical Focus",
     "Priority Takeaways",
-    "Reported Teaching",
-    "Verified Bridge",
-    "Operational Consequence",
-    "Clarify Or Verify Locally",
+    "Clinical & Anatomical Synthesis",
+    "Operational Mental Models",
+    "Institutional & Local Clarifications",
     "Mastery Objectives",
     "Related In This Vault",
-    "Sources",
+    "References",
 )
 REQUIRED_METADATA_KEYS = {
     "tags",
@@ -32,11 +30,6 @@ REQUIRED_METADATA_KEYS = {
     "provenance",
     "internal_knowledge_used",
 }
-PROVENANCE_LABELS = (
-    "Source-grounded",
-    "Service teaching - locally confirm",
-    "Clinical knowledge - verify",
-)
 SOURCE_TIER_LABELS = (
     "Internal textbook RAG",
     "External review",
@@ -46,11 +39,25 @@ SOURCE_TIER_LABELS = (
 HIGH_STAKES_SOURCE_RE = re.compile(
     r"\b(?:medication|medications|postoperative|postop|analgesia|analgesic|pain plan|"
     r"opioid|opioids|NSAID|NSAIDs|gabapentin|gabapentinoid|muscle relaxant|"
-    r"operative|surgical approach|approach selection|ACDF|lordosis|deformity|threshold)\b",
+    r"operative|surgical approach|approach selection|ACDF|lordosis|deformity|threshold|"
+    r"EVD|external ventricular drain|CSF drainage|drain state|transport protocol)\b",
     re.I,
 )
-EXTRACTION_MAP_MAX_NODE_WORDS = 8
-PRIORITY_TAKEAWAY_MAX_WORDS = 16
+INLINE_CITATION_RE = re.compile(
+    r"\((?:"
+    r"[A-Z][A-Za-z'`.-]+(?:\s+(?:&|and)\s+[A-Z][A-Za-z'`.-]+|\s+et\s+al\.)?,\s*(?:19|20)\d{2}"
+    r"|Youmans\s+&\s+Winn,\s*8th\s+ed\.[^)]*"
+    r"|[A-Z][A-Za-z'`.-]+\s+et\s+al\.,\s*(?:19|20)\d{2}"
+    r"|PROSPECT,\s*(?:19|20)\d{2}"
+    r")\)",
+    re.I,
+)
+HIGH_STAKES_NO_GUIDELINE_RE = re.compile(
+    r"\b(?:no|not|none|unable to identify|did not identify|not located|not found)\b"
+    r"[\s\S]{0,120}\b(?:guideline|formal guidance|primary stud(?:y|ies)|primary source)\b",
+    re.I,
+)
+PRIORITY_TAKEAWAY_MAX_WORDS = 32
 
 
 def _json_dumps(payload: object) -> str:
@@ -104,6 +111,15 @@ def _bottom_yaml(text: str) -> str | None:
     return match.group("yaml") if match else None
 
 
+def _section_body(text: str, heading: str) -> str | None:
+    match = re.search(
+        rf"^## {re.escape(heading)}\s*$([\s\S]*?)(?=^## |\n---\n|\Z)",
+        text,
+        flags=re.M,
+    )
+    return match.group(1) if match else None
+
+
 def validate_text(text: str, *, path: Path) -> ValidationResult:
     errors: list[str] = []
     stripped = text.lstrip()
@@ -126,14 +142,15 @@ def validate_text(text: str, *, path: Path) -> ValidationResult:
         if not re.search(r"^skill:\s*brain-dump\s*$", yaml_text, flags=re.M):
             errors.append("bottom YAML skill must be brain-dump")
 
-    if not any(label in text for label in PROVENANCE_LABELS):
-        errors.append("artifact must identify at least one approved provenance tier")
+    clinical_focus = _section_body(text, "Clinical Focus")
+    if clinical_focus:
+        bullets = re.findall(r"^\s*[-*]\s+\S.*$", clinical_focus, flags=re.M)
+        if not bullets:
+            errors.append("Clinical Focus must include concise bullet topics")
 
-    priority_match = re.search(
-        r"^## Priority Takeaways\s*$([\s\S]*?)(?=^## |\n---\n|\Z)", text, flags=re.M
-    )
-    if priority_match:
-        bullets = re.findall(r"^\s*[-*]\s+\S.*$", priority_match.group(1), flags=re.M)
+    priority_body = _section_body(text, "Priority Takeaways")
+    if priority_body:
+        bullets = re.findall(r"^\s*[-*]\s+\S.*$", priority_body, flags=re.M)
         if not bullets:
             errors.append("Priority Takeaways must include 1 to 3 bullet takeaways")
         if len(bullets) > 3:
@@ -146,55 +163,41 @@ def validate_text(text: str, *, path: Path) -> ValidationResult:
                     f"({len(words)} words, max {PRIORITY_TAKEAWAY_MAX_WORDS}): {bullet[:80]}"
                 )
 
-    extraction_match = re.search(
-        r"^## Extraction Map\s*$([\s\S]*?)(?=^## |\n---\n|\Z)", text, flags=re.M
-    )
-    if extraction_match:
-        extraction_body = extraction_match.group(1)
-        if "|" in extraction_body:
-            errors.append("Extraction Map must use terse '-->' flow lines, not a markdown table")
-        flow_lines = [
-            line.strip().lstrip("-").strip()
-            for line in extraction_body.splitlines()
-            if "-->" in line
-        ]
-        if not flow_lines:
-            errors.append("Extraction Map must include at least one '-->' flow line")
-        for line in flow_lines:
-            if line.count("-->") < 2:
-                errors.append(f"extraction flow must have at least 3 nodes: {line[:80]}")
-            for node in [part.strip(" `") for part in line.split("-->")]:
-                word_count = len(re.findall(r"\b[\w/+.-]+\b", node))
-                if word_count > EXTRACTION_MAP_MAX_NODE_WORDS:
-                    errors.append(
-                        "extraction flow node too long "
-                        f"({word_count} words, max {EXTRACTION_MAP_MAX_NODE_WORDS}): {node[:80]}"
-                    )
+    synthesis_body = _section_body(text, "Clinical & Anatomical Synthesis")
+    if synthesis_body and not INLINE_CITATION_RE.search(synthesis_body):
+        errors.append(
+            "Clinical & Anatomical Synthesis must include academic inline citations"
+        )
 
-    sources_match = re.search(
-        r"^## Sources\s*$([\s\S]*?)(?=^## |\n---\n|\Z)", text, flags=re.M
-    )
-    if sources_match and not re.search(r"\[[^\]]+\]\(https?://[^)]+\)", sources_match.group(1)):
-        errors.append("Sources must include at least one linked external reference")
-    if sources_match and not any(f"{label}:" in sources_match.group(1) for label in SOURCE_TIER_LABELS):
-        errors.append("Sources must label evidence type for each support item")
-    if sources_match:
-        for line in sources_match.group(1).splitlines():
+    mental_models_body = _section_body(text, "Operational Mental Models")
+    if mental_models_body and not re.search(r"^###\s+\S+", mental_models_body, flags=re.M):
+        errors.append("Operational Mental Models must include at least one named model subheading")
+
+    references_body = _section_body(text, "References")
+    if references_body and not re.search(r"\[[^\]]+\]\(https?://[^)]+\)", references_body):
+        errors.append("References must include at least one linked external reference")
+    if references_body and not any(f"{label}:" in references_body for label in SOURCE_TIER_LABELS):
+        errors.append("References must label evidence type for each support item")
+    if references_body:
+        for line in references_body.splitlines():
             stripped_line = line.strip()
             if stripped_line.startswith("- ") and not any(
                 stripped_line.startswith(f"- {label}:") for label in SOURCE_TIER_LABELS
             ):
-                errors.append(f"source bullet missing evidence-type label: {stripped_line[:80]}")
+                errors.append(f"reference bullet missing evidence-type label: {stripped_line[:80]}")
     if (
-        sources_match
+        references_body
         and HIGH_STAKES_SOURCE_RE.search(text)
         and not any(
-            f"{label}:" in sources_match.group(1)
+            f"{label}:" in references_body
             for label in ("Guideline/formal guidance", "Primary study")
+        )
+        and not HIGH_STAKES_NO_GUIDELINE_RE.search(
+            _section_body(text, "Institutional & Local Clarifications") or ""
         )
     ):
         errors.append(
-            "Medication or operative-strategy artifacts must include Guideline/formal guidance or Primary study support, or explicitly state why unavailable"
+            "Medication or operative-strategy artifacts must include Guideline/formal guidance or Primary study support, or explicitly state in Institutional & Local Clarifications why unavailable"
         )
 
     for label, pattern in PHI_PATTERNS:

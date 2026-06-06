@@ -122,14 +122,14 @@ Classify procedure complexity to scale query floors, cycles, and subagent requir
 Follow the modular workflow checkpoints defined in the child modules:
 
 1. **Checkpoint 0: Ledger**: Maintain `data/Sessions/<Title> Workflow Ledger.md` (for dry runs/debug) or in session scratch space. Verdict JSONs are stored under `data/Sessions/<Title>/verdicts/`.
-2. **Checkpoint 1: Decomposition** — Read [.agents/shared/commands/intraoperative-guide-decomposition.md](file:///.agents/shared/commands/intraoperative-guide-decomposition.md). Build the Coverage Matrix and write `decomposition.json`.
-3. **Checkpoint 2: Research** — Read [.agents/shared/commands/intraoperative-guide-research.md](file:///.agents/shared/commands/intraoperative-guide-research.md). Run textbook RAG and PubMed queries to write `research.json` and generate `source_cards.jsonl` and `coverage_ledger.json`.
-4. **Checkpoint 3: Operative Knowledge Map** — Read [.agents/shared/commands/intraoperative-guide-knowledge-map.md](file:///.agents/shared/commands/intraoperative-guide-knowledge-map.md). Construct the JSON-based operative mental model.
-5. **Checkpoint 4: Map-Completeness Review** — Read [.agents/shared/commands/intraoperative-guide-map-review.md](file:///.agents/shared/commands/intraoperative-guide-map-review.md). Separate reviewer subagent stress-tests the map; writes `map-review-cycle-<N>.json`.
-6. **Checkpoint 5: First Synthesis** — Read [.agents/shared/commands/intraoperative-guide-synthesis.md](file:///.agents/shared/commands/intraoperative-guide-synthesis.md). Draft the guide from the approved map, utilizing correct provenance tiering.
-7. **Checkpoint 6: Expert Completeness Review** — Read [.agents/shared/commands/intraoperative-guide-review.md](file:///.agents/shared/commands/intraoperative-guide-review.md). Dedicated expert reviewer subagent evaluates the draft against the rubric; writes `expert-review-cycle-<N>.json`.
-8. **Checkpoint 7: Gap Repair Loop** — Read [.agents/shared/commands/intraoperative-guide-gap-repair.md](file:///.agents/shared/commands/intraoperative-guide-gap-repair.md). Apply the escalation ladder if expert review returns `REVISION REQUIRED`; writes `gap-repair-cycle-<N>.json`.
-9. **Checkpoint 8: Finalization** — Read [.agents/shared/commands/intraoperative-guide-finalize.md](file:///.agents/shared/commands/intraoperative-guide-finalize.md). Verify verdict chain, run `operative_guide_validator.py`, rebuild index, extract concepts, log memory, and enqueue procedure-specific Anki cards (`Neurosurgery::Procedures::<Title>`).
+2. **Checkpoint 1: Decomposition** — Read `.agents/shared/commands/intraoperative-guide-decomposition.md`. Build the Coverage Matrix and write `decomposition.json`.
+3. **Checkpoint 2: Research** — Read `.agents/shared/commands/intraoperative-guide-research.md`. Run textbook RAG and PubMed queries to write `research.json` and generate `source_cards.jsonl` and `coverage_ledger.json`.
+4. **Checkpoint 3: Operative Knowledge Map** — Read `.agents/shared/commands/intraoperative-guide-knowledge-map.md`. Construct the JSON-based operative mental model.
+5. **Checkpoint 4: Map-Completeness Review** — Read `.agents/shared/commands/intraoperative-guide-map-review.md`. Separate reviewer subagent stress-tests the map; writes `map-review-cycle-<N>.json`.
+6. **Checkpoint 5: First Synthesis** — Read `.agents/shared/commands/intraoperative-guide-synthesis.md`. Draft the guide from the approved map, utilizing correct provenance tiering.
+7. **Checkpoint 6: Expert Completeness Review** — Read `.agents/shared/commands/intraoperative-guide-review.md`. Dedicated expert reviewer subagent evaluates the draft against the rubric; writes `expert-review-cycle-<N>.json`.
+8. **Checkpoint 7: Gap Repair Loop** — Read `.agents/shared/commands/intraoperative-guide-gap-repair.md`. Apply the escalation ladder if expert review returns `REVISION REQUIRED`; writes `gap-repair-cycle-<N>.json`.
+9. **Checkpoint 8: Finalization** — Read `.agents/shared/commands/intraoperative-guide-finalize.md`. Verify verdict chain, run `operative_guide_validator.py`, rebuild index, extract concepts, log memory, and enqueue procedure-specific Anki cards (`Neurosurgery::Procedures::<Title>`).
 
 ---
 
@@ -176,13 +176,13 @@ Follow the modular workflow checkpoints defined in the child modules:
 - Include a `## Pre-Scrub Mental Rehearsal` section near the end of the guide for intermediate and complex procedures.
 - Write like an operative reference, not a generic explanation.
 - Avoid false precision. If a step varies by attending preference or institution, say what varies and what principle remains fixed.
-- Do not include "Generation Mode," "STATUS: COMPLETE," citation registries, review memos, gap repair memos, verdict JSON contents, or scaffolding commentary in the final guide.
+- The final guide contains operative reference content only. Keep citation registries, review memos, gap-repair notes, verdict JSON contents, status markers, and scaffolding commentary in workflow artifacts or the final user summary.
 
 ---
 
 ## User-Facing Finish
 
-Reread [.agents/shared/commands/intraoperative-guide-finalize.md](file:///.agents/shared/commands/intraoperative-guide-finalize.md) to report:
+Reread `.agents/shared/commands/intraoperative-guide-finalize.md` to report:
 * File/dry-run path and procedure complexity.
 * Source mix, retrieval counts, and context budget tracking.
 * Subagent usage and verdict chain summaries (cycles, verdicts, gap-repairs).

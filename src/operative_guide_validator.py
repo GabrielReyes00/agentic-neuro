@@ -41,8 +41,8 @@ H2_RE = re.compile(r"^##\s+(.+?)\s*$", re.MULTILINE)
 HEADING_RE = re.compile(r"^#{2,4}\s+(.+?)\s*$", re.MULTILINE)
 HEADING_WITH_POS_RE = re.compile(r"^(#{2,4})\s+(.+?)\s*$", re.MULTILINE)
 H2_WITH_POS_RE = re.compile(r"^##\s+(.+?)\s*$", re.MULTILINE)
-GEN_MODE_RE = re.compile(r"^Generation Mode\s*:", re.MULTILINE)
-STATUS_RE = re.compile(r"^STATUS\s*:", re.MULTILINE)
+WORKFLOW_MODE_MARKER_RE = re.compile(r"^[A-Z][A-Za-z ]+\s+Mode\s*:", re.MULTILINE)
+WORKFLOW_STATUS_MARKER_RE = re.compile(r"^STATUS\s*:", re.MULTILINE)
 RAG_CALLOUT_RE = re.compile(r"^>\s*\[!info\]\s*RAG Supplemented\s*$", re.MULTILINE)
 ANY_RAG_CALLOUT_HINT_RE = re.compile(r"^>\s*\[!\w+\].*RAG", re.MULTILINE | re.IGNORECASE)
 ANKI_ROUTING_HEADING_RE = re.compile(r"^#{2,4}\s+.*\b(Anki|Deck Routing|Procedure-Specific Deck)\b", re.MULTILINE)
@@ -477,11 +477,11 @@ def validate(path: Path, require_verdict_chain: bool = True) -> list[str]:
     if lines and lines[0].strip() == "---":
         failures.append("line 1: YAML front matter at top is not allowed (YAML belongs at bottom)")
 
-    if GEN_MODE_RE.search(text):
-        failures.append("legacy `Generation Mode:` tag is banned")
+    if WORKFLOW_MODE_MARKER_RE.search(text):
+        failures.append("workflow mode markers belong outside the final guide body")
 
-    if STATUS_RE.search(text):
-        failures.append("status marker is banned; surface status in chat, not in the artifact")
+    if WORKFLOW_STATUS_MARKER_RE.search(text):
+        failures.append("workflow status markers belong in chat or workflow artifacts, not in the guide body")
 
     if ANKI_ROUTING_HEADING_RE.search(text):
         failures.append("Anki deck-routing metadata must not appear as a guide body section")

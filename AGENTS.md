@@ -19,11 +19,11 @@ Key shared contracts:
 - `.agents/shared/commands/anki-session-workflow.md` — per-answer Anki decisions, queue review/check/flush.
 - `.agents/shared/commands/anki-card-quality.md` — short card-quality, cloze, deck taxonomy, and duplicate-judgment rules for all Anki creation/review.
 - `.agents/shared/commands/anki-deck-maintenance.md` — separate live Anki deck rewrite/reorganization workflow; Anki is ground truth and Chroma is rebuilt from Anki.
-- `.agents/shared/commands/concept-extraction.md` — shared post-write concept-stub rules for artifact-generating workflows.
+- `.agents/shared/commands/concept-extraction.md` — shared post-write concept-card rules for artifact-generating workflows.
 - `.agents/shared/commands/study-review.md` — doc-anchored and memory-driven review.
 - `.agents/shared/commands/consult.md` — lecture-first clinical consult, verification, Anki, pocket-card write, provenance-tiered citations.
 - `.agents/shared/commands/brain-dump.md` — de-identified service-teaching capture, targeted verification, artifact-anchor memory logging, pending atomic review candidates, service-origin tagging, and optional Socratic review.
-- `.agents/shared/commands/service-log.md` — deprecated compatibility surface; `/brain-dump` owns service-experience capture while the service-memory backend remains active.
+- `.agents/shared/commands/service-log.md` — service-debrief alias that routes through `/brain-dump` while preserving service-memory primitives.
 - `.agents/shared/commands/quick-answer.md` — brief direct answers with lightweight memory logging, no startup recall, and optional Anki.
 - `.agents/shared/commands/generate-report.md` — citation-dense report generation with structured research plan, source cards, coverage ledger, synthesis map, provenance tiering, Mastery Objectives, and validator gate.
 - `.agents/shared/commands/intraoperative-guide.md` — deep-research operative rehearsal guides with procedure decomposition, serial RAG, operative knowledge maps, verified Obsidian wikilinks, restrained readable formatting, adversarial expert review, gap repair, structural validation, procedure-specific Anki decks, and Mastery Objectives.
@@ -45,6 +45,8 @@ When Gabriel asks to study a specific Obsidian document, that document stays pri
 
 When recall exposes `historical_misconceptions` or `repair_velocity`, use them silently to design high-friction distractors, bounded interleaving, and consequence-framed follow-ups. Do not quote prior answers or let interleaving override requested document priority.
 
+At 12+ turns in study sessions, offer a brief digest before continuing. Never compress study context silently.
+
 ## Universal Directives
 
 1. No bare "Done" or "Executed" — surface meaningful output, status, or a clarifying question.
@@ -52,6 +54,10 @@ When recall exposes `historical_misconceptions` or `repair_velocity`, use them s
 3. Suppress reasoning tags; never output `<thought>` or similar XML.
 4. Scripts are tools, not LLMs. Retrieval, memory, and Anki scripts do DB/API/vector work; the agent performs reasoning.
 5. No broad cleanup commands. Keep cleanup scoped to the exact files or directories requested.
+6. No persistent personal-memory saves unless explicitly requested; workflow memory writes are allowed only inside explicit memory-enabled workflows.
+7. No decorative emojis; workflow-required symbols such as `⚠` are allowed. Vault artifacts use no H1 title and put YAML metadata at the bottom.
+8. Do not ask for numeric self-ratings; infer confidence from answer language and behavior.
+9. Do not narrate routine internal tool steps. Surface outcomes, file paths, counts, blockers, and meaningful status.
 
 ## Invisible Bookkeeping
 
@@ -64,6 +70,15 @@ The CLI may run from `~`, so all repo commands must use:
 ```bash
 cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && <command>
 ```
+
+## Core Paths
+
+- Vault root: `/Users/gabrielreyes/Documents/Obsidian/agentic-neuro`
+- Study memory and service-rotation state: `data/study_memory.db`
+- Textbook RAG corpus: `neurosurgery_v4.lance`
+- Anki overlap cache and session queue: `data/chromadb_store_anki_memory`, `data/Sessions/anki_queue.jsonl`
+- ACGME catalog: `data/acgme_curriculum.json`
+- Generated dashboards (`Dashboard.md`, `ACGME Readiness.md`, ACGME canvases) are read-only outputs; regenerate from tools, never hand-edit.
 
 ## Memory Contract
 
@@ -95,7 +110,7 @@ Explicit or obvious workflow trigger:
 - Study material or quiz from a file -> `study-material`
 - Research report, comprehensive review, deep-dive on a topic -> `generate-report` (produces an encyclopedic, citation-dense reference document; not learner-tailored)
 - Focused clinical question, ward knowledge gap, curbside consult, or management question that should produce a reusable pocket card -> `consult` (brief expert lecture + verification questions + pocket-card vault note; not encyclopedic)
-- `/service-log`, "today on [service] at [site], I managed/learned...", daily service-rotation debrief, or "log my day on service" -> deprecated compatibility route; follow `brain-dump`
+- `/service-log`, "today on [service] at [site], I managed/learned...", daily service-rotation debrief, or "log my day on service" -> service-debrief route through `brain-dump`
 - `/brain-dump`, "capture what I learned on shift", "senior corrected me on service", or "ward teaching lesson" -> `brain-dump` (de-identify first; verified compact artifact, atomic review candidates, optional Socratic conversion; capture is not mastery)
 - Grand rounds, case presentation, or journal club deck -> `grand-rounds`
 
@@ -137,6 +152,36 @@ If the user exits abruptly, finalize with available data and do not claim full c
 
 Generated `Reports/`, `Consults/`, `Brain Dumps/`, and `Operative Guides/` artifacts include a `## Mastery Objectives` section per their shared command contracts. `study-review --doc` must read the full document first and use Mastery Objectives only as a coverage checksum, never as a substitute for the source body.
 
+## Vault Targets
+
+Use `.agents/shared/commands/review-artifacts.md` for the canonical destination table. In brief: `study-review` writes no vault artifact; `Reports/`, `Operative Guides/`, `Study Material/`, `Consults/`, `Brain Dumps/`, and `Presentations/Cases|Articles/` are written only by their matching workflows and then indexed.
+
 ## Service-Rotation Commands
 
 Service learning lives in `data/study_memory.db` and is sealed out of formal document review. Capture new service learning through `/brain-dump`; service/site-specific recall uses `startup-recall --lens service`.
+
+## Shared Protocols
+
+### Naming Conventions
+
+- **All vault files**: Title Case, spaces, no underscores, no date suffixes, no skill prefixes.
+- **Reports / Study Material / Consults / Brain Dumps / Operative Guides / Presentations**: Title-cased topic only; no dates in filenames.
+- **study-review sessions**: no vault file — record lives in `study_memory.db`.
+
+### Cross-Reference Discovery
+
+Before writing any skill output, scan the vault for related content:
+```bash
+VAULT="/Users/gabrielreyes/Documents/Obsidian/agentic-neuro"
+find "$VAULT/Reports" "$VAULT/Operative Guides" "$VAULT/Study Material" "$VAULT/Concepts" "$VAULT/Consults" "$VAULT/Brain Dumps" -type f -name "*.md" -print 2>/dev/null
+```
+
+Match filenames + `key_terms:` frontmatter against topic. Generate wikilinks: `[[folder/note_name|Display Title]]`.
+
+### INDEX.md Domain-Grouped Indexes
+
+Every folder `INDEX.md` is a domain-grouped navigation surface rendered by `src/index_builder.py` (a tool, not an LLM): files are grouped under `## <Domain>` headings in canonical order (Vascular, Skull Base, Tumor, Spine, Trauma, Neurocritical Care, Functional, Pediatric, Peripheral Nerve, Anatomy, General, then Uncategorized), each shown as a **bold wikilink** with its one-line summary on an indented line beneath. A file is listed once under its primary domain; further domains trail as `· also: X`. No tables, no auto-generated header line.
+
+Grouping is driven by each note's **bottom YAML**: a `domain:` field (canonical slug, may be a list or `/`-separated) or `domain/<slug>` entries in `tags:`, plus a one-line `summary:` and optional `display:` (overrides the filename as the index title; `aliases:` are search terms, never display titles). Every vault note must close its bottom YAML with a final `---` — an unterminated block parses as no metadata and the file drops to `Uncategorized`.
+
+Script-written indexes (Study Material, Brain Dumps, Presentations) regenerate automatically through their guards. Agent-written indexes (Reports, Operative Guides, Concepts, Consults, Reference) are regenerated with `python3 src/index_builder.py <Folder>` (or `--all`) after the artifact's frontmatter is set.

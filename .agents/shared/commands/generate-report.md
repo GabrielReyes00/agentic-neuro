@@ -14,15 +14,14 @@ Do not address the learner. Do not mention PGY level or any individual's prior k
 
 **Reference exemplar.** The gold-standard output for this skill is `Reports/Sphenoid Wing Meningiomas.md` in the vault — read its first 40 lines if you need a structural and tonal anchor before writing. Match or exceed its density, citation specificity, differentiator coverage, and operative detail. For the opening Clinical Utility & Quick Reference block specifically, follow `Reports/Temporal ICH Management.md` as the structural exemplar.
 
-**Anti-patterns — do NOT do any of these.** They are residue from prior versions of this skill or from generic AI-summary writing:
-- No `Generation Mode: [+RAG]` or `[-RAG]` header (legacy tag — banned). When RAG was actually used during generation, emit the sanctioned callout instead: `> [!info] RAG Supplemented` placed immediately above the opening H2, with a one-line description on the next blockquote line. Absence of the callout signals no RAG was used. No `STATUS: COMPLETE` markers. No "citation registry" appendix. No phase numbering in the file.
-- No H1 title at the top (filename is the title in Obsidian); no YAML at the top (YAML goes at the bottom).
-- No "you," "the learner," "the resident should know," PGY-level qualifiers, or assumed-knowledge skips.
-- No repo-workflow leakage: do not discuss source cards, query rewriting, coverage ledgers, gap repair, raw-source audits, validators, or RAG internals in the final report body. Those belong in `data/Sessions/<Title>/` artifacts and final user summaries, not in clinical reference prose.
-- No "studies suggest," "is known to," "recent evidence indicates," "research has shown," "in conclusion," "it is important to note." Replace each with a specific cited claim.
-- No bare wikilinks invented from intuition — every `[[Note Name]]` must appear in the Step 2 vault scan.
-- No PMID or DOI constructed from memory — copy from tool output verbatim.
-- No `_v2`, `(updated)`, or date-stamped filenames when regenerating an existing report — overwrite in place.
+**Final report shape.** The report body is clinical reference prose from the first H2 through `## Mastery Objectives`; workflow scaffolding stays in `data/Sessions/<Title>/` and in the final user summary.
+- When RAG was used, place the sanctioned callout immediately above the opening H2: `> [!info] RAG Supplemented`, followed by a one-line blockquote description.
+- The vault file starts with `## Clinical Utility & Quick Reference`; the filename is the title, and bottom YAML is the only metadata block.
+- Write for the topic itself, without second-person address, learner-state assumptions, PGY-level qualifiers, or assumed-knowledge skips.
+- Express evidence as specific cited claims. Generic filler phrases such as "studies suggest" or "research has shown" should be replaced by the source-backed finding.
+- Wikilinks come only from the verified Step 2 vault scan.
+- PMID and DOI values are copied verbatim from tool output.
+- Regenerating an existing report updates the existing Title Case file in place.
 
 ---
 
@@ -34,7 +33,7 @@ This file is the public command contract and orchestrator. Detailed post-retriev
 - `.agents/shared/commands/generate-report-research.md` — `source_cards.jsonl`, non-RAG source-card normalization, and `coverage_ledger.json`.
 - `.agents/shared/commands/generate-report-synthesis-map.md` — compact-but-dense `report_knowledge_map.json` built from source cards and the coverage ledger.
 - `.agents/shared/commands/generate-report-finalize.md` — write from the synthesis map, run `report_validator.py --coverage-ledger`, update INDEX, concepts, memory, and final user summary.
-- `.agents/shared/commands/concept-extraction.md` — shared concept-stub rules for post-write concept extraction.
+- `.agents/shared/commands/concept-extraction.md` — shared concept-card rules for post-write concept extraction.
 
 Do not copy the full `/intraoperative-guide` workflow. Reports need structured coverage control, not mandatory reviewer subagents, operative verdict chains, or attending-question gates. Optional review is appropriate only for unusually large, high-stakes, or controversy-heavy reports.
 
@@ -58,7 +57,7 @@ If `coverage_ledger.json` contains any required block with `status: gap`, do not
 
 Derive a Title Case slug from the user's request. If the topic is genuinely ambiguous (e.g., "report on aneurysms" with no localizer or context), ask one clarifying question. Otherwise infer scope and proceed.
 
-If `Reports/<Title>.md` already exists, treat the request as a regeneration: overwrite the file in place, refresh INDEX.md, and replace any concept stubs that are now stale. Do not create date-stamped variants or `_v2` files.
+If `Reports/<Title>.md` already exists, treat the request as a regeneration: overwrite the file in place, refresh INDEX.md, and update concept cards whose source content changed. Do not create date-stamped variants or `_v2` files.
 
 Create the report session directory at the start of the run:
 
@@ -79,10 +78,8 @@ The sole purpose of memory summary here is to surface existing related memory/re
 ### Step 2: Vault scan for cross-citation targets (silent)
 
 ```bash
-ls "/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Reports/"*.md \
-   "/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Operative Guides/"*.md \
-   "/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Study Material/"*.md \
-   "/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Concepts/"*.md 2>/dev/null
+VAULT="/Users/gabrielreyes/Documents/Obsidian/agentic-neuro"
+find "$VAULT/Reports" "$VAULT/Operative Guides" "$VAULT/Study Material" "$VAULT/Concepts" -type f -name "*.md" -print 2>/dev/null
 ```
 
 Identify wikilink targets relevant to this topic. Use them as inline references and citations within the prose, and list them in a final `## Related in This Vault` section.
@@ -130,9 +127,9 @@ The Sphenoid Wing Meningiomas reference exemplar remains the calibration point.
 
 Follow the structured research and synthesis process defined in the child modules:
 
-1. **Checkpoint 1: Research Plan** — Read [.agents/shared/commands/generate-report-research-plan.md](file:///.agents/shared/commands/generate-report-research-plan.md). Build `data/Sessions/<Title>/report_research_plan.json` before retrieval, classifying the archetype and customizing coverage domains.
-2. **Checkpoint 2: Structured Research** — Read [.agents/shared/commands/generate-report-research.md](file:///.agents/shared/commands/generate-report-research.md). Run textbook RAG (`lance_retriever.py compare --card-json`) and PubMed/guideline queries to produce `source_cards.jsonl` and `coverage_ledger.json`. Ensure no required domains are marked as a `gap`.
-3. **Checkpoint 3: Synthesis Map** — Read [.agents/shared/commands/generate-report-synthesis-map.md](file:///.agents/shared/commands/generate-report-synthesis-map.md). Build `data/Sessions/<Title>/report_knowledge_map.json` to plan integrated claims, citations, key numbers, differentiators, pitfalls, and provenance tiers (`source_grounded`, `model_knowledge_verified`, `model_knowledge_verify`).
+1. **Checkpoint 1: Research Plan** — Read `.agents/shared/commands/generate-report-research-plan.md`. Build `data/Sessions/<Title>/report_research_plan.json` before retrieval, classifying the archetype and customizing coverage domains.
+2. **Checkpoint 2: Structured Research** — Read `.agents/shared/commands/generate-report-research.md`. Run textbook RAG (`lance_retriever.py compare --card-json`) and PubMed/guideline queries to produce `source_cards.jsonl` and `coverage_ledger.json`. Ensure no required domains are marked as a `gap`.
+3. **Checkpoint 3: Synthesis Map** — Read `.agents/shared/commands/generate-report-synthesis-map.md`. Build `data/Sessions/<Title>/report_knowledge_map.json` to plan integrated claims, citations, key numbers, differentiators, pitfalls, and provenance tiers (`source_grounded`, `model_knowledge_verified`, `model_knowledge_verify`).
 
 ### Core Research Rules
 
@@ -145,31 +142,20 @@ Follow the structured research and synthesis process defined in the child module
 
 ## Self-Audit Before Write
 
-This is the intelligence layer of this skill. Before committing the file, read your own draft end-to-end and validate:
+Before final write, read your draft end-to-end and verify:
+- **Quality Contract & Floors**: All mandatory elements are present and conform to the Quality Contract rules and content-driven quality floors.
+- **Integrity & Specificity**: Prose is dense, specific, and academic. All links and PMIDs/DOIs are hyperlinked. Provenance tiering is cleanly applied, with unverified claims clearly marked.
+- **Wikilinks & Mastery Objectives**: Wikilinks resolve to verified targets from the vault scan; Mastery Objectives are testable and action-oriented.
 
-- **Opening block** — H2 `## Clinical Utility & Quick Reference` present with all four required children (blockquoted TL;DR, `### When to Reference This Report`, `### Key Numbers at a Glance` with the canonical `| Parameter | Value | Context | Source |` table header, `### Decision Framework` as numbered bolded steps), in that order. After writing, run `python3 src/report_validator.py "/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Reports/<Title Case Title>.md" --coverage-ledger "data/Sessions/<Title>/coverage_ledger.json"` to confirm structural and coverage-ledger compliance for the target report — its exit code is binary.
-- **Coverage ledger** — `coverage_ledger.json` contains no required block with `status: gap`. Optional or genuinely not-applicable domains are explicitly marked, not silently omitted.
-- **Comprehensiveness** — every Mandatory Element from the Quality Contract is present, or its absence is justified by the topic.
-- **Density** — the prose integrates sources rather than serial-summarizing them. No padding sections, no encyclopedic-history filler when operational depth is missing.
-- **Citation integrity** — every quantitative claim, every recommendation, every mechanism is cited. The cited source actually supports the claim made (semantic check, not string match), and is about the same entity (no related-condition misattribution). PMIDs and DOIs are verbatim from the source tool, not constructed.
-- **Provenance tiering** — every substantive claim is either source-grounded (cited) or labelled **model knowledge — verify**; no claim is untiered. No textbook/PMID/DOI citation is attached to model-knowledge content. High-stakes model-knowledge specifics (doses, thresholds, percentages, device specs) carry a `⚠` verify flag, and model-knowledge Key Numbers rows use `model est. — verify` in the Source cell.
-- **Specificity** — the prose names thresholds, percentages, named maneuvers, page references, named series. No "studies suggest," no "is known to," no "recent evidence indicates."
-- **Mastery Objectives** — `## Mastery Objectives` contains 5-10 testable objectives, uses strong action verbs, avoids weak verbs, and maps to management-changing discriminators, thresholds, mechanisms, complications, anatomy-risk relationships, or operative decisions from the report body.
-- **Wikilinks resolve** to real vault notes from your Step 2 vault scan. No invented filenames — verify each `[[...]]` against the scan output before writing.
-- **Voice** — reads like an expert reference chapter, not an AI summary. No "in conclusion," no "it is important to note," no narrator commentary.
-- **No learner-tailoring leakage** — the report does not address "you," does not mention PGY level, does not skip content because something might be assumed.
-
-This is not a checklist gate. If the draft fails the contract on any axis, re-research and rewrite the deficient sections. The agent owns this judgment — there is no external verifier downstream.
-
-**Stop-and-research trigger.** If during self-audit you find the draft below any Quality Floor or the coverage ledger contains a required `gap`, do NOT write the file with a note like "more research needed." Run additional `lance_retriever.py compare --card-json` queries on the deficient topic, do additional PubMed searches, update source cards and the synthesis map, and rewrite the section to floor before committing.
+If draft fails any criteria, the coverage ledger contains a required `gap`, or you find the content below the Quality Floor, run additional targeted searches and rewrite the sections before writing the file (Stop-and-research protocol).
 
 ---
 
 ## Finish
 
-Before final write and verification, read [.agents/shared/commands/generate-report-finalize.md](file:///.agents/shared/commands/generate-report-finalize.md) for detailed execution instructions.
+Before final write and verification, read `.agents/shared/commands/generate-report-finalize.md` for detailed execution instructions.
 
 1. **Write & Validate**: Persist to `Reports/<Title Case Title>.md` without H1 and with YAML at the bottom. Run `report_validator.py` with the `--coverage-ledger` flag.
-2. **Update Index & Extract Concepts**: Rebuild the index (`src/index_builder.py`) and extract 2–5 new concept stubs per [.agents/shared/commands/concept-extraction.md](file:///.agents/shared/commands/concept-extraction.md).
+2. **Update Index & Extract Concepts**: Rebuild the index (`src/index_builder.py`) and extract 2–5 new concept cards per `.agents/shared/commands/concept-extraction.md`.
 3. **Log to Memory**: Record the report anchor using `study_memory.py log-answer` (with `skill="generate-report"`) and close with `study_memory.py end-session` including a highly specific `--next-strategy`.
 4. **Surface**: Present the TL;DR, file path, source distribution, Quality Contract checklist, and crosslinks to the user. Do not print the report body in chat.

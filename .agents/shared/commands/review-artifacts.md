@@ -13,7 +13,7 @@ These are read-only outputs. Agents never hand-edit them.
 - `Dashboard.md`: live snapshot of coverage, open errors, weak concepts, stale knowledge, and recent sessions.
 - `ACGME Readiness.md`: PGY-1 curriculum view with progress overlay and higher-PGY catalog.
 - `ACGME Canvases/*.canvas`: one canvas per ACGME milestone, every topic colored by mastery.
-- `Concepts/INDEX.md`: domain-grouped glossary index.
+- `Concepts/INDEX.md`: domain-grouped concept-card index.
 
 ## Vault-Producing Skills
 

@@ -327,7 +327,7 @@ If the file already exists, ask before overwriting.
 
 ## Phase 8: Concept Extraction and Hook
 
-Extract 2-5 atomic concepts from the presentation content when they are useful as future wikilink targets and not already in `Concepts/`. Follow the repository's concept extraction rules.
+Extract 2-5 concept cards from the presentation content when they are useful as future wikilink targets and not already in `Concepts/`. Follow `.agents/shared/commands/concept-extraction.md`.
 
 ## Phase 9: Optional Rehearsal
 

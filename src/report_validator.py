@@ -13,7 +13,7 @@ Checks (per file):
     row matches `| Parameter | Value | Context | Source |` (whitespace-tolerant).
   - H2 `## Mastery Objectives` appears after the opening block and before bottom
     YAML, with 5-10 objective lines using testable action verbs.
-  - No `Generation Mode:` line anywhere in the file (legacy anti-pattern).
+  - Workflow mode markers are kept out of the final report body.
   - No H1 (`^# `) anywhere in the file.
   - YAML metadata appears at the bottom, not the top (no `---` on line 1).
   - If a RAG callout is present, it uses the exact sanctioned form
@@ -54,7 +54,7 @@ NUMBERS_HEADER_RE = re.compile(
     r"^\|\s*Parameter\s*\|\s*Value\s*\|\s*Context\s*\|\s*Source\s*\|",
     re.MULTILINE,
 )
-GEN_MODE_RE = re.compile(r"^Generation Mode\s*:", re.MULTILINE)
+WORKFLOW_MODE_MARKER_RE = re.compile(r"^[A-Z][A-Za-z ]+\s+Mode\s*:", re.MULTILINE)
 H1_RE = re.compile(r"^#\s", re.MULTILINE)
 RAG_CALLOUT_RE = re.compile(r"^>\s*\[!info\]\s*RAG Supplemented\s*$", re.MULTILINE)
 ANY_RAG_CALLOUT_HINT_RE = re.compile(r"^>\s*\[!\w+\].*RAG", re.MULTILINE | re.IGNORECASE)
@@ -134,11 +134,10 @@ def validate(path: Path) -> list[str]:
                     f"line {idx}: `{line.split(':', 1)[0].strip()}` metadata is not allowed in Reports YAML"
                 )
 
-    # Legacy generation-mode header
-    m = GEN_MODE_RE.search(text)
+    m = WORKFLOW_MODE_MARKER_RE.search(text)
     if m:
         line_no = text.count("\n", 0, m.start()) + 1
-        failures.append(f"line {line_no}: legacy `Generation Mode:` tag is banned (use the sanctioned RAG callout instead)")
+        failures.append(f"line {line_no}: workflow mode markers belong outside the final report body; use the RAG callout when retrieval was used")
 
     # First H2 must be the required block
     first_h2 = next((i for i, line in enumerate(lines, 1) if line.startswith("## ")), None)

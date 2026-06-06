@@ -26,11 +26,7 @@ Parse the user's input into a topic slug. Freeform input is expected — the use
 
 ### Step 1: Memory Summary (silent)
 
-```bash
-cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
-SESSION_TS=$(date -u +%Y-%m-%dT%H:%M:%S+00:00) && \
-python3 src/study_memory.py startup-recall --topic "<topic>"
-```
+Retrieve the learner's topic memory using the topic-anchored `startup-recall` command from `memory-operations.md` to initialize the session.
 
 Read `planning_brief`, `counts`, `omitted`, and `retrieval_guidance`. Validate contextual-frontier candidates silently. Use the brief to shape verification questions and lecture framing — NOT to omit content. If prior errors exist, note them for targeted verification and natural correction within the lecture. If no prior data, this is a new topic.
 
@@ -58,9 +54,8 @@ Read the retrieved passages. Use them to enrich the lecture with specific textbo
 ### Step 3: Vault scan for merge targets and wikilinks (silent)
 
 ```bash
-ls "/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Consults/"*.md \
-   "/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Reports/"*.md \
-   "/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Concepts/"*.md 2>/dev/null
+VAULT="/Users/gabrielreyes/Documents/Obsidian/agentic-neuro"
+find "$VAULT/Consults" "$VAULT/Reports" "$VAULT/Concepts" -type f -name "*.md" -print 2>/dev/null
 ```
 
 If a `Consults/<Topic>.md` already exists, plan to append an encounter section rather than creating a new file. Identify wikilink targets for the pocket card.
@@ -139,13 +134,11 @@ Carry the same provenance tiering into the pocket card: source-grounded points c
 
 **Merge semantics:** If `Consults/<Topic>.md` already exists, read the file and insert an `## Encounter — YYYY-MM-DD` section with the new teaching points **above the bottom YAML block** (encounters are body content; the closed `---` YAML block stays at the very end of the file). Do not overwrite existing content.
 
-**Anti-patterns — do NOT:**
-- Use a fixed 10-slot scaffold (pathology, mechanism, imaging, labs, consults, preop, intraop, postop, red flags, priorities)
-- Write a 300-line encyclopedic document — this is a pocket card, not a report
-- Include scaffold sections that don't apply to the topic
-- Omit sections that DO apply just because the card is meant to be brief
-- Add an H1 title (filename is the title in Obsidian)
-- Put YAML at the top
+**Pocket card shape:**
+- Topic-shaped sections only: include the management, threshold, discriminator, and escalation blocks that actually apply.
+- Brief but complete: target a ward-reference card, not an encyclopedic report.
+- Filename supplies the title; the body starts at the first useful section heading.
+- YAML metadata closes the file at the bottom.
 
 ---
 
@@ -153,16 +146,9 @@ Carry the same provenance tiering into the pocket card: source-grounded points c
 
 1. **Write the pocket card** to `Consults/<Topic Title>.md` (or append if merge target exists). No H1, YAML at bottom. Then regenerate the domain-grouped index: `python3 src/index_builder.py Consults`.
 
-2. **End session** with a specific `--next-strategy`:
+2. **Extract concept cards when useful**: If the consult creates reusable clinical concepts worth future wikilinking, extract 2-5 concept cards per `.agents/shared/commands/concept-extraction.md`.
 
-```bash
-cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
-python3 src/study_memory.py end-session \
-  --session "$SESSION_TS" \
-  --summary "<1-3 sentence description of what was covered>" \
-  --next-strategy "<specific directive for future sessions>" \
-  --json
-```
+3. **End session**: Run the `end-session` command with a specific `--next-strategy` and `--json` flag per `memory-operations.md`.
 
 The `--next-strategy` should name what's worth studying deeper. Examples:
 GOOD: "Drill vasospasm protocol details and triple-H therapy parameters; verify sodium correction rate safety limits in a clinical vignette."
@@ -170,13 +156,13 @@ BAD: "Continue studying this topic."
 
 Read the JSON output silently and remember whether `curation.recommended` is `true`.
 
-3. **Flush Anki queue** — review, advisory quality/overlap check, flush per `anki-session-workflow.md`.
+4. **Flush Anki queue** — review, advisory quality/overlap check, flush per `anki-session-workflow.md`.
 
-4. **Optional curation** — if the remembered `curation.recommended` flag is `true`, follow `memory-curation.md` after Anki flush.
+5. **Optional curation** — if the remembered `curation.recommended` flag is `true`, follow `memory-curation.md` after Anki flush.
 
-5. **Unknown-unknowns** — surface 2-3 adjacent topics the resident should know about but didn't ask about. One line each, no expansion unless requested. These become future `/consult` or `/study-review` candidates.
+6. **Unknown-unknowns** — surface 2-3 adjacent topics the resident should know about but didn't ask about. One line each, no expansion unless requested. These become future `/consult` or `/study-review` candidates.
 
-6. **Surface to user**: one-line summary, vault file path, Anki card count, unknown-unknowns list.
+7. **Surface to user**: one-line summary, vault file path, concept-card count, Anki card count, unknown-unknowns list.
 
 ---
 

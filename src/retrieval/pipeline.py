@@ -19,6 +19,7 @@ import subprocess
 import sys
 import threading
 import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 
 # ── Venv & working directory guard ───────────────────────────────────────────
@@ -33,6 +34,7 @@ import numpy as np
 BASE_DIR = Path(__file__).resolve().parents[2]
 DATA_DIR = BASE_DIR / "data"
 SESSIONS_DIR = DATA_DIR / "Sessions"
+RUNTIME_DIR = DATA_DIR / "runtime"
 
 # ── Configuration ────────────────────────────────────────────────────────────
 
@@ -42,6 +44,35 @@ DEFAULT_LANCE_DIR = os.environ.get(
     str(BASE_DIR),
 )
 DEFAULT_LANCE_TABLE = os.environ.get("NEURO_LANCE_TABLE", "neurosurgery_v4")
+TEXTBOOK_INVENTORY_PATH = DATA_DIR / "rag_textbook_sources.json"
+
+# Model cache defaults
+BGE_M3_MODEL_ID = os.environ.get("NEURO_BGE_MODEL_ID", "BAAI/bge-m3")
+MODEL_CACHE_DIR = Path(os.environ.get("NEURO_MODEL_CACHE_DIR", DATA_DIR / "models" / "huggingface"))
+MODEL_LOAD_LOCAL_ONLY = os.environ.get("NEURO_MODEL_LOAD_LOCAL_ONLY", "1") != "0"
+BGE_REQUIRED_ROOT_FILES = ("model.safetensors", "pytorch_model.bin")
+RERANKER_REQUIRED_FILES = ("model.safetensors", "config.json", "tokenizer.json", "vocab.txt")
+BGE_DOWNLOAD_FILES = (
+    "config.json",
+    "modules.json",
+    "pytorch_model.bin",
+    "sentence_bert_config.json",
+    "sentencepiece.bpe.model",
+    "sparse_linear.pt",
+    "colbert_linear.pt",
+    "special_tokens_map.json",
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "1_Pooling/config.json",
+)
+RERANKER_DOWNLOAD_FILES = (
+    "config.json",
+    "model.safetensors",
+    "special_tokens_map.json",
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "vocab.txt",
+)
 
 # Retrieval parameters
 DEFAULT_MIN_SIMILARITY = 0.35
@@ -98,6 +129,196 @@ _EMBEDDING_MODEL = None
 _RERANKER_CACHE: Dict[str, Any] = {}
 
 
+class RetrievalPreflightError(RuntimeError):
+    """Raised when local retrieval prerequisites are not ready."""
+
+
+@contextmanager
+def _model_cache_lock():
+    """Serialize model cache repair/load so parallel RAG calls do not contend."""
+    RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+    lock_path = RUNTIME_DIR / "rag_model_cache.lock"
+    with lock_path.open("w") as lock_file:
+        try:
+            import fcntl
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            yield
+        finally:
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            except Exception:
+                pass
+
+
+def _snapshot_has_root_weights(path: Path) -> bool:
+    return any((path / name).exists() for name in BGE_REQUIRED_ROOT_FILES)
+
+
+def _find_cached_snapshot(model_id: str, *, cache_dir: Path) -> Path | None:
+    repo_dir = cache_dir / f"models--{model_id.replace('/', '--')}"
+    if not repo_dir.exists():
+        return None
+    snapshots_dir = repo_dir / "snapshots"
+    if not snapshots_dir.exists():
+        return None
+    refs_main = repo_dir / "refs" / "main"
+    candidates: list[Path] = []
+    if refs_main.exists():
+        ref = refs_main.read_text(encoding="utf-8").strip()
+        if ref:
+            candidates.append(snapshots_dir / ref)
+    candidates.extend(sorted(snapshots_dir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True))
+    for candidate in candidates:
+        if candidate.exists() and candidate.is_dir():
+            return candidate
+    return None
+
+
+def _bge_cache_status(*, cache_dir: Path | None = None) -> dict[str, Any]:
+    cache_root = Path(cache_dir or MODEL_CACHE_DIR)
+    snapshot = _find_cached_snapshot(BGE_M3_MODEL_ID, cache_dir=cache_root)
+    repo_dir = cache_root / f"models--{BGE_M3_MODEL_ID.replace('/', '--')}"
+    incomplete = sorted(str(p) for p in repo_dir.rglob("*.incomplete")) if repo_dir.exists() else []
+    lock_dir = cache_root / ".locks" / repo_dir.name
+    lock_files = sorted(str(p) for p in lock_dir.glob("*.lock")) if lock_dir.exists() else []
+    has_weights = bool(snapshot and _snapshot_has_root_weights(snapshot))
+    return {
+        "model_id": BGE_M3_MODEL_ID,
+        "cache_dir": str(cache_root),
+        "snapshot": str(snapshot) if snapshot else "",
+        "has_root_weights": has_weights,
+        "required_any_of": list(BGE_REQUIRED_ROOT_FILES),
+        "incomplete_files": incomplete,
+        "lock_files": lock_files,
+        "ok": has_weights,
+    }
+
+
+def _reranker_cache_status(model_key: str = DEFAULT_RERANKER, *, cache_dir: Path | None = None) -> dict[str, Any]:
+    model_id = RERANKER_MODELS.get(model_key, model_key)
+    cache_root = Path(cache_dir or MODEL_CACHE_DIR)
+    snapshot = _find_cached_snapshot(model_id, cache_dir=cache_root)
+    missing = [
+        name for name in RERANKER_REQUIRED_FILES
+        if not (snapshot and (snapshot / name).exists())
+    ]
+    repo_dir = cache_root / f"models--{model_id.replace('/', '--')}"
+    incomplete = sorted(str(p) for p in repo_dir.rglob("*.incomplete")) if repo_dir.exists() else []
+    return {
+        "model_key": model_key,
+        "model_id": model_id,
+        "cache_dir": str(cache_root),
+        "snapshot": str(snapshot) if snapshot else "",
+        "missing_files": missing,
+        "incomplete_files": incomplete,
+        "ok": not missing,
+    }
+
+
+def _download_bge_snapshot(*, cache_dir: Path | None = None, local_only: bool = False) -> Path:
+    from huggingface_hub import snapshot_download
+
+    if not local_only:
+        os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+    cache_root = Path(cache_dir or MODEL_CACHE_DIR)
+    cache_root.mkdir(parents=True, exist_ok=True)
+    path = Path(snapshot_download(
+        BGE_M3_MODEL_ID,
+        cache_dir=str(cache_root),
+        local_files_only=local_only,
+        resume_download=True,
+        allow_patterns=list(BGE_DOWNLOAD_FILES),
+    ))
+    return path
+
+
+def _download_reranker_snapshot(model_key: str = DEFAULT_RERANKER, *, local_only: bool = False) -> Path:
+    from huggingface_hub import snapshot_download
+
+    if not local_only:
+        os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+    model_id = RERANKER_MODELS.get(model_key, model_key)
+    MODEL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    return Path(snapshot_download(
+        model_id,
+        cache_dir=str(MODEL_CACHE_DIR),
+        local_files_only=local_only,
+        resume_download=True,
+        allow_patterns=list(RERANKER_DOWNLOAD_FILES),
+    ))
+
+
+def ensure_model_cache(*, download: bool = False) -> dict[str, Any]:
+    """Verify or repair local model snapshots required by retrieval."""
+    with _model_cache_lock():
+        if download:
+            bge_path = _download_bge_snapshot(local_only=False)
+            reranker_path = _download_reranker_snapshot(DEFAULT_RERANKER, local_only=False)
+        else:
+            bge_path = _download_bge_snapshot(local_only=True)
+            reranker_path = _download_reranker_snapshot(DEFAULT_RERANKER, local_only=True)
+    bge_status = _bge_cache_status()
+    if not bge_status["ok"]:
+        raise RetrievalPreflightError(
+            "BGE-M3 snapshot exists but does not contain root PyTorch/safetensors weights. "
+            f"Snapshot: {bge_status.get('snapshot') or bge_path}. "
+            "Run `python3 src/lance_retriever.py warmup --download` with network access, or manually run "
+            "`hf download BAAI/bge-m3 pytorch_model.bin --cache-dir data/models/huggingface --max-workers 1`."
+        )
+    return {
+        "bge_m3": bge_status,
+        "reranker": {
+            "model_key": DEFAULT_RERANKER,
+            "path": str(reranker_path),
+            "ok": True,
+        },
+    }
+
+
+def preflight(*, require_models: bool = True, json_mode: bool = False) -> dict[str, Any]:
+    """Check local RAG prerequisites without running a query."""
+    payload: dict[str, Any] = {
+        "lance": {"ok": False, "dir": DEFAULT_LANCE_DIR, "table": DEFAULT_LANCE_TABLE},
+        "bge_m3": _bge_cache_status(),
+        "reranker": _reranker_cache_status(DEFAULT_RERANKER),
+        "inventory": {
+            "ok": TEXTBOOK_INVENTORY_PATH.exists(),
+            "path": str(TEXTBOOK_INVENTORY_PATH),
+        },
+    }
+    try:
+        table = _get_lance_table()
+        payload["lance"].update({"ok": True, "rows": table.count_rows()})
+    except Exception as exc:
+        payload["lance"].update({"error": str(exc)})
+    models_ok = bool(payload["bge_m3"]["ok"] and payload["reranker"]["ok"])
+    if require_models and not models_ok:
+        payload["ok"] = False
+        payload["next_action"] = (
+            "Run `python3 src/lance_retriever.py warmup --download` once to repair the local model cache. "
+            "Manual equivalent: `hf download BAAI/bge-m3 pytorch_model.bin --cache-dir data/models/huggingface --max-workers 1`."
+        )
+    else:
+        payload["ok"] = bool(payload["lance"]["ok"] and payload["inventory"]["ok"])
+    if not json_mode:
+        return payload
+    return payload
+
+
+def _require_bge_cache_ready() -> None:
+    status = _bge_cache_status()
+    if status["ok"]:
+        return
+    incomplete = status.get("incomplete_files") or []
+    incomplete_msg = f"; incomplete files: {len(incomplete)}" if incomplete else ""
+    raise RetrievalPreflightError(
+        "BGE-M3 local cache is incomplete or missing root model weights "
+        f"({', '.join(BGE_REQUIRED_ROOT_FILES)}) at {status['cache_dir']}{incomplete_msg}. "
+        "Run `python3 src/lance_retriever.py warmup --download` once, then retry RAG. "
+        "Manual equivalent: `hf download BAAI/bge-m3 pytorch_model.bin --cache-dir data/models/huggingface --max-workers 1`."
+    )
+
+
 class _ClonedCrossEncoder:
     """Cross-encoder wrapper that avoids mmap-backed safetensors at inference.
 
@@ -113,7 +334,11 @@ class _ClonedCrossEncoder:
         from transformers import AutoConfig, AutoModelForSequenceClassification, AutoTokenizer
         import torch
 
-        local_path = Path(snapshot_download(model_id, local_files_only=True))
+        local_path = Path(snapshot_download(
+            model_id,
+            cache_dir=str(MODEL_CACHE_DIR),
+            local_files_only=True,
+        ))
         model_file = local_path / "model.safetensors"
         if not model_file.exists():
             raise FileNotFoundError(f"No local safetensors file for {model_id}")
@@ -174,8 +399,15 @@ def _get_embedding_model():
     """Load BGE-M3 for query encoding (dense + sparse)."""
     global _EMBEDDING_MODEL
     if _EMBEDDING_MODEL is None:
+        if MODEL_LOAD_LOCAL_ONLY:
+            _require_bge_cache_ready()
         from FlagEmbedding import BGEM3FlagModel
-        _EMBEDDING_MODEL = BGEM3FlagModel("BAAI/bge-m3", use_fp16=True)
+        with _model_cache_lock():
+            _EMBEDDING_MODEL = BGEM3FlagModel(
+                BGE_M3_MODEL_ID,
+                use_fp16=True,
+                cache_dir=str(MODEL_CACHE_DIR),
+            )
     return _EMBEDDING_MODEL
 
 
@@ -197,7 +429,7 @@ def _get_reranker(model_key: str = DEFAULT_RERANKER):
         from sentence_transformers import CrossEncoder
         import torch
         device = "mps" if torch.backends.mps.is_available() else "cpu"
-        ce = CrossEncoder(model_id, device=device)
+        ce = CrossEncoder(model_id, device=device, cache_folder=str(MODEL_CACHE_DIR))
         ce.predict([["warmup", "warmup"]])
         _RERANKER_CACHE[model_key] = ce
         return ce, model_key
@@ -2610,6 +2842,9 @@ def compare(query: str, output_file: str = "",
     up-to-date PMC literature is included alongside textbook retrieval.
     Frontier runs concurrently with retrieval (I/O-bound vs CPU-bound).
     """
+    if MODEL_LOAD_LOCAL_ONLY:
+        _require_bge_cache_ready()
+
     frontier_thread, frontier_started_at, frontier_status = _start_frontier_search(
         query,
         disabled=no_frontier,
@@ -2774,13 +3009,21 @@ def compare(query: str, output_file: str = "",
 # and prints per-stage timings — useful as a sanity check before a batch of
 # RAG queries from the same process. It does NOT spawn a daemon.
 
-def _warm_models(verbose: bool = True) -> Dict[str, float]:
+def _warm_models(verbose: bool = True, download: bool = False) -> Dict[str, float]:
     """Preload BGE-M3, the default cross-encoder reranker, and SciSpacy NER.
 
-    Returns a per-stage timing dict. Network calls happen only if the HuggingFace
-    cache is missing or stale; set HF_HUB_OFFLINE=1 to force fully offline.
+    Returns a per-stage timing dict. Normal warmup is offline-only and fails
+    fast if required model files are missing. Pass download=True for the one
+    intentional Hugging Face repair path.
     """
     timings: Dict[str, float] = {}
+
+    if verbose:
+        action = "repairing/downloading" if download else "checking"
+        print(f"[warmup] {action} local model cache…", flush=True)
+    t0 = time.time()
+    ensure_model_cache(download=download)
+    timings["model_cache_preflight"] = time.time() - t0
 
     if verbose:
         print("[warmup] loading LanceDB table…", flush=True)
@@ -2811,22 +3054,80 @@ def _warm_models(verbose: bool = True) -> Dict[str, float]:
     return timings
 
 
-def list_textbooks():
-    """List all unique textbooks and chunk counts in the LanceDB table."""
+def _load_textbook_inventory() -> dict[str, Any] | None:
+    if not TEXTBOOK_INVENTORY_PATH.exists():
+        return None
+    try:
+        return json.loads(TEXTBOOK_INVENTORY_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _source_book_counts_from_lance() -> list[tuple[int, str]]:
     import pyarrow.compute as pc
+
     table = _get_lance_table()
-    arrow = table.to_arrow()
+    try:
+        arrow = table.to_arrow(columns=["source_book"])
+    except TypeError:
+        arrow = table.to_arrow()
     vc = pc.value_counts(arrow["source_book"])
 
     entries = []
-    total = 0
     for i in range(len(vc)):
         s = vc[i]
         name = s["values"].as_py()
         count = s["counts"].as_py()
         entries.append((count, name))
-        total += count
     entries.sort(key=lambda x: -x[0])
+    return entries
+
+
+def refresh_textbook_inventory() -> dict[str, Any]:
+    entries = _source_book_counts_from_lance()
+    books = sorted({name for _, name in entries if name})
+    payload = {
+        "generated_from": DEFAULT_LANCE_TABLE,
+        "book_count": len(books),
+        "total_chunks": sum(count for count, _ in entries),
+        "books": books,
+        "counts": {name: count for count, name in entries if name},
+    }
+    existing = _load_textbook_inventory() or {}
+    if "citation_keys" in existing:
+        payload["citation_keys"] = existing["citation_keys"]
+    TEXTBOOK_INVENTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    TEXTBOOK_INVENTORY_PATH.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return payload
+
+
+def list_textbooks(refresh: bool = False):
+    """List textbook inventory without materializing the Lance table by default."""
+    inventory = refresh_textbook_inventory() if refresh else _load_textbook_inventory()
+    if inventory:
+        books = inventory.get("books") or []
+        counts = inventory.get("counts") or {}
+        print(f"Database Inventory ({inventory.get('generated_from', DEFAULT_LANCE_TABLE)})")
+        print(f"{'─' * 50}")
+        total = 0
+        if counts:
+            entries = sorted(((int(count), name) for name, count in counts.items()), key=lambda x: -x[0])
+            for count, name in entries:
+                print(f"  {count:>5d}  {name}")
+                total += count
+            print(f"{'─' * 50}")
+            print(f"  {total:>5d}  TOTAL ({len(entries)} books)")
+        else:
+            for name in books:
+                print(f"         {name}")
+            print(f"{'─' * 50}")
+            print(f"  {len(books):>5d}  BOOKS")
+        if not refresh:
+            print(f"(from {TEXTBOOK_INVENTORY_PATH}; use `list_textbooks --refresh` after corpus changes)")
+        return
+
+    entries = _source_book_counts_from_lance()
+    total = sum(count for count, _ in entries)
 
     print(f"Database Inventory ({DEFAULT_LANCE_TABLE})")
     print(f"{'─' * 50}")

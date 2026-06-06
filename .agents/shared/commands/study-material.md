@@ -8,7 +8,7 @@ Follow `.agents/shared/commands/learning-session-contract.md` for the module map
 
 1. Infer a clean Title Case topic from the filename.
 2. Run `study_memory.py startup-recall --profile doc --topic "<topic>" --doc "Study Material/<Title>.md"` to load compact learner context.
-3. If the source is already marked `Generation Mode: [+RAG]`, skip the RAG opt-in prompt. Otherwise ask whether to enrich with local RAG.
+3. If the source metadata or instructions already request RAG enrichment, proceed with local RAG. Otherwise ask whether to enrich with local RAG.
 4. Enumerate all chunks before extraction:
    - PPTX: slides, titles, body, notes, image descriptions.
    - PDF: pages, headers, body, captions, tables.
@@ -128,7 +128,9 @@ Rules:
 7. Do not summarize away concepts to reduce length.
 8. Do not collapse a dense slide into one concept or one question.
 
-Notify with counts only after the guard passes, then offer: start drilling, review offline, or both.
+After the guard passes, extract 2-5 concept cards per `.agents/shared/commands/concept-extraction.md` when the generated material contains reusable clinical concepts worth future wikilinking.
+
+Notify with counts only after the guard and any concept-card writes pass, then offer: start drilling, review offline, or both.
 
 ## Phase 2: Interactive Drill
 

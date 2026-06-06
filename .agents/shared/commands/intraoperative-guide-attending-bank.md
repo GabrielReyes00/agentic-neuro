@@ -4,7 +4,7 @@ Curated procedure-family pimping questions used by the expert completeness revie
 
 The bank is intentionally **family-level**, not procedure-level: each question should apply broadly within its family. Conditional tags (`[fusion-only]`, `[aneurysm-only]`, `[awake-only]`, etc.) mark questions the reviewer should skip when not applicable rather than scrubbing depth from the bank.
 
-**Revision history:** v1 (initial draft, 90 questions) → v2 (procedure-family spanning fixes, conditional tags) → v3 (coverage gaps closed: consent numerics, imaging interpretation, OR logistics, op-note essentials, drug thresholds, specimen handling, anatomic-variant warning patterns) → v4 (sharpened to attending-pimping voice with concrete scenarios) → v5 (false-completeness detectors and stop-and-step-back triggers added) → **v6 (current, 111 questions)**: reviewer usability refined, OR-team choreography and Pre-Scrub Mental Rehearsal elevated as universals, multi-family pull rules clarified, addressed-rubric added.
+The bank emphasizes attending-style readiness: OR-team choreography, Pre-Scrub Mental Rehearsal, multi-family procedure review, concrete crisis handling, and false-completeness detection.
 
 ---
 

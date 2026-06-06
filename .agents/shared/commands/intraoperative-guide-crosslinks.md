@@ -33,7 +33,7 @@ find "/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Operative Guides" \
      "/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Consults" \
      "/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Study Material" \
      "/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Concepts" \
-     -maxdepth 1 -type f -name "*.md" 2>/dev/null
+     -type f -name "*.md" 2>/dev/null
 ```
 
 Use only exact filenames returned by the scan. Strip `.md` for wikilinks. If a filename contains spaces, use the exact note title inside `[[...]]`.

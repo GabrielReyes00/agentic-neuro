@@ -57,7 +57,7 @@ class RecallContractReferenceTests(unittest.TestCase):
                 text = (ROOT / relative_path).read_text()
                 self.assertIn(".agents/shared/commands/service-log.md", text)
 
-    def test_service_log_contract_is_deprecated_compatibility_route(self) -> None:
+    def test_service_log_contract_routes_through_brain_dump_with_service_memory(self) -> None:
         contract = (ROOT / ".agents/shared/commands/service-log.md").read_text()
         implementation = (ROOT / "src/study_memory.py").read_text()
         for command in (
@@ -72,7 +72,7 @@ class RecallContractReferenceTests(unittest.TestCase):
             with self.subTest(flag=flag):
                 self.assertIn(flag, contract)
                 self.assertIn(flag, implementation)
-        self.assertIn("Deprecated compatibility surface", contract)
+        self.assertIn("service-debrief entry point", contract)
         self.assertIn(".agents/shared/commands/brain-dump.md", contract)
         self.assertIn("service", implementation)
 
@@ -88,12 +88,12 @@ class RecallContractReferenceTests(unittest.TestCase):
             with self.subTest(contract_fragment=fragment):
                 self.assertIn(fragment, contract)
 
-    def test_root_agent_instructions_route_service_log_as_deprecated(self) -> None:
+    def test_root_agent_instructions_route_service_log_through_brain_dump(self) -> None:
         for relative_path in ("AGENTS.md", "CLAUDE.md", "GEMINI.md"):
             with self.subTest(path=relative_path):
                 text = (ROOT / relative_path).read_text()
                 self.assertIn("service-log", text)
-                self.assertIn("deprecated compatibility", text)
+                self.assertIn("brain-dump", text)
 
 
 if __name__ == "__main__":

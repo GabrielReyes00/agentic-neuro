@@ -8,32 +8,27 @@ from src import brain_dump_guard as guard
 
 
 def _valid_note(extra: str = "") -> str:
-    return f"""## De-identified Teaching Trigger
+    return f"""## Clinical Focus
 
-A postoperative patient with an external ventricular drain required transport planning.
-
-## Extraction Map
-
-- EVD transport teaching --> transport action? --> local protocol + mechanism --> confirm drain state
+- **EVD Transport:** Practical implications of drain state and pressure-gradient risk during movement.
+- **Local Protocol:** Which transport order details require point-of-care confirmation.
 
 ## Priority Takeaways
 
-- Confirm drain state before transport; do not trust unverified local memory.
+- Confirm drain state before transport; do not treat unverified local memory as a protocol.
 
-## Reported Teaching
+## Clinical & Anatomical Synthesis
 
-- Service teaching - locally confirm: clarify drain clamping and leveling practice before transport.
+A patient with an external ventricular drain can experience clinically meaningful pressure-gradient changes when drainage height, clamping state, or transport positioning changes. The generalizable principle is not a universal clamp-or-do-not-clamp rule; it is that drain state, leveling, and monitoring plan must be made explicit before movement (Youmans & Winn, 8th ed., Vol. 4, p. 122).
 
-## Verified Bridge
+## Operational Mental Models
 
-- Source-grounded: rapid changes in CSF drainage can alter intracranial pressure relationships.
+### The Pressure Column Handoff
 
-## Operational Consequence
-
-- Confirm the service-specific transport order before moving the patient.
+A transport handoff should preserve the intended CSF pressure column: know whether the system is open, clamped, or leveled before the patient moves.
 {extra}
 
-## Clarify Or Verify Locally
+## Institutional & Local Clarifications
 
 - Confirm the exact institutional transport protocol with the supervising team.
 
@@ -46,7 +41,7 @@ A postoperative patient with an external ventricular drain required transport pl
 
 - Related reference to verify when available.
 
-## Sources
+## References
 
 - Guideline/formal guidance: [Verification source](https://doi.org/10.1000/example)
 
@@ -83,13 +78,13 @@ class BrainDumpGuardTests(unittest.TestCase):
             draft.write_text(_valid_note(), encoding="utf-8")
             guard.install_draft(draft, "EVD Transport Management", vault_root=vault)
 
-            revised = _valid_note("\n## Brain Dump - 2026-05-26\n\n- Service teaching - locally confirm: recheck leveling after transfer.")
+            revised = _valid_note("\n## Brain Dump - 2026-05-26\n\n- Recheck leveling after transfer using the local transport pathway.")
             draft.write_text(revised, encoding="utf-8")
             result = guard.install_draft(draft, "EVD Transport Management", vault_root=vault)
             installed = (vault / "Brain Dumps" / "EVD Transport Management.md").read_text(encoding="utf-8")
 
             self.assertTrue(result.ok)
-            self.assertIn("## De-identified Teaching Trigger", installed)
+            self.assertIn("## Clinical Focus", installed)
             self.assertIn("## Brain Dump - 2026-05-26", installed)
 
     def test_rejects_common_direct_identifiers(self) -> None:
@@ -107,67 +102,60 @@ class BrainDumpGuardTests(unittest.TestCase):
                 self.assertFalse(result.ok)
                 self.assertIn(expected, "\n".join(result.errors))
 
-    def test_rejects_missing_provenance_tier_or_required_heading(self) -> None:
-        note = _valid_note().replace("Source-grounded", "Supported").replace(
-            "Service teaching - locally confirm", "Taught on rounds"
-        ).replace("## Operational Consequence", "## Action")
+    def test_rejects_missing_required_heading(self) -> None:
+        note = _valid_note().replace("## Operational Mental Models", "## Action")
         result = guard.validate_text(note, path=Path("draft.md"))
         self.assertFalse(result.ok)
-        self.assertIn("missing required heading: ## Operational Consequence", result.errors)
-        self.assertIn("artifact must identify at least one approved provenance tier", result.errors)
+        self.assertIn("missing required heading: ## Operational Mental Models", result.errors)
 
-    def test_rejects_sources_without_external_hyperlink(self) -> None:
+    def test_rejects_references_without_external_hyperlink(self) -> None:
         note = _valid_note().replace(
             "[Verification source](https://doi.org/10.1000/example)", "Verification source"
         )
         result = guard.validate_text(note, path=Path("draft.md"))
         self.assertFalse(result.ok)
-        self.assertIn("Sources must include at least one linked external reference", result.errors)
+        self.assertIn("References must include at least one linked external reference", result.errors)
 
-    def test_rejects_unlabelled_source_bullets(self) -> None:
+    def test_rejects_unlabelled_reference_bullets(self) -> None:
         note = _valid_note().replace("Guideline/formal guidance: ", "")
         result = guard.validate_text(note, path=Path("draft.md"))
         self.assertFalse(result.ok)
-        self.assertIn("Sources must label evidence type for each support item", result.errors)
+        self.assertIn("References must label evidence type for each support item", result.errors)
 
-    def test_rejects_extraction_map_table(self) -> None:
+    def test_rejects_clinical_focus_without_bullets(self) -> None:
         note = _valid_note().replace(
-            "- EVD transport teaching --> transport action? --> local protocol + mechanism --> confirm drain state\n",
-            "| Raw fragment | Interpreted question | Verification target | Final teaching point |\n"
-            "|---|---|---|---|\n"
-            "| EVD transport teaching | What transport detail changes action? | Local protocol plus source-grounded mechanism | Confirm drain state and leveling before movement |\n",
+            "- **EVD Transport:** Practical implications of drain state and pressure-gradient risk during movement.\n"
+            "- **Local Protocol:** Which transport order details require point-of-care confirmation.\n",
+            "EVD transport and local protocol confirmation.\n",
+        )
+        result = guard.validate_text(note, path=Path("draft.md"))
+        self.assertFalse(result.ok)
+        self.assertIn("Clinical Focus must include concise bullet topics", result.errors)
+
+    def test_rejects_missing_synthesis_inline_citation(self) -> None:
+        note = _valid_note().replace(
+            " (Youmans & Winn, 8th ed., Vol. 4, p. 122)",
+            "",
         )
         result = guard.validate_text(note, path=Path("draft.md"))
         self.assertFalse(result.ok)
         self.assertIn(
-            "Extraction Map must use terse '-->' flow lines, not a markdown table",
+            "Clinical & Anatomical Synthesis must include academic inline citations",
             result.errors,
         )
 
-    def test_rejects_missing_extraction_map_flow(self) -> None:
+    def test_rejects_unnamed_operational_mental_model(self) -> None:
         note = _valid_note().replace(
-            "- EVD transport teaching --> transport action? --> local protocol + mechanism --> confirm drain state\n",
-            "- No flow.\n",
+            "### The Pressure Column Handoff\n\n",
+            "",
         )
         result = guard.validate_text(note, path=Path("draft.md"))
         self.assertFalse(result.ok)
-        self.assertIn("Extraction Map must include at least one '-->' flow line", result.errors)
-
-    def test_rejects_verbose_extraction_map_node(self) -> None:
-        note = _valid_note().replace(
-            "local protocol + mechanism",
-            "local protocol and the detailed source grounded mechanism that explains pressure gradients",
-        )
-        result = guard.validate_text(note, path=Path("draft.md"))
-        self.assertFalse(result.ok)
-        self.assertTrue(
-            any(error.startswith("extraction flow node too long") for error in result.errors),
-            result.errors,
-        )
+        self.assertIn("Operational Mental Models must include at least one named model subheading", result.errors)
 
     def test_rejects_missing_priority_takeaways_bullets(self) -> None:
         note = _valid_note().replace(
-            "- Confirm drain state before transport; do not trust unverified local memory.\n",
+            "- Confirm drain state before transport; do not treat unverified local memory as a protocol.\n",
             "No bullet.\n",
         )
         result = guard.validate_text(note, path=Path("draft.md"))
@@ -176,8 +164,8 @@ class BrainDumpGuardTests(unittest.TestCase):
 
     def test_rejects_verbose_priority_takeaways(self) -> None:
         note = _valid_note().replace(
-            "Confirm drain state before transport; do not trust unverified local memory.",
-            "Confirm drain state before transport and then carefully think through every possible source of pressure gradient error before moving any patient anywhere",
+            "Confirm drain state before transport; do not treat unverified local memory as a protocol.",
+            "Confirm drain state before transport and then carefully think through every possible source of pressure gradient error before moving any patient anywhere while reviewing the entire broader transport workflow and every possible monitoring contingency",
         )
         result = guard.validate_text(note, path=Path("draft.md"))
         self.assertFalse(result.ok)
@@ -191,9 +179,17 @@ class BrainDumpGuardTests(unittest.TestCase):
         result = guard.validate_text(note, path=Path("draft.md"))
         self.assertFalse(result.ok)
         self.assertIn(
-            "Medication or operative-strategy artifacts must include Guideline/formal guidance or Primary study support, or explicitly state why unavailable",
+            "Medication or operative-strategy artifacts must include Guideline/formal guidance or Primary study support, or explicitly state in Institutional & Local Clarifications why unavailable",
             result.errors,
         )
+
+    def test_allows_high_stakes_with_explicit_unavailable_primary_support_note(self) -> None:
+        note = _valid_note().replace("Guideline/formal guidance: ", "External review: ").replace(
+            "- Confirm the exact institutional transport protocol with the supervising team.",
+            "- No guideline/formal guidance or primary study was identified for the local transport protocol; confirm it with the supervising team.",
+        )
+        result = guard.validate_text(note, path=Path("draft.md"))
+        self.assertTrue(result.ok, result.errors)
 
 
 if __name__ == "__main__":

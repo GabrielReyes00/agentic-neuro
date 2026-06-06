@@ -135,7 +135,7 @@ Hard rules:
 
 - No H1 title; the filename is the title.
 - No top YAML. YAML metadata belongs at the bottom.
-- No "Generation Mode," "STATUS: COMPLETE," citation registry, or scaffolding commentary.
+- Keep workflow status, citation registries, and scaffolding commentary out of the guide body.
 - Use verified wikilinks only.
 - Do not include Anki deck-routing metadata in the guide body.
 - Write like an operative reference, not a generic explanation.
