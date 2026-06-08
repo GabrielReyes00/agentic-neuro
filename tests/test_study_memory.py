@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -1482,6 +1483,56 @@ class StudyMemoryTests(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_startup_recall_attaches_topic_anki_overlay_after_planning_brief(self) -> None:
+        conn = self._memory_conn()
+        try:
+            study_memory.log_answer(
+                conn,
+                session_id="anki-overlay-topic",
+                topic="hypertension management",
+                concept="ischemic stroke bp threshold",
+                question="What is the no-reperfusion permissive BP ceiling?",
+                answer="160 systolic.",
+                correct=0,
+                correction="Use 220/120 when no reperfusion therapy is planned.",
+                missing_edge="no-reperfusion permissive hypertension ceiling",
+                tested_claim="No-reperfusion ischemic stroke permissive hypertension ceiling is 220/120.",
+                force_new_claim=True,
+            )
+            overlay = {
+                "status": "success",
+                "scope": "topic",
+                "cards_examined": 3,
+                "macro_counts": {"active_lapse": 1},
+                "atomic_focus": [
+                    {
+                        "fact": "No-reperfusion ischemic stroke BP ceiling is [220/120].",
+                        "state": "active_lapse",
+                        "concept": "Ischemic Stroke BP Threshold",
+                        "metrics": {"lapses": 1, "rt_s": 18.0},
+                    }
+                ],
+                "atomic_scaffolds": [],
+                "atomic_primes": [],
+                "concept_rollup": [],
+                "avoid_direct_quiz": {"count": 0, "facts": [], "directive": ""},
+                "teaching_directives": ["Repair exact Anki atom after SQLite priorities."],
+            }
+
+            with patch("anki_feedback.build_session_anki_profile", return_value=overlay) as build:
+                payload = json.loads(study_memory.startup_recall(conn, topic="hypertension management"))
+
+            self.assertEqual(payload["planning_brief"]["anki_overlay"], overlay)
+            self.assertEqual(payload["startup_recall"]["anki_feedback_status"]["status"], "success")
+            self.assertEqual(payload["startup_recall"]["anki_feedback_status"]["macro_counts"], {"active_lapse": 1})
+            self.assertNotIn("recent_anki_reviews", payload["startup_recall"])
+            kwargs = build.call_args.kwargs
+            self.assertFalse(kwargs["global_mode"])
+            self.assertEqual(kwargs["profile"], "memory")
+            self.assertIn("ischemic stroke bp threshold", kwargs["planning_concepts"])
+        finally:
+            conn.close()
+
     def test_startup_recall_uses_doc_family_to_resolve_canonical_topic(self) -> None:
         conn = self._memory_conn()
         try:
@@ -1550,11 +1601,27 @@ class StudyMemoryTests(unittest.TestCase):
             self.assertLess(len(compact_raw), len(audit_raw))
             self.assertEqual(compact["startup_recall"]["profile"], "doc")
             self.assertFalse(compact["startup_recall"]["auto_expanded"])
+            self.assertFalse(compact["startup_recall"]["pre_question_expansion_allowed"])
             self.assertEqual(compact["startup_recall"]["final_limit"], 2)
+            self.assertIn("without audit expansion", compact["startup_recall"]["next_action"])
+            self.assertIn("ask one clinical question", compact["startup_recall"]["next_action"])
+            self.assertNotIn("recap", compact["startup_recall"]["next_action"])
+            self.assertNotIn("calibration question", compact["startup_recall"]["next_action"])
             self.assertEqual(compact["planning_brief"]["profile"], "doc_review_compact")
             self.assertLessEqual(len(compact["planning_brief"]["teaching_priorities"]), 2)
-            self.assertIn("full_evidence_command", compact["retrieval_guidance"])
-            self.assertIn("--profile audit", compact["retrieval_guidance"]["full_evidence_command"])
+            self.assertIn("deferred_high_signal_counts", compact["retrieval_guidance"])
+            self.assertEqual(
+                compact["planning_brief"]["deferred_evidence"]["counts"],
+                compact["retrieval_guidance"]["deferred_high_signal_counts"],
+            )
+            self.assertIn(
+                "do not fetch before the first question",
+                compact["planning_brief"]["deferred_evidence"]["teaching_use"],
+            )
+            self.assertFalse(compact["retrieval_guidance"]["pre_question_expansion_allowed"])
+            self.assertNotIn("full_evidence_command", compact["retrieval_guidance"])
+            self.assertNotIn("full_evidence_command", compact["planning_brief"]["fallback"])
+            self.assertTrue(compact["planning_brief"]["fallback"]["audit_profile_available"])
             self.assertNotIn("cards", compact)
             self.assertEqual(audit["startup_recall"]["profile"], "audit")
             self.assertTrue(audit["startup_recall"]["auto_expanded"])
@@ -1579,6 +1646,8 @@ class StudyMemoryTests(unittest.TestCase):
             self.assertTrue(payload["startup_recall"]["routing_required"])
             self.assertFalse(payload["startup_recall"]["ready_to_teach"])
             self.assertTrue(payload["planning_brief"]["resolution_candidates"])
+            self.assertEqual(payload["startup_recall"]["anki_feedback_status"]["status"], "skipped")
+            self.assertNotIn("anki_overlay", payload["planning_brief"])
         finally:
             conn.close()
 
@@ -1599,7 +1668,15 @@ class StudyMemoryTests(unittest.TestCase):
                     tested_claim=f"Global claim {idx}.",
                     missing_edge=f"topic-specific rule {idx}",
                 )
-            payload = json.loads(study_memory.startup_recall(conn, global_mode=True, limit=2))
+            global_anki = {
+                "status": "success",
+                "scope": "global_recent",
+                "cards_examined": 4,
+                "topic_headlines": [{"topic": "Vascular", "reviews": 4, "lapses": 1}],
+                "concept_level_overlay": False,
+            }
+            with patch("anki_feedback.build_session_anki_profile", return_value=global_anki):
+                payload = json.loads(study_memory.startup_recall(conn, global_mode=True, limit=2))
             startup = payload["startup_recall"]
             self.assertFalse(startup["auto_expanded"])
             self.assertEqual(startup["final_limit"], 2)
@@ -1608,6 +1685,9 @@ class StudyMemoryTests(unittest.TestCase):
             self.assertTrue(startup["candidate_selection_required"])
             self.assertFalse(startup["ready_to_teach"])
             self.assertTrue(all(item["topic"] for item in payload["planning_brief"]["open_first"]))
+            self.assertNotIn("anki_overlay", payload["planning_brief"])
+            self.assertEqual(startup["anki_feedback_status"]["scope"], "global_recent")
+            self.assertEqual(startup["anki_feedback_status"]["topic_headline_count"], 1)
         finally:
             conn.close()
 

@@ -197,6 +197,24 @@ class EnqueueTests(unittest.TestCase):
         entries = anki_queue._read_queue(self.queue)
         self.assertEqual(len(entries), 1)
 
+    def test_stable_metadata_tags_are_generated_from_topic_and_concept(self):
+        tags = anki_queue._stable_metadata_tags(
+            {
+                "topic": "EVD Management",
+                "concept": "Flat EVD Waveform Interpretation",
+            },
+            "abc123",
+        )
+
+        self.assertEqual(
+            tags,
+            [
+                "topic/evd-management",
+                "concept/flat-evd-waveform-interpretation",
+                "claim/abc123",
+            ],
+        )
+
 
 class AnkiClientFormattingTests(unittest.TestCase):
     def test_cloze_add_note_does_not_write_back_extra(self):

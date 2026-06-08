@@ -198,6 +198,36 @@ _DECK_RE = re.compile(r"^Neurosurgery::.+::.+$")
 BRAIN_DUMP_DECK = "Neurosurgery::Brain Dumps"
 
 
+def _metadata_slug(text: object) -> str:
+    value = re.sub(r"[^A-Za-z0-9]+", "-", str(text or "").lower()).strip("-")
+    return value[:80]
+
+
+def _stable_metadata_tags(entry: dict, claim_id: str) -> list[str]:
+    tags: list[str] = []
+    topic_slug = _metadata_slug(entry.get("topic"))
+    concept_slug = _metadata_slug(entry.get("concept"))
+    claim_slug = _metadata_slug(claim_id)
+    if topic_slug:
+        tags.append(f"topic/{topic_slug}")
+    if concept_slug:
+        tags.append(f"concept/{concept_slug}")
+    if claim_slug:
+        tags.append(f"claim/{claim_slug}")
+    return tags
+
+
+def _dedupe_tags(tags: list[str]) -> list[str]:
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for tag in tags:
+        if not tag or tag in seen:
+            continue
+        seen.add(tag)
+        deduped.append(tag)
+    return deduped
+
+
 def _validate_enqueue(
     text: str,
     deck: str,
@@ -528,7 +558,7 @@ def flush(
         tags = entry.get("tags", [])
         if isinstance(tags, str):
             tags = [t.strip() for t in tags.split(",") if t.strip()]
-        tags = ["Neuro-Agent", "study-review"] + tags
+        tags = _dedupe_tags(["Neuro-Agent", "study-review"] + tags + _stable_metadata_tags(entry, cid))
 
         try:
             client.ensure_deck(deck)
@@ -547,6 +577,15 @@ def flush(
             errors.append(str(e))
 
     _write_queue(queue_path, remaining)
+
+    if created > 0 and not dry_run:
+        try:
+            if str(Path(__file__).parent) not in sys.path:
+                sys.path.insert(0, str(Path(__file__).parent))
+            from anki_deck_tools import rebuild_chroma
+            rebuild_chroma("deck:Neurosurgery*")
+        except Exception as e:
+            errors.append(f"Auto-Chroma rebuild warning: {e}")
 
     metrics = {
         "queue_size": len(to_flush),

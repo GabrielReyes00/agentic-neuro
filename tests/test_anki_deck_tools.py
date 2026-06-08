@@ -63,6 +63,12 @@ class AnkiDeckToolsTests(unittest.TestCase):
         self.assertEqual(result["source_of_truth"], "anki")
         self.assertEqual(result["claims"], 2)
         store.replace_claims.assert_called_once()
+        claims, metadatas = store.replace_claims.call_args.args
+        self.assertEqual(claims[0].topic, "General")
+        self.assertEqual(claims[0].concept, "ICP")
+        self.assertEqual(metadatas[0]["note_id"], 201)
+        self.assertEqual(metadatas[0]["card_id"], 101)
+        self.assertEqual(metadatas[0]["source"], "live_anki_rebuild")
 
 
 if __name__ == "__main__":

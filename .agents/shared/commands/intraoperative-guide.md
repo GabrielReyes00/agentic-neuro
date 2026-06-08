@@ -4,7 +4,7 @@ Produce a complete, source-grounded operative rehearsal manual for a neurosurgic
 
 This command is closer to `/generate-report` than to `/consult`: the artifact is a durable standalone operative reference, not a brief teaching exchange. The agent is the intelligence layer. Scripts retrieve sources, validate structure, and record memory; they do not write or reason for the agent.
 
-Follow `.agents/shared/commands/learning-session-contract.md` for the module map. Use `memory-operations.md`, `memory-retrieval.md`, `review-artifacts.md`, `anki-session-workflow.md`, and `anki-card-quality.md` for shared memory, artifact, concept, and Anki behavior unless this contract is more specific.
+Follow `.agents/shared/commands/learning-session-contract.md` for the module map. Use `memory-operations.md`, `memory-retrieval.md`, `vault-intelligence.md`, `review-artifacts.md`, `anki-session-workflow.md`, and `anki-card-quality.md` for shared memory, supplemental vault context, artifact, concept, and Anki behavior unless this contract is more specific.
 
 The deterministic validator is necessary but never sufficient. A guide may pass validation and still fail this workflow if expert completeness review does not approve it as a standalone operative reference.
 
@@ -114,6 +114,13 @@ Classify procedure complexity to scale query floors, cycles, and subagent requir
 1. **Step 0: Resolve Procedure**: Derive a Title Case slug. Overwrite existing guides. Create session directory: `data/Sessions/<Title>/verdicts`.
 2. **Step 1: Discover Memory (silent)**: Run `study_memory.py startup-recall` (profile `doc`) to check prior weaknesses.
 3. **Step 2: Scan Vault (silent)**: Scan the vault to locate real target files for cross-citations.
+4. **Step 3: Vault Intelligence (silent)**: Query field-aware vault context for prior operative anatomy, discriminators, mental models, and related concepts:
+
+```bash
+python3 src/vault_retriever.py recall "<procedure and anatomy>" --task operative-rehearsal --limit 8
+```
+
+Use retrieved sections as personalized context and crosslink discovery. They do not replace the Coverage Matrix, native operative reasoning, or formal source retrieval.
 
 ---
 

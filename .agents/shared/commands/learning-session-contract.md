@@ -2,46 +2,47 @@
 
 Use this orchestration contract from any command that teaches, drills, simulates, or writes a review artifact.
 
-This file is intentionally thin. The detailed rules live in focused shared modules so each policy has one home.
-
 ## Required Modules
 
-Read the modules that apply to the workflow before acting:
+Read only the modules that apply to the current phase. Do not preload later-phase modules before the first learner-facing question; this keeps startup fast.
 
 | Module | Scope |
 |---|---|
-| `.agents/shared/commands/memory-operations.md` | Session start, topic/global summary selection, `log-answer`, `end-session`, integrity verification, invisible bookkeeping, entry formatting |
-| `.agents/shared/commands/memory-retrieval.md` | How to interpret cards, learner graph signals, model surfaces, context surfaces, and truncation metadata |
-| `.agents/shared/commands/adaptive-teaching-doctrine.md` | Socratic teaching behavior, cognitive friction, progressive reveal, repair/retest logic |
-| `.agents/shared/commands/anki-session-workflow.md` | Per-answer card decisions, queue review, duplicate checking, Anki flush |
-| `.agents/shared/commands/anki-card-quality.md` | Card quality, cloze policy, deck taxonomy, duplicate judgment |
-| `.agents/shared/commands/memory-curation.md` | Optional post-flush curated summaries, learner graph edges, and shadow rules |
-| `.agents/shared/commands/review-artifacts.md` | Vault artifact destinations, generated dashboard/readiness surfaces, cleanup |
+| `.agents/shared/commands/study-review-startup.md` | Startup only: routing, recall, and first question |
+| `.agents/shared/commands/study-review-turn.md` | Per-turn grading, logging, Anki enqueue, and next question |
+| `.agents/shared/commands/study-review-vault-repair.md` | Point-of-need Obsidian repair/contrast |
+| `.agents/shared/commands/study-review-end.md` | Session end: synthesis, end-session, Anki flush, curation |
+| `.agents/shared/commands/memory-operations.md` | Session start, logging, end-session, and integrity checks |
+| `.agents/shared/commands/memory-retrieval.md` | Interpreting cards, graph signals, model surfaces, and truncation |
+| `.agents/shared/commands/vault-intelligence.md` | Optional point-of-need Obsidian section retrieval |
+| `.agents/shared/commands/adaptive-teaching-doctrine.md` | Tutor voice, teaching modes, field-to-teaching-move mapping, and Socratic voice |
+| `.agents/shared/commands/anki-session-workflow.md` | Per-answer card decisions and queue flushing |
+| `.agents/shared/commands/anki-card-quality.md` | Card quality, clozes, taxonomy, and duplicate checks |
+| `.agents/shared/commands/memory-curation.md` | Post-flush curated summaries, graph edges, and shadow rules |
+| `.agents/shared/commands/review-artifacts.md` | Vault artifact destinations and generated dashboards |
 
-## Core Sequence
+## Core Sequence & Graded Release
 
-For full learning workflows, execute the modules in this order:
-
-1. **Session start**: follow `memory-operations.md` for topic-scoped versus global `study_memory.py startup-recall`. Pass `--doc` whenever a vault artifact is known.
-2. **Memory interpretation**: read `startup_recall` and `planning_brief` first, then follow `memory-retrieval.md` before designing questions. Validate bounded contextual-frontier candidates silently. Topic startup auto-expands high-signal cards; global startup intentionally defers bulk expansion until candidate topics are selected.
-3. **Teaching loop**: follow `adaptive-teaching-doctrine.md`. Ask one question, stop, wait for the learner, evaluate, reveal progressively, and choose the next teaching move.
-4. **After each answer**: log the evaluated exchange with `study_memory.py log-answer` per `memory-operations.md`; then decide whether to enqueue Anki cards per `anki-session-workflow.md` and `anki-card-quality.md`.
-5. **Session end**: run `study_memory.py end-session --json` and the post-session integrity checks per `memory-operations.md`.
-6. **Anki completion**: run queue review, `check`, and `flush` per `anki-session-workflow.md`.
-7. **Optional curation**: if `end-session --json` reported `curation.recommended = true`, run the post-flush curation pass in `memory-curation.md`.
-8. **Artifacts and cleanup**: follow the workflow-specific command contract plus `review-artifacts.md`.
-
-`memory-maintenance.md` is not part of this sequence. Use it only for deliberate identity audits, reviewed topic merges, telemetry audits, or reference-graph loading.
+1. **Pre-Question Minimal Path**:
+   - Read the command adapter contract and requested doc.
+   - Run `study_memory.py startup-recall` and read using `.agents/shared/commands/study-review-startup.md`.
+   - Ask one clinical question and stop. Use `handoff.next_action` silently; do not quote `handoff.summary` or narrate startup.
+2. **Teaching Loop**:
+   - Load `study-review-turn.md` and `adaptive-teaching-doctrine.md`.
+   - Log to `study_memory.py log-answer` and apply `anki-session-workflow.md`/`anki-card-quality.md`.
+   - If needed, load `vault-intelligence.md` / `study-review-vault-repair.md` after the first question.
+3. **Session End**:
+   - Load `study-review-end.md` and `memory-operations.md` to run the synthesis challenge and duplicate checks.
+   - Metacognitive synthesis prompts shape the session handoff rather than tracked claim state.
+   - Run `anki_queue.py flush`. If curation is recommended or an active curation is resolved, load `memory-curation.md` for curation and escalation.
 
 ## Routing Notes
 
-- `study-review`, `consult`, and `study-material` usually need all modules above, unless their command contract explicitly narrows the behavior.
-- `quick-answer` intentionally does not use this contract; it has its own lightweight contract at `.agents/shared/commands/quick-answer.md`.
-- `brain-dump` captures de-identified service teaching as an artifact anchor plus atomic pending review candidates. It does not become learner-state evidence unless the learner chooses Socratic review or later `study-review`, where evaluated answers are logged with candidate ids.
-- Reference-generating workflows such as `generate-report`, `intraoperative-guide`, and `grand-rounds` may use learner memory for context and artifacts for downstream review, but their specific command contracts control depth, citations, and artifact validation.
+- `study-review` startup uses `.agents/shared/commands/study-review-startup.md` and `startup-recall`.
+- `consult`, `study-material`, and research/report workflows may retrieve vault context before synthesis when requested.
+- `quick-answer` does not use this contract; it uses its own contract at `.agents/shared/commands/quick-answer.md`.
+- `brain-dump` captures de-identified teaching. It does not become learner state until Socratic review/testing is logged.
 
 ## Conflict Resolution
 
-If this orchestration file conflicts with a focused module, the focused module wins for its scope.
-
-If a workflow-specific command conflicts with a focused module, the workflow-specific command wins only for its explicitly specialized behavior; shared memory, Anki, curation, and cleanup mechanics still come from the focused modules unless the workflow contract says otherwise.
+- Workflow-specific commands override shared modules only for specialized behavior; memory/Anki rules remain invariant.

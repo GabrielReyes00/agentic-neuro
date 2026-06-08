@@ -13,14 +13,19 @@ Key shared contracts:
 - `.agents/shared/commands/learning-session-contract.md` — thin orchestration index for learning workflows.
 - `.agents/shared/commands/memory-operations.md` — learner-memory reads/writes, session start/end, integrity checks, entry formatting.
 - `.agents/shared/commands/memory-retrieval.md` — cards, learner graph signals, model/context surfaces, and truncation metadata.
-- `.agents/shared/commands/memory-curation.md` — optional post-flush curated summaries, learner graph edges, and shadow rules.
+- `.agents/shared/commands/vault-intelligence.md` — field-aware Obsidian vault retrieval, task routing, provenance boundaries, and supplemental-context rules.
+- `.agents/shared/commands/memory-curation.md` — post-flush curated summaries, learner graph edges, shadow rules, and escalation.
 - `.agents/shared/commands/memory-maintenance.md` — deliberate identity audits, guarded topic merges, telemetry audits, and reviewed reference-graph loading.
-- `.agents/shared/commands/adaptive-teaching-doctrine.md` — cognitive-friction teaching behavior, repair/retest logic, and learner posture.
+- `.agents/shared/commands/adaptive-teaching-doctrine.md` — tutor voice, teaching modes, cognitive friction, field-to-teaching-move mapping, repair/retest logic, and repetition avoidance.
 - `.agents/shared/commands/anki-session-workflow.md` — per-answer Anki decisions, queue review/check/flush.
 - `.agents/shared/commands/anki-card-quality.md` — short card-quality, cloze, deck taxonomy, and duplicate-judgment rules for all Anki creation/review.
 - `.agents/shared/commands/anki-deck-maintenance.md` — separate live Anki deck rewrite/reorganization workflow; Anki is ground truth and Chroma is rebuilt from Anki.
 - `.agents/shared/commands/concept-extraction.md` — shared post-write concept-card rules for artifact-generating workflows.
-- `.agents/shared/commands/study-review.md` — doc-anchored and memory-driven review.
+- `.agents/shared/commands/study-review-startup.md` — active `/study-review` startup entrypoint; load before the first question.
+- `.agents/shared/commands/study-review-turn.md` — per-answer grading, memory logging, Anki enqueue, and next-question behavior.
+- `.agents/shared/commands/study-review-vault-repair.md` — point-of-need Obsidian supplementation during review, not startup.
+- `.agents/shared/commands/study-review-end.md` — synthesis, `end-session`, Anki flush, and curation/escalation.
+- `.agents/shared/commands/study-review.md` — legacy full study-review reference; do not load at startup.
 - `.agents/shared/commands/consult.md` — lecture-first clinical consult, verification, Anki, pocket-card write, provenance-tiered citations.
 - `.agents/shared/commands/brain-dump.md` — de-identified service-teaching capture, targeted verification, artifact-anchor memory logging, pending atomic review candidates, service-origin tagging, and optional Socratic review.
 - `.agents/shared/commands/service-log.md` — service-debrief alias that routes through `/brain-dump` while preserving service-memory primitives.
@@ -63,6 +68,8 @@ At 12+ turns in study sessions, offer a brief digest before continuing. Never co
 
 During learning workflows, memory logging, Anki queue review/check/flush, validation guards, Obsidian writes, and concept extraction are internal bookkeeping. Parse JSON/tool output silently; do not print commands, JSON payloads, raw stdout, or raw stderr into the learner-facing transcript. Surface only concise counts, file paths, success/failure status, and actionable warnings.
 
+For `study-review` startup, the skill announcement, document lookup, shared-contract reads, full-document reading, `startup-recall`, Anki overlay status, and timestamp setup are also invisible bookkeeping. Do not announce the workflow or send progress updates during this pre-question phase unless blocked; the first learner-facing message should be one clinical question, with at most one short orientation clause. Do not narrate `handoff.summary` or list prior-session topics.
+
 ## Shell Prefix
 
 The CLI may run from `~`, so all repo commands must use:
@@ -75,7 +82,9 @@ cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && <command>
 
 - Vault root: `/Users/gabrielreyes/Documents/Obsidian/agentic-neuro`
 - Study memory and service-rotation state: `data/study_memory.db`
+- Vault intelligence section index: `data/vault_index.db`
 - Textbook RAG corpus: `neurosurgery_v4.lance`
+- Vault RAG table: `vault_notes` inside the LanceDB directory, separate from the textbook table.
 - Anki overlap cache and session queue: `data/chromadb_store_anki_memory`, `data/Sessions/anki_queue.jsonl`
 - ACGME catalog: `data/acgme_curriculum.json`
 - Generated dashboards (`Dashboard.md`, `ACGME Readiness.md`, ACGME canvases) are read-only outputs; regenerate from tools, never hand-edit.
@@ -84,13 +93,15 @@ cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && <command>
 
 The active long-term memory system is the claim-centered learner model at `data/study_memory.db`, accessed only through `src/study_memory.py`; there is no dual-write workflow.
 
+Obsidian vault intelligence is a supplemental context layer, not learner-state memory and not the full neurosurgery knowledge base. Use `.agents/shared/commands/vault-intelligence.md` for field-aware retrieval from `data/vault_index.db` and the dedicated `vault_notes` LanceDB table. Absence from the vault never limits the agent's native clinical knowledge or need for formal verification.
+
 Detailed memory mechanics now live in focused modules:
 - Use `.agents/shared/commands/memory-operations.md` for session start, `summary`, `log-answer`, `end-session`, integrity checks, and entry formatting.
 - Use `.agents/shared/commands/memory-retrieval.md` for interpreting cards, learner graph signals, model/context surfaces, and truncation metadata.
-- Use `.agents/shared/commands/memory-curation.md` for the optional post-Anki curation pass.
+- Use `.agents/shared/commands/memory-curation.md` for the post-Anki curation and escalation pass.
 - Use `.agents/shared/commands/memory-maintenance.md` only for deliberate audits or reviewed graph maintenance, never inside routine teaching loops.
 
-Invariant summary: skill-driven document sessions start with `study_memory.py startup-recall --profile doc --topic ... --doc ...`; memory-driven custom review uses `startup-recall --global --lens general`, and topic-only review uses `startup-recall --topic ... --lens general`. Site/service-specific recall uses `--lens service`. Read `startup_recall` and `planning_brief` first. Use `--profile audit` only for ambiguous compact briefs or learner-model audits. Raw `summary` is for dashboard or audit reads. Memory writes occur only inside explicit memory-enabled workflows or when the user asks to save/capture memory. Quick-answer entries and pending Brain Dump candidates are low-stakes reference/review-interest captures, not demonstrated mastery.
+Invariant summary: `/study-review` starts from `.agents/shared/commands/study-review-startup.md`, not the legacy full contract. Skill-driven document sessions run `study_memory.py startup-recall --profile doc --topic ... --doc ...`; memory-driven custom review uses `startup-recall --global --lens general`, and topic-only review uses `startup-recall --topic ... --lens general`. Site/service-specific recall uses `--lens service`. Read `startup_recall` and `planning_brief` first. Use `--profile audit` only for ambiguous compact briefs or learner-model audits. Raw `summary` is for dashboard or audit reads. Memory writes occur only inside explicit memory-enabled workflows or when the user asks to save/capture memory. Quick-answer entries and pending Brain Dump candidates are low-stakes reference/review-interest captures, not demonstrated mastery.
 
 ## Capability Router
 

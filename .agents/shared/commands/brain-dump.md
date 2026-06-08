@@ -4,7 +4,7 @@ Capture de-identified teaching received on service, connect it to mechanism and 
 
 This workflow is for exposure capture, not demonstrated mastery. A senior resident correction or lesson is valuable evidence of what Gabriel encountered; it is not evidence of what he can yet retrieve or apply.
 
-Follow `.agents/shared/commands/learning-session-contract.md` only where this contract invokes learner testing. Use `memory-operations.md` and `memory-retrieval.md` for silent learner-context retrieval, artifact-anchor logging, atomic review-candidate logging, and optional Socratic conversion. Use `review-artifacts.md` for the vault destination and `anki-card-quality.md` for cards generated only after evaluated answers.
+Follow `.agents/shared/commands/learning-session-contract.md` only where this contract invokes learner testing. Use `memory-operations.md` and `memory-retrieval.md` for silent learner-context retrieval, artifact-anchor logging, atomic review-candidate logging, and optional Socratic conversion. Use `vault-intelligence.md` only as supplemental context for prior related vault notes and provenance-aware local clarifications. Use `review-artifacts.md` for the vault destination and `anki-card-quality.md` for cards generated only after evaluated answers.
 
 ## When To Use
 
@@ -67,6 +67,14 @@ Read `planning_brief`, `counts`, `omitted`, and `retrieval_guidance` per `memory
 If the dump names a service/site-specific practice and an active service context is needed, resolve the rotation and use `startup-recall --lens service` from `memory-operations.md` for local memory.
 
 ### 4. Targeted Source Verification and Academic Synthesis
+
+Before or alongside formal verification, query vault intelligence for related prior context when it can improve synthesis or provenance handling:
+
+```bash
+python3 src/vault_retriever.py recall "<sanitized teaching topic>" --task service-local --limit 5
+```
+
+Use this to find prior local clarifications, operational mental models, and related Brain Dumps/Consults. Do not use vault retrieval to universalize local practice; formal claims still require focused source verification.
 
 Use focused RAG queries for management-changing claims, mechanisms, thresholds, and anatomy or physiology claims:
 

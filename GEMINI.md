@@ -6,6 +6,7 @@
 
 This profile is intentionally not self-contained. Before acting in this repo, read `AGENTS.md`; this file only adds Gemini-specific runtime notes.
 All agents share the startup recall contract (`startup-recall`; Raw `summary` is for dashboard/audits only) and the `service-log` debrief route through `brain-dump` defined in `AGENTS.md`.
+All agents also share the vault intelligence contract in `.agents/shared/commands/vault-intelligence.md` for supplemental Obsidian context; it enriches learner-memory recall and does not replace `study_memory.py`.
 
 Please read and follow `AGENTS.md` for:
 - User Profile & Learner Posture (cognitive friction, progressive reveal)

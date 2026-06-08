@@ -80,6 +80,14 @@ If case intake contains PHI or exact identifiers, do not repeat them. Convert to
 
 Before creating the rubric, build a compact internal landscape note.
 
+Query field-aware vault intelligence when prior notes may improve the presentation angle, anticipated questions, discriminators, or related concept links:
+
+```bash
+python3 src/vault_retriever.py recall "<presentation topic>" --task report-generation --limit 6
+```
+
+Follow `.agents/shared/commands/vault-intelligence.md` for field selection and provenance. Use the result as personalized context. The vault is not exhaustive; continue using native knowledge, article/PDF content, and formal RAG when needed.
+
 Case mode:
 - Extract likely pathology, subtype, procedure, anatomy, management controversy, and likely guideline/evidence axis.
 - Run focused RAG when useful:

@@ -4,6 +4,8 @@ Single-purpose contract for interpreting `study_memory.py startup-recall` output
 
 The database stores facts. The agent supplies judgment. Memory is evidence for teaching design, not a rigid routing table and not learner-facing narration.
 
+Memory is not the only knowledge source. `startup-recall` itself is SQLite learner-state plus optional Anki overlay, not Obsidian vault search. When Gabriel's own notes can improve a repair, contrast, local-practice clarification, or artifact workflow, use `.agents/shared/commands/vault-intelligence.md` as a point-of-need supplemental tool. In document-anchored `study-review`, the requested document is already read directly, so do not query the vault at startup for the same document. The vault can supply discriminators, durable mental models, evidence cards, local clarifications, and mastery objectives; it is not exhaustive neurosurgery knowledge and never prevents the agent from using native clinical knowledge or formal verification.
+
 ## Read Path
 
 Use a staged agent-facing read path:
@@ -33,38 +35,41 @@ python3 src/study_memory.py startup-recall --lens service --service "<service>" 
 Always read `startup_recall`, `planning_brief`, `counts`, `omitted`, and `retrieval_guidance` before teaching. `planning_brief` is the ordered first-read tutor context.
 
 Startup profiles:
-- `--profile doc`: default for document-anchored review. It is compact and document-primary: it returns handoff, top open gaps, top recent repairs, due scaffolds, capped related-context candidates, and a fallback `full_evidence_command`. Use this for `/study-review --doc`.
+- `--profile doc`: default for document-anchored review. It is compact and document-primary: it returns handoff, top open gaps, top recent repairs, due scaffolds, capped related-context candidates, and no pre-question audit command. Use this for `/study-review --doc`.
 - `--profile memory`: topic/global review planning. With `--lens general`, topic-scoped memory recall includes assessed learner state plus pending Brain Dump review candidates and expands omitted high-signal cards automatically; global startup stays compact and returns `ready_to_teach = false`.
 - `--profile audit`: full rich startup surface for troubleshooting, learner-model audits, or ambiguous/safety-critical compact briefs.
 - `--profile auto`: chooses `doc` when `--doc` is present, otherwise `memory`.
 
-For doc review, do not expand just because `counts` or `omitted` are nonzero. Expand only when the compact brief is ambiguous, safety-critical high-signal material appears omitted, or the learner explicitly asks for a memory-driven detour. For memory-driven global review, use `startup_recall.deferred_high_signal` as a prompt for candidate selection, then run topic-scoped startup recall for selected topics.
+For doc review, do not expand just because `counts`, `omitted`, or `retrieval_guidance.deferred_high_signal_counts` are nonzero. Those counts preserve awareness of compacted learner evidence; they are not a pre-question fetch instruction. If `startup_recall.ready_to_teach=true` and `startup_recall.pre_question_expansion_allowed=false`, ask the first question from `planning_brief`. Use audit expansion only if startup is blocked, the compact brief is incoherent, or the learner explicitly asks for a memory audit. For memory-driven global review, use `startup_recall.deferred_high_signal` as a prompt for candidate selection, then run topic-scoped startup recall for selected topics.
 
 If `planning_brief.resolution_warning` is present, do not begin teaching from an empty or guessed topic envelope. Validate one of `resolution_candidates` as the intended existing learner-state anchor, rerun topic-scoped recall with that anchor, and clarify with the learner only when the correct curriculum scope remains ambiguous.
 
 If scaffold cards were omitted, expand `--scaffold-limit` only when you need a coverage map or transfer-question premises. Scaffolds are confirmed knowledge, not primary drill targets. For memory-driven global review, use `--include-global-scaffolds` only when no stronger due gaps dominate.
 
-Inspect the full non-brief summary, raw exchange rows, or claim rows only when the compact brief is ambiguous, when truncation requires expansion, or when auditing the learner model.
+Inspect the full non-brief summary, raw exchange rows, or claim rows only when the compact brief is incoherent, startup is blocked, topic-scoped memory mode still reports unresolved omitted high-signal material, or you are auditing the learner model.
 
 ## Planning Brief
 
 In `profile=doc`, read `planning_brief` as a compact session-start contract:
 
-1. **`handoff`**: the previous session directive, if any.
+1. **`handoff`**: the previous session directive, if any. Use `handoff.next_action` as private question-design input. Treat `handoff.summary` as audit/debug context only; do not narrate it to the learner.
 2. **`teaching_priorities`**: the ranked blend of open gaps, recent repairs, and stale scaffolds.
 3. **`contextual_frontier`**: capped related-context candidates. Accept only candidates central to the requested document.
 4. **`question_design_bias`** and **`domain_patterns`**: small shaping signals, not a mandate.
-5. **`fallback.full_evidence_command`**: use only when compact startup is insufficient.
+5. **`anki_overlay`**: optional scoped Anki feedback. Use it only to shape sequencing, scaffolds, and redundant-card avoidance after the document curriculum and SQLite priorities are set.
+6. **`deferred_evidence`**: compacted-evidence counts retained for awareness; do not fetch them before the first question.
+7. **`fallback.audit_profile_available`**: reminder that a richer audit exists for blocked or explicit audit situations; it is not a pre-question step.
 
 In `profile=memory` or `profile=audit`, read `planning_brief` in order:
 
-1. **`handoff`**: the latest learner-session directive. Artifact-generation anchors do not compete with this surface.
+1. **`handoff`**: the latest learner-session directive. Use `handoff.next_action` to select the next probe; do not quote or paraphrase `handoff.summary` as an opening recap. Artifact-generation anchors do not compete with this surface.
 2. **`open_first`**: unresolved claims that deserve the first questions.
 3. **`recent_repairs`** and **`known_scaffolds_due`**: changed-frame retention checks and stale premises.
 4. **`domain_patterns`** and **`misconception_rules`**: curated cross-session fault lines and evidence-backed false rules.
 5. **`contextual_frontier`**: bounded neighboring foundations from learner graph edges, reviewed reference-graph paths, report-local scaffolds, and cautious cross-topic overlap.
 6. **`question_design_bias`**: confidence calibration, weak cognitive operations, and teaching-move evidence.
-7. **`low_confidence_leads`**: curiosity and artifact hints only.
+7. **`anki_overlay`**: optional scoped Anki feedback. Read exact atomic facts, but apply them only after SQLite priorities; see **Anki Overlay** below.
+8. **`low_confidence_leads`**: curiosity and artifact hints only.
 
 Before teaching, execute `agent_validation_checkpoint` silently. Accept only 1-3 frontier candidates that are clinically central, within the requested curriculum boundary, and likely to explain an active gap or deepen transfer. Reject tangents. Frontier candidates shape questions; they never override urgent open claims.
 
@@ -77,10 +82,11 @@ Read the JSON in this order:
 3. **Learner graph surfaces**: `graph_signals` and `shadow_rule_signals`. These are evidence-backed discrimination and false-rule repair inputs.
 4. **Model surfaces**: `due_claims`, `calibration_profile`, `operation_profile`, `teaching_move_profile`, `telemetry_profile`, `tutor_efficacy_profile`, `coverage_frontier`, `brain_dump_review_candidates`, and `shadow_queue`.
 5. **Context surfaces**: optional `context_focus` and `context_graph_focus` when `--context` is present. These weight session planning; they do not override urgent gaps.
+6. **Anki feedback overlay**: optional `planning_brief.anki_overlay`, sourced from live Anki scheduling/review metadata. Detailed atomic signals appear only on resolved topic/doc startup; global startup exposes status or topic headlines only and requires a topic-scoped rerun before teaching.
 
 ## Cards
 
-- Open from the most recent `session_handoff.next_action` when present; it is the previous agent's directive.
+- Open from the most recent `session_handoff.next_action` when present; it is the previous agent's directive. Convert it into a question or case setup, not a learner-facing recap.
 - Map each `must_retest` card to a question that forces confrontation with the specific `missing_edge` or `corrected_rule`.
 - Repeated misses on the same concept mean the previous teaching approach failed; use a different teaching move.
 - `scaffold` cards are premises for transfer questions, not drill targets.
@@ -127,9 +133,27 @@ Quick-answer entries normally do not appear as `cards` because they do not creat
 - `context_focus`: only appears when the command includes `--context "<case/rotation/upcoming focus>"`; use it to weight, not override, due and safety-critical gaps.
 - `context_graph_focus`: reviewed reference-graph paths, capped at two hops and filtered by context predicates. Verify the path makes clinical sense before using it. Learner graph edges and the reference graph are separate layers.
 
+## Anki Overlay
+
+`planning_brief.anki_overlay` is a compact live-Anki advisory surface for the resolved topic or document scope. If it is absent, offline, unresolved, `no_matches`, or only present as `startup_recall.anki_feedback_status`, proceed from SQLite and normal document/topic context.
+
+Scoping uses explicit deck/tag/phrase matches plus Chroma semantic candidates from the Anki cache. Strong semantic hits may contribute even when the card lacks a literal topic token; weak or generic hits need a real scope anchor. Generic words such as "emergency", "acute", or "management" never define scope by themselves.
+
+- `atomic_focus`: exact card facts with fragile review state such as `active_lapse`, `leech`, `shaky_success`, or central `mature_stale`. After `open_first`, `recent_repairs`, and urgent `due_claims`, use these to sharpen changed-frame probes or Socratic repairs.
+- `atomic_scaffolds`: exact stable or recent-success facts. Use them as transfer premises, not first-order recall targets.
+- `atomic_primes`: exact stale-new facts. Use at most as one brief recognition prime when central to the requested topic.
+- `avoid_direct_quiz`: fresh or transition cards. Suppress direct quizzes on these facts; if central, use them only as premise or context.
+- `concept_rollup` and `macro_counts`: orientation only. `concept_rollup` may be structured dictionaries or compact `Concept:worst_state(count)` strings; never use it as a question queue.
+
+Guardrails:
+- SQLite precedence: Anki shapes the queue; it does not own the queue. Anki never overrides `handoff`, `open_first`, `recent_repairs`, urgent `due_claims`, or requested-document priority.
+- Mastery evidence: Do not let Anki success clear a SQLite misconception. Anki success does not clear a known misconception, and Anki lapse does not become `claim_state` until Gabriel answers an agent-assessed probe.
+- Scope: ignore off-topic atomic facts, service-local cards in formal/doc review when identifiable, and low-confidence mappings unless the fact is clinically central and independently sensible.
+- Visibility: use Anki signals silently. Do not narrate Anki scheduling, lapses, or ease ratings to Gabriel unless he asks.
+
 ## Invisibility Rule
 
-Do not echo summary content, paste curated summary text, or telegraph graph signals to the learner. "You've been confusing X and Y" is design input, not a teaching opening.
+Do not echo summary content, paste curated summary text, list previously reviewed topics, or telegraph graph signals to the learner; specifically, do not narrate `handoff.summary`. "You've been confusing X and Y" is design input, not a teaching opening.
 
 ## Writing Better Memory
 

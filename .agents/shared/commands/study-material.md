@@ -2,7 +2,7 @@
 
 Use for explicit file-based study requests from PDF, PPTX, or vault markdown. Do not use this for general questions or intern simulation.
 
-Follow `.agents/shared/commands/learning-session-contract.md` for the module map. Use `memory-operations.md`, `memory-retrieval.md`, `adaptive-teaching-doctrine.md`, `anki-session-workflow.md`, and `anki-card-quality.md` as the focused sources of truth.
+Follow `.agents/shared/commands/learning-session-contract.md` for the module map. Use `memory-operations.md`, `memory-retrieval.md`, `vault-intelligence.md`, `adaptive-teaching-doctrine.md`, `anki-session-workflow.md`, and `anki-card-quality.md` as the focused sources of truth.
 
 ## Phase 1: Generate Material
 
@@ -142,6 +142,14 @@ python3 src/study_memory.py startup-recall --profile doc --topic "<topic>" --doc
 
 The selected document is the curriculum. New documents start at TU-01. Returning documents prioritize previously missed concepts from this same document, then continue forward. Use the compact doc-review startup brief to identify scaffold, must-retest, recent-repair, and handoff concepts for this document. Prior misses from other sessions may appear only under the Requested-Document Priority rule: directly related, close confuser, safety-critical, or one brief due bridge.
 
+When prior vault context can improve question design or repair without displacing the selected Study Material file, run:
+
+```bash
+python3 src/vault_retriever.py recall "<study material topic or missed concept>" --task doc-review --limit 5
+```
+
+Use retrieved discriminators, mental models, execution checks, or related concept cards as optional teaching aids. Do not let vault retrieval replace the generated question bank, source chunk inventory, atomic fact ledger, or the learner-state priorities returned by `startup-recall`.
+
 ## Study Mode Gate
 
 Study Material files can have different educational purposes. Do not assume every vault document needs the same deep Socratic treatment.
@@ -210,7 +218,7 @@ After Gabriel answers, choose the post-answer behavior from the selected study m
 
 Ordering: recall, spatial/discrimination, mechanism/integration, visual interspersed. If 2+ misses occur in one TU, add 1-2 alternate-angle probes.
 
-Every evaluated answer follows the shared memory logging contract with `--skill "study-material"`. Use the same `SESSION_TS` for the whole drill. For partial or incorrect answers, include full error metadata (`--error-type`, `--misconception`, `--correction`).
+Every assessed drill answer follows the shared memory logging contract with `--skill "study-material"`. Use the same `SESSION_TS` for the whole drill. For partial or incorrect answers, include full error metadata (`--error-type`, `--misconception`, `--correction`).
 
 Checkpoint around every 12 questions with strengths, needs work, and options to continue, focus weak areas, or pause.
 

@@ -113,6 +113,14 @@ def _deck_path_for_title(title: str, desktop: Path = DEFAULT_DESKTOP) -> Path:
     return desktop / f"{_title_case_slug(title)}.pptx"
 
 
+def _refresh_vault_intelligence(vault_root: Path) -> None:
+    try:
+        import vault_index
+    except ModuleNotFoundError:  # imported as part of the `src` package
+        from . import vault_index
+    vault_index.refresh_default_index_after_vault_write(vault_root=vault_root)
+
+
 def _reject_h1(body: str) -> None:
     candidate = body.split("---", 1)[0] if "---" in body else body
     if _TOP_H1_RE.search(candidate):
@@ -479,9 +487,11 @@ def upsert_index(
         import index_builder
     except ModuleNotFoundError:  # imported as part of the `src` package
         from . import index_builder
-    return index_builder.write_index(
+    index_path = index_builder.write_index(
         vault_root / PRESENTATIONS_DIRNAME, vault_root=vault_root, recursive=True
     )
+    _refresh_vault_intelligence(vault_root)
+    return index_path
 
 
 def main(argv: list[str] | None = None) -> int:

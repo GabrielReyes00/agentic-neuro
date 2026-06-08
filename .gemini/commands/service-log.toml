@@ -1,9 +1,9 @@
-description = "Deprecated compatibility route for service-rotation debriefs; follow brain-dump service-memory capture"
+description = "Service-rotation debrief route through brain-dump service-memory capture"
 
 prompt = """
-ACTIVE COMMAND: /service-log - Deprecated compatibility route for service-rotation learning.
+ACTIVE COMMAND: /service-log - Service-rotation debrief route through brain-dump service-memory capture.
 
-You MUST read `.agents/shared/commands/service-log.md`; it redirects new capture behavior to the brain-dump service-memory workflow.
+Read `.agents/shared/commands/service-log.md`; it routes service debriefs through the brain-dump service-memory workflow.
 
 User's input: {{args}}
 

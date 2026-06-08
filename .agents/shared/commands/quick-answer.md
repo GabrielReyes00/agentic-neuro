@@ -6,6 +6,8 @@ Use this when the user wants a brief direct answer, not a report, consult pocket
 
 This command intentionally does **not** use `.agents/shared/commands/learning-session-contract.md`.
 
+Use `.agents/shared/commands/vault-intelligence.md` only when field-aware Obsidian context would improve a brief answer.
+
 ## When to Use
 
 - Explicit `/quick-answer` invocation.
@@ -28,6 +30,14 @@ Do not write a vault artifact.
 Do not force a teaching format, verification questions, or a fixed response length.
 
 Answer the user's question in the style and depth that best fits the question. Use tools only when the question requires current verification, the user asks for sources, or local context is needed.
+
+When prior vault context may improve accuracy or personalization without turning the answer into a full consult, query field-aware vault intelligence:
+
+```bash
+python3 src/vault_retriever.py recall "<focused question>" --task quick-answer --limit 3
+```
+
+For service/site/local-practice questions, use `--task service-local`. Treat retrieved vault sections as supplemental context. Absence from the vault is not absence from neurosurgery knowledge; use native clinical knowledge and formal verification when needed.
 
 ### 2. Memory Write
 

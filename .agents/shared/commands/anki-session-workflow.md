@@ -35,6 +35,7 @@ The `log-answer` command prints `OK exchange_id=N`; use that N as `--exchange-id
 - Exception: portable cards from evaluated Brain Dump Socratic turns, or during `/study-review` anchored to a `Brain Dumps/` artifact, use `Neurosurgery::Brain Dumps` with tag `brain-dump` to keep lived-experience-origin teaching distinct from textbook/source-heavy decks. Site-local service conventions use the service-learning routing defined in `brain-dump.md`/`service-log.md`.
 - Do not create Anki cards during initial Brain Dump capture; pending candidates become card-eligible only after evaluated learner answers.
 - Tags: `<skill>,<error_type>` comma-separated, omitting error type if correct.
+- Pass accurate `--topic` and `--concept` values at enqueue time. During flush, `anki_queue.py` adds stable metadata tags for future feedback retrieval: `topic/<slug>`, `concept/<slug>`, and `claim/<claim_id>`. Do not manually add, rewrite, or remove these stable tags. Preserve provenance tags such as `brain-dump`, service/site tags, and workflow tags because they let startup recall keep formal, portable, and service-local Anki signals separate.
 
 ## Enqueue
 

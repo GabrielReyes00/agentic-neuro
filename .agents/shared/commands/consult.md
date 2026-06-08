@@ -2,7 +2,7 @@
 
 Focused, expert-level clinical teaching triggered by a knowledge gap on the wards. The interaction model is a curbside consult with a senior resident or attending — a brief, dense lecture on a specific topic followed by verification questions, not a Socratic teaching session.
 
-Follow `.agents/shared/commands/learning-session-contract.md` for the module map. Use `memory-operations.md` for memory bookkeeping and entry formatting, `memory-retrieval.md` for summary interpretation, `anki-session-workflow.md` plus `anki-card-quality.md` for Anki, and `memory-curation.md` for optional post-flush curation. The teaching principles below are specific to `/consult` and override Socratic teaching defaults where they conflict.
+Follow `.agents/shared/commands/learning-session-contract.md` for the module map. Use `memory-operations.md` for memory bookkeeping and entry formatting, `memory-retrieval.md` for summary interpretation, `vault-intelligence.md` for supplemental field-aware Obsidian context, `anki-session-workflow.md` plus `anki-card-quality.md` for Anki, and `memory-curation.md` for optional post-flush curation. The teaching principles below are specific to `/consult` and override Socratic teaching defaults where they conflict.
 
 ---
 
@@ -32,7 +32,23 @@ Read `planning_brief`, `counts`, `omitted`, and `retrieval_guidance`. Validate c
 
 **Critical rule: memory informs teaching approach, never content omission.** Every consult delivers the full applicable knowledge regardless of prior exposure.
 
-### Step 2: Textbook RAG (silent)
+### Step 2: Vault Intelligence (silent)
+
+Use vault intelligence for high-signal personalized context when it is likely to help the consult:
+
+```bash
+python3 src/vault_retriever.py recall "<focused consult topic>" --task quick-answer --limit 5
+```
+
+For service/site/local-practice questions, use:
+
+```bash
+python3 src/vault_retriever.py recall "<service-local query>" --task service-local --limit 5
+```
+
+Use retrieved quick references, bedside rules, evidence cards, discriminators, or local clarifications to enrich the lecture. The vault does not cap the consult: if the vault is silent or thin, teach from native clinical knowledge and formal sources.
+
+### Step 3: Textbook RAG (silent)
 
 Ground the lecture in authoritative textbook sources. Use `compare --stdout` to retrieve, rerank, and distill relevant passages — the formatted text prints directly to stdout (no file read needed).
 
@@ -51,7 +67,7 @@ Read the retrieved passages. Use them to enrich the lecture with specific textbo
 
 "No hedging" means no vague "it depends" — it does **not** mean hiding provenance. Give the answer with authority, then label whether it is textbook-grounded or clinical-knowledge-to-verify. This is professional accuracy, not equivocation.
 
-### Step 3: Vault scan for merge targets and wikilinks (silent)
+### Step 4: Vault scan for merge targets and wikilinks (silent)
 
 ```bash
 VAULT="/Users/gabrielreyes/Documents/Obsidian/agentic-neuro"

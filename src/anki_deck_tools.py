@@ -62,6 +62,39 @@ def _claim_text(note: dict) -> str:
     return prompt[:420]
 
 
+def _slug_display(value: str) -> str:
+    value = re.sub(r"[-_]+", " ", str(value or "")).strip()
+    return value.title()
+
+
+def _note_topic_concept(note: dict) -> tuple[str, str, str]:
+    tags = [str(tag) for tag in note.get("tags", []) if str(tag)]
+    decks = [str(deck) for deck in note.get("decks", []) if str(deck)]
+    deck_parts = decks[0].split("::") if decks else []
+    topic = ""
+    concept = ""
+    source_workflow = "live_anki"
+
+    if len(deck_parts) >= 2:
+        topic = deck_parts[1]
+    if len(deck_parts) >= 3:
+        concept = deck_parts[-1]
+    if any(tag.lower() == "brain-dump" for tag in tags) or any("Brain Dumps" in deck for deck in decks):
+        source_workflow = "brain-dump"
+    for tag in tags:
+        lower = tag.lower()
+        if lower.startswith("topic/"):
+            topic = _slug_display(tag.split("/", 1)[1])
+        elif lower.startswith("domain/") and not topic:
+            topic = _slug_display(tag.split("/", 1)[1])
+        elif lower.startswith("concept/"):
+            concept = _slug_display(tag.split("/", 1)[1])
+        elif lower in {"study-review", "quick-answer", "consult", "intraoperative-guide"}:
+            source_workflow = lower
+
+    return topic or "live_anki", concept, source_workflow
+
+
 def _export_notes(client: AnkiClient, query: str) -> dict:
     card_ids = client.find_cards(query)
     cards = client.cards_info(card_ids, batch_size=100)
@@ -118,21 +151,34 @@ def export(query: str, output: Path | None) -> dict:
 def rebuild_chroma(query: str, dry_run: bool = False) -> dict:
     client = AnkiClient(ANKI_URL)
     data = _export_notes(client, query)
-    claims = [
-        ClaimModel(
-            claim_id=str(note["noteId"])[-12:],
-            topic="live_anki",
-            concept="",
-            card_type="cloze" if note["modelName"] == "Cloze" else "qa",
-            claim_text=note["claim_text"],
+    claims = []
+    metadatas = []
+    for note in data["notes"]:
+        if not note.get("claim_text"):
+            continue
+        topic, concept, source_workflow = _note_topic_concept(note)
+        claims.append(
+            ClaimModel(
+                claim_id=str(note["noteId"])[-12:],
+                topic=topic,
+                concept=concept,
+                card_type="cloze" if note["modelName"] == "Cloze" else "qa",
+                claim_text=note["claim_text"],
+            )
         )
-        for note in data["notes"]
-        if note.get("claim_text")
-    ]
+        card_ids = [int(card_id) for card_id in note.get("cardIds", []) if card_id]
+        metadatas.append({
+            "source": "live_anki_rebuild",
+            "source_workflow": source_workflow,
+            "note_id": int(note["noteId"]),
+            "card_id": card_ids[0] if card_ids else 0,
+            "deck": " | ".join(str(deck) for deck in note.get("decks", [])),
+            "tags": " ".join(str(tag) for tag in note.get("tags", [])),
+        })
 
     if not dry_run:
         store = NoveltyStore(CHROMADB_PATH, COLLECTION_NAME, EMBEDDING_MODEL)
-        store.replace_claims(claims, {"source": "live_anki_rebuild"})
+        store.replace_claims(claims, metadatas)
 
     result = {
         "query": query,

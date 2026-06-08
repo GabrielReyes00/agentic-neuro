@@ -1,8 +1,8 @@
 ---
 name: service-log
-description: Deprecated compatibility route for service-rotation debriefs; follow brain-dump service-memory capture.
+description: Service-rotation debrief route through brain-dump service-memory capture.
 ---
 
 # Service Log
 
-Read `.agents/shared/commands/service-log.md`; it is a compatibility wrapper that redirects new capture behavior to `.agents/shared/commands/brain-dump.md`.
+Read `.agents/shared/commands/service-log.md`; it routes service debriefs through `.agents/shared/commands/brain-dump.md` with service-memory handling.

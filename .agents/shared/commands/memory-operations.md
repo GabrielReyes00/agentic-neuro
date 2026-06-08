@@ -28,7 +28,7 @@ Context-pulling is mode-conditional. The wrong command at the wrong time causes 
 python3 src/study_memory.py startup-recall --profile doc --topic "<topic>" --doc "<folder>/<file>.md"
 ```
 
-Do not expand just because counts or omitted fields are nonzero. Use `--profile audit` only when the compact brief is ambiguous, safety-critical context appears omitted, or you are auditing the learner model.
+Do not expand just because counts or omitted fields are nonzero. If `startup_recall.ready_to_teach=true` and `startup_recall.pre_question_expansion_allowed=false`, begin from the compact brief and ask the first question. Use `--profile audit` only after startup is blocked, the compact brief is incoherent, or the learner explicitly asks for a memory audit.
 
 **Topic-anchored sessions without a vault document**: user named a topic or clinical question but no artifact is known.
 
@@ -54,13 +54,15 @@ python3 src/study_memory.py startup-recall --global --lens general
 
 Global startup recall surfaces a compact high-signal candidate set, due conceptual checks, pending Brain Dump candidates, learner-model profiles, and recent session handoff state while suppressing scaffolds by default. It intentionally returns `startup_recall.ready_to_teach = false`: read `startup_recall.deferred_high_signal`, select candidate topics, then run topic-scoped `startup-recall --topic "<candidate>" --lens general` for each chosen topic. Use `--include-global-scaffolds` only if no stronger due gaps dominate and broad target selection needs scaffold context.
 
-In all modes, read output silently. Start from `planning_brief`, then inspect raw surfaces only when the brief is ambiguous, diagnostics require audit, or `retrieval_guidance.omitted_high_signal` requires expansion. Do not paste recall into chat, summarize it as a menu, or telegraph prior misses. The data shapes questioning; it does not shape narration.
+In all modes, read output silently. Start from `planning_brief`, then inspect raw surfaces only when the brief is ambiguous, diagnostics require audit, or topic-scoped memory mode reports unresolved omitted high-signal material. Do not paste recall into chat, summarize it as a menu, or telegraph prior misses. The data shapes questioning; it does not shape narration.
+
+`startup-recall` already emits JSON-like structured output and does not accept `--json`. Do not add a `--json` flag to `startup-recall` commands.
 
 ## Pre-Session Verification
 
-After running `summary`, read the full JSON and verify:
+After running the appropriate `startup-recall` command, read the full JSON and verify:
 
-1. **Retrieval completeness**: inspect `startup_recall`, `counts`, `omitted`, and `retrieval_guidance`. `profile=doc` is intentionally compact and may report omitted material; expand only when the compact brief is insufficient. Topic-only `startup-recall` automatically expands omitted high-signal cards; if any remain, stop and troubleshoot before teaching. Global startup intentionally keeps `startup_recall.deferred_high_signal` compact: select candidate topics and run topic-scoped startup recall before teaching.
+1. **Retrieval completeness**: inspect `startup_recall`, `counts`, `omitted`, and `retrieval_guidance`. `profile=doc` is intentionally compact and may report omitted material; `retrieval_guidance.deferred_high_signal_counts` preserves awareness of compacted evidence but is not a pre-question fetch instruction. When `ready_to_teach=true`, do not run audit expansion before the first question. Topic-only `startup-recall` automatically expands omitted high-signal cards; if any remain, stop and troubleshoot before teaching. Global startup intentionally keeps `startup_recall.deferred_high_signal` compact: select candidate topics and run topic-scoped startup recall before teaching.
 2. **Planning-brief validation**: read `planning_brief.agent_validation_checkpoint`. Accept only 1-3 `contextual_frontier` candidates that are clinically central, scope-compatible, and useful for explaining an active gap or deepening transfer. Reject tangents. Record the accepted and rejected candidate ids in a silent internal note.
 3. **Returning session**: if `startup_recall.routing_required = true`, validate a returned `resolution_candidate`, then rerun `startup-recall --profile doc --topic "<canonical candidate>" --doc "<folder>/<file>.md"` for document review or `startup-recall --topic "<canonical candidate>"` for topic-only review. Clarify with the learner only if the intended curriculum remains ambiguous.
 4. **Coherence**: handoff, open claims, repairs, and accepted frontier candidates must relate to the requested topic. If output is unrelated, resolve the topic and re-run summary.
@@ -72,7 +74,7 @@ Set one `SESSION_TS` at the first learner-facing question and reuse it for the w
 SESSION_TS=$(date -u +%Y-%m-%dT%H:%M:%S+00:00)
 ```
 
-## After Every Q&A
+## After Every Assessed Q&A
 
 ```bash
 python3 src/study_memory.py log-answer \

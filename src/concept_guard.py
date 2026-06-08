@@ -231,6 +231,14 @@ def _update_index(vault_root: Path) -> None:
     index_builder.write_index(vault_root / CONCEPT_DIRNAME, vault_root=vault_root)
 
 
+def _refresh_vault_intelligence(vault_root: Path) -> None:
+    try:
+        import vault_index
+    except ModuleNotFoundError:
+        from . import vault_index
+    vault_index.refresh_default_index_after_vault_write(vault_root=vault_root)
+
+
 def install_draft(
     draft: Path,
     title: str,
@@ -252,6 +260,7 @@ def install_draft(
     installed_result = validate_file(target)
     if installed_result.ok:
         _update_index(vault_root)
+        _refresh_vault_intelligence(vault_root)
     return installed_result
 
 

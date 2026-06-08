@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 
 from .schemas import ClaimModel
 
@@ -88,7 +88,7 @@ class NoveltyStore:
     def persist_claims(
         self,
         claims: list[ClaimModel],
-        metadata: Mapping[str, str | int | float | bool] | None = None,
+        metadata: Mapping[str, str | int | float | bool] | Sequence[Mapping[str, str | int | float | bool]] | None = None,
     ) -> None:
         if not claims:
             return
@@ -97,7 +97,14 @@ class NoveltyStore:
         ids: list[str] = []
         docs: list[str] = []
         metas: list[dict[str, str | int | float | bool]] = []
-        for claim in claims:
+        per_claim_metadata: Sequence[Mapping[str, str | int | float | bool]] | None = None
+        shared_metadata: Mapping[str, str | int | float | bool] | None = None
+        if isinstance(metadata, Mapping):
+            shared_metadata = metadata
+        elif isinstance(metadata, Sequence) and not isinstance(metadata, (str, bytes)):
+            per_claim_metadata = metadata
+
+        for idx, claim in enumerate(claims):
             claim_hash = hashlib.sha256(claim.claim_text.encode("utf-8")).hexdigest()[:24]
             ids.append(f"claim-{claim_hash}")
             docs.append(claim.claim_text)
@@ -107,8 +114,10 @@ class NoveltyStore:
                 "concept": claim.concept,
                 "card_type": claim.card_type,
             }
-            if metadata:
-                row_meta.update(metadata)
+            if shared_metadata:
+                row_meta.update(shared_metadata)
+            if per_claim_metadata and idx < len(per_claim_metadata):
+                row_meta.update(per_claim_metadata[idx])
             metas.append(row_meta)
 
         self._collection.upsert(ids=ids, documents=docs, metadatas=metas, embeddings=embeddings)
@@ -116,7 +125,7 @@ class NoveltyStore:
     def replace_claims(
         self,
         claims: list[ClaimModel],
-        metadata: Mapping[str, str | int | float | bool] | None = None,
+        metadata: Mapping[str, str | int | float | bool] | Sequence[Mapping[str, str | int | float | bool]] | None = None,
     ) -> None:
         """Replace the Chroma collection with the supplied claims.
 

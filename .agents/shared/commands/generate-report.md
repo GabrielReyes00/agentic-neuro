@@ -34,6 +34,7 @@ This file is the public command contract and orchestrator. Detailed post-retriev
 - `.agents/shared/commands/generate-report-synthesis-map.md` — compact-but-dense `report_knowledge_map.json` built from source cards and the coverage ledger.
 - `.agents/shared/commands/generate-report-finalize.md` — write from the synthesis map, run `report_validator.py --coverage-ledger`, update INDEX, concepts, memory, and final user summary.
 - `.agents/shared/commands/concept-extraction.md` — shared concept-card rules for post-write concept extraction.
+- `.agents/shared/commands/vault-intelligence.md` — field-aware retrieval of prior vault sections for crosslinks, discriminators, mental models, and evidence cards.
 
 Do not copy the full `/intraoperative-guide` workflow. Reports need structured coverage control, not mandatory reviewer subagents, operative verdict chains, or attending-question gates. Optional review is appropriate only for unusually large, high-stakes, or controversy-heavy reports.
 
@@ -83,6 +84,14 @@ find "$VAULT/Reports" "$VAULT/Operative Guides" "$VAULT/Study Material" "$VAULT/
 ```
 
 Identify wikilink targets relevant to this topic. Use them as inline references and citations within the prose, and list them in a final `## Related in This Vault` section.
+
+Also query the compiled vault intelligence index for prior field-aware context:
+
+```bash
+python3 src/vault_retriever.py recall "<report topic>" --task report-generation --limit 8
+```
+
+Use retrieved sections to avoid duplicating existing vault work, discover useful concept-card fields, and preserve prior wikilinks. The vault is a personalized context layer, not a substitute for comprehensive report research.
 
 ---
 

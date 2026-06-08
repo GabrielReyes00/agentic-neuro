@@ -2,7 +2,7 @@
 
 Single-purpose contract for the curated cross-session synthesis layer.
 
-The curation layer writes `memory_summaries`, learner `concept_relationships`, and evidence-backed `shadow_rules`. It runs after Anki flush, never before. It is bookkeeping, not a teaching step.
+The curation layer writes `memory_summaries`, learner `concept_relationships`, and evidence-backed `shadow_rules` as rows in `data/study_memory.db`. `study_memory.py` manages the schema and commands; memory is not compressed into Python source files. Curation runs after Anki flush, never before. It is bookkeeping, not a teaching step.
 
 ## Trigger And Ordering
 
@@ -16,21 +16,21 @@ python3 src/study_memory.py end-session \
   --json
 ```
 
-Read the returned `curation.recommended` flag silently and remember it while completing the Anki queue workflow.
+Read the returned `curation.recommended` flag silently and check if any concepts mentioned in active summaries or relationships were successfully answered (`correct=2`) during this session.
 
-Always run Anki review/check/flush after `end-session`. After Anki flush completes, stop if `curation.recommended` is `false`; if it is `true`, continue with the curation steps below.
+Always run Anki review/check/flush after `end-session`. After Anki flush completes, stop if `curation.recommended` is `false` AND no active summaries need to be superseded/escalated; otherwise, continue with the curation and escalation steps below.
 
-## Curation & Maintenance Pass
+## Curation, Escalation & Maintenance Pass
 
-When `curation.recommended` is `true` after `end-session`, run the bookkeeping pass once the Anki flush completes. Curation and routine maintenance fire together from one command, so the identity and telemetry audits cannot silently fall stale.
+When curation is triggered (due to `curation.recommended=true` or to escalate resolved gaps), run the bookkeeping pass once the Anki flush completes. Curation and routine maintenance fire together from one command, so the identity and telemetry audits cannot silently fall stale.
 
 1. Build the candidate packet:
    ```bash
    python3 src/study_memory.py curate-candidates --mode compact --recent-sessions 5 --limit 40
    ```
-   Use `--topic "<slug>"` to narrow when recent sessions cluster on one topic. Use `--mode detailed` only if compact evidence is insufficient. The packet carries a `maintenance` block with `identity_audit` and `telemetry_audit` results, so topic-identity redundancy and telemetry integrity are reviewed in the same pass — no separate audit commands.
+   Use `--topic "<slug>"` to narrow when recent sessions cluster on one topic. Use `--mode detailed` only if compact evidence is insufficient. The packet carries a `maintenance` block with `identity_audit` and `telemetry_audit` results, so topic-identity redundancy and telemetry integrity are reviewed in the same pass.
 
-2. Author an apply payload that obeys the doctrine below. Stamp the packet's `built_at_version` into the payload unchanged.
+2. Author an apply payload that obeys the doctrine below. Mark resolved summaries as superseded and author replacement summaries containing explicit escalation directives for future sessions. Stamp the packet's `built_at_version` into the payload unchanged.
 
 3. If `maintenance.identity_audit` lists `duplicate_topic_candidates`, dry-run the merge to verify safety and row impact:
    ```bash
@@ -56,6 +56,7 @@ The summaries, learner-graph edges, and shadow rules produced here are durable c
 - **Confused-with criterion**: assert `confused_with` only when evidence shows cross-contamination errors or repeated misses on one concept whose corrections name the other.
 - **Prerequisite criterion**: `prerequisite` is directed. `source_concept_id` is the foundation required before `target_concept_id`. Use it only when evidence shows repeated target failure and corrections point to an unmastered upstream concept.
 - **Prefer supersede over duplicate**: use `supersede_summary_ids` for stale or near-duplicate existing summaries rather than writing a parallel summary.
+- **Escalation summary rule**: when superseding a summary due to resolved gaps or demonstrated mastery, write a new active summary with an explicit `Escalation` clause. This instructs future agents on how to probe with higher-level questions, clinical transfer scenarios, or related topics (e.g. *"Gabriel has mastered X. Escalation: test on Y or Z"*).
 - **Shadow-rule criterion**: author a shadow rule only for a coherent false decision rule that can leak across contexts. Bind it to explicit concepts and provide a changed-frame `probe_shape`. Do not recast an isolated miss as a rule.
 - **Per-pass budget**: cap each pass at roughly 5 summaries, 5 relationships, and 3 shadow rules. Narrow by topic instead of flooding.
 - **Strength is required for visibility**: set `strength` on every relationship. Retrieval filters `graph_signals` at `strength >= 0.6`. Use 0.6-0.7 for real, useful confusion or prerequisite edges and 0.8-0.9 for dominant fault lines.

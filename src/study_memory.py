@@ -3275,7 +3275,6 @@ def _compact_doc_review_payload(
     payload: dict[str, object],
     *,
     startup_meta: dict[str, object],
-    full_evidence_command: str,
 ) -> dict[str, object]:
     """Collapse rich learner-model surfaces into a fast doc-review startup brief."""
     brief = payload.get("planning_brief") if isinstance(payload.get("planning_brief"), dict) else {}
@@ -3339,16 +3338,19 @@ def _compact_doc_review_payload(
 
     counts = payload.get("counts", {})
     omitted = payload.get("omitted", {})
+    source_guidance = payload.get("retrieval_guidance", {})
+    deferred_high_signal_counts = (
+        source_guidance.get("omitted_high_signal", {})
+        if isinstance(source_guidance, dict)
+        else {}
+    )
     retrieval_guidance = {
         "scope": "topic",
         "is_truncated": bool(omitted),
-        "omitted_high_signal": (
-            payload.get("retrieval_guidance", {}).get("omitted_high_signal", {})
-            if isinstance(payload.get("retrieval_guidance"), dict)
-            else {}
-        ),
+        "deferred_high_signal_counts": deferred_high_signal_counts,
         "policy": "doc_primary_compact",
-        "full_evidence_command": full_evidence_command,
+        "pre_question_expansion_allowed": False,
+        "expand_when": "only if compact startup is incoherent, routing blocks teaching, or the learner explicitly asks for an audit",
     }
 
     doc_brief = {
@@ -3363,15 +3365,21 @@ def _compact_doc_review_payload(
         "misconception_rules": misconception_rules,
         "contextual_frontier": [compact_frontier(item) for item in contextual_frontier],
         "question_design_bias": compact_bias,
+        "deferred_evidence": {
+            "counts": deferred_high_signal_counts,
+            "teaching_use": "awareness only during startup; do not fetch before the first question",
+        },
         "agent_validation_checkpoint": {
             "required_before_teaching": bool(contextual_frontier),
             "task": "Accept only compact contextual candidates central to the requested document.",
         },
         "fallback": {
-            "when_to_expand": "ambiguous_or_safety_critical",
-            "full_evidence_command": full_evidence_command,
+            "when_to_expand": "blocked_or_explicit_audit_only",
+            "audit_profile_available": True,
         },
     }
+    if isinstance(brief.get("anki_overlay"), dict):
+        doc_brief["anki_overlay"] = brief["anki_overlay"]
     return {
         "startup_recall": startup_meta,
         "planning_brief": doc_brief,
@@ -3442,6 +3450,53 @@ def _startup_recall_command(
     if profile:
         parts.append(f"--profile {profile}")
     return " ".join(parts)
+
+
+def _planning_concepts_for_anki_overlay(brief: dict[str, object]) -> list[str]:
+    concepts: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: object) -> None:
+        text = str(value or "").strip()
+        key = _normalize(text)
+        if text and key and key not in seen:
+            seen.add(key)
+            concepts.append(text)
+
+    for key in (
+        "open_first",
+        "recent_repairs",
+        "known_scaffolds_due",
+        "contextual_frontier",
+        "low_confidence_leads",
+        "teaching_priorities",
+    ):
+        raw = brief.get(key, [])
+        if not isinstance(raw, list):
+            continue
+        for item in raw:
+            if isinstance(item, dict):
+                add(item.get("concept"))
+                add(item.get("topic"))
+    return concepts[:12]
+
+
+def _compact_anki_feedback_status(profile: dict[str, object]) -> dict[str, object]:
+    status = {
+        "status": profile.get("status", "unknown"),
+        "scope": profile.get("scope", ""),
+        "cards_examined": profile.get("cards_examined", 0),
+    }
+    if isinstance(profile.get("macro_counts"), dict):
+        status["macro_counts"] = profile["macro_counts"]
+    if isinstance(profile.get("topic_headlines"), list):
+        status["topic_headline_count"] = len(profile["topic_headlines"])  # type: ignore[arg-type]
+        status["topic_headlines"] = profile["topic_headlines"][:5]  # type: ignore[index]
+    if profile.get("message"):
+        status["message"] = profile.get("message")
+    if profile.get("reason"):
+        status["reason"] = profile.get("reason")
+    return status
 
 
 def _retrieval_guidance(
@@ -3986,10 +4041,38 @@ def startup_recall(
     brief = payload.get("planning_brief", {})
     routing_required = bool(isinstance(brief, dict) and brief.get("resolution_warning"))
     deferred_high_signal = payload.get("retrieval_guidance", {}).get("omitted_high_signal", {})
+    anki_feedback_status: dict[str, object] = {"status": "skipped", "reason": "not evaluated"}
+    if routing_required:
+        anki_feedback_status = {"status": "skipped", "reason": "topic unresolved"}
+    else:
+        try:
+            from anki_feedback import build_session_anki_profile
+
+            anki_profile = build_session_anki_profile(
+                topic=recall_topic or requested_topic,
+                resolved_topic=resolved.slug if resolved else "",
+                doc_path=doc_path,
+                context=context,
+                global_mode=global_mode,
+                profile=effective_profile,
+                planning_concepts=(
+                    _planning_concepts_for_anki_overlay(brief)
+                    if isinstance(brief, dict)
+                    else []
+                ),
+            )
+            if isinstance(anki_profile, dict):
+                anki_feedback_status = _compact_anki_feedback_status(anki_profile)
+                if not global_mode and isinstance(brief, dict):
+                    brief["anki_overlay"] = anki_profile
+        except Exception as e:  # noqa: BLE001 - startup recall must remain available.
+            anki_feedback_status = {"status": "error", "message": str(e)[:200]}
+
     payload["startup_recall"] = {
         "mode": "global" if global_mode else "topic",
         "requested_topic": requested_topic,
         "requested_doc": doc_path,
+        "anki_feedback_status": anki_feedback_status,
         "resolved_topic": resolved.slug if resolved else "",
         "resolver_confidence": resolved.confidence if resolved else None,
         "profile": effective_profile,
@@ -4006,28 +4089,24 @@ def startup_recall(
         "candidate_selection_required": global_mode,
         "routing_required": routing_required,
         "ready_to_teach": not routing_required and not global_mode,
+        "pre_question_expansion_allowed": bool(
+            routing_required or global_mode or effective_profile == "audit"
+        ),
         "next_action": (
             "Select candidate topics from the compact global brief, then run topic-scoped startup-recall for each chosen topic before teaching."
             if global_mode
             else (
                 "Validate a resolution candidate and rerun topic-scoped startup-recall before teaching."
                 if routing_required
-                else "Validate the planning brief and begin the topic-anchored workflow."
+                else "Begin from the planning brief without audit expansion; ask one clinical question with at most one short orientation clause."
             )
         ),
     }
     if effective_profile == "doc":
-        full_evidence_command = _startup_recall_command(
-            topic=recall_topic or requested_topic,
-            doc_path=doc_path,
-            context=context,
-            profile="audit",
-        )
         return _json_dumps(
             _compact_doc_review_payload(
                 payload,
                 startup_meta=payload["startup_recall"],  # type: ignore[arg-type]
-                full_evidence_command=full_evidence_command,
             )
         )
     return _json_dumps(payload)

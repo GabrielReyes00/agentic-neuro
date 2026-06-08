@@ -3,13 +3,13 @@ description = "Socratic review from an existing vault document (Reports/, Study 
 prompt = """
 ACTIVE COMMAND: /study-review
 
-Use `.agents/shared/commands/study-review.md` as the source of truth. Apply `.gemini/commands/study-review.md` only for Gemini-specific runtime constraints.
+Use `.agents/shared/commands/study-review-startup.md` as the source of truth. Apply `.gemini/commands/study-review.md` only for Gemini-specific runtime constraints.
 
 User request: {{args}}
 
 ---
 
-@{.agents/shared/commands/study-review.md}
+@{.agents/shared/commands/study-review-startup.md}
 @{.agents/shared/commands/learning-session-contract.md}
 @{.gemini/commands/study-review.md}
 """

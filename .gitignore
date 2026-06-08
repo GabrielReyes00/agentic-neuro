@@ -8,6 +8,7 @@ neurosurgery_v4.lance/
 data/study_memory.db
 data/study_memory.db-wal
 data/study_memory.db-shm
+data/vault_index.db
 data/chromadb_store_anki_memory/
 data/study_memory_backup_*.db
 data/*.memory_cleanup_backup_*.db
