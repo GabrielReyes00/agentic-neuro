@@ -31,15 +31,22 @@ python3 src/study_memory.py startup-recall --profile doc --topic "<topic>" --doc
 
 Doc review uses the formal lens. Never pass `--lens service`.
 
-4. **Mandatory landscape pass (artifact-anchored sessions).** Before the first question, build the knowledge landscape that borders the document with one bounded, deterministic lookup (vault wikilink graph + ACGME catalog; no embeddings, no LLM, no textbook RAG):
+4. **Mandatory concept-inventory mapping pass.** Before the first question, build the comprehensive knowledge map for the session and project Gabriel's learner state onto it with one bounded, deterministic lookup against the canonical concept inventory (`data/concept_inventory.db`; no embeddings, no LLM, no textbook RAG). The inventory is the stable ~1200-concept neurosurgery domain map; this pass scopes it to the session and maps learner memory onto only that slice — it is never loaded in full.
 
 ```bash
-python3 src/vault_index.py landscape --note "<folder>/<file>.md" --max-neighbors 8
+# Doc/topic review: anchor by the document/topic subject. Pass the learner-memory
+# topic hint(s) you used for startup-recall so memory projects onto the scope.
+python3 src/concept_inventory.py map-learner --query "<doc or topic subject>" --learner-topic "<topic hint>" --budget 80
 ```
 
-Read `neighbors` (each carries `direction`, `edge_type`, `shared_domain`) and `acgme_neighbors`. This is silent bookkeeping that loads neighboring concepts, prerequisites, and competencies into your context so you have somewhere to go when signals appear mid-session: probe or repair a confused neighbor, introduce a needed prerequisite, or extend into an adjacent node when Gabriel shows near-mastery. The neighbors do not have to be surfaced or used — but the pass is not optional. The `landscape` command is a deterministic graph lookup (wikilinks + ACGME), not vault intelligence; semantic/section vault-intelligence recall stays deferred to point-of-need (`study-review-vault-repair.md`).
+If you already know the inventory topic id (from a prior `scope`/`stats`), anchor deterministically with `--topic-id "<code.topic>"` instead of `--query`. Read the result silently:
+- `knowledge_map`: one entry per scoped inventory concept with `exposure_status` (`unexposed`/`exposed_superficial`/`exposed_deep`), `knowledge_state`, `active_misconception`, `safety_critical`, `tier`, `role` (`entry` vs `neighbor_*`), and `matched_learner_concepts`. This is the inventory-grounded version of `comprehensive_schema_map`: unexposed here means "in the domain map but Gabriel has never been tested on it", which is what ORIENT needs.
+- `sequential_teaching_plan`: the deterministic phase/interrupts computed from the projection (same engine as the per-turn policy). When the document has no prior learner concepts, this correctly yields ORIENT over real domain concepts rather than an empty plan.
+- `counts`, `unmatched_learner_concepts`, `learner_status`.
 
-The landscape is a **skeleton, not a ceiling**: vault wikilinks only reach notes Gabriel has already generated, and ACGME entries are coarse. Complete it from your own clinical knowledge of bordering prerequisites and pathology for planning — the graph leads, native knowledge fills it out. See "The Landscape Is A Skeleton, Not A Ceiling" in `adaptive-teaching-doctrine.md`.
+Treat this projection as the authoritative schema map and teaching plan for the session. The `startup-recall` `comprehensive_schema_map` remains the record of what Gabriel has actually been logged against; when the two differ, the inventory projection defines the curriculum breadth (what exists to teach) and the SQLite signals (`open_first`/`teaching_priorities`, due claims) define urgency within it.
+
+The inventory map is a **skeleton, not a ceiling**: it is curated and broad but finite. Complete it from your own clinical knowledge of bordering prerequisites and pathology — the map leads, native knowledge fills it out. See "The Landscape Is A Skeleton, Not A Ceiling" in `adaptive-teaching-doctrine.md`. If the inventory DB is unavailable or the scope is empty, fall back to the document body plus the `startup-recall` schema map and proceed.
 
 ## Non-Document Startup
 
@@ -80,7 +87,7 @@ Read `startup_recall`, `planning_brief`, `counts`, `omitted`, and `retrieval_gui
 - Prioritize SQLite signals first, by profile. In `profile=doc`, the compact brief carries `teaching_priorities` (the ranked blend of open gaps, recent repairs, and stale scaffolds) — there is no separate `open_first` list in doc mode. In `profile=memory`/`audit`, read `open_first`, `recent_repairs`, and `known_scaffolds_due`. In both, requested-document priority holds.
 - Use `planning_brief.anki_overlay` only as an advisory overlay: avoid fresh-card direct quizzes, add lightweight primes, choose transfer scaffolds, or sharpen changed-frame checks. Anki never clears SQLite misconceptions.
 - Validate `contextual_frontier` silently. Accept only 1-3 candidates that are clinically central, scope-compatible, and useful for a prerequisite, discriminator, mechanism, or transfer probe. Reject tangential adjacency.
-- The startup context is the document itself, SQLite recall, the Anki overlay, and the deterministic `landscape` neighbor map. Do not query vault intelligence at startup for the requested document — semantic/section recall stays deferred to point-of-need.
+- The startup context is the document itself, SQLite recall, the Anki overlay, and the deterministic concept-inventory `map-learner` projection. Do not query vault intelligence at startup for the requested document — semantic/section recall stays deferred to point-of-need.
 
 ## First Question
 

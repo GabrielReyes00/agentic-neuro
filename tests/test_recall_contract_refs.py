@@ -328,11 +328,11 @@ class RecallContractReferenceTests(unittest.TestCase):
         self.assertIn("`startup-recall` itself is SQLite learner-state plus optional Anki overlay, not Obsidian vault search", retrieval)
         self.assertIn("do not query the vault at startup for the same document", retrieval)
         self.assertIn("Do not query vault intelligence at startup", startup)
-        # The approved landscape pass is a deterministic graph lookup, distinct
-        # from banned semantic vault recall. Guard both: it must be present and
-        # must not reintroduce semantic recall at startup.
-        self.assertIn("vault_index.py landscape", startup)
-        self.assertIn("deterministic graph lookup", startup)
+        # The approved startup map pass is the deterministic concept-inventory
+        # projection, distinct from banned semantic vault recall. Guard both: it
+        # must be present and must not reintroduce semantic recall at startup.
+        self.assertIn("concept_inventory.py map-learner", startup)
+        self.assertIn("no embeddings, no LLM, no textbook RAG", startup)
         self.assertNotIn("vault_retriever.py", startup)
 
     def test_study_review_contracts_carry_deterministic_policy_invariant(self) -> None:
@@ -539,6 +539,30 @@ class RecallContractReferenceTests(unittest.TestCase):
         # The TOML wrapper must not preload the orchestration index at startup.
         toml = (ROOT / ".gemini/commands/study-review.toml").read_text()
         self.assertNotIn("@{.agents/shared/commands/learning-session-contract.md}", toml)
+
+    def test_concept_inventory_is_wired_into_startup_and_root(self) -> None:
+        startup = (ROOT / ".agents/shared/commands/study-review-startup.md").read_text()
+        root = (ROOT / "AGENTS.md").read_text()
+        # Startup must run the deterministic inventory projection and read its surfaces.
+        for fragment in ("concept_inventory.py map-learner", "knowledge_map",
+                         "sequential_teaching_plan", "skeleton, not a ceiling"):
+            with self.subTest(startup_fragment=fragment):
+                self.assertIn(fragment, startup)
+        # The old vault landscape pass must be gone from startup.
+        self.assertNotIn("vault_index.py landscape", startup)
+        # Root must register the inventory as a separate datastore and its role.
+        for fragment in ("data/concept_inventory.db", "src/concept_inventory.py",
+                         "concept_inventory.py map-learner", "opened read-only"):
+            with self.subTest(root_fragment=fragment):
+                self.assertIn(fragment, root)
+
+    def test_concept_inventory_cli_surface_matches_contract(self) -> None:
+        impl = (ROOT / "src/concept_inventory.py").read_text()
+        for command in ("build", "validate", "stats", "scope", "map-learner"):
+            with self.subTest(command=command):
+                self.assertIn(command, impl)
+        # The mapping pass must open the learner memory DB read-only.
+        self.assertIn("mode=ro", impl)
 
     def test_no_dead_brief_4b_references_in_contracts(self) -> None:
         for relative_path in (

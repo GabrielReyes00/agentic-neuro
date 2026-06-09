@@ -82,6 +82,7 @@ cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && <command>
 - Vault root: `/Users/gabrielreyes/Documents/Obsidian/agentic-neuro`
 - Study memory and service-rotation state: `data/study_memory.db`
 - Vault intelligence section index: `data/vault_index.db`
+- Canonical concept inventory: curated JSON sources in `data/concept_inventory/` compiled into `data/concept_inventory.db` via `src/concept_inventory.py` (auto-rebuilt on source change). This is the stable, comprehensive neurosurgery domain map (~1200 concepts, 11 domains, grown from the ACGME skeleton) onto which learner memory is projected at review startup. It is a separate datastore from `study_memory.db`; never hand-edit the DB, edit the JSON sources and rebuild.
 - Textbook RAG corpus: `neurosurgery_v4.lance`
 - Vault RAG table: `vault_notes` inside the LanceDB directory, separate from the textbook table.
 - Anki overlap cache and session queue: `data/anki_vector_cache.db`, `data/Sessions/anki_queue.jsonl`
@@ -93,6 +94,8 @@ cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && <command>
 The active long-term memory system is the claim-centered learner model at `data/study_memory.db`, accessed only through `src/study_memory.py`; there is no dual-write workflow.
 
 Obsidian vault intelligence is a supplemental context layer, not learner-state memory and not the full neurosurgery knowledge base. Use `.agents/shared/commands/vault-intelligence.md` for field-aware retrieval from `data/vault_index.db` and the dedicated `vault_notes` LanceDB table. Absence from the vault never limits the agent's native clinical knowledge or need for formal verification.
+
+The canonical concept inventory (`src/concept_inventory.py`, `data/concept_inventory.db`) is the stable domain map, not learner state. At `study-review` startup the agent runs `concept_inventory.py map-learner` to scope the inventory to the session and project learner memory onto it, producing the inventory-grounded `comprehensive_schema_map` and `sequential_teaching_plan`. The inventory defines curriculum breadth (what exists to teach, including concepts never seen); `study_memory.db` defines learner state and urgency. The inventory is queried scoped — never loaded in full — and the memory DB is opened read-only by the mapping pass.
 
 Detailed memory mechanics now live in focused modules:
 - Use `.agents/shared/commands/memory-operations.md` for session start, `summary`, `log-answer`, `end-session`, integrity checks, and entry formatting.
