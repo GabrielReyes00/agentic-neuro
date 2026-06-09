@@ -456,6 +456,75 @@ class FlushTests(unittest.TestCase):
         remaining = anki_queue._read_queue(self.queue)
         self.assertEqual(len(remaining), 0)
 
+    def _enqueue_two_distinct(self):
+        anki_queue.enqueue(
+            session="ts", exchange_id=1,
+            deck="Neurosurgery::Vascular::EVD Management",
+            card_type="cloze",
+            cloze="EVD infection risk increases with {{c1::duration and manipulation}}",
+            queue_path=self.queue,
+        )
+        anki_queue.enqueue(
+            session="ts", exchange_id=2,
+            deck="Neurosurgery::Trauma::ICP",
+            card_type="qa",
+            front="What is the ICP treatment threshold in severe TBI?",
+            back="Treat sustained ICP above 22 mmHg.",
+            queue_path=self.queue,
+        )
+
+    @patch.object(anki_queue, "NoveltyStore")
+    @patch.object(anki_queue, "AnkiClient")
+    def test_flush_tags_each_card_with_its_own_claim_id(self, MockClient, MockStore):
+        # claim/<slug> is the join key between Anki review history and the
+        # learner model; every card must carry its OWN claim id, not the last one.
+        self._enqueue_two_distinct()
+        entries = anki_queue._read_queue(self.queue)
+        self.assertEqual(len(entries), 2)
+        expected_slugs = [
+            anki_queue._metadata_slug(e["claim_id"]) for e in entries
+        ]
+        self.assertNotEqual(expected_slugs[0], expected_slugs[1])
+
+        self._mock_no_existing_duplicates(MockStore)
+        mock_client = MockClient.return_value
+        mock_client.check_connection.return_value = (True, "")
+        mock_client.add_card.return_value = AnkiDispatchResult(
+            claim_id="x", card_type="cloze", status="created", note_id=1, error="",
+        )
+
+        anki_queue.flush(queue_path=self.queue)
+
+        dispatched_tags = [call.args[2] for call in mock_client.add_card.call_args_list]
+        self.assertEqual(len(dispatched_tags), 2)
+        for tags, slug in zip(dispatched_tags, expected_slugs):
+            self.assertIn(f"claim/{slug}", tags)
+        # No cross-contamination: card 0 must not carry card 1's claim tag.
+        self.assertNotIn(f"claim/{expected_slugs[1]}", dispatched_tags[0])
+
+    @patch.object(anki_queue, "NoveltyStore")
+    @patch.object(anki_queue, "AnkiClient")
+    def test_flush_retains_failed_cards_for_retry(self, MockClient, MockStore):
+        self._enqueue_two_distinct()
+        self._mock_no_existing_duplicates(MockStore)
+
+        mock_client = MockClient.return_value
+        mock_client.check_connection.return_value = (True, "")
+        mock_client.add_card.side_effect = [
+            AnkiDispatchResult(claim_id="a", card_type="cloze", status="created", note_id=1, error=""),
+            AnkiDispatchResult(claim_id="b", card_type="cloze", status="failed", note_id=None, error="boom"),
+        ]
+
+        result = anki_queue.flush(queue_path=self.queue)
+
+        self.assertEqual(result["created"], 1)
+        self.assertEqual(result["failed"], 1)
+        self.assertEqual(result["retained_failed"], 1)
+        remaining = anki_queue._read_queue(self.queue)
+        self.assertEqual(len(remaining), 1)
+        self.assertEqual(remaining[0]["card_type"], "qa")
+        self.assertIn("ICP treatment threshold", remaining[0]["front"])
+
     @patch.object(anki_queue, "NoveltyStore")
     def test_check_reports_intra_batch_duplicate(self, MockStore):
         anki_queue.enqueue(

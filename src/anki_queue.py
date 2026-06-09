@@ -552,13 +552,16 @@ def flush(
     failed = 0
     decks_touched: set[str] = set()
     errors: list[str] = []
+    failed_entries: list[dict] = []
 
     for draft, entry in zip(drafts, to_flush):
         deck = entry.get("deck", "Neurosurgery::General::Session")
         tags = entry.get("tags", [])
         if isinstance(tags, str):
             tags = [t.strip() for t in tags.split(",") if t.strip()]
-        tags = _dedupe_tags(["Neuro-Agent", "study-review"] + tags + _stable_metadata_tags(entry, cid))
+        # Use this card's own claim_id for stable metadata tags; claim/<slug>
+        # is the join key between Anki review history and the learner model.
+        tags = _dedupe_tags(["Neuro-Agent", "study-review"] + tags + _stable_metadata_tags(entry, draft.claim_id))
 
         try:
             client.ensure_deck(deck)
@@ -570,13 +573,17 @@ def flush(
                 duplicate += 1
             else:
                 failed += 1
+                failed_entries.append(entry)
                 if result.error:
                     errors.append(result.error)
         except Exception as e:
             failed += 1
+            failed_entries.append(entry)
             errors.append(str(e))
 
-    _write_queue(queue_path, remaining)
+    # Cards that failed Anki dispatch stay queued so a later flush can retry them;
+    # only created/duplicate cards leave the queue.
+    _write_queue(queue_path, remaining + failed_entries)
 
     if created > 0 and not dry_run:
         try:
@@ -594,6 +601,7 @@ def flush(
         "duplicate_candidate_count": len(duplicate_candidates),
         "duplicate_gate": "overridden" if duplicate_candidates else "clear",
         "failed": failed,
+        "retained_failed": len(failed_entries),
         "decks_touched": sorted(decks_touched),
     }
     if errors:
