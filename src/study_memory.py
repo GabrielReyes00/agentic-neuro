@@ -484,6 +484,7 @@ CREATE TABLE IF NOT EXISTS policy_events (
     phase TEXT NOT NULL,
     interrupts_json TEXT NOT NULL DEFAULT '{}',
     inputs_json TEXT NOT NULL DEFAULT '{}',
+    plan_json TEXT NOT NULL DEFAULT '{}',
     claim_result_id INTEGER,
     FOREIGN KEY(topic_id) REFERENCES topics(id),
     FOREIGN KEY(claim_result_id) REFERENCES claim_results(id)
@@ -546,6 +547,11 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE concept_relationships ADD COLUMN rationale TEXT NOT NULL DEFAULT ''"
         )
+    # Full teaching-plan snapshot per policy event so the per-turn `policy=` line
+    # can carry target concepts and directives, not just mode/phase/interrupts.
+    policy_cols = {row["name"] for row in conn.execute("PRAGMA table_info(policy_events)")}
+    if "plan_json" not in policy_cols:
+        conn.execute("ALTER TABLE policy_events ADD COLUMN plan_json TEXT NOT NULL DEFAULT '{}'")
     _backfill_memory_schedule(conn)
     _normalize_session_cards(conn)
 
@@ -2112,7 +2118,8 @@ def log_answer(
         if origin == "assessed":
             # Recompute the deterministic teaching policy from the updated
             # learner state and append an auditable per-turn policy event.
-            # Policy logging must never block answer logging.
+            # Policy logging must never block answer logging, but failures
+            # must be surfaced (stderr) instead of silently dropped.
             try:
                 plan = _current_policy_for_topic(conn, topic_id=topic_id, topic_slug=resolution.slug)
                 _record_policy_event(
@@ -2124,8 +2131,8 @@ def log_answer(
                     claim_result_id=result_id,
                     now=now,
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                print(f"WARN policy_event_failed: {exc}", file=sys.stderr)
     if competency_target and service_row:
         # Touching a rubric target during service learning advances it off 'open'.
         conn.execute(
@@ -3260,10 +3267,12 @@ def _build_schema_map(conn: sqlite3.Connection, topic_slug: str) -> list[dict[st
         "SELECT id, display_name, canonical_slug FROM concepts WHERE topic_id = ?",
         (topic_id,),
     ).fetchall()
+    # Formal lens only: service-origin captures are sealed out of the formal
+    # schema map and never drive the deterministic teaching policy.
     attempts_rows = conn.execute(
         """SELECT concept_id, COUNT(*) as cnt, SUM(CASE WHEN score >= 2.0 THEN 1 ELSE 0 END) as success_cnt
            FROM claim_results
-           WHERE topic_id = ?
+           WHERE topic_id = ? AND origin = 'assessed'
            GROUP BY concept_id""",
         (topic_id,),
     ).fetchall()
@@ -3271,7 +3280,7 @@ def _build_schema_map(conn: sqlite3.Connection, topic_slug: str) -> list[dict[st
     state_rows = conn.execute(
         """SELECT concept_id, state, priority, stability, gap_type
            FROM claim_state
-           WHERE topic_id = ?""",
+           WHERE topic_id = ? AND origin = 'assessed'""",
         (topic_id,),
     ).fetchall()
     concept_claims: dict[int, list[dict[str, object]]] = {}
@@ -3455,8 +3464,8 @@ def _record_policy_event(
         return
     conn.execute(
         """INSERT INTO policy_events
-           (session_id, ts, event_type, topic_id, mode, phase, interrupts_json, inputs_json, claim_result_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           (session_id, ts, event_type, topic_id, mode, phase, interrupts_json, inputs_json, plan_json, claim_result_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             session_id,
             now or datetime.now(timezone.utc).isoformat(),
@@ -3466,6 +3475,7 @@ def _record_policy_event(
             str(plan.get("current_phase") or ""),
             _json_dumps(plan.get("interrupts") or {}),
             _json_dumps(plan.get("decision_inputs") or {}),
+            _json_dumps(plan),
             claim_result_id,
         ),
     )
@@ -3669,11 +3679,15 @@ def _planning_brief_for_summary(
     # Build the comprehensive schema map and deterministic teaching policy.
     schema_map: list[dict[str, object]] = []
     teaching_plan: dict[str, object] = {}
+    schema_map_status = "no_topic"
     if conn and session_topic:
         try:
             schema_map = _build_schema_map(conn, session_topic)
-        except Exception:
+            schema_map_status = "ok" if schema_map else "empty_no_learner_concepts"
+        except Exception as exc:
             schema_map = []
+            schema_map_status = f"error: {exc}"
+            print(f"WARN schema_map_failed: {exc}", file=sys.stderr)
     if schema_map:
         teaching_plan = _compute_teaching_policy(
             schema_map,
@@ -3684,6 +3698,7 @@ def _planning_brief_for_summary(
     return {
         "read_first": True,
         "comprehensive_schema_map": schema_map,
+        "schema_map_status": schema_map_status,
         "sequential_teaching_plan": teaching_plan,
         "handoff": {
             "topic": handoffs[0].get("topic"),
@@ -3778,6 +3793,53 @@ def _refine_brief_with_anki(brief: dict[str, object], anki_profile: dict[str, ob
             ):
                 plan["pedagogical_directives"].append(directive)
     brief["sequential_teaching_plan"] = plan
+
+
+SCHEMA_MAP_COMPACT_CAP = 40
+TARGET_CONCEPTS_COMPACT_CAP = 25
+_EXPOSURE_COMPACT_ORDER = {"exposed_superficial": 0, "unexposed": 1, "exposed_deep": 2}
+_STATE_COMPACT_SEVERITY = {
+    "missed": 0,
+    "regressed": 1,
+    "partially_repaired": 2,
+    "repaired_same_session": 3,
+    "untested": 4,
+}
+
+
+def _compact_schema_map(
+    schema_map: list[dict[str, object]],
+    cap: int = SCHEMA_MAP_COMPACT_CAP,
+) -> tuple[list[dict[str, object]], dict[str, object]]:
+    """Cap the emitted schema map deterministically, keeping the highest-signal entries.
+
+    The teaching policy is always computed from the FULL map before this cap is
+    applied; truncation only bounds what the startup payload carries.
+    """
+    if len(schema_map) <= cap:
+        return list(schema_map), {}
+
+    def sort_key(c: dict[str, object]) -> tuple:
+        return (
+            0 if c.get("active_misconception") else 1,
+            0 if c.get("safety_critical") else 1,
+            _STATE_COMPACT_SEVERITY.get(str(c.get("knowledge_state")), 5),
+            _EXPOSURE_COMPACT_ORDER.get(str(c.get("exposure_status")), 3),
+            str(c.get("concept", "")),
+        )
+
+    ranked = sorted(schema_map, key=sort_key)
+    kept = ranked[:cap]
+    omitted = ranked[cap:]
+    breakdown: dict[str, int] = {}
+    for c in omitted:
+        key = str(c.get("exposure_status"))
+        breakdown[key] = breakdown.get(key, 0) + 1
+    return kept, {
+        "count": len(omitted),
+        "by_exposure_status": breakdown,
+        "note": "teaching plan was computed from the full map before truncation",
+    }
 
 
 def _compact_doc_review_payload(
@@ -3893,9 +3955,27 @@ def _compact_doc_review_payload(
             "when_to_expand": "blocked_or_explicit_audit_only",
             "audit_profile_available": True,
         },
-        "comprehensive_schema_map": brief.get("comprehensive_schema_map", []),
-        "sequential_teaching_plan": brief.get("sequential_teaching_plan", {}),
     }
+    raw_schema_map = brief.get("comprehensive_schema_map", [])
+    if not isinstance(raw_schema_map, list):
+        raw_schema_map = []
+    capped_schema_map, schema_map_omitted = _compact_schema_map(raw_schema_map)
+    doc_brief["comprehensive_schema_map"] = capped_schema_map
+    if schema_map_omitted:
+        doc_brief["schema_map_omitted"] = schema_map_omitted
+    if brief.get("schema_map_status"):
+        doc_brief["schema_map_status"] = brief["schema_map_status"]
+    plan = brief.get("sequential_teaching_plan", {})
+    if (
+        isinstance(plan, dict)
+        and isinstance(plan.get("target_concepts"), list)
+        and len(plan["target_concepts"]) > TARGET_CONCEPTS_COMPACT_CAP
+    ):
+        plan = dict(plan)
+        targets = list(plan["target_concepts"])
+        plan["target_concepts"] = targets[:TARGET_CONCEPTS_COMPACT_CAP]
+        plan["target_concepts_omitted"] = len(targets) - TARGET_CONCEPTS_COMPACT_CAP
+    doc_brief["sequential_teaching_plan"] = plan
     if isinstance(brief.get("anki_overlay"), dict):
         doc_brief["anki_overlay"] = brief["anki_overlay"]
     return {
@@ -4609,8 +4689,8 @@ def startup_recall(
                 plan=brief["sequential_teaching_plan"],  # type: ignore[arg-type]
             )
             conn.commit()
-        except Exception:
-            pass
+        except Exception as exc:
+            print(f"WARN policy_event_failed: {exc}", file=sys.stderr)
 
     payload["startup_recall"] = {
         "mode": "global" if global_mode else "topic",
@@ -4889,15 +4969,44 @@ def main() -> None:
             )
             print(f"OK exchange_id={exchange_id}")
             policy_row = conn.execute(
-                """SELECT mode, phase, interrupts_json FROM policy_events
+                """SELECT mode, phase, interrupts_json, plan_json FROM policy_events
                    WHERE session_id = ? ORDER BY id DESC LIMIT 1""",
                 (args.session,),
             ).fetchone()
             if policy_row:
-                print("policy=" + _json_dumps({
+                try:
+                    plan_snapshot = json.loads(policy_row["plan_json"] or "{}")
+                except (ValueError, TypeError):
+                    plan_snapshot = {}
+                policy_payload: dict[str, object] = {
                     "mode": policy_row["mode"],
                     "phase": policy_row["phase"],
                     "interrupts": json.loads(policy_row["interrupts_json"] or "{}"),
+                }
+                # Carry the full plan so each turn is self-sufficient: the agent
+                # does not need to retain the startup brief to obey the policy.
+                for key in (
+                    "target_concepts",
+                    "pedagogical_directives",
+                    "socratic_choice_directives",
+                    "decision_inputs",
+                ):
+                    if key in plan_snapshot:
+                        policy_payload[key] = plan_snapshot[key]
+                targets = policy_payload.get("target_concepts")
+                if isinstance(targets, list) and len(targets) > TARGET_CONCEPTS_COMPACT_CAP:
+                    policy_payload["target_concepts"] = targets[:TARGET_CONCEPTS_COMPACT_CAP]
+                    policy_payload["target_concepts_omitted"] = (
+                        len(targets) - TARGET_CONCEPTS_COMPACT_CAP
+                    )
+                print("policy=" + _json_dumps(policy_payload))
+            elif args.origin == "assessed":
+                # Explicit signal instead of silence: the agent should keep the
+                # current phase and surface the gap rather than guessing.
+                print("policy_status=" + _json_dumps({
+                    "status": "unavailable",
+                    "reason": "no_policy_event_for_session",
+                    "action": "continue current phase; rerun startup-recall if this persists",
                 }))
         elif args.command == "end-session":
             result = end_session(conn, session_id=args.session, summary=args.summary, next_strategy=args.next_strategy, stats_json=args.stats_json)

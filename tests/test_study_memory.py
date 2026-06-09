@@ -3067,5 +3067,224 @@ class ModelOriginatedEdgeTests(unittest.TestCase):
             tmp.cleanup()
 
 
+class SchemaMapOriginFilterTests(unittest.TestCase):
+    """Formal-lens schema map must never count service-origin evidence."""
+
+    def test_schema_map_excludes_service_origin_evidence(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            path = Path(tmp.name) / "m.db"
+            conn = study_memory._get_db(path)
+            t_res = study_memory.TopicResolution("svc-seal-topic", "Svc Seal Topic", "general", (), 1.0)
+            topic_id = study_memory._ensure_topic(conn, t_res)
+            concept_id = conn.execute(
+                "INSERT INTO concepts (topic_id, canonical_slug, display_name) VALUES (?, 'evd-weaning', 'EVD Weaning')",
+                (topic_id,),
+            ).lastrowid
+            # Service-origin evidence only: must not change formal exposure.
+            exchange_id = conn.execute(
+                """INSERT INTO exchanges
+                   (session_id, ts, turn, topic_id, concept_id, raw_question, raw_answer, origin)
+                   VALUES ('svc-session', '2026-01-01T00:00:00+00:00', 1, ?, ?, 'Q', 'A', 'service')""",
+                (topic_id, concept_id),
+            ).lastrowid
+            conn.execute(
+                """INSERT INTO claim_results
+                   (exchange_id, topic_id, concept_id, claim_slug, claim_text, score, origin, created_at)
+                   VALUES (?, ?, ?, 'svc-claim', 'Local EVD weaning convention.', 2, 'service', '2026-01-01T00:00:00+00:00')""",
+                (exchange_id, topic_id, concept_id),
+            )
+            conn.execute(
+                """INSERT INTO claim_state
+                   (topic_id, concept_id, claim_slug, claim_text, state, origin)
+                   VALUES (?, ?, 'svc-claim', 'Local EVD weaning convention.', 'missed', 'service')""",
+                (topic_id, concept_id),
+            )
+            conn.commit()
+
+            schema_map = study_memory._build_schema_map(conn, "svc-seal-topic")
+            self.assertEqual(len(schema_map), 1)
+            self.assertEqual(schema_map[0]["exposure_status"], "unexposed")
+            self.assertEqual(schema_map[0]["knowledge_state"], "untested")
+            self.assertEqual(schema_map[0]["attempts_count"], 0)
+            self.assertFalse(schema_map[0]["active_misconception"])
+
+            # An assessed answer on the same concept is counted normally.
+            study_memory.log_answer(
+                conn, session_id="s-seal", topic="svc-seal-topic", concept="EVD Weaning",
+                question="Q", answer="a", correct=2,
+                tested_claim="Wean EVD by progressive raising before clamp trial.",
+            )
+            schema_map = study_memory._build_schema_map(conn, "svc-seal-topic")
+            entry = next(c for c in schema_map if c["concept"] == "EVD Weaning")
+            self.assertEqual(entry["attempts_count"], 1)
+            self.assertNotEqual(entry["exposure_status"], "unexposed")
+            conn.close()
+        finally:
+            tmp.cleanup()
+
+
+class PolicyEmissionTests(unittest.TestCase):
+    """The per-turn policy surface must be self-sufficient and auditable."""
+
+    def test_policy_event_persists_full_plan_json(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            path = Path(tmp.name) / "m.db"
+            conn = study_memory._get_db(path)
+            study_memory.log_answer(
+                conn, session_id="s-plan", topic="acdf", concept="Dysphagia",
+                question="Q", answer="a", correct=1,
+                tested_claim="Dysphagia is the most common early ACDF complaint.",
+            )
+            row = conn.execute(
+                "SELECT plan_json FROM policy_events WHERE session_id = 's-plan' ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            self.assertIsNotNone(row)
+            plan = json.loads(row["plan_json"])
+            for key in ("current_phase", "mode", "target_concepts",
+                        "pedagogical_directives", "socratic_choice_directives", "interrupts"):
+                self.assertIn(key, plan)
+            conn.close()
+        finally:
+            tmp.cleanup()
+
+    def test_log_answer_cli_prints_self_sufficient_policy_line(self) -> None:
+        import io
+        from contextlib import redirect_stdout
+
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            path = Path(tmp.name) / "m.db"
+            argv = [
+                "study_memory.py", "log-answer",
+                "--session", "s-cli", "--topic", "acdf", "--concept", "Pseudarthrosis",
+                "--question", "Q", "--answer", "a", "--correct", "1",
+                "--tested-claim", "Smoking increases ACDF pseudarthrosis risk.",
+            ]
+            buf = io.StringIO()
+            with patch.object(study_memory, "DB_PATH", path), patch.object(sys, "argv", argv):
+                with redirect_stdout(buf):
+                    study_memory.main()
+            out = buf.getvalue()
+            self.assertIn("OK exchange_id=", out)
+            policy_lines = [l for l in out.splitlines() if l.startswith("policy=")]
+            self.assertEqual(len(policy_lines), 1)
+            policy = json.loads(policy_lines[0][len("policy="):])
+            for key in ("mode", "phase", "interrupts", "target_concepts",
+                        "pedagogical_directives", "socratic_choice_directives", "decision_inputs"):
+                self.assertIn(key, policy)
+        finally:
+            tmp.cleanup()
+
+    def test_plan_json_migration_is_additive_for_legacy_dbs(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            path = Path(tmp.name) / "legacy.db"
+            conn = sqlite3.connect(str(path))
+            conn.execute(
+                """CREATE TABLE policy_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL DEFAULT '',
+                    ts TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    topic_id INTEGER,
+                    mode TEXT NOT NULL,
+                    phase TEXT NOT NULL,
+                    interrupts_json TEXT NOT NULL DEFAULT '{}',
+                    inputs_json TEXT NOT NULL DEFAULT '{}',
+                    claim_result_id INTEGER
+                )"""
+            )
+            conn.execute(
+                "INSERT INTO policy_events (session_id, ts, event_type, mode, phase) "
+                "VALUES ('legacy', '2026-01-01T00:00:00+00:00', 'turn', 'orient', 'phase_1_clear_fog')"
+            )
+            conn.commit()
+            conn.close()
+
+            conn = study_memory._get_db(path)
+            cols = {row["name"] for row in conn.execute("PRAGMA table_info(policy_events)")}
+            self.assertIn("plan_json", cols)
+            legacy = conn.execute(
+                "SELECT plan_json FROM policy_events WHERE session_id = 'legacy'"
+            ).fetchone()
+            self.assertEqual(legacy["plan_json"], "{}")
+            conn.close()
+        finally:
+            tmp.cleanup()
+
+
+class CompactSchemaMapCapTests(unittest.TestCase):
+    """Compact doc startup must bound the emitted schema map deterministically."""
+
+    @staticmethod
+    def _entry(i: int, **overrides: object) -> dict[str, object]:
+        entry: dict[str, object] = {
+            "concept_id": i,
+            "concept": f"Concept {i:03d}",
+            "exposure_status": "exposed_deep",
+            "knowledge_state": "untested",
+            "attempts_count": 3,
+            "sqlite_success_rate": 1.0,
+            "safety_critical": False,
+            "active_misconception": False,
+        }
+        entry.update(overrides)
+        return entry
+
+    def test_compact_schema_map_keeps_high_signal_entries_first(self) -> None:
+        schema_map = [self._entry(i) for i in range(60)]
+        schema_map[57] = self._entry(57, active_misconception=True, knowledge_state="missed")
+        schema_map[58] = self._entry(58, safety_critical=True)
+        schema_map[59] = self._entry(59, exposure_status="exposed_superficial")
+
+        kept, omitted = study_memory._compact_schema_map(schema_map, cap=40)
+        self.assertEqual(len(kept), 40)
+        kept_ids = {c["concept_id"] for c in kept}
+        self.assertIn(57, kept_ids)
+        self.assertIn(58, kept_ids)
+        self.assertIn(59, kept_ids)
+        self.assertEqual(omitted["count"], 20)
+        self.assertEqual(sum(omitted["by_exposure_status"].values()), 20)
+        # Deterministic across runs.
+        kept2, _ = study_memory._compact_schema_map(schema_map, cap=40)
+        self.assertEqual([c["concept_id"] for c in kept], [c["concept_id"] for c in kept2])
+
+    def test_compact_schema_map_passthrough_below_cap(self) -> None:
+        schema_map = [self._entry(i) for i in range(5)]
+        kept, omitted = study_memory._compact_schema_map(schema_map, cap=40)
+        self.assertEqual(len(kept), 5)
+        self.assertEqual(omitted, {})
+
+    def test_compact_doc_payload_caps_schema_map_and_targets(self) -> None:
+        schema_map = [self._entry(i, exposure_status="unexposed") for i in range(60)]
+        plan = study_memory._compute_teaching_policy(schema_map)
+        payload = {
+            "planning_brief": {
+                "comprehensive_schema_map": schema_map,
+                "schema_map_status": "ok",
+                "sequential_teaching_plan": plan,
+                "handoff": {},
+            },
+            "counts": {},
+            "omitted": {},
+            "retrieval_guidance": {},
+        }
+        compact = study_memory._compact_doc_review_payload(payload, startup_meta={})
+        brief = compact["planning_brief"]
+        self.assertLessEqual(len(brief["comprehensive_schema_map"]), study_memory.SCHEMA_MAP_COMPACT_CAP)
+        self.assertEqual(brief["schema_map_omitted"]["count"], 60 - study_memory.SCHEMA_MAP_COMPACT_CAP)
+        self.assertEqual(brief["schema_map_status"], "ok")
+        capped_plan = brief["sequential_teaching_plan"]
+        self.assertLessEqual(len(capped_plan["target_concepts"]), study_memory.TARGET_CONCEPTS_COMPACT_CAP)
+        self.assertEqual(
+            capped_plan["target_concepts_omitted"],
+            60 - study_memory.TARGET_CONCEPTS_COMPACT_CAP,
+        )
+        # Phase was computed from the full map and is untouched by truncation.
+        self.assertEqual(capped_plan["current_phase"], "phase_1_clear_fog")
+
+
 if __name__ == "__main__":
     unittest.main()
