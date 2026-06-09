@@ -21,7 +21,7 @@ from anki_sync.novelty import NoveltyStore
 from anki_sync.schemas import CardDraft, ClaimModel
 
 QUEUE_PATH = Path("data/Sessions/anki_queue.jsonl")
-CHROMADB_PATH = "data/chromadb_store_anki_memory"
+CHROMADB_PATH = "data/anki_vector_cache.db"
 ANKI_URL = "http://localhost:8765"
 EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
 NOVELTY_THRESHOLD = 0.70

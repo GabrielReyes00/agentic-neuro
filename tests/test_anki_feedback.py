@@ -217,6 +217,8 @@ def test_build_session_anki_profile_is_topic_scoped_and_bounded():
     }
 
     def fake_invoke(action, **params):
+        if action == "multi":
+            return [fake_invoke(act["action"], **act.get("params", {})) for act in params["actions"]]
         if action == "version":
             return 6
         if action == "findCards":
@@ -449,7 +451,7 @@ def test_global_session_anki_profile_returns_headlines_not_concepts():
 
 @mock.patch("src.anki_feedback.invoke")
 def test_build_session_anki_profile_offline(mock_invoke):
-    mock_invoke.side_effect = RuntimeError("Connection refused")
+    mock_invoke.side_effect = ConnectionError("Connection refused")
     result = build_session_anki_profile("Spine Emergencies")
     assert result["status"] == "offline"
     assert "offline" in result["message"]

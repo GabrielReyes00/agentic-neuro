@@ -63,7 +63,7 @@ class RecallContractReferenceTests(unittest.TestCase):
             "avoid_direct_quiz",
             "concept_rollup",
             "macro_counts",
-            "Chroma semantic candidates",
+            "SQLite vector cache semantic candidates",
             "Strong semantic hits",
             "Generic words",
             "SQLite precedence",

@@ -20,7 +20,7 @@ from anki_sync.novelty import NoveltyStore
 from anki_sync.schemas import ClaimModel
 
 ANKI_URL = "http://localhost:8765"
-CHROMADB_PATH = "data/chromadb_store_anki_memory"
+CHROMADB_PATH = "data/anki_vector_cache.db"
 COLLECTION_NAME = "anki_claim_memory"
 EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
 DEFAULT_QUERY = "deck:Neurosurgery*"
@@ -222,7 +222,7 @@ def main(argv: list[str] | None = None) -> int:
     p_export.add_argument("--query", default=DEFAULT_QUERY)
     p_export.add_argument("--output", type=Path, default=None)
 
-    p_rebuild = sub.add_parser("rebuild-chroma")
+    p_rebuild = sub.add_parser("rebuild-cache", aliases=["rebuild-chroma"])
     p_rebuild.add_argument("--query", default=DEFAULT_QUERY)
     p_rebuild.add_argument("--dry-run", action="store_true")
 
@@ -239,7 +239,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "export":
         export(args.query, args.output)
         return 0
-    if args.command == "rebuild-chroma":
+    if args.command in ("rebuild-cache", "rebuild-chroma"):
         rebuild_chroma(args.query, args.dry_run)
         return 0
     if args.command == "update-note":

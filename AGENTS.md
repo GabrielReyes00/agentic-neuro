@@ -19,7 +19,7 @@ Key shared contracts:
 - `.agents/shared/commands/adaptive-teaching-doctrine.md` — tutor voice, teaching modes, cognitive friction, field-to-teaching-move mapping, repair/retest logic, and repetition avoidance.
 - `.agents/shared/commands/anki-session-workflow.md` — per-answer Anki decisions, queue review/check/flush.
 - `.agents/shared/commands/anki-card-quality.md` — short card-quality, cloze, deck taxonomy, and duplicate-judgment rules for all Anki creation/review.
-- `.agents/shared/commands/anki-deck-maintenance.md` — separate live Anki deck rewrite/reorganization workflow; Anki is ground truth and Chroma is rebuilt from Anki.
+- `.agents/shared/commands/anki-deck-maintenance.md` — separate live Anki deck rewrite/reorganization workflow; Anki is ground truth and the SQLite vector cache is rebuilt from Anki.
 - `.agents/shared/commands/concept-extraction.md` — shared post-write concept-card rules for artifact-generating workflows.
 - `.agents/shared/commands/study-review-startup.md` — active `/study-review` startup entrypoint; load before the first question.
 - `.agents/shared/commands/study-review-turn.md` — per-answer grading, memory logging, Anki enqueue, and next-question behavior.
@@ -85,7 +85,7 @@ cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && <command>
 - Vault intelligence section index: `data/vault_index.db`
 - Textbook RAG corpus: `neurosurgery_v4.lance`
 - Vault RAG table: `vault_notes` inside the LanceDB directory, separate from the textbook table.
-- Anki overlap cache and session queue: `data/chromadb_store_anki_memory`, `data/Sessions/anki_queue.jsonl`
+- Anki overlap cache and session queue: `data/anki_vector_cache.db`, `data/Sessions/anki_queue.jsonl`
 - ACGME catalog: `data/acgme_curriculum.json`
 - Generated dashboards (`Dashboard.md`, `ACGME Readiness.md`, ACGME canvases) are read-only outputs; regenerate from tools, never hand-edit.
 
@@ -128,7 +128,7 @@ Explicit or obvious workflow trigger:
 Anki: card creation is inline in every learning skill via `anki_queue.py enqueue/check/flush` and follows `.agents/shared/commands/anki-session-workflow.md` plus `.agents/shared/commands/anki-card-quality.md`. There is no separate Anki runtime skill.
 No cards are created during initial `brain-dump` capture. Cards from evaluated Brain Dump Socratic review route to `Neurosurgery::Brain Dumps` with `brain-dump` provenance tags unless they are site-local service conventions, which use service-learning routing.
 
-Current-deck cleanup, card rewriting, taxonomy reorganization, and Chroma rebuilds use the separate `.agents/shared/commands/anki-deck-maintenance.md` workflow. Do not let Chroma suppress cards as ground truth; rebuild it from live Anki after approved deck edits.
+Current-deck cleanup, card rewriting, taxonomy reorganization, and vector cache rebuilds use the separate `.agents/shared/commands/anki-deck-maintenance.md` workflow. Do not let the vector cache suppress cards as ground truth; rebuild it from live Anki after approved deck edits.
 
 Persona-shaped sessions (intern-style firefight, oral-board staged cases, ward consult drills) run inside `study-review`'s memory-driven mode -- the agent adjusts question shape and tone based on what the learner asks for. The reference topic bank at `Reference/Oral Boards Topic Bank.md` in the vault is a curated pool for board-style case selection.
 

@@ -4,7 +4,7 @@ Single-purpose contract for Anki card generation, queue validation, and session 
 
 Card quality, cloze policy, deck taxonomy, and duplicate judgment are governed by `.agents/shared/commands/anki-card-quality.md`. Read that file before drafting or validating queued cards.
 
-Live deck rewrites, taxonomy cleanup, and Chroma rebuilds are governed by `.agents/shared/commands/anki-deck-maintenance.md`, not by this routine session workflow.
+Live deck rewrites, taxonomy cleanup, and vector cache rebuilds are governed by `.agents/shared/commands/anki-deck-maintenance.md`, not by this routine session workflow.
 
 ## Per-Answer Card Decision
 

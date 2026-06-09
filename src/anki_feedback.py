@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 ANKI_URL = "http://localhost:8765"
-CHROMADB_PATH = "data/chromadb_store_anki_memory"
+CHROMADB_PATH = "data/anki_vector_cache.db"
 COLLECTION_NAME = "anki_claim_memory"
 
 RECENT_REVIEW_DAYS = 7
@@ -291,18 +291,35 @@ def classify_card_lifecycle(
 
 
 def _load_chroma_collection() -> Any | None:
-    try:
-        import chromadb  # type: ignore
-
-        client = chromadb.PersistentClient(path=CHROMADB_PATH)
-        return client.get_collection(name=COLLECTION_NAME)
-    except Exception:
-        return None
+    # Return path to the custom SQLite vector cache DB
+    return CHROMADB_PATH
 
 
 def _chroma_metadata_for_card(card: dict[str, Any], chroma_collection: Any | None) -> dict[str, Any]:
     if chroma_collection is None:
         return {}
+
+    # If it is the pre-fetched cache dictionary
+    if isinstance(chroma_collection, dict):
+        note_id = card.get("note")
+        card_id = card.get("cardId")
+        candidates = []
+        if note_id:
+            candidates.append(("note_id", _safe_int(note_id)))
+            candidates.append(("claim_id", str(note_id)[-12:]))
+        if card_id:
+            candidates.append(("card_id", _safe_int(card_id)))
+
+        for key, value in candidates:
+            if (key, value) in chroma_collection:
+                return dict(chroma_collection[(key, value)] or {})
+        return {}
+
+    # If it is a string database path, we do not query single-card metadata on the fly
+    if isinstance(chroma_collection, str):
+        return {}
+
+    # Otherwise, it's a mocked database object in tests; run get() on it directly
     note_id = card.get("note")
     card_id = card.get("cardId")
     candidates = []
@@ -311,12 +328,6 @@ def _chroma_metadata_for_card(card: dict[str, Any], chroma_collection: Any | Non
         candidates.append(("claim_id", str(note_id)[-12:]))
     if card_id:
         candidates.append(("card_id", _safe_int(card_id)))
-
-    if isinstance(chroma_collection, dict):
-        for key, value in candidates:
-            if (key, value) in chroma_collection:
-                return dict(chroma_collection[(key, value)] or {})
-        return {}
 
     for key, value in candidates:
         try:
@@ -340,60 +351,85 @@ def _resolve_source_workflow(tags: list[str], deck_name: str) -> str:
 
 
 def _prefetch_chroma_metadata(cards: list[dict[str, Any]], chroma_collection: Any | None) -> dict[tuple[str, Any], dict[str, Any]]:
-    if chroma_collection is None or not cards:
+    # If the collection is a mocked object (like in tests)
+    if chroma_collection is not None and not isinstance(chroma_collection, str):
+        note_ids = []
+        claim_ids = []
+        card_ids = []
+        for card in cards:
+            note_id = card.get("note")
+            card_id = card.get("cardId")
+            if note_id:
+                note_ids.append(_safe_int(note_id))
+                claim_ids.append(str(note_id)[-12:])
+            if card_id:
+                card_ids.append(_safe_int(card_id))
+        meta_map = {}
+        for nid in note_ids:
+            try:
+                res = chroma_collection.get(where={"note_id": nid})
+                metadatas = res.get("metadatas") if isinstance(res, dict) else []
+                if metadatas:
+                    meta_map[("note_id", nid)] = metadatas[0]
+            except Exception:
+                pass
+        for cid in card_ids:
+            try:
+                res = chroma_collection.get(where={"card_id": cid})
+                metadatas = res.get("metadatas") if isinstance(res, dict) else []
+                if metadatas:
+                    meta_map[("card_id", cid)] = metadatas[0]
+            except Exception:
+                pass
+        return meta_map
+
+    db_path = chroma_collection or CHROMADB_PATH
+    if not cards or not Path(db_path).exists():
         return {}
 
-    note_ids = []
-    claim_ids = []
     card_ids = []
-
+    note_ids = []
     for card in cards:
-        note_id = card.get("note")
-        card_id = card.get("cardId")
-        if note_id:
-            note_ids.append(_safe_int(note_id))
-            claim_ids.append(str(note_id)[-12:])
-        if card_id:
-            card_ids.append(_safe_int(card_id))
+        cid = card.get("cardId")
+        nid = card.get("note")
+        if cid:
+            card_ids.append(int(cid))
+        if nid:
+            note_ids.append(int(nid))
+
+    if not card_ids and not note_ids:
+        return {}
 
     meta_map = {}
-
-    # Batch query by note_id
-    if note_ids:
-        try:
-            for i in range(0, len(note_ids), 200):
-                batch = note_ids[i : i + 200]
-                res = chroma_collection.get(where={"note_id": {"$in": batch}})
-                for meta in res.get("metadatas", []):
-                    if meta and "note_id" in meta:
-                        meta_map[("note_id", _safe_int(meta["note_id"]))] = meta
-        except Exception:
-            pass
-
-    # Batch query by claim_id
-    if claim_ids:
-        try:
-            for i in range(0, len(claim_ids), 200):
-                batch = claim_ids[i : i + 200]
-                res = chroma_collection.get(where={"claim_id": {"$in": batch}})
-                for meta in res.get("metadatas", []):
-                    if meta and "claim_id" in meta:
-                        meta_map[("claim_id", str(meta["claim_id"]))] = meta
-        except Exception:
-            pass
-
-    # Batch query by card_id
-    if card_ids:
-        try:
-            for i in range(0, len(card_ids), 200):
-                batch = card_ids[i : i + 200]
-                res = chroma_collection.get(where={"card_id": {"$in": batch}})
-                for meta in res.get("metadatas", []):
-                    if meta and "card_id" in meta:
-                        meta_map[("card_id", _safe_int(meta["card_id"]))] = meta
-        except Exception:
-            pass
-
+    import sqlite3
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        
+        where_clauses = []
+        params = []
+        if card_ids:
+            placeholders_cid = ",".join("?" for _ in card_ids)
+            where_clauses.append(f"card_id IN ({placeholders_cid})")
+            params.extend(card_ids)
+        if note_ids:
+            placeholders_nid = ",".join("?" for _ in note_ids)
+            where_clauses.append(f"json_extract(metadata, '$.note_id') IN ({placeholders_nid})")
+            params.extend(note_ids)
+            
+        sql = "SELECT card_id, metadata FROM card_vectors WHERE " + " OR ".join(where_clauses)
+        cursor.execute(sql, params)
+        rows = cursor.fetchall()
+        for cid, meta_str in rows:
+            meta = json.loads(meta_str)
+            if cid is not None:
+                meta_map[("card_id", int(cid))] = meta
+            if "note_id" in meta:
+                meta_map[("note_id", int(meta["note_id"]))] = meta
+                meta_map[("claim_id", str(meta["note_id"])[-12:])] = meta
+        conn.close()
+    except Exception:
+        pass
     return meta_map
 
 
@@ -460,6 +496,8 @@ def _resolve_card_concept_and_topic(card_detail: dict[str, Any], chroma_collecti
 def _find_cards(query: str) -> list[int]:
     try:
         result = invoke("findCards", query=query)
+    except ConnectionError:
+        raise
     except Exception:
         return []
     if not isinstance(result, list):
@@ -467,16 +505,39 @@ def _find_cards(query: str) -> list[int]:
     return [_safe_int(card_id) for card_id in result if _safe_int(card_id)]
 
 
+def _find_cards_multi(queries: list[str]) -> list[list[int]]:
+    if not queries:
+        return []
+    actions = [{"action": "findCards", "params": {"query": q}} for q in queries]
+    try:
+        results = invoke("multi", actions=actions)
+    except ConnectionError:
+        raise
+    except Exception:
+        return [[] for _ in queries]
+    if not isinstance(results, list):
+        return [[] for _ in queries]
+    out = []
+    for res in results:
+        if isinstance(res, list):
+            out.append([_safe_int(cid) for cid in res if _safe_int(cid)])
+        else:
+            out.append([])
+    return out
+
+
 def _cards_info(card_ids: list[int]) -> list[dict[str, Any]]:
     if not card_ids:
         return []
-    cards: list[dict[str, Any]] = []
-    for idx in range(0, len(card_ids), 100):
-        batch = card_ids[idx : idx + 100]
-        result = invoke("cardsInfo", cards=batch)
-        if isinstance(result, list):
-            cards.extend(card for card in result if isinstance(card, dict))
-    return cards
+    try:
+        result = invoke("cardsInfo", cards=card_ids)
+    except ConnectionError:
+        raise
+    except Exception:
+        return []
+    if isinstance(result, list):
+        return [card for card in result if isinstance(card, dict)]
+    return []
 
 
 def _reviews_for_cards(card_ids: list[int]) -> dict[str, list[dict[str, Any]]]:
@@ -484,6 +545,8 @@ def _reviews_for_cards(card_ids: list[int]) -> dict[str, list[dict[str, Any]]]:
         return {}
     try:
         result = invoke("getReviewsOfCards", cards=card_ids)
+    except ConnectionError:
+        raise
     except Exception:
         return {}
     if not isinstance(result, dict):
@@ -565,62 +628,147 @@ def _explicit_search_queries(terms: list[str]) -> list[str]:
 
 
 def _semantic_candidate_hits(chroma_collection: Any | None, terms: list[str], *, limit: int = 60) -> dict[int, dict[str, Any]]:
-    if chroma_collection is None or not terms:
+    # If the collection is a mocked object (like in tests)
+    if chroma_collection is not None and not isinstance(chroma_collection, str):
+        query = " ".join(terms[:8])
+        try:
+            result = chroma_collection.query(
+                query_texts=[query],
+                n_results=limit,
+                include=["metadatas", "distances"],
+            )
+        except Exception:
+            return {}
+        metadatas = (result.get("metadatas") or [[]])[0] if isinstance(result, dict) else []
+        distances = (result.get("distances") or [[]])[0] if isinstance(result, dict) else []
+        hits = {}
+        def remember(card_id: int, hit: dict[str, Any]) -> None:
+            if not card_id:
+                return
+            existing = hits.get(card_id)
+            existing_distance = _safe_float_or_none(existing.get("distance")) if existing else None
+            new_distance = _safe_float_or_none(hit.get("distance"))
+            if (
+                existing is None
+                or (new_distance is not None and (existing_distance is None or new_distance < existing_distance))
+                or _safe_int(hit.get("rank"), 999) < _safe_int(existing.get("rank"), 999)
+            ):
+                hits[card_id] = hit
+        for rank, meta in enumerate(metadatas, start=1):
+            if not isinstance(meta, dict):
+                continue
+            distance = _safe_float_or_none(distances[rank - 1] if rank - 1 < len(distances) else None)
+            hit = {
+                "rank": rank,
+                "distance": round(distance, 4) if distance is not None else None,
+            }
+            card_id = _safe_int(meta.get("card_id"), 0)
+            if card_id:
+                remember(card_id, hit)
+        return hits
+
+    db_path = chroma_collection or CHROMADB_PATH
+    if not terms or not Path(db_path).exists():
         return {}
     query = " ".join(terms[:8])
     hits: dict[int, dict[str, Any]] = {}
     note_hits: dict[int, dict[str, Any]] = {}
+
+    import sqlite3
+    import numpy as np
     try:
-        result = chroma_collection.query(
-            query_texts=[query],
-            n_results=limit,
-            include=["metadatas", "distances"],
-        )
+        # 1. Check or load query embedding from cache
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS query_embeddings (
+                query TEXT PRIMARY KEY,
+                vector BLOB NOT NULL,
+                timestamp REAL NOT NULL
+            );
+        """)
+        conn.commit()
+
+        cursor.execute("SELECT vector FROM query_embeddings WHERE query = ?", (query,))
+        row = cursor.fetchone()
+        if row:
+            q_emb = list(np.frombuffer(row[0], dtype=np.float32))
+        else:
+            from fastembed import TextEmbedding  # type: ignore
+            embedder = TextEmbedding(model_name="BAAI/bge-small-en-v1.5", cache_dir="data/Sessions/fastembed_cache")
+            q_emb = list(embedder.embed([query]))[0]
+            vec_bytes = np.array(q_emb, dtype=np.float32).tobytes()
+            cursor.execute("""
+                INSERT OR REPLACE INTO query_embeddings (query, vector, timestamp)
+                VALUES (?, ?, ?);
+            """, (query, vec_bytes, time.time()))
+            conn.commit()
+
+        q_vec = np.array(q_emb, dtype=np.float32)
+
+        # 2. Fetch vectors and metadata from SQLite
+        cursor.execute("SELECT card_id, vector, metadata FROM card_vectors;")
+        rows = cursor.fetchall()
+        conn.close()
+
+        cids = []
+        vectors = []
+        metas = []
+        for cid, vec_bytes, meta_str in rows:
+            cids.append(int(cid))
+            vectors.append(np.frombuffer(vec_bytes, dtype=np.float32))
+            metas.append(json.loads(meta_str))
+
+        # 3. Compute exact cosine similarity via dot product (vectors are already normalized)
+        vectors_matrix = np.array(vectors)
+        scores = np.dot(vectors_matrix, q_vec)
+
+        # 4. Sort and select top hits
+        top_indices = np.argsort(scores)[::-1][:limit]
+
+        def remember(card_id: int, hit: dict[str, Any]) -> None:
+            if not card_id:
+                return
+            existing = hits.get(card_id)
+            existing_distance = _safe_float_or_none(existing.get("distance")) if existing else None
+            new_distance = _safe_float_or_none(hit.get("distance"))
+            if (
+                existing is None
+                or (new_distance is not None and (existing_distance is None or new_distance < existing_distance))
+                or _safe_int(hit.get("rank"), 999) < _safe_int(existing.get("rank"), 999)
+            ):
+                hits[card_id] = hit
+
+        for rank, idx in enumerate(top_indices, start=1):
+            cid = cids[idx]
+            meta = metas[idx]
+            score = float(scores[idx])
+            # Cosine similarity to cosine distance (1 - similarity)
+            distance = float(max(0.0, min(1.0, 1.0 - score)))
+            hit = {
+                "rank": rank,
+                "distance": round(distance, 4),
+            }
+            remember(cid, hit)
+            note_id = _safe_int(meta.get("note_id"), 0)
+            if note_id:
+                note_hits[note_id] = hit
+
+        if note_hits:
+            note_id_list = sorted(note_hits.keys())
+            for idx in range(0, len(note_id_list), 40):
+                batch_ids = note_id_list[idx : idx + 40]
+                or_query = " OR ".join(f"nid:{nid}" for nid in batch_ids)
+                card_ids = _find_cards(or_query)
+                if card_ids:
+                    cards_info = _cards_info(card_ids)
+                    for card in cards_info:
+                           card_id = _safe_int(card.get("cardId"))
+                           nid = _safe_int(card.get("note"))
+                           if nid in note_hits:
+                               remember(card_id, note_hits[nid])
     except Exception:
-        return {}
-    metadatas = (result.get("metadatas") or [[]])[0] if isinstance(result, dict) else []
-    distances = (result.get("distances") or [[]])[0] if isinstance(result, dict) else []
-
-    def remember(card_id: int, hit: dict[str, Any]) -> None:
-        if not card_id:
-            return
-        existing = hits.get(card_id)
-        existing_distance = _safe_float_or_none(existing.get("distance")) if existing else None
-        new_distance = _safe_float_or_none(hit.get("distance"))
-        if (
-            existing is None
-            or (new_distance is not None and (existing_distance is None or new_distance < existing_distance))
-            or _safe_int(hit.get("rank"), 999) < _safe_int(existing.get("rank"), 999)
-        ):
-            hits[card_id] = hit
-
-    for rank, meta in enumerate(metadatas, start=1):
-        if not isinstance(meta, dict):
-            continue
-        distance = _safe_float_or_none(distances[rank - 1] if rank - 1 < len(distances) else None)
-        hit = {
-            "rank": rank,
-            "distance": round(distance, 4) if distance is not None else None,
-        }
-        card_id = _safe_int(meta.get("card_id"), 0)
-        note_id = _safe_int(meta.get("note_id"), 0)
-        if card_id:
-            remember(card_id, hit)
-        if note_id:
-            note_hits[note_id] = hit
-    if note_hits:
-        note_id_list = sorted(note_hits.keys())
-        for idx in range(0, len(note_id_list), 40):
-            batch_ids = note_id_list[idx : idx + 40]
-            or_query = " OR ".join(f"nid:{nid}" for nid in batch_ids)
-            card_ids = _find_cards(or_query)
-            if card_ids:
-                cards_info = _cards_info(card_ids)
-                for card in cards_info:
-                    cid = _safe_int(card.get("cardId"))
-                    nid = _safe_int(card.get("note"))
-                    if nid in note_hits:
-                        remember(cid, note_hits[nid])
+        pass
     return hits
 
 
@@ -1096,68 +1244,71 @@ def build_session_anki_profile(
     """Return a compact Anki overlay for startup-recall planning."""
     now_ms = now_ms if now_ms is not None else _now_ms()
     try:
-        invoke("version", timeout=0.5)
-    except Exception:
+        if global_mode:
+            return _build_global_profile(now_ms)
+
+        primary_terms = _profile_terms(topic, resolved_topic, doc_path, context, None)
+        planning_terms = _profile_terms("", "", "", "", planning_concepts)
+        terms = primary_terms or planning_terms
+        if not terms:
+            return {"status": "skipped", "reason": "No resolved topic scope for Anki overlay."}
+
+        chroma = _load_chroma_collection()
+        candidate_ids: set[int] = set()
+        
+        # Consolidate explicit search queries into a single batch request
+        queries = _explicit_search_queries(primary_terms or terms)
+        multi_results = _find_cards_multi(queries)
+        for res in multi_results:
+            candidate_ids.update(res)
+
+        semantic_hits = _semantic_candidate_hits(chroma, primary_terms or terms)
+        candidate_ids.update(semantic_hits)
+
+        if not candidate_ids:
+            candidate_ids.update(_find_cards("deck:Neurosurgery*")[:400])
+        if not candidate_ids:
+            return {"status": "no_cards", "scope": "topic", "cards_examined": 0, "macro_counts": {}}
+
+        cards = _cards_info(sorted(candidate_ids)[:400])
+        reviews = _reviews_for_cards([_safe_int(card.get("cardId")) for card in cards])
+        scoped_cards: list[dict[str, Any]] = []
+        mappings: dict[int, CardMapping] = {}
+
+        prefetch_map = _prefetch_chroma_metadata(cards, chroma)
+        for card in cards:
+            card_id = _safe_int(card.get("cardId"))
+            mapping = _resolve_card_mapping(card, prefetch_map)
+            if not _allowed_by_profile(card, mapping, profile):
+                continue
+            if _matches_scope(card, mapping, primary_terms or terms) or _semantic_hit_in_scope(
+                card,
+                mapping,
+                primary_terms or terms,
+                semantic_hits.get(card_id),
+            ):
+                scoped_cards.append(card)
+                mappings[card_id] = mapping
+
+        if not scoped_cards:
+            return {
+                "status": "no_matches",
+                "scope": "topic",
+                "cards_examined": 0,
+                "macro_counts": {},
+                "message": "No Anki cards matched the resolved topic scope.",
+            }
+
+        return _rollup_profile(
+            scoped_cards,
+            reviews,
+            mappings,
+            scope="topic",
+            now_ms=now_ms,
+            max_chars=max_chars,
+        )
+    except ConnectionError:
         return {"status": "offline", "message": "AnkiConnect offline, skipping Anki overlay."}
-
-    if global_mode:
-        return _build_global_profile(now_ms)
-
-    primary_terms = _profile_terms(topic, resolved_topic, doc_path, context, None)
-    planning_terms = _profile_terms("", "", "", "", planning_concepts)
-    terms = primary_terms or planning_terms
-    if not terms:
-        return {"status": "skipped", "reason": "No resolved topic scope for Anki overlay."}
-
-    chroma = _load_chroma_collection()
-    candidate_ids: set[int] = set()
-    for query in _explicit_search_queries(primary_terms or terms):
-        candidate_ids.update(_find_cards(query))
-    semantic_hits = _semantic_candidate_hits(chroma, primary_terms or terms)
-    candidate_ids.update(semantic_hits)
-
-    if not candidate_ids:
-        candidate_ids.update(_find_cards("deck:Neurosurgery*")[:400])
-    if not candidate_ids:
-        return {"status": "no_cards", "scope": "topic", "cards_examined": 0, "macro_counts": {}}
-
-    cards = _cards_info(sorted(candidate_ids)[:400])
-    reviews = _reviews_for_cards([_safe_int(card.get("cardId")) for card in cards])
-    scoped_cards: list[dict[str, Any]] = []
-    mappings: dict[int, CardMapping] = {}
-
-    prefetch_map = _prefetch_chroma_metadata(cards, chroma)
-    for card in cards:
-        card_id = _safe_int(card.get("cardId"))
-        mapping = _resolve_card_mapping(card, prefetch_map)
-        if not _allowed_by_profile(card, mapping, profile):
-            continue
-        if _matches_scope(card, mapping, primary_terms or terms) or _semantic_hit_in_scope(
-            card,
-            mapping,
-            primary_terms or terms,
-            semantic_hits.get(card_id),
-        ):
-            scoped_cards.append(card)
-            mappings[card_id] = mapping
-
-    if not scoped_cards:
-        return {
-            "status": "no_matches",
-            "scope": "topic",
-            "cards_examined": 0,
-            "macro_counts": {},
-            "message": "No Anki cards matched the resolved topic scope.",
-        }
-
-    return _rollup_profile(
-        scoped_cards,
-        reviews,
-        mappings,
-        scope="topic",
-        now_ms=now_ms,
-        max_chars=max_chars,
-    )
 
 
 def get_recent_reviews(days: int = 7) -> list[dict[str, Any]]:

@@ -137,7 +137,7 @@ Quick-answer entries normally do not appear as `cards` because they do not creat
 
 `planning_brief.anki_overlay` is a compact live-Anki advisory surface for the resolved topic or document scope. If it is absent, offline, unresolved, `no_matches`, or only present as `startup_recall.anki_feedback_status`, proceed from SQLite and normal document/topic context.
 
-Scoping uses explicit deck/tag/phrase matches plus Chroma semantic candidates from the Anki cache. Strong semantic hits may contribute even when the card lacks a literal topic token; weak or generic hits need a real scope anchor. Generic words such as "emergency", "acute", or "management" never define scope by themselves.
+Scoping uses explicit deck/tag/phrase matches plus SQLite vector cache semantic candidates from the Anki cache. Strong semantic hits may contribute even when the card lacks a literal topic token; weak or generic hits need a real scope anchor. Generic words such as "emergency", "acute", or "management" never define scope by themselves.
 
 - `atomic_focus`: exact card facts with fragile review state such as `active_lapse`, `leech`, `shaky_success`, or central `mature_stale`. After `open_first`, `recent_repairs`, and urgent `due_claims`, use these to sharpen changed-frame probes or Socratic repairs.
 - `atomic_scaffolds`: exact stable or recent-success facts. Use them as transfer premises, not first-order recall targets.

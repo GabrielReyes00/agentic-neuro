@@ -111,7 +111,7 @@ Normal learning sessions have two agent checkpoints:
 1. Drafting before `anki_queue.py enqueue`.
 2. Queue review after `anki_queue.py review` and mandatory `check`, before `flush`.
 
-Live deck cleanup is separate and follows `.agents/shared/commands/anki-deck-maintenance.md`. In that workflow, preserve review history by updating notes and moving cards in place; rebuild Chroma only after live Anki is clean. Do not rely on deck maintenance to clean duplicates created by routine sessions.
+Live deck cleanup is separate and follows `.agents/shared/commands/anki-deck-maintenance.md`. In that workflow, preserve review history by updating notes and moving cards in place; rebuild the SQLite vector cache only after live Anki is clean. Do not rely on deck maintenance to clean duplicates created by routine sessions.
 
 ## Final Pre-Flush Checklist
 
