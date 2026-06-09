@@ -2711,7 +2711,7 @@ class CurationLayerTests(unittest.TestCase):
         finally:
             conn.close()
 
-    def test_comprehensive_schema_map_and_sequential_teaching_plan(self) -> None:
+    def test_knowledge_map_and_sequential_teaching_plan(self) -> None:
         conn = self._conn()
         try:
             # Seed topic and concepts
@@ -2734,10 +2734,10 @@ class CurationLayerTests(unittest.TestCase):
             brief = res["planning_brief"]
             
             # Assert schema map exists
-            self.assertIn("comprehensive_schema_map", brief)
+            self.assertIn("knowledge_map", brief)
             self.assertIn("sequential_teaching_plan", brief)
             
-            schema_map = brief["comprehensive_schema_map"]
+            schema_map = brief["knowledge_map"]
             self.assertEqual(len(schema_map), 2)
             
             # Since no attempts are seeded, exposure should be unexposed
@@ -2780,7 +2780,7 @@ class CurationLayerTests(unittest.TestCase):
             res_str = study_memory.retrieval_summary(conn, topic="test-map-topic", include_model=True)
             res = json.loads(res_str)
             brief = res["planning_brief"]
-            schema_map = brief["comprehensive_schema_map"]
+            schema_map = brief["knowledge_map"]
             
             # Find Concept One in the new map
             c1_entry = next(c for c in schema_map if c["concept"] == "Concept One")
@@ -2800,7 +2800,7 @@ class CurationLayerTests(unittest.TestCase):
             
             # Test refinement with Anki
             brief_refined = {
-                "comprehensive_schema_map": schema_map,
+                "knowledge_map": schema_map,
                 "sequential_teaching_plan": plan
             }
             # Concept Two has Anki reviews -> upgrade to deep
@@ -2818,7 +2818,7 @@ class CurationLayerTests(unittest.TestCase):
             }
             study_memory._refine_brief_with_anki(brief_refined, fake_anki_profile)
             
-            refined_map = brief_refined["comprehensive_schema_map"]
+            refined_map = brief_refined["knowledge_map"]
             c2_refined = next(c for c in refined_map if c["concept"] == "Concept Two")
             self.assertEqual(c2_refined["exposure_status"], "exposed_deep")
             self.assertEqual(c2_refined["anki_reviews_count"], 5)
@@ -2956,7 +2956,7 @@ class AnkiAdvisoryOnlyTests(unittest.TestCase):
             before_snapshot = [tuple(r) for r in before]
 
             brief = {
-                "comprehensive_schema_map": [{
+                "knowledge_map": [{
                     "concept": "Dysphagia", "concept_id": 1, "exposure_status": "exposed_superficial",
                     "knowledge_state": "partially_repaired", "anki_reviews_count": 0, "anki_success_rate": 0.0,
                 }],
@@ -2969,7 +2969,7 @@ class AnkiAdvisoryOnlyTests(unittest.TestCase):
                 {"concept": "Dysphagia", "reviews_count": 12, "success_rate": 1.0},
             ]})
             # The advisory overlay upgraded the brief's exposure view...
-            self.assertEqual(brief["comprehensive_schema_map"][0]["anki_reviews_count"], 12)
+            self.assertEqual(brief["knowledge_map"][0]["anki_reviews_count"], 12)
             # ...but claim_state rows are byte-for-byte unchanged.
             after = conn.execute(
                 "SELECT id, state, priority, stability, difficulty, next_due_ts FROM claim_state"
@@ -3262,8 +3262,8 @@ class CompactSchemaMapCapTests(unittest.TestCase):
         plan = study_memory._compute_teaching_policy(schema_map)
         payload = {
             "planning_brief": {
-                "comprehensive_schema_map": schema_map,
-                "schema_map_status": "ok",
+                "knowledge_map": schema_map,
+                "knowledge_map_status": "ok",
                 "sequential_teaching_plan": plan,
                 "handoff": {},
             },
@@ -3273,9 +3273,9 @@ class CompactSchemaMapCapTests(unittest.TestCase):
         }
         compact = study_memory._compact_doc_review_payload(payload, startup_meta={})
         brief = compact["planning_brief"]
-        self.assertLessEqual(len(brief["comprehensive_schema_map"]), study_memory.SCHEMA_MAP_COMPACT_CAP)
-        self.assertEqual(brief["schema_map_omitted"]["count"], 60 - study_memory.SCHEMA_MAP_COMPACT_CAP)
-        self.assertEqual(brief["schema_map_status"], "ok")
+        self.assertLessEqual(len(brief["knowledge_map"]), study_memory.SCHEMA_MAP_COMPACT_CAP)
+        self.assertEqual(brief["knowledge_map_omitted"]["count"], 60 - study_memory.SCHEMA_MAP_COMPACT_CAP)
+        self.assertEqual(brief["knowledge_map_status"], "ok")
         capped_plan = brief["sequential_teaching_plan"]
         self.assertLessEqual(len(capped_plan["target_concepts"]), study_memory.TARGET_CONCEPTS_COMPACT_CAP)
         self.assertEqual(

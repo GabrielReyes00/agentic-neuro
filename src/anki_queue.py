@@ -208,12 +208,15 @@ def _stable_metadata_tags(entry: dict, claim_id: str) -> list[str]:
     topic_slug = _metadata_slug(entry.get("topic"))
     concept_slug = _metadata_slug(entry.get("concept"))
     claim_slug = _metadata_slug(claim_id)
+    inv_id = str(entry.get("inventory_concept_id") or "").strip()
     if topic_slug:
         tags.append(f"topic/{topic_slug}")
     if concept_slug:
         tags.append(f"concept/{concept_slug}")
     if claim_slug:
         tags.append(f"claim/{claim_slug}")
+    if inv_id:
+        tags.append(f"inv/{inv_id}")
     return tags
 
 
@@ -265,6 +268,7 @@ def enqueue(
     tags: str = "",
     topic: str = "",
     concept: str = "",
+    inventory_concept_id: str = "",
     queue_path: Path = QUEUE_PATH,
 ) -> bool:
     text = cloze if card_type == "cloze" else front
@@ -300,6 +304,7 @@ def enqueue(
         "claim_id": cid,
         "topic": topic,
         "concept": concept,
+        "inventory_concept_id": inventory_concept_id.strip(),
         "tags": [t.strip() for t in tags.split(",") if t.strip()] if tags else [],
     }
     if card_type == "cloze":
@@ -629,6 +634,7 @@ def main(argv: list[str] | None = None) -> int:
     p_enq.add_argument("--tags", default="")
     p_enq.add_argument("--topic", default="")
     p_enq.add_argument("--concept", default="")
+    p_enq.add_argument("--inventory-concept-id", default="")
 
     p_rev = sub.add_parser("review")
     p_rev.add_argument("--session", default=None)
@@ -665,6 +671,7 @@ def main(argv: list[str] | None = None) -> int:
             tags=args.tags,
             topic=args.topic,
             concept=args.concept,
+            inventory_concept_id=args.inventory_concept_id,
         )
         return 0 if ok else 1
 

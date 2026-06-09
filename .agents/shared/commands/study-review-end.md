@@ -21,7 +21,9 @@ python3 src/study_memory.py end-session \
   --json
 ```
 
-`--next-strategy` must be actionable. Name the concept, gap, and next move. Do not write generic handoffs like "continue reviewing."
+`--next-strategy` must be actionable and inventory-ID-aware when possible (e.g. `vas.vasospasm_threshold`). Name the concept, gap, and next move. Do not write generic handoffs like "continue reviewing."
+
+`--stats-json` may carry audit coverage (`session_progress`, `priority_inventory_ids`, `phase_at_close`); startup recall does not pull this — it is for dashboards and audits only. The session knowledge map file is deleted automatically by `end-session`.
 
 Read the JSON silently and remember `curation.recommended`.
 

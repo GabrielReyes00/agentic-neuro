@@ -331,8 +331,9 @@ class RecallContractReferenceTests(unittest.TestCase):
         # The approved startup map pass is the deterministic concept-inventory
         # projection, distinct from banned semantic vault recall. Guard both: it
         # must be present and must not reintroduce semantic recall at startup.
-        self.assertIn("concept_inventory.py map-learner", startup)
-        self.assertIn("no embeddings, no LLM, no textbook RAG", startup)
+        self.assertIn("startup-recall", startup)
+        self.assertIn("--session", startup)
+        self.assertIn("knowledge_map", startup)
         self.assertNotIn("vault_retriever.py", startup)
 
     def test_study_review_contracts_carry_deterministic_policy_invariant(self) -> None:
@@ -341,11 +342,12 @@ class RecallContractReferenceTests(unittest.TestCase):
         doctrine = (ROOT / ".agents/shared/commands/adaptive-teaching-doctrine.md").read_text()
         # The mode/phase is deterministic and the five named modes plus the two
         # interrupts must be addressable from the contracts.
-        for fragment in ("comprehensive_schema_map", "sequential_teaching_plan",
+        for fragment in ("knowledge_map", "sequential_teaching_plan",
                          "ORIENT", "DEEPEN", "CONNECT", "interrupts.remediate", "interrupts.consolidate"):
             with self.subTest(startup_fragment=fragment):
                 self.assertIn(fragment, startup)
         self.assertIn("policy=", turn)
+        self.assertIn("inventory-concept-id", turn)
         for fragment in ("ORIENT", "DEEPEN", "CONNECT", "REMEDIATE", "CONSOLIDATE",
                          "never pick the macro phase yourself", "interrupts"):
             with self.subTest(doctrine_fragment=fragment):
@@ -355,7 +357,7 @@ class RecallContractReferenceTests(unittest.TestCase):
         self.assertIn("model_proposed", doctrine)
         # The interpretation contract must document the new planning_brief surfaces.
         retrieval = (ROOT / ".agents/shared/commands/memory-retrieval.md").read_text()
-        for fragment in ("comprehensive_schema_map", "sequential_teaching_plan",
+        for fragment in ("knowledge_map", "sequential_teaching_plan",
                          "interrupts.remediate", "interrupts.consolidate", "exposure_status"):
             with self.subTest(retrieval_policy_fragment=fragment):
                 self.assertIn(fragment, retrieval)
@@ -495,7 +497,7 @@ class RecallContractReferenceTests(unittest.TestCase):
         retrieval = (ROOT / ".agents/shared/commands/memory-retrieval.md").read_text()
         for text, label in ((doctrine, "doctrine"), (startup, "startup"), (retrieval, "retrieval")):
             with self.subTest(contract=label):
-                self.assertIn("empty_no_learner_concepts", text)
+                self.assertIn("empty_no_inventory_scope", text)
         self.assertIn("ORIENT by definition", doctrine)
         self.assertIn("ORIENT by definition", startup)
 
@@ -506,7 +508,7 @@ class RecallContractReferenceTests(unittest.TestCase):
         # Doc-mode startup must name the compact brief's real field.
         self.assertIn("teaching_priorities", startup)
         self.assertIn("there is no separate `open_first` list in doc mode", startup)
-        for field in ("teaching_priorities", "schema_map_status", "schema_map_omitted",
+        for field in ("teaching_priorities", "knowledge_map_status", "knowledge_map_omitted",
                       "target_concepts_omitted", "socratic_choice_directives"):
             with self.subTest(field=field):
                 self.assertIn(field, retrieval)
@@ -544,7 +546,7 @@ class RecallContractReferenceTests(unittest.TestCase):
         startup = (ROOT / ".agents/shared/commands/study-review-startup.md").read_text()
         root = (ROOT / "AGENTS.md").read_text()
         # Startup must run the deterministic inventory projection and read its surfaces.
-        for fragment in ("concept_inventory.py map-learner", "knowledge_map",
+        for fragment in ("startup-recall", "knowledge_map",
                          "sequential_teaching_plan", "skeleton, not a ceiling"):
             with self.subTest(startup_fragment=fragment):
                 self.assertIn(fragment, startup)
@@ -552,7 +554,7 @@ class RecallContractReferenceTests(unittest.TestCase):
         self.assertNotIn("vault_index.py landscape", startup)
         # Root must register the inventory as a separate datastore and its role.
         for fragment in ("data/concept_inventory.db", "src/concept_inventory.py",
-                         "concept_inventory.py map-learner", "opened read-only"):
+                         "startup-recall --session", "knowledge_map"):
             with self.subTest(root_fragment=fragment):
                 self.assertIn(fragment, root)
 

@@ -215,6 +215,17 @@ class EnqueueTests(unittest.TestCase):
             ],
         )
 
+    def test_stable_metadata_tags_include_inventory_concept_id(self):
+        tags = anki_queue._stable_metadata_tags(
+            {
+                "topic": "Vasospasm",
+                "concept": "Vasospasm Threshold",
+                "inventory_concept_id": "vas.vasospasm_threshold",
+            },
+            "def456",
+        )
+        self.assertIn("inv/vas.vasospasm_threshold", tags)
+
 
 class AnkiClientFormattingTests(unittest.TestCase):
     def test_cloze_add_note_does_not_write_back_extra(self):

@@ -6,7 +6,7 @@ Lean startup contract for `/study-review`. Use this file before the first learne
 
 Startup is silent. Do not narrate contract loading, document lookup/read, `startup-recall`, Anki status, or timestamp setup. If startup succeeds, the first learner-facing message is one clinical question, with at most one short orientation clause. Do not quote `handoff.summary`, list prior-session topics, or explain why memory chose the opening.
 
-Set one `SESSION_TS` at the first learner-facing question and reuse it for all later logging, Anki, and session-end commands:
+Set one `SESSION_TS` before startup recall (invisible bookkeeping) and reuse it for all logging, Anki, and session-end commands:
 
 ```bash
 SESSION_TS=$(date -u +%Y-%m-%dT%H:%M:%S+00:00)
@@ -26,34 +26,27 @@ SESSION_TS=$(date -u +%Y-%m-%dT%H:%M:%S+00:00)
 3. Once the relative doc path is known, run the document read and startup recall in the same tool turn when possible:
 
 ```bash
-python3 src/study_memory.py startup-recall --profile doc --topic "<topic>" --doc "<folder>/<file>.md"
+python3 src/study_memory.py startup-recall --profile doc --topic "<topic>" --doc "<folder>/<file>.md" --session "$SESSION_TS"
 ```
 
 Doc review uses the formal lens. Never pass `--lens service`.
 
-4. **Mandatory concept-inventory mapping pass.** Before the first question, build the comprehensive knowledge map for the session and project Gabriel's learner state onto it with one bounded, deterministic lookup against the canonical concept inventory (`data/concept_inventory.db`; no embeddings, no LLM, no textbook RAG). The inventory is the stable ~1200-concept neurosurgery domain map; this pass scopes it to the session and maps learner memory onto only that slice — it is never loaded in full.
+`startup-recall` internally runs the concept-inventory projection (scoped subgraph from `data/concept_inventory.db`; no embeddings, no LLM, no textbook RAG) and writes the live session map to `data/Sessions/knowledge_map_<SESSION_TS>.json` for per-turn patching. Read `planning_brief` silently:
+- **`knowledge_map`**: one entry per scoped inventory concept with inventory `concept_id`, `exposure_status` (`unexposed`/`exposed_superficial`/`exposed_deep`), `knowledge_state`, `active_misconception`, `safety_critical`, `tier`, `role` (`entry` vs `neighbor_*`), and `matched_learner_concepts`. Unexposed here means "in the domain map but Gabriel has never been tested on it" — what ORIENT needs.
+- **`sequential_teaching_plan`**: deterministic phase/interrupts from the inventory-grounded map plus SQLite urgency signals.
+- **`teaching_priorities`** / **`open_first`**: SQLite learner-state urgency layered on top of the map.
+- **`inventory_unmatched_learner_concepts`**: legacy learner concepts without inventory IDs yet; retry matching when they resurface.
 
-```bash
-# Doc/topic review: anchor by the document/topic subject. Pass the learner-memory
-# topic hint(s) you used for startup-recall so memory projects onto the scope.
-python3 src/concept_inventory.py map-learner --query "<doc or topic subject>" --learner-topic "<topic hint>" --budget 80
-```
+**Artifact Priority (doc-anchored):** the requested document is the primary curriculum. Teach from the artifact body first. Borrow from the knowledge map only for prerequisite gaps, misconception repair, phase-boundary choices, or transfer after artifact material is substantially covered. The map informs context; it does not pull teaching off-artifact.
 
-If you already know the inventory topic id (from a prior `scope`/`stats`), anchor deterministically with `--topic-id "<code.topic>"` instead of `--query`. Read the result silently:
-- `knowledge_map`: one entry per scoped inventory concept with `exposure_status` (`unexposed`/`exposed_superficial`/`exposed_deep`), `knowledge_state`, `active_misconception`, `safety_critical`, `tier`, `role` (`entry` vs `neighbor_*`), and `matched_learner_concepts`. This is the inventory-grounded version of `comprehensive_schema_map`: unexposed here means "in the domain map but Gabriel has never been tested on it", which is what ORIENT needs.
-- `sequential_teaching_plan`: the deterministic phase/interrupts computed from the projection (same engine as the per-turn policy). When the document has no prior learner concepts, this correctly yields ORIENT over real domain concepts rather than an empty plan.
-- `counts`, `unmatched_learner_concepts`, `learner_status`.
-
-Treat this projection as the authoritative schema map and teaching plan for the session. The `startup-recall` `comprehensive_schema_map` remains the record of what Gabriel has actually been logged against; when the two differ, the inventory projection defines the curriculum breadth (what exists to teach) and the SQLite signals (`open_first`/`teaching_priorities`, due claims) define urgency within it.
-
-The inventory map is a **skeleton, not a ceiling**: it is curated and broad but finite. Complete it from your own clinical knowledge of bordering prerequisites and pathology — the map leads, native knowledge fills it out. See "The Landscape Is A Skeleton, Not A Ceiling" in `adaptive-teaching-doctrine.md`. If the inventory DB is unavailable or the scope is empty, fall back to the document body plus the `startup-recall` schema map and proceed.
+The inventory map is a **skeleton, not a ceiling**. If the inventory DB is unavailable, fall back to the document body plus SQLite recall signals and proceed.
 
 ## Non-Document Startup
 
 Topic-only review:
 
 ```bash
-python3 src/study_memory.py startup-recall --topic "<topic>" --lens general
+python3 src/study_memory.py startup-recall --topic "<topic>" --lens general --session "$SESSION_TS"
 ```
 
 Memory-driven review:
@@ -79,7 +72,7 @@ Read `startup_recall`, `planning_brief`, `counts`, `omitted`, and `retrieval_gui
 - If `routing_required=true`, validate a returned candidate and rerun topic/doc recall. Clarify only if still ambiguous.
 - If `ready_to_teach=true` and `pre_question_expansion_allowed=false`, do not run audit expansion before the first question.
 - Use `handoff.next_action` privately to choose the first probe **within** the plan's current phase and interrupts; if the handoff conflicts with the plan, the plan and interrupts win (see "Signal Precedence" in `adaptive-teaching-doctrine.md`). Treat `handoff.summary` as audit context only.
-- **Pedagogical Policy Invariant**: Read `planning_brief.comprehensive_schema_map` and obey `planning_brief.sequential_teaching_plan`. The `mode`/`current_phase` is deterministic — never override it. See `.agents/shared/commands/adaptive-teaching-doctrine.md` for the full mode/interrupt contract. In `profile=doc` the emitted schema map is capped (`schema_map_omitted` reports what was truncated) and `target_concepts` may carry `target_concepts_omitted`; the policy was computed from the full map before truncation, so trust the phase. If `sequential_teaching_plan` is `{}` or `schema_map_status` is `empty_no_learner_concepts` (first review of this topic), the session is ORIENT by definition — everything in the document is unexposed.
+- **Pedagogical Policy Invariant**: Read `planning_brief.knowledge_map` and obey `planning_brief.sequential_teaching_plan`. The `mode`/`current_phase` is deterministic — never override it. See `.agents/shared/commands/adaptive-teaching-doctrine.md` for the full mode/interrupt contract. In `profile=doc` the emitted map is capped (`knowledge_map_omitted` reports what was truncated) and `target_concepts` may carry `target_concepts_omitted`; the policy was computed from the full map before truncation, so trust the phase. If `sequential_teaching_plan` is `{}` or `knowledge_map_status` is `empty_no_inventory_scope`, the session is ORIENT by definition.
   - **ORIENT** (`phase_1_clear_fog`): open with a superficial introduction to the listed unexposed concepts plus one concrete exemplar; present a "lay of the land" menu at boundaries.
   - **DEEPEN** (`phase_2_recalibrate_gaps`): drill active gaps/superficial concepts; prioritize prerequisites and address confused semantic competitors.
   - **CONNECT** (`phase_3_force_connections`): test synthesis/transfer across two or more already-seen concepts.
@@ -87,7 +80,7 @@ Read `startup_recall`, `planning_brief`, `counts`, `omitted`, and `retrieval_gui
 - Prioritize SQLite signals first, by profile. In `profile=doc`, the compact brief carries `teaching_priorities` (the ranked blend of open gaps, recent repairs, and stale scaffolds) — there is no separate `open_first` list in doc mode. In `profile=memory`/`audit`, read `open_first`, `recent_repairs`, and `known_scaffolds_due`. In both, requested-document priority holds.
 - Use `planning_brief.anki_overlay` only as an advisory overlay: avoid fresh-card direct quizzes, add lightweight primes, choose transfer scaffolds, or sharpen changed-frame checks. Anki never clears SQLite misconceptions.
 - Validate `contextual_frontier` silently. Accept only 1-3 candidates that are clinically central, scope-compatible, and useful for a prerequisite, discriminator, mechanism, or transfer probe. Reject tangential adjacency.
-- The startup context is the document itself, SQLite recall, the Anki overlay, and the deterministic concept-inventory `map-learner` projection. Do not query vault intelligence at startup for the requested document — semantic/section recall stays deferred to point-of-need.
+- The startup context is the document itself, SQLite recall, the Anki overlay, and the inventory-grounded `knowledge_map` inside `planning_brief`. Do not query vault intelligence at startup for the requested document — semantic/section recall stays deferred to point-of-need.
 
 ## First Question
 

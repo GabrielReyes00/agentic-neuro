@@ -149,6 +149,7 @@ CREATE TABLE IF NOT EXISTS concepts (
     topic_id INTEGER NOT NULL,
     canonical_slug TEXT NOT NULL,
     display_name TEXT NOT NULL,
+    inventory_concept_id TEXT,
     created_at TEXT NOT NULL DEFAULT '',
     UNIQUE(topic_id, canonical_slug),
     FOREIGN KEY(topic_id) REFERENCES topics(id)
@@ -226,6 +227,7 @@ CREATE TABLE IF NOT EXISTS claim_results (
     created_at TEXT NOT NULL DEFAULT '',
     origin TEXT NOT NULL DEFAULT 'assessed',
     rotation_id INTEGER,
+    inventory_concept_id TEXT,
     FOREIGN KEY(exchange_id) REFERENCES exchanges(id),
     FOREIGN KEY(topic_id) REFERENCES topics(id),
     FOREIGN KEY(concept_id) REFERENCES concepts(id)
@@ -552,6 +554,13 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     policy_cols = {row["name"] for row in conn.execute("PRAGMA table_info(policy_events)")}
     if "plan_json" not in policy_cols:
         conn.execute("ALTER TABLE policy_events ADD COLUMN plan_json TEXT NOT NULL DEFAULT '{}'")
+    for table in ("claim_results", "concepts"):
+        cols = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if "inventory_concept_id" not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN inventory_concept_id TEXT")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_memory_concepts_inventory ON concepts(inventory_concept_id)"
+    )
     _backfill_memory_schedule(conn)
     _normalize_session_cards(conn)
 
@@ -1708,6 +1717,7 @@ def _log_claim_result(
     service_slug: str = "",
     site_slug: str = "",
     convention: bool = False,
+    inventory_concept_id: str = "",
 ) -> int:
     claim_text = _derive_claim(concept=concept, tested_claim=tested_claim, corrected_rule=corrected_rule, correction=correction)
     claim_slug = _slug(claim_text)
@@ -1768,8 +1778,8 @@ def _log_claim_result(
            (exchange_id, topic_id, concept_id, claim_slug, claim_text, score, gap_type,
             learner_claim, missing_edge, corrected_rule, clinical_consequence,
             retest_prompt_shape, learning_operation, agent_signal_json, created_at,
-            origin, rotation_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            origin, rotation_id, inventory_concept_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             exchange_id,
             topic_id,
@@ -1788,6 +1798,7 @@ def _log_claim_result(
             now,
             origin,
             rotation_id,
+            inventory_concept_id or None,
         ),
     )
     result_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
@@ -2001,7 +2012,24 @@ def log_answer(
     competency_target: str = "",
     convention: bool = False,
     brain_dump_candidate_id: int | None = None,
+    inventory_concept_id: str = "",
 ) -> int:
+    if skill == "study-review" and origin == "assessed" and not inventory_concept_id:
+        try:
+            from session_map import bootstrap_session_map, lexical_match_inventory_id, load as load_session_map  # noqa: PLC0415
+            smap = load_session_map(session_id) or bootstrap_session_map(
+                conn, session_id=session_id, topic=topic, doc_path=doc_path, skill=skill,
+            )
+            if smap:
+                matched, _ = lexical_match_inventory_id(concept, smap)
+                if matched:
+                    inventory_concept_id = matched
+                    print(
+                        f"WARN inventory_concept_id inferred={matched}; pass --inventory-concept-id explicitly",
+                        file=sys.stderr,
+                    )
+        except Exception:
+            pass
     if strict_telemetry:
         _validate_strict_telemetry(
             concept=concept,
@@ -2104,7 +2132,20 @@ def log_answer(
             service_slug=service_slug,
             site_slug=site_slug,
             convention=convention,
+            inventory_concept_id=inventory_concept_id,
         )
+        if inventory_concept_id:
+            promote_inventory_binding = None
+            try:
+                from session_map import promote_inventory_binding  # noqa: PLC0415
+            except ImportError:
+                promote_inventory_binding = None
+            if promote_inventory_binding:
+                promote_inventory_binding(
+                    conn,
+                    learner_concept_id=concept_id,
+                    inventory_concept_id=inventory_concept_id,
+                )
         if brain_dump_candidate_id is not None or doc_path.startswith("Brain Dumps/"):
             _mark_brain_dump_candidate_reviewed(
                 conn,
@@ -2116,12 +2157,22 @@ def log_answer(
                 now=now,
             )
         if origin == "assessed":
-            # Recompute the deterministic teaching policy from the updated
-            # learner state and append an auditable per-turn policy event.
-            # Policy logging must never block answer logging, but failures
-            # must be surfaced (stderr) instead of silently dropped.
+            # Recompute policy from the session knowledge map when available.
             try:
-                plan = _current_policy_for_topic(conn, topic_id=topic_id, topic_slug=resolution.slug)
+                plan, progress = _policy_after_log_answer(
+                    conn,
+                    session_id=session_id,
+                    topic_id=topic_id,
+                    topic_slug=resolution.slug,
+                    doc_path=doc_path,
+                    skill=skill,
+                    inventory_concept_id=inventory_concept_id,
+                    concept=concept,
+                    correct=correct,
+                    exchange_id=exchange_id,
+                    coverage_role=coverage_role,
+                    learner_concept_id=concept_id,
+                )
                 _record_policy_event(
                     conn,
                     session_id=session_id,
@@ -2131,6 +2182,8 @@ def log_answer(
                     claim_result_id=result_id,
                     now=now,
                 )
+                if progress:
+                    print("session_progress=" + _json_dumps(progress))
             except Exception as exc:
                 print(f"WARN policy_event_failed: {exc}", file=sys.stderr)
     if competency_target and service_row:
@@ -2145,6 +2198,23 @@ def log_answer(
 
 
 def end_session(conn: sqlite3.Connection, *, session_id: str, summary: str, next_strategy: str, ended: str | None = None, stats_json: str = "{}") -> dict[str, object]:
+    try:
+        from session_map import delete as delete_session_map, load as load_session_map, session_progress  # noqa: PLC0415
+        smap = load_session_map(session_id)
+        if smap:
+            try:
+                audit = json.loads(stats_json) if stats_json.strip() else {}
+            except (ValueError, TypeError):
+                audit = {}
+            if not isinstance(audit, dict):
+                audit = {}
+            audit.setdefault("session_progress", session_progress(smap))
+            if smap.get("scope"):
+                audit.setdefault("inventory_scope", smap["scope"])
+            stats_json = _json_dumps(audit)
+        delete_session_map(session_id)
+    except Exception as exc:
+        print(f"WARN session_map_cleanup_failed: {exc}", file=sys.stderr)
     now = ended or datetime.now(timezone.utc).isoformat()
     conn.execute(
         """INSERT OR IGNORE INTO sessions
@@ -3497,6 +3567,110 @@ def _current_policy_for_topic(
     return _compute_teaching_policy(schema_map, due_claims=due, shadow_rule_signals=shadows)
 
 
+def _policy_after_log_answer(
+    conn: sqlite3.Connection,
+    *,
+    session_id: str,
+    topic_id: int,
+    topic_slug: str,
+    doc_path: str,
+    skill: str,
+    inventory_concept_id: str,
+    concept: str,
+    correct: int,
+    exchange_id: int,
+    coverage_role: str,
+    learner_concept_id: int,
+) -> tuple[dict[str, object], dict[str, int]]:
+    """Patch session knowledge map and return the next-turn policy."""
+    from session_map import (  # noqa: PLC0415
+        bootstrap_session_map,
+        compute_policy_from_session,
+        load as load_session_map,
+        patch_after_log,
+        session_progress,
+        write as write_session_map,
+    )
+
+    data = load_session_map(session_id)
+    if data is None:
+        data = bootstrap_session_map(
+            conn,
+            session_id=session_id,
+            topic=topic_slug,
+            doc_path=doc_path,
+            skill=skill,
+        )
+    if data:
+        data, delta = patch_after_log(
+            data,
+            inventory_concept_id=inventory_concept_id,
+            concept_text=concept,
+            correct=correct,
+            exchange_id=exchange_id,
+            coverage_role=coverage_role,
+            learner_concept_id=learner_concept_id,
+        )
+        write_session_map(session_id, data)
+        if delta == "unbound":
+            plan = _current_policy_for_topic(conn, topic_id=topic_id, topic_slug=topic_slug)
+        else:
+            plan = compute_policy_from_session(data, conn, topic_id=topic_id, topic_slug=topic_slug)
+        return plan, session_progress(data)
+    plan = _current_policy_for_topic(conn, topic_id=topic_id, topic_slug=topic_slug)
+    return plan, {}
+
+
+def _integrate_inventory_knowledge_map(
+    conn: sqlite3.Connection,
+    brief: dict[str, object],
+    *,
+    topic: str,
+    doc_path: str,
+    profile: str,
+    session_id: str = "",
+) -> None:
+    """Replace SQLite-only schema map with inventory-grounded knowledge_map."""
+    from session_map import (  # noqa: PLC0415
+        apply_artifact_priority,
+        build_inventory_projection,
+        create_from_projection,
+        write as write_session_map,
+    )
+
+    projection = build_inventory_projection(topic=topic, doc_path=doc_path, memory_db=DB_PATH)
+    if not projection:
+        return
+    knowledge_map = list(projection.get("knowledge_map") or [])
+    if not knowledge_map:
+        brief["knowledge_map_status"] = "empty_no_inventory_scope"
+        return
+    teaching_plan = dict(projection.get("sequential_teaching_plan") or {})
+    teaching_plan = apply_artifact_priority(
+        teaching_plan,
+        knowledge_map,
+        profile=profile,
+        doc_path=doc_path,
+    )
+    brief["knowledge_map"] = knowledge_map
+    brief["knowledge_map_status"] = "ok"
+    brief["sequential_teaching_plan"] = teaching_plan
+    brief["inventory_unmatched_learner_concepts"] = projection.get("unmatched_learner_concepts", [])
+    brief["inventory_counts"] = projection.get("counts", {})
+    if profile == "doc" and doc_path:
+        brief["document_priority"] = "requested_doc_primary"
+        brief["teaching_priority"] = "artifact_primary"
+    if session_id:
+        session_data = create_from_projection(
+            projection,
+            session_id=session_id,
+            profile=profile,
+            doc_path=doc_path,
+            learner_topics=[topic] if topic else [],
+        )
+        write_session_map(session_id, session_data)
+
+
 def _planning_brief_for_summary(
     conn: sqlite3.Connection | None,
     *,
@@ -3676,29 +3850,30 @@ def _planning_brief_for_summary(
 
     must_retest.sort(key=lambda x: (-x.get("adjusted_priority", 0.0), -float(x.get("updated_ts", 0.0) or 0.0) if x.get("updated_ts") else 0))
 
-    # Build the comprehensive schema map and deterministic teaching policy.
-    schema_map: list[dict[str, object]] = []
+    # Build knowledge map and deterministic teaching policy (SQLite fallback;
+    # startup-recall replaces with inventory-grounded map when available).
+    knowledge_map: list[dict[str, object]] = []
     teaching_plan: dict[str, object] = {}
-    schema_map_status = "no_topic"
+    knowledge_map_status = "no_topic"
     if conn and session_topic:
         try:
-            schema_map = _build_schema_map(conn, session_topic)
-            schema_map_status = "ok" if schema_map else "empty_no_learner_concepts"
+            knowledge_map = _build_schema_map(conn, session_topic)
+            knowledge_map_status = "ok" if knowledge_map else "empty_no_learner_concepts"
         except Exception as exc:
-            schema_map = []
-            schema_map_status = f"error: {exc}"
-            print(f"WARN schema_map_failed: {exc}", file=sys.stderr)
-    if schema_map:
+            knowledge_map = []
+            knowledge_map_status = f"error: {exc}"
+            print(f"WARN knowledge_map_failed: {exc}", file=sys.stderr)
+    if knowledge_map:
         teaching_plan = _compute_teaching_policy(
-            schema_map,
+            knowledge_map,
             due_claims=due_claims,
             shadow_rule_signals=shadow_rule_signals,
         )
 
     return {
         "read_first": True,
-        "comprehensive_schema_map": schema_map,
-        "schema_map_status": schema_map_status,
+        "knowledge_map": knowledge_map,
+        "knowledge_map_status": knowledge_map_status,
         "sequential_teaching_plan": teaching_plan,
         "handoff": {
             "topic": handoffs[0].get("topic"),
@@ -3740,7 +3915,7 @@ def _planning_brief_for_summary(
 
 
 def _refine_brief_with_anki(brief: dict[str, object], anki_profile: dict[str, object]) -> None:
-    schema_map = brief.get("comprehensive_schema_map")
+    schema_map = brief.get("knowledge_map")
     if not isinstance(schema_map, list) or not schema_map:
         return
     
@@ -3956,15 +4131,19 @@ def _compact_doc_review_payload(
             "audit_profile_available": True,
         },
     }
-    raw_schema_map = brief.get("comprehensive_schema_map", [])
-    if not isinstance(raw_schema_map, list):
-        raw_schema_map = []
-    capped_schema_map, schema_map_omitted = _compact_schema_map(raw_schema_map)
-    doc_brief["comprehensive_schema_map"] = capped_schema_map
-    if schema_map_omitted:
-        doc_brief["schema_map_omitted"] = schema_map_omitted
-    if brief.get("schema_map_status"):
-        doc_brief["schema_map_status"] = brief["schema_map_status"]
+    raw_knowledge_map = brief.get("knowledge_map", [])
+    if not isinstance(raw_knowledge_map, list):
+        raw_knowledge_map = []
+    capped_knowledge_map, knowledge_map_omitted = _compact_schema_map(raw_knowledge_map)
+    doc_brief["knowledge_map"] = capped_knowledge_map
+    if knowledge_map_omitted:
+        doc_brief["knowledge_map_omitted"] = knowledge_map_omitted
+    if brief.get("knowledge_map_status"):
+        doc_brief["knowledge_map_status"] = brief["knowledge_map_status"]
+    if brief.get("document_priority"):
+        doc_brief["document_priority"] = brief["document_priority"]
+    if brief.get("teaching_priority"):
+        doc_brief["teaching_priority"] = brief["teaching_priority"]
     plan = brief.get("sequential_teaching_plan", {})
     if (
         isinstance(plan, dict)
@@ -4553,6 +4732,7 @@ def startup_recall(
     site: str = "",
     rotation_id: int | None = None,
     profile: str = "auto",
+    session_id: str = "",
 ) -> str:
     """Return the deterministic first-read brief used by every learning workflow.
 
@@ -4641,6 +4821,19 @@ def startup_recall(
 
     brief = payload.get("planning_brief", {})
     routing_required = bool(isinstance(brief, dict) and brief.get("resolution_warning"))
+    if isinstance(brief, dict) and not routing_required and not global_mode and recall_topic:
+        try:
+            _integrate_inventory_knowledge_map(
+                conn,
+                brief,
+                topic=recall_topic,
+                doc_path=doc_path,
+                profile=effective_profile,
+                session_id=session_id,
+            )
+            payload["planning_brief"] = brief
+        except Exception as exc:
+            print(f"WARN inventory_integration_failed: {exc}", file=sys.stderr)
     deferred_high_signal = payload.get("retrieval_guidance", {}).get("omitted_high_signal", {})
     anki_feedback_status: dict[str, object] = {"status": "skipped", "reason": "not evaluated"}
     if routing_required:
@@ -4666,7 +4859,6 @@ def startup_recall(
             if isinstance(anki_profile, dict):
                 anki_feedback_status = _compact_anki_feedback_status(anki_profile)
                 if not global_mode and isinstance(brief, dict):
-                    # Refine comprehensive_schema_map with Anki stats
                     _refine_brief_with_anki(brief, anki_profile)
                     # Clean up full_concept_rollup to prevent token bloat
                     if "full_concept_rollup" in anki_profile:
@@ -4683,7 +4875,7 @@ def startup_recall(
             ).fetchone()
             _record_policy_event(
                 conn,
-                session_id="",
+                session_id=session_id,
                 event_type="startup",
                 topic_id=int(topic_row[0]) if topic_row else None,
                 plan=brief["sequential_teaching_plan"],  # type: ignore[arg-type]
@@ -4800,6 +4992,11 @@ def main() -> None:
     p_log.add_argument("--competency-target", default="", help="Service competency_target slug this answer advances")
     p_log.add_argument("--convention", action="store_true", help="Mark as a (service x site) local convention rather than a portable clinical gap")
     p_log.add_argument("--brain-dump-candidate-id", type=int, default=None, help="Mark this pending brain-dump review candidate as reviewed by the logged answer")
+    p_log.add_argument(
+        "--inventory-concept-id",
+        default="",
+        help="Canonical inventory concept id for the probed concept (required for study-review when resolvable)",
+    )
 
     p_end = sub.add_parser("end-session")
     p_end.add_argument("--session", required=True)
@@ -4858,6 +5055,11 @@ def main() -> None:
         choices=["auto", "doc", "memory", "audit"],
         default="auto",
         help="auto chooses compact doc review when --doc is present; audit returns the full rich startup surface",
+    )
+    p_startup.add_argument(
+        "--session",
+        default="",
+        help="Session id; when set, writes the live knowledge map file for per-turn patching",
     )
 
     sub.add_parser("status")
@@ -4966,6 +5168,7 @@ def main() -> None:
                 competency_target=args.competency_target,
                 convention=args.convention,
                 brain_dump_candidate_id=args.brain_dump_candidate_id,
+                inventory_concept_id=args.inventory_concept_id,
             )
             print(f"OK exchange_id={exchange_id}")
             policy_row = conn.execute(
@@ -5058,6 +5261,7 @@ def main() -> None:
                         site=args.site,
                         rotation_id=args.rotation,
                         profile=args.profile,
+                        session_id=args.session,
                     )
                 )
             except ValueError as exc:

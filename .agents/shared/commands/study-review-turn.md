@@ -46,12 +46,15 @@ python3 src/study_memory.py log-answer \
   [--source-section "<heading>"] [--source-anchor "<anchor>"] [--curriculum-unit "<unit>"] \
   [--priority "<urgent|high|medium|low>"] \
   [--match-claim-state-id <id>] [--new-claim] [--repairs-claim-state-ids "<id,id,...>"] \
-  [--brain-dump-candidate-id <id>]
+  [--brain-dump-candidate-id <id>] \
+  [--inventory-concept-id "<inventory.concept_id>"]
 ```
 
 Correctness: `2` correct without help, `1` partial, `0` wrong/misconception.
 
-`log-answer` prints `OK exchange_id=N` followed by a `policy={...}` line with the recomputed `mode`, `phase`, `interrupts`, `target_concepts` (capped, with `target_concepts_omitted` when truncated), `pedagogical_directives`, `socratic_choice_directives`, and `decision_inputs`. Parse it silently and let it drive the next question (step 4). The same full plan is persisted to `policy_events.plan_json` for audit; you do not write it yourself. If a `policy_status={"status":"unavailable",...}` line appears instead, keep the current phase, continue teaching, and rerun `startup-recall` if it persists — never invent a phase change yourself.
+`log-answer` prints `OK exchange_id=N` followed by a `policy={...}` line with the recomputed `mode`, `phase`, `interrupts`, `target_concepts` (capped, with `target_concepts_omitted` when truncated), `pedagogical_directives`, `socratic_choice_directives`, and `decision_inputs`, plus an optional compact `session_progress={...}` line with in-session coverage counts. Parse both silently. Policy is computed from the live session knowledge map (patched incrementally each turn). Pass `--inventory-concept-id` whenever the probed concept is on the session map — required for assessed `study-review` exchanges when resolvable. Legacy concepts without IDs are lexically matched when possible; unmatched rows retry on future surfacing.
+
+The same full plan is persisted to `policy_events.plan_json` for audit only; you do not write it yourself. If a `policy_status={"status":"unavailable",...}` line appears instead, keep the current phase, continue teaching, and rerun `startup-recall` if it persists — never invent a phase change yourself.
 
 `--coverage-role` in study-review uses `primary_doc`, `related_topic_probe`, `repair_probe`, or `memory_probe`. The `synthesis` value exists for other workflows only; study-review never logs synthesis prompts (see below).
 
@@ -63,7 +66,7 @@ Never log a tracked claim for a synthesis/self-assessment prompt.
 
 After `log-answer`, use the printed `exchange_id` for any card enqueue. Create cards for incorrect, partial, high-yield corrected rules, and fragile transfer edges; skip trivial correct recall.
 
-Load `.agents/shared/commands/anki-card-quality.md` before drafting cards if card wording is nontrivial. Use `anki_queue.py enqueue`; do not write directly to Anki. Preserve stable metadata tags produced by flush: `topic/<slug>`, `concept/<slug>`, `claim/<claim_id>`, and provenance tags.
+Load `.agents/shared/commands/anki-card-quality.md` before drafting cards if card wording is nontrivial. Use `anki_queue.py enqueue` per turn (flush at session end); pass `--inventory-concept-id` when known. Do not write directly to Anki. Preserve stable metadata tags produced by flush: `topic/<slug>`, `concept/<slug>`, `claim/<claim_id>`, `inv/<inventory_concept_id>`, and provenance tags.
 
 ## Continue Or End
 
