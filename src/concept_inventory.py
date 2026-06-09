@@ -1,0 +1,910 @@
+"""Canonical neurosurgery concept inventory: build, validate, scope, and learner mapping.
+
+The inventory is the stable, comprehensive domain map the teaching policy needs:
+a curated set of concepts (grown from the ACGME milestone skeleton) stored as
+committed JSON sources in data/concept_inventory/ and compiled into a dedicated
+SQLite database (data/concept_inventory.db). It is intentionally separate from
+every existing datastore.
+
+Agent surface (all deterministic, no embeddings, no LLM):
+  build        compile JSON sources into the inventory DB
+  validate     integrity-check the JSON sources without writing
+  stats        counts by domain/tier/type
+  scope        bounded subgraph for a query/topic — never load the whole map
+  map-learner  project learner memory (read-only) onto a scoped subgraph and
+               compute the inventory-grounded teaching plan
+
+`map-learner` opens data/study_memory.db strictly read-only and reuses
+study_memory._compute_teaching_policy so the phase semantics are identical to
+the per-turn policy engine.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import re
+import sqlite3
+import sys
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parents[1]
+INVENTORY_DIR = Path(__import__("os").environ.get("NEURO_CONCEPT_INVENTORY_DIR", BASE_DIR / "data" / "concept_inventory"))
+DB_PATH = Path(__import__("os").environ.get("NEURO_CONCEPT_INVENTORY_DB", BASE_DIR / "data" / "concept_inventory.db"))
+ACGME_PATH = BASE_DIR / "data" / "acgme_curriculum.json"
+
+VALID_TYPES = frozenset({
+    "anatomy", "physiology", "pathology", "presentation", "diagnostics", "imaging",
+    "classification", "management", "operative", "complication", "pharmacology", "evidence",
+})
+VALID_TIERS = frozenset({"foundation", "core", "advanced", "expert"})
+TIER_ORDER = {"foundation": 0, "core": 1, "advanced": 2, "expert": 3}
+EDGE_TYPES = ("prereq", "discriminator", "related")
+
+DEFAULT_SCOPE_BUDGET = 80
+DEFAULT_ENTRY_LIMIT = 30
+TOPIC_ANCHOR_THRESHOLD = 0.6
+CONCEPT_MATCH_THRESHOLD = 0.34
+LEARNER_MATCH_THRESHOLD = 0.5
+
+_STOPWORDS = frozenset({
+    "of", "the", "in", "and", "or", "vs", "for", "a", "an", "to", "with", "on",
+    "by", "at", "from", "into", "after", "before", "their", "its",
+})
+
+SCHEMA_SQL = """
+PRAGMA journal_mode=WAL;
+CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS domains (
+    slug TEXT PRIMARY KEY,
+    code TEXT NOT NULL,
+    display_name TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS topics (
+    id TEXT PRIMARY KEY,
+    domain TEXT NOT NULL REFERENCES domains(slug),
+    name TEXT NOT NULL,
+    blurb TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS concepts (
+    id TEXT PRIMARY KEY,
+    topic_id TEXT NOT NULL REFERENCES topics(id),
+    domain TEXT NOT NULL REFERENCES domains(slug),
+    name TEXT NOT NULL,
+    type TEXT NOT NULL,
+    tier TEXT NOT NULL,
+    blurb TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS aliases (
+    concept_id TEXT NOT NULL REFERENCES concepts(id),
+    alias TEXT NOT NULL,
+    UNIQUE(concept_id, alias)
+);
+CREATE TABLE IF NOT EXISTS edges (
+    src TEXT NOT NULL REFERENCES concepts(id),
+    dst TEXT NOT NULL REFERENCES concepts(id),
+    edge_type TEXT NOT NULL CHECK(edge_type IN ('prereq', 'discriminator', 'related')),
+    UNIQUE(src, dst, edge_type)
+);
+CREATE TABLE IF NOT EXISTS acgme_links (
+    concept_id TEXT NOT NULL REFERENCES concepts(id),
+    milestone TEXT NOT NULL,
+    acgme_title TEXT NOT NULL,
+    UNIQUE(concept_id, milestone, acgme_title)
+);
+CREATE INDEX IF NOT EXISTS idx_concepts_topic ON concepts(topic_id);
+CREATE INDEX IF NOT EXISTS idx_concepts_domain ON concepts(domain);
+CREATE INDEX IF NOT EXISTS idx_edges_src ON edges(src);
+CREATE INDEX IF NOT EXISTS idx_edges_dst ON edges(dst);
+"""
+
+
+def _json_dumps(payload: object) -> str:
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=False)
+
+
+def _tokens(text: str) -> frozenset[str]:
+    words = re.findall(r"[a-z0-9]+", str(text).lower())
+    return frozenset(w for w in words if w not in _STOPWORDS and len(w) > 1)
+
+
+def _lexical_score(query_tokens: frozenset[str], candidate_tokens: frozenset[str]) -> float:
+    if not query_tokens or not candidate_tokens:
+        return 0.0
+    overlap = query_tokens & candidate_tokens
+    if not overlap:
+        return 0.0
+    jaccard = len(overlap) / len(query_tokens | candidate_tokens)
+    containment = len(overlap) / min(len(query_tokens), len(candidate_tokens))
+    return max(jaccard, 0.85 * containment)
+
+
+# ── Source loading and validation ───────────────────────────────────
+
+
+def _source_files(inventory_dir: Path) -> list[Path]:
+    return sorted(p for p in inventory_dir.glob("*.json"))
+
+
+def _source_hash(inventory_dir: Path) -> str:
+    digest = hashlib.sha256()
+    for path in _source_files(inventory_dir):
+        digest.update(path.name.encode("utf-8"))
+        digest.update(path.read_bytes())
+    return digest.hexdigest()
+
+
+def _load_sources(inventory_dir: Path) -> tuple[list[dict], list[str]]:
+    documents: list[dict] = []
+    errors: list[str] = []
+    files = _source_files(inventory_dir)
+    if not files:
+        errors.append(f"no JSON sources found in {inventory_dir}")
+    for path in files:
+        try:
+            doc = json.loads(path.read_text())
+        except ValueError as exc:
+            errors.append(f"{path.name}: invalid JSON ({exc})")
+            continue
+        doc["_file"] = path.name
+        documents.append(doc)
+    return documents, errors
+
+
+def validate_sources(inventory_dir: Path = INVENTORY_DIR, single_file: Path | None = None) -> dict:
+    """Integrity report for the JSON sources. Never writes anything."""
+    if single_file is not None:
+        try:
+            doc = json.loads(Path(single_file).read_text())
+        except ValueError as exc:
+            return {"ok": False, "errors": [f"invalid JSON: {exc}"], "warnings": []}
+        doc["_file"] = Path(single_file).name
+        documents = [doc]
+        errors: list[str] = []
+        dir_level = False
+    else:
+        documents, errors = _load_sources(inventory_dir)
+        dir_level = True
+
+    warnings: list[str] = []
+    all_concept_ids: dict[str, str] = {}
+    all_topic_ids: dict[str, str] = {}
+    edge_refs: list[tuple[str, str, str, str]] = []  # (file, src, dst, edge_type)
+    concept_count = 0
+
+    for doc in documents:
+        fname = doc["_file"]
+        domain = str(doc.get("domain", ""))
+        code = str(doc.get("code", ""))
+        if not domain:
+            errors.append(f"{fname}: missing 'domain'")
+        if not code:
+            errors.append(f"{fname}: missing 'code'")
+        if not doc.get("display_name"):
+            errors.append(f"{fname}: missing 'display_name'")
+        topics = doc.get("topics", [])
+        concepts = doc.get("concepts", [])
+        if not isinstance(topics, list) or not topics:
+            errors.append(f"{fname}: 'topics' must be a non-empty list")
+            topics = []
+        if not isinstance(concepts, list) or not concepts:
+            errors.append(f"{fname}: 'concepts' must be a non-empty list")
+            concepts = []
+
+        local_topic_ids = set()
+        for topic in topics:
+            tid = str(topic.get("id", ""))
+            if not tid:
+                errors.append(f"{fname}: topic missing 'id'")
+                continue
+            if code and not tid.startswith(f"{code}."):
+                errors.append(f"{fname}: topic id '{tid}' must start with '{code}.'")
+            if tid in all_topic_ids:
+                errors.append(f"{fname}: duplicate topic id '{tid}' (also in {all_topic_ids[tid]})")
+            all_topic_ids[tid] = fname
+            local_topic_ids.add(tid)
+            if not topic.get("name"):
+                errors.append(f"{fname}: topic '{tid}' missing 'name'")
+
+        for concept in concepts:
+            cid = str(concept.get("id", ""))
+            if not cid:
+                errors.append(f"{fname}: concept missing 'id'")
+                continue
+            concept_count += 1
+            if code and not cid.startswith(f"{code}."):
+                errors.append(f"{fname}: concept id '{cid}' must start with '{code}.'")
+            if cid in all_concept_ids:
+                errors.append(f"{fname}: duplicate concept id '{cid}' (also in {all_concept_ids[cid]})")
+            all_concept_ids[cid] = fname
+            if not concept.get("name"):
+                errors.append(f"{fname}: concept '{cid}' missing 'name'")
+            if not concept.get("blurb"):
+                warnings.append(f"{fname}: concept '{cid}' missing 'blurb'")
+            ctype = str(concept.get("type", ""))
+            if ctype not in VALID_TYPES:
+                errors.append(f"{fname}: concept '{cid}' has invalid type '{ctype}'")
+            tier = str(concept.get("tier", ""))
+            if tier not in VALID_TIERS:
+                errors.append(f"{fname}: concept '{cid}' has invalid tier '{tier}'")
+            topic_ref = str(concept.get("topic", ""))
+            if topic_ref not in local_topic_ids:
+                errors.append(f"{fname}: concept '{cid}' references unknown topic '{topic_ref}'")
+            for field, edge_type in (("prereqs", "prereq"), ("discriminators", "discriminator"), ("related", "related")):
+                for ref in concept.get(field, []) or []:
+                    edge_refs.append((fname, cid, str(ref), edge_type))
+
+    if dir_level:
+        for fname, src, dst, edge_type in edge_refs:
+            if dst not in all_concept_ids:
+                warnings.append(f"{fname}: {edge_type} edge {src} -> {dst} is dangling (dropped at build)")
+            if dst == src:
+                errors.append(f"{fname}: self-edge {src} -> {dst}")
+
+    return {
+        "ok": not errors,
+        "files": len(documents),
+        "topics": len(all_topic_ids),
+        "concepts": concept_count,
+        "edges_declared": len(edge_refs),
+        "errors": errors,
+        "warnings": warnings[:200],
+        "warning_count": len(warnings),
+    }
+
+
+# ── ACGME linking ───────────────────────────────────────────────────
+
+
+def _acgme_titles() -> list[tuple[str, str, frozenset[str]]]:
+    """(milestone_key, title, tokens) for every ACGME catalog topic."""
+    try:
+        catalog = json.loads(ACGME_PATH.read_text())
+    except (OSError, ValueError):
+        return []
+    out: list[tuple[str, str, frozenset[str]]] = []
+    for key, milestone in (catalog.get("milestones") or {}).items():
+        for topic in milestone.get("topics", []) or []:
+            title = str(topic.get("title", ""))
+            if title:
+                out.append((str(key), title, _tokens(title)))
+    return out
+
+
+def _match_acgme(ref: str, acgme: list[tuple[str, str, frozenset[str]]]) -> tuple[str, str] | None:
+    ref_tokens = _tokens(ref)
+    best: tuple[float, str, str] | None = None
+    for key, title, title_tokens in acgme:
+        if title.lower() == ref.lower():
+            return (key, title)
+        score = _lexical_score(ref_tokens, title_tokens)
+        if best is None or score > best[0]:
+            best = (score, key, title)
+    if best and best[0] >= 0.5:
+        return (best[1], best[2])
+    return None
+
+
+# ── Build ───────────────────────────────────────────────────────────
+
+
+def build_db(inventory_dir: Path = INVENTORY_DIR, db_path: Path = DB_PATH, force: bool = False) -> dict:
+    report = validate_sources(inventory_dir)
+    if not report["ok"]:
+        return {"ok": False, "stage": "validate", "errors": report["errors"][:50]}
+
+    source_hash = _source_hash(inventory_dir)
+    if not force and db_path.exists():
+        try:
+            conn = sqlite3.connect(str(db_path))
+            row = conn.execute("SELECT value FROM meta WHERE key = 'source_hash'").fetchone()
+            conn.close()
+            if row and row[0] == source_hash:
+                return {"ok": True, "stage": "build", "status": "up_to_date", "source_hash": source_hash}
+        except sqlite3.Error:
+            pass
+
+    documents, _ = _load_sources(inventory_dir)
+    acgme = _acgme_titles()
+
+    tmp_path = db_path.with_suffix(".building")
+    if tmp_path.exists():
+        tmp_path.unlink()
+    conn = sqlite3.connect(str(tmp_path))
+    conn.executescript(SCHEMA_SQL)
+
+    concept_ids: set[str] = set()
+    for doc in documents:
+        for concept in doc.get("concepts", []):
+            concept_ids.add(str(concept["id"]))
+
+    dropped_edges: list[str] = []
+    unmatched_acgme: list[str] = []
+    edge_count = 0
+    acgme_link_count = 0
+
+    for doc in sorted(documents, key=lambda d: d["_file"]):
+        domain = str(doc["domain"])
+        conn.execute(
+            "INSERT INTO domains (slug, code, display_name) VALUES (?, ?, ?)",
+            (domain, str(doc["code"]), str(doc["display_name"])),
+        )
+        for topic in doc.get("topics", []):
+            conn.execute(
+                "INSERT INTO topics (id, domain, name, blurb) VALUES (?, ?, ?, ?)",
+                (str(topic["id"]), domain, str(topic["name"]), str(topic.get("blurb", ""))),
+            )
+        for concept in doc.get("concepts", []):
+            cid = str(concept["id"])
+            conn.execute(
+                "INSERT INTO concepts (id, topic_id, domain, name, type, tier, blurb) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (cid, str(concept["topic"]), domain, str(concept["name"]),
+                 str(concept["type"]), str(concept["tier"]), str(concept.get("blurb", ""))),
+            )
+            for alias in sorted({str(a).strip().lower() for a in concept.get("aliases", []) or [] if str(a).strip()}):
+                conn.execute("INSERT OR IGNORE INTO aliases (concept_id, alias) VALUES (?, ?)", (cid, alias))
+            for field, edge_type in (("prereqs", "prereq"), ("discriminators", "discriminator"), ("related", "related")):
+                for ref in concept.get(field, []) or []:
+                    ref = str(ref)
+                    if ref in concept_ids and ref != cid:
+                        conn.execute(
+                            "INSERT OR IGNORE INTO edges (src, dst, edge_type) VALUES (?, ?, ?)",
+                            (cid, ref, edge_type),
+                        )
+                        edge_count += 1
+                    else:
+                        dropped_edges.append(f"{cid} -[{edge_type}]-> {ref}")
+            for ref in concept.get("acgme", []) or []:
+                match = _match_acgme(str(ref), acgme)
+                if match:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO acgme_links (concept_id, milestone, acgme_title) VALUES (?, ?, ?)",
+                        (cid, match[0], match[1]),
+                    )
+                    acgme_link_count += 1
+                else:
+                    unmatched_acgme.append(f"{cid}: {ref}")
+
+    counts = {
+        "domains": conn.execute("SELECT COUNT(*) FROM domains").fetchone()[0],
+        "topics": conn.execute("SELECT COUNT(*) FROM topics").fetchone()[0],
+        "concepts": conn.execute("SELECT COUNT(*) FROM concepts").fetchone()[0],
+        "aliases": conn.execute("SELECT COUNT(*) FROM aliases").fetchone()[0],
+        "edges": conn.execute("SELECT COUNT(*) FROM edges").fetchone()[0],
+        "acgme_links": acgme_link_count,
+    }
+    conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('source_hash', ?)", (source_hash,))
+    conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('counts', ?)", (_json_dumps(counts),))
+    conn.commit()
+    conn.close()
+    if db_path.exists():
+        db_path.unlink()
+    for suffix in ("-wal", "-shm"):
+        sidecar = Path(str(db_path) + suffix)
+        if sidecar.exists():
+            sidecar.unlink()
+    tmp_path.rename(db_path)
+
+    return {
+        "ok": True,
+        "stage": "build",
+        "status": "rebuilt",
+        "source_hash": source_hash,
+        "counts": counts,
+        "dropped_edges": dropped_edges[:50],
+        "dropped_edge_count": len(dropped_edges),
+        "unmatched_acgme": unmatched_acgme[:50],
+        "unmatched_acgme_count": len(unmatched_acgme),
+    }
+
+
+def _open_inventory(inventory_dir: Path = INVENTORY_DIR, db_path: Path = DB_PATH) -> sqlite3.Connection:
+    """Open the inventory DB, rebuilding automatically when sources changed."""
+    needs_build = True
+    if db_path.exists():
+        try:
+            probe = sqlite3.connect(str(db_path))
+            row = probe.execute("SELECT value FROM meta WHERE key = 'source_hash'").fetchone()
+            probe.close()
+            needs_build = not row or row[0] != _source_hash(inventory_dir)
+        except sqlite3.Error:
+            needs_build = True
+    if needs_build:
+        result = build_db(inventory_dir, db_path)
+        if not result.get("ok"):
+            raise RuntimeError(f"concept inventory build failed: {result.get('errors')}")
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+# ── Scope ───────────────────────────────────────────────────────────
+
+
+def _concept_index(conn: sqlite3.Connection, domain: str = "") -> list[dict]:
+    where = "WHERE c.domain = ?" if domain else ""
+    params = (domain,) if domain else ()
+    rows = conn.execute(
+        f"""SELECT c.id, c.topic_id, c.domain, c.name, c.type, c.tier, c.blurb, t.name AS topic_name
+            FROM concepts c JOIN topics t ON c.topic_id = t.id {where} ORDER BY c.id""",
+        params,
+    ).fetchall()
+    alias_rows = conn.execute("SELECT concept_id, alias FROM aliases ORDER BY concept_id, alias").fetchall()
+    alias_map: dict[str, list[str]] = {}
+    for r in alias_rows:
+        alias_map.setdefault(r["concept_id"], []).append(r["alias"])
+    out = []
+    for r in rows:
+        aliases = alias_map.get(r["id"], [])
+        match_tokens = _tokens(r["name"])
+        for alias in aliases:
+            match_tokens = match_tokens | _tokens(alias)
+        out.append({
+            "id": r["id"],
+            "topic_id": r["topic_id"],
+            "topic_name": r["topic_name"],
+            "domain": r["domain"],
+            "name": r["name"],
+            "type": r["type"],
+            "tier": r["tier"],
+            "blurb": r["blurb"],
+            "aliases": aliases,
+            "match_tokens": match_tokens,
+        })
+    return out
+
+
+def scope_subgraph(
+    conn: sqlite3.Connection,
+    *,
+    query: str = "",
+    topic_id: str = "",
+    domain: str = "",
+    budget: int = DEFAULT_SCOPE_BUDGET,
+    entry_limit: int = DEFAULT_ENTRY_LIMIT,
+) -> dict:
+    """Deterministic bounded subgraph: entry nodes + 1-hop prereq/discriminator/related closure."""
+    concepts = _concept_index(conn, domain=domain)
+    by_id = {c["id"]: c for c in concepts}
+
+    entries: list[tuple[float, str]] = []
+    anchored_topics: list[str] = []
+    if topic_id:
+        if not conn.execute("SELECT 1 FROM topics WHERE id = ?", (topic_id,)).fetchone():
+            return {"ok": False, "reason": "unknown_topic_id", "topic_id": topic_id}
+        anchored_topics = [topic_id]
+        entries = [(1.0, c["id"]) for c in concepts if c["topic_id"] == topic_id]
+    elif query:
+        query_tokens = _tokens(query)
+        topic_rows = conn.execute("SELECT id, name FROM topics ORDER BY id").fetchall()
+        topic_scores = sorted(
+            ((_lexical_score(query_tokens, _tokens(r["name"])), r["id"]) for r in topic_rows),
+            key=lambda x: (-x[0], x[1]),
+        )
+        anchored_topics = [tid for score, tid in topic_scores if score >= TOPIC_ANCHOR_THRESHOLD][:3]
+        anchored_set = set(anchored_topics)
+        scored = []
+        for c in concepts:
+            score = _lexical_score(query_tokens, c["match_tokens"])
+            if c["topic_id"] in anchored_set:
+                score = max(score, 0.75)
+            if score >= CONCEPT_MATCH_THRESHOLD:
+                scored.append((score, c["id"]))
+        scored.sort(key=lambda x: (-x[0], x[1]))
+        entries = scored[: max(entry_limit, len([s for s in scored if by_id[s[1]]["topic_id"] in anchored_set]))]
+    else:
+        return {"ok": False, "reason": "query_or_topic_required"}
+
+    entry_ids = [cid for _, cid in entries]
+    entry_set = set(entry_ids)
+
+    # 1-hop closure: prerequisites (both directions for awareness), discriminators, related.
+    expansion: dict[str, tuple[int, str]] = {}  # id -> (edge_priority, via)
+    edge_priority = {"prereq": 0, "discriminator": 1, "related": 2}
+    if entry_ids:
+        placeholders = ",".join("?" for _ in entry_ids)
+        rows = conn.execute(
+            f"""SELECT src, dst, edge_type FROM edges
+                WHERE src IN ({placeholders}) OR dst IN ({placeholders})
+                ORDER BY edge_type, src, dst""",
+            entry_ids + entry_ids,
+        ).fetchall()
+    else:
+        rows = []
+    scope_edges = []
+    for r in rows:
+        scope_edges.append({"src": r["src"], "dst": r["dst"], "edge_type": r["edge_type"]})
+        for neighbor in (r["src"], r["dst"]):
+            if neighbor not in entry_set and neighbor in by_id:
+                prio = edge_priority[r["edge_type"]]
+                if neighbor not in expansion or prio < expansion[neighbor][0]:
+                    expansion[neighbor] = (prio, r["edge_type"])
+
+    expansion_ranked = sorted(
+        expansion.items(),
+        key=lambda kv: (kv[1][0], TIER_ORDER.get(by_id[kv[0]]["tier"], 9), kv[0]),
+    )
+    included = list(entry_ids)
+    omitted_expansion = 0
+    for cid, _ in expansion_ranked:
+        if len(included) >= budget:
+            omitted_expansion += 1
+            continue
+        included.append(cid)
+    included_set = set(included)
+    omitted_entries = 0
+    if len(included) > budget:
+        omitted_entries = len(included) - budget
+        included = included[:budget]
+        included_set = set(included)
+
+    nodes = []
+    for cid in included:
+        c = by_id[cid]
+        nodes.append({
+            "id": c["id"],
+            "name": c["name"],
+            "topic_id": c["topic_id"],
+            "topic_name": c["topic_name"],
+            "domain": c["domain"],
+            "type": c["type"],
+            "tier": c["tier"],
+            "blurb": c["blurb"],
+            "role": "entry" if cid in entry_set else f"neighbor_{expansion[cid][1]}",
+        })
+    edges_in_scope = [e for e in scope_edges if e["src"] in included_set and e["dst"] in included_set]
+
+    return {
+        "ok": True,
+        "scope": {
+            "query": query,
+            "topic_id": topic_id,
+            "domain": domain,
+            "anchored_topics": anchored_topics,
+            "budget": budget,
+        },
+        "nodes": nodes,
+        "edges": edges_in_scope,
+        "counts": {
+            "nodes": len(nodes),
+            "entries": len([n for n in nodes if n["role"] == "entry"]),
+            "neighbors": len([n for n in nodes if n["role"] != "entry"]),
+            "edges": len(edges_in_scope),
+            "omitted_neighbors": omitted_expansion,
+            "omitted_entries": omitted_entries,
+        },
+    }
+
+
+# ── Learner mapping ─────────────────────────────────────────────────
+
+
+def _open_memory_readonly(memory_db: Path) -> sqlite3.Connection | None:
+    if not Path(memory_db).exists():
+        return None
+    conn = sqlite3.connect(f"file:{memory_db}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _learner_topic_ids(mem: sqlite3.Connection, learner_topics: list[str], resolve_topic) -> dict[str, int]:
+    """Resolve learner topic hints to learner-memory topic ids deterministically.
+
+    Reuses study_memory.resolve_topic — the same read-only resolver that created
+    the topics — so a hint maps to the identical canonical topic the agent logged
+    against, regardless of catalog rewriting or alias storage form.
+    """
+    resolved: dict[str, int] = {}
+    for hint in learner_topics:
+        try:
+            res = resolve_topic(mem, str(hint), "")
+        except Exception:
+            continue
+        if not res or not getattr(res, "slug", ""):
+            continue
+        row = mem.execute("SELECT id FROM topics WHERE canonical_slug = ?", (res.slug,)).fetchone()
+        if row:
+            resolved[res.slug] = int(row["id"])
+    return resolved
+
+
+def map_learner(
+    *,
+    inventory_conn: sqlite3.Connection,
+    memory_db: Path,
+    learner_topics: list[str],
+    query: str = "",
+    topic_id: str = "",
+    domain: str = "",
+    budget: int = DEFAULT_SCOPE_BUDGET,
+) -> dict:
+    """Project learner memory onto a scoped inventory subgraph (memory DB opened read-only)."""
+    scope = scope_subgraph(inventory_conn, query=query, topic_id=topic_id, domain=domain, budget=budget)
+    if not scope.get("ok"):
+        return scope
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from study_memory import (  # noqa: PLC0415 - shared deterministic policy semantics
+        TARGET_CONCEPTS_COMPACT_CAP,
+        _compute_teaching_policy,
+        _due_claims_for_summary,
+        resolve_topic,
+        shadow_rule_signals_for_summary,
+    )
+
+    mem = _open_memory_readonly(Path(memory_db))
+    learner_status = "ok"
+    learner_concepts: list[dict] = []
+    resolved_topics: dict[str, int] = {}
+    due_claims: list[dict] = []
+    shadow_signals: list[dict] = []
+    if mem is None:
+        learner_status = "memory_db_absent"
+    else:
+        resolved_topics = _learner_topic_ids(mem, learner_topics, resolve_topic)
+        if learner_topics and not resolved_topics:
+            learner_status = "no_learner_topics_resolved"
+        topic_ids = sorted(resolved_topics.values())
+        for tid in topic_ids:
+            rows = mem.execute(
+                """SELECT c.id, c.display_name, c.canonical_slug,
+                          COALESCE(a.cnt, 0) AS attempts,
+                          COALESCE(a.success_cnt, 0) AS successes
+                   FROM concepts c
+                   LEFT JOIN (
+                       SELECT concept_id, COUNT(*) AS cnt,
+                              SUM(CASE WHEN score >= 2.0 THEN 1 ELSE 0 END) AS success_cnt
+                       FROM claim_results WHERE topic_id = ? AND origin = 'assessed'
+                       GROUP BY concept_id
+                   ) a ON a.concept_id = c.id
+                   WHERE c.topic_id = ? ORDER BY c.id""",
+                (tid, tid),
+            ).fetchall()
+            state_rows = mem.execute(
+                """SELECT concept_id, state, priority, stability, gap_type FROM claim_state
+                   WHERE topic_id = ? AND origin = 'assessed' ORDER BY id""",
+                (tid,),
+            ).fetchall()
+            states: dict[int, list[sqlite3.Row]] = {}
+            for sr in state_rows:
+                states.setdefault(int(sr["concept_id"]), []).append(sr)
+            for r in rows:
+                learner_concepts.append({
+                    "learner_concept_id": int(r["id"]),
+                    "name": r["display_name"],
+                    "slug": r["canonical_slug"],
+                    "attempts": int(r["attempts"]),
+                    "successes": int(r["successes"]),
+                    "states": [
+                        {"state": s["state"], "priority": s["priority"],
+                         "stability": s["stability"], "gap_type": s["gap_type"]}
+                        for s in states.get(int(r["id"]), [])
+                    ],
+                    "tokens": _tokens(r["display_name"]),
+                })
+            try:
+                due_claims.extend(_due_claims_for_summary(mem, topic_id=tid, limit=8))
+            except Exception:
+                pass
+        matched_ids = [lc["learner_concept_id"] for lc in learner_concepts]
+        if matched_ids:
+            try:
+                shadow_signals = shadow_rule_signals_for_summary(mem, relevant_concept_ids=matched_ids, limit=4)
+            except Exception:
+                shadow_signals = []
+        mem.close()
+
+    # Deterministic lexical projection of learner concepts onto scoped inventory nodes.
+    node_tokens: dict[str, frozenset[str]] = {}
+    alias_rows = inventory_conn.execute("SELECT concept_id, alias FROM aliases ORDER BY concept_id, alias").fetchall()
+    alias_map: dict[str, list[str]] = {}
+    for r in alias_rows:
+        alias_map.setdefault(r["concept_id"], []).append(r["alias"])
+    for node in scope["nodes"]:
+        toks = _tokens(node["name"])
+        for alias in alias_map.get(node["id"], []):
+            toks = toks | _tokens(alias)
+        node_tokens[node["id"]] = toks
+
+    assignments: dict[str, list[dict]] = {}
+    unmatched: list[dict] = []
+    for lc in learner_concepts:
+        best: tuple[float, str] | None = None
+        for node in scope["nodes"]:
+            score = _lexical_score(lc["tokens"], node_tokens[node["id"]])
+            if best is None or score > best[0] or (score == best[0] and node["id"] < best[1]):
+                best = (score, node["id"])
+        if best and best[0] >= LEARNER_MATCH_THRESHOLD:
+            assignments.setdefault(best[1], []).append({**lc, "match_score": round(best[0], 3)})
+        else:
+            unmatched.append(lc)
+
+    open_gap_states = {"missed", "partially_repaired", "regressed"}
+    misconception_gap_types = {"conceptual_confusion", "cross_contamination"}
+    knowledge_map: list[dict] = []
+    for node in scope["nodes"]:
+        mapped = assignments.get(node["id"], [])
+        attempts = sum(m["attempts"] for m in mapped)
+        successes = sum(m["successes"] for m in mapped)
+        all_states = [s for m in mapped for s in m["states"]]
+        stabilities = [s["stability"] for s in all_states if s["stability"] is not None]
+        avg_stability = sum(stabilities) / len(stabilities) if stabilities else 1.0
+        success_rate = round(successes / attempts, 3) if attempts else 0.0
+        if attempts == 0:
+            exposure = "unexposed"
+        elif attempts == 1 or avg_stability < 2.0 or success_rate < 0.6:
+            exposure = "exposed_superficial"
+        else:
+            exposure = "exposed_deep"
+        state_severity = {"missed": 0, "partially_repaired": 1, "regressed": 2, "repaired_same_session": 3}
+        worst_state = None
+        worst_val = 99
+        for s in all_states:
+            if s["state"] in state_severity and state_severity[s["state"]] < worst_val:
+                worst_val = state_severity[s["state"]]
+                worst_state = s["state"]
+        knowledge_map.append({
+            "concept_id": node["id"],
+            "concept": node["name"],
+            "topic_id": node["topic_id"],
+            "tier": node["tier"],
+            "type": node["type"],
+            "role": node["role"],
+            "exposure_status": exposure,
+            "knowledge_state": worst_state or "untested",
+            "attempts_count": attempts,
+            "sqlite_success_rate": success_rate,
+            "safety_critical": any(s["priority"] in ("urgent", "high") for s in all_states),
+            "active_misconception": any(
+                s["state"] in open_gap_states and str(s["gap_type"] or "") in misconception_gap_types
+                for s in all_states
+            ),
+            "matched_learner_concepts": [
+                {"learner_concept_id": m["learner_concept_id"], "name": m["name"], "match_score": m["match_score"]}
+                for m in mapped
+            ],
+        })
+
+    plan = _compute_teaching_policy(knowledge_map, due_claims=due_claims, shadow_rule_signals=shadow_signals)
+    if isinstance(plan.get("target_concepts"), list) and len(plan["target_concepts"]) > TARGET_CONCEPTS_COMPACT_CAP:
+        targets = list(plan["target_concepts"])
+        plan = dict(plan)
+        plan["target_concepts"] = targets[:TARGET_CONCEPTS_COMPACT_CAP]
+        plan["target_concepts_omitted"] = len(targets) - TARGET_CONCEPTS_COMPACT_CAP
+
+    exposure_counts = {"unexposed": 0, "exposed_superficial": 0, "exposed_deep": 0}
+    for entry in knowledge_map:
+        exposure_counts[entry["exposure_status"]] += 1
+
+    return {
+        "ok": True,
+        "learner_status": learner_status,
+        "resolved_learner_topics": resolved_topics,
+        "scope": scope["scope"],
+        "knowledge_map": knowledge_map,
+        "edges": scope["edges"],
+        "sequential_teaching_plan": plan,
+        "unmatched_learner_concepts": [
+            {"learner_concept_id": lc["learner_concept_id"], "name": lc["name"]}
+            for lc in unmatched
+        ],
+        "counts": {
+            **scope["counts"],
+            **exposure_counts,
+            "learner_concepts": len(learner_concepts),
+            "matched_learner_concepts": len(learner_concepts) - len(unmatched),
+            "unmatched_learner_concepts": len(unmatched),
+            "due_claims": len(due_claims),
+        },
+    }
+
+
+# ── Stats ───────────────────────────────────────────────────────────
+
+
+def stats(conn: sqlite3.Connection) -> dict:
+    by_domain = {
+        r["domain"]: r["cnt"]
+        for r in conn.execute("SELECT domain, COUNT(*) AS cnt FROM concepts GROUP BY domain ORDER BY domain")
+    }
+    by_tier = {
+        r["tier"]: r["cnt"]
+        for r in conn.execute("SELECT tier, COUNT(*) AS cnt FROM concepts GROUP BY tier ORDER BY tier")
+    }
+    by_type = {
+        r["type"]: r["cnt"]
+        for r in conn.execute("SELECT type, COUNT(*) AS cnt FROM concepts GROUP BY type ORDER BY type")
+    }
+    meta = {r["key"]: r["value"] for r in conn.execute("SELECT key, value FROM meta")}
+    return {
+        "ok": True,
+        "concepts": conn.execute("SELECT COUNT(*) FROM concepts").fetchone()[0],
+        "topics": conn.execute("SELECT COUNT(*) FROM topics").fetchone()[0],
+        "edges": conn.execute("SELECT COUNT(*) FROM edges").fetchone()[0],
+        "acgme_links": conn.execute("SELECT COUNT(*) FROM acgme_links").fetchone()[0],
+        "by_domain": by_domain,
+        "by_tier": by_tier,
+        "by_type": by_type,
+        "source_hash": meta.get("source_hash", ""),
+    }
+
+
+# ── CLI ─────────────────────────────────────────────────────────────
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Canonical neurosurgery concept inventory")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p_build = sub.add_parser("build")
+    p_build.add_argument("--force", action="store_true")
+
+    p_validate = sub.add_parser("validate")
+    p_validate.add_argument("--file", default="", help="Validate a single domain JSON file")
+
+    sub.add_parser("stats")
+
+    p_scope = sub.add_parser("scope")
+    p_scope.add_argument("--query", default="")
+    p_scope.add_argument("--topic-id", default="")
+    p_scope.add_argument("--domain", default="")
+    p_scope.add_argument("--budget", type=int, default=DEFAULT_SCOPE_BUDGET)
+
+    p_map = sub.add_parser("map-learner")
+    p_map.add_argument("--query", default="")
+    p_map.add_argument("--topic-id", default="")
+    p_map.add_argument("--domain", default="")
+    p_map.add_argument("--budget", type=int, default=DEFAULT_SCOPE_BUDGET)
+    p_map.add_argument("--memory-db", default=str(BASE_DIR / "data" / "study_memory.db"))
+    p_map.add_argument("--learner-topic", action="append", default=[],
+                       help="Learner-memory topic slug/name to project (repeatable)")
+
+    args = parser.parse_args(argv)
+
+    if args.command == "build":
+        result = build_db(force=args.force)
+        print(_json_dumps(result))
+        return 0 if result.get("ok") else 1
+    if args.command == "validate":
+        result = validate_sources(single_file=Path(args.file) if args.file else None)
+        print(_json_dumps(result))
+        return 0 if result.get("ok") else 1
+    if args.command == "stats":
+        conn = _open_inventory()
+        result = stats(conn)
+        conn.close()
+        print(_json_dumps(result))
+        return 0
+    if args.command == "scope":
+        conn = _open_inventory()
+        result = scope_subgraph(
+            conn, query=args.query, topic_id=args.topic_id, domain=args.domain, budget=args.budget,
+        )
+        conn.close()
+        print(_json_dumps(result))
+        return 0 if result.get("ok") else 1
+    if args.command == "map-learner":
+        conn = _open_inventory()
+        result = map_learner(
+            inventory_conn=conn,
+            memory_db=Path(args.memory_db),
+            learner_topics=list(args.learner_topic),
+            query=args.query,
+            topic_id=args.topic_id,
+            domain=args.domain,
+            budget=args.budget,
+        )
+        conn.close()
+        print(_json_dumps(result))
+        return 0 if result.get("ok") else 1
+    return 1
+
+
+if __name__ == "__main__":
+    try:
+        from _env_guard import check_environment
+        check_environment(marker_file="concept_inventory.py")
+    except ImportError:
+        pass
+    raise SystemExit(main())

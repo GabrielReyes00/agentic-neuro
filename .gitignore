@@ -5,6 +5,10 @@
 neurosurgery_v4.lance/
 
 # === Databases & Backups (user data, never wipe) ===
+data/concept_inventory.db
+data/concept_inventory.db-wal
+data/concept_inventory.db-shm
+data/concept_inventory.db.building
 data/study_memory.db
 data/study_memory.db-wal
 data/study_memory.db-shm
