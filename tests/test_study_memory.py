@@ -2711,5 +2711,361 @@ class CurationLayerTests(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_comprehensive_schema_map_and_sequential_teaching_plan(self) -> None:
+        conn = self._conn()
+        try:
+            # Seed topic and concepts
+            t_res = study_memory.TopicResolution("test-map-topic", "Test Map Topic", "general", (), 1.0)
+            topic_id = study_memory._ensure_topic(conn, t_res)
+            
+            c1_id = conn.execute(
+                "INSERT INTO concepts (topic_id, canonical_slug, display_name) VALUES (?, 'concept-one', 'Concept One')",
+                (topic_id,)
+            ).lastrowid
+            
+            c2_id = conn.execute(
+                "INSERT INTO concepts (topic_id, canonical_slug, display_name) VALUES (?, 'concept-two', 'Concept Two')",
+                (topic_id,)
+            ).lastrowid
+            
+            # Let's call retrieval_summary
+            res_str = study_memory.retrieval_summary(conn, topic="test-map-topic", include_model=True)
+            res = json.loads(res_str)
+            brief = res["planning_brief"]
+            
+            # Assert schema map exists
+            self.assertIn("comprehensive_schema_map", brief)
+            self.assertIn("sequential_teaching_plan", brief)
+            
+            schema_map = brief["comprehensive_schema_map"]
+            self.assertEqual(len(schema_map), 2)
+            
+            # Since no attempts are seeded, exposure should be unexposed
+            self.assertEqual(schema_map[0]["exposure_status"], "unexposed")
+            self.assertEqual(schema_map[0]["knowledge_state"], "untested")
+            self.assertEqual(schema_map[0]["attempts_count"], 0)
+            
+            plan = brief["sequential_teaching_plan"]
+            self.assertEqual(plan["current_phase"], "phase_1_clear_fog")
+            self.assertIn("Concept One", plan["target_concepts"])
+            self.assertIn("Concept Two", plan["target_concepts"])
+            
+            # Now seed some attempts
+            # Seed 3 correct answers for Concept One -> should become exposed_deep
+            for idx in range(3):
+                study_memory.log_answer(
+                    conn,
+                    session_id="session-1",
+                    topic="test-map-topic",
+                    concept="Concept One",
+                    question=f"Q1 {idx}",
+                    answer="A1",
+                    correct=2,
+                    tested_claim="Claim One",
+                )
+            
+            # Seed 1 correct answer for Concept Two -> should remain exposed_superficial
+            study_memory.log_answer(
+                conn,
+                session_id="session-1",
+                topic="test-map-topic",
+                concept="Concept Two",
+                question="Q2",
+                answer="A2",
+                correct=2,
+                tested_claim="Claim Two",
+            )
+            
+            # Re-run summary
+            res_str = study_memory.retrieval_summary(conn, topic="test-map-topic", include_model=True)
+            res = json.loads(res_str)
+            brief = res["planning_brief"]
+            schema_map = brief["comprehensive_schema_map"]
+            
+            # Find Concept One in the new map
+            c1_entry = next(c for c in schema_map if c["concept"] == "Concept One")
+            c2_entry = next(c for c in schema_map if c["concept"] == "Concept Two")
+            
+            self.assertEqual(c1_entry["exposure_status"], "exposed_deep")
+            self.assertEqual(c1_entry["attempts_count"], 3)
+            self.assertEqual(c1_entry["sqlite_success_rate"], 1.0)
+            
+            self.assertEqual(c2_entry["exposure_status"], "exposed_superficial")
+            self.assertEqual(c2_entry["attempts_count"], 1)
+            
+            plan = brief["sequential_teaching_plan"]
+            # Since Concept Two is superficial, we should be in recalibrate_gaps
+            self.assertEqual(plan["current_phase"], "phase_2_recalibrate_gaps")
+            self.assertIn("Concept Two", plan["target_concepts"])
+            
+            # Test refinement with Anki
+            brief_refined = {
+                "comprehensive_schema_map": schema_map,
+                "sequential_teaching_plan": plan
+            }
+            # Concept Two has Anki reviews -> upgrade to deep
+            fake_anki_profile = {
+                "concept_rollup": [
+                    {
+                        "concept": "Concept Two",
+                        "worst": "stable",
+                        "cards": 1,
+                        "states": {"stable": 1},
+                        "reviews_count": 5,
+                        "success_rate": 1.0
+                    }
+                ]
+            }
+            study_memory._refine_brief_with_anki(brief_refined, fake_anki_profile)
+            
+            refined_map = brief_refined["comprehensive_schema_map"]
+            c2_refined = next(c for c in refined_map if c["concept"] == "Concept Two")
+            self.assertEqual(c2_refined["exposure_status"], "exposed_deep")
+            self.assertEqual(c2_refined["anki_reviews_count"], 5)
+            self.assertEqual(c2_refined["anki_success_rate"], 1.0)
+            
+            # Both are now deep, phase should transition to phase_3_force_connections
+            refined_plan = brief_refined["sequential_teaching_plan"]
+            self.assertEqual(refined_plan["current_phase"], "phase_3_force_connections")
+            
+        finally:
+            conn.close()
+
+
+class PedagogicalPolicyTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.memory_path = Path(self.tmp.name) / "study_memory.db"
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def _conn(self) -> sqlite3.Connection:
+        return study_memory._get_db(self.memory_path)
+
+    def test_misconception_miss_emits_remediate_interrupt_and_policy_event(self) -> None:
+        conn = self._conn()
+        try:
+            study_memory.log_answer(
+                conn, session_id="s1", topic="colloid cyst", concept="Hydrocephalus Mechanism",
+                question="Q", answer="wrong", correct=0, error_type="conceptual_confusion",
+                misconception="believes obstruction is communicating",
+                tested_claim="Colloid cyst causes obstructive hydrocephalus at the foramen of Monro.",
+            )
+            row = conn.execute(
+                "SELECT event_type, mode, phase, interrupts_json, claim_result_id FROM policy_events "
+                "WHERE session_id = 's1' ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            self.assertIsNotNone(row)
+            self.assertEqual(row["event_type"], "turn")
+            self.assertEqual(row["phase"], "phase_2_recalibrate_gaps")
+            self.assertEqual(row["mode"], "deepen")
+            interrupts = json.loads(row["interrupts_json"])
+            self.assertIn("hydrocephalus mechanism", interrupts["remediate"])
+            self.assertIsNotNone(row["claim_result_id"])
+        finally:
+            conn.close()
+
+    def test_policy_reconstructable_from_event_log_alone(self) -> None:
+        conn = self._conn()
+        try:
+            for idx in range(2):
+                study_memory.log_answer(
+                    conn, session_id="s2", topic="acdf", concept=f"Concept {idx}",
+                    question=f"Q{idx}", answer="a", correct=2,
+                    tested_claim=f"Claim {idx} about ACDF.",
+                )
+            events = conn.execute(
+                "SELECT event_type, mode, phase, claim_result_id FROM policy_events "
+                "WHERE session_id = 's2' ORDER BY id"
+            ).fetchall()
+            # Every assessed turn produced exactly one auditable policy event.
+            self.assertEqual(len(events), 2)
+            self.assertTrue(all(e["mode"] for e in events))
+            self.assertTrue(all(e["claim_result_id"] is not None for e in events))
+        finally:
+            conn.close()
+
+    def test_compute_policy_phase_progression_is_deterministic(self) -> None:
+        # Pure-function check: same schema map -> same phase, every run.
+        unexposed = [{"concept": "A", "concept_id": 1, "exposure_status": "unexposed",
+                      "knowledge_state": "untested"}]
+        superficial = [{"concept": "A", "concept_id": 1, "exposure_status": "exposed_superficial",
+                        "knowledge_state": "passed"}]
+        deep = [{"concept": "A", "concept_id": 1, "exposure_status": "exposed_deep",
+                 "knowledge_state": "passed"},
+                {"concept": "B", "concept_id": 2, "exposure_status": "exposed_deep",
+                 "knowledge_state": "passed"}]
+        for _ in range(3):
+            self.assertEqual(study_memory._compute_teaching_policy(unexposed)["mode"], "orient")
+            self.assertEqual(study_memory._compute_teaching_policy(superficial)["mode"], "deepen")
+            self.assertEqual(study_memory._compute_teaching_policy(deep)["mode"], "connect")
+
+    def test_consolidate_interrupt_lists_due_claims_only(self) -> None:
+        deep = [{"concept": "A", "concept_id": 1, "exposure_status": "exposed_deep",
+                 "knowledge_state": "passed"}]
+        due = [{"concept": "A", "claim_state_id": 9, "retrievability": 0.4}]
+        plan = study_memory._compute_teaching_policy(deep, due_claims=due)
+        self.assertEqual([d["claim_state_id"] for d in plan["interrupts"]["consolidate"]], [9])
+        plan_none = study_memory._compute_teaching_policy(deep)
+        self.assertEqual(plan_none["interrupts"]["consolidate"], [])
+
+
+class SchedulerDeterminismTests(unittest.TestCase):
+    def test_due_set_reproducible_across_runs_given_same_state(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            path = Path(tmp.name) / "m.db"
+            conn = study_memory._get_db(path)
+            # Seed a miss that schedules a due claim deterministically.
+            study_memory.log_answer(
+                conn, session_id="s", topic="tbi", concept="ICP Threshold",
+                question="Q", answer="wrong", correct=0, error_type="numerical_recall",
+                tested_claim="Treat ICP above 22 mmHg.",
+                ts="2026-01-01T00:00:00+00:00",
+            )
+            tid = conn.execute("SELECT topic_id FROM claim_state LIMIT 1").fetchone()[0]
+            run_a = study_memory._due_claims_for_summary(conn, topic_id=int(tid), limit=8)
+            run_b = study_memory._due_claims_for_summary(conn, topic_id=int(tid), limit=8)
+            self.assertTrue(run_a, "seeded miss from 2026-01-01 should be due by now")
+            self.assertEqual(
+                [(d["claim_state_id"], d["next_due_ts"]) for d in run_a],
+                [(d["claim_state_id"], d["next_due_ts"]) for d in run_b],
+            )
+            # No LLM in the decision path: the function is pure SQL + arithmetic.
+            self.assertTrue(all("retrievability" in d for d in run_a))
+            conn.close()
+        finally:
+            tmp.cleanup()
+
+
+class AnkiAdvisoryOnlyTests(unittest.TestCase):
+    def test_anki_refinement_never_mutates_claim_state(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            path = Path(tmp.name) / "m.db"
+            conn = study_memory._get_db(path)
+            study_memory.log_answer(
+                conn, session_id="s", topic="acdf", concept="Dysphagia",
+                question="Q", answer="a", correct=1,
+                tested_claim="Dysphagia is the most common ACDF complication.",
+            )
+            before = conn.execute(
+                "SELECT id, state, priority, stability, difficulty, next_due_ts FROM claim_state"
+            ).fetchall()
+            before_snapshot = [tuple(r) for r in before]
+
+            brief = {
+                "comprehensive_schema_map": [{
+                    "concept": "Dysphagia", "concept_id": 1, "exposure_status": "exposed_superficial",
+                    "knowledge_state": "partially_repaired", "anki_reviews_count": 0, "anki_success_rate": 0.0,
+                }],
+                "sequential_teaching_plan": study_memory._compute_teaching_policy([{
+                    "concept": "Dysphagia", "concept_id": 1, "exposure_status": "exposed_superficial",
+                    "knowledge_state": "partially_repaired",
+                }]),
+            }
+            study_memory._refine_brief_with_anki(brief, {"concept_rollup": [
+                {"concept": "Dysphagia", "reviews_count": 12, "success_rate": 1.0},
+            ]})
+            # The advisory overlay upgraded the brief's exposure view...
+            self.assertEqual(brief["comprehensive_schema_map"][0]["anki_reviews_count"], 12)
+            # ...but claim_state rows are byte-for-byte unchanged.
+            after = conn.execute(
+                "SELECT id, state, priority, stability, difficulty, next_due_ts FROM claim_state"
+            ).fetchall()
+            self.assertEqual([tuple(r) for r in after], before_snapshot)
+            conn.close()
+        finally:
+            tmp.cleanup()
+
+
+class ModelOriginatedEdgeTests(unittest.TestCase):
+    def test_model_proposed_edge_persists_distinctly_and_yields_to_curated(self) -> None:
+        from memory_operations import apply_curation_payload, graph_signals_for_summary
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            path = Path(tmp.name) / "m.db"
+            conn = study_memory._get_db(path)
+            t = study_memory.resolve_topic(conn, "acdf", "")
+            tid = study_memory._ensure_topic(conn, t)
+            c1 = conn.execute(
+                "INSERT INTO concepts (topic_id, canonical_slug, display_name) VALUES (?,?,?)",
+                (tid, "dysphagia", "Dysphagia")).lastrowid
+            c2 = conn.execute(
+                "INSERT INTO concepts (topic_id, canonical_slug, display_name) VALUES (?,?,?)",
+                (tid, "esophageal-retraction", "Esophageal Retraction")).lastrowid
+            conn.commit()
+            ver = study_memory.curation_status(conn)["last_curation_version"]
+
+            apply_curation_payload(conn, {
+                "built_at_version": ver, "summaries": [], "shadow_rules": [],
+                "relationships": [{
+                    "source_concept_id": c2, "target_concept_id": c1,
+                    "relation_type": "prerequisite", "strength": 0.6,
+                    "origin": "model_proposed",
+                    "rationale": "Native knowledge: retraction injury underlies dysphagia.",
+                }],
+            })
+            row = conn.execute("SELECT origin, rationale FROM concept_relationships").fetchone()
+            self.assertEqual(row["origin"], "model_proposed")
+            self.assertTrue(row["rationale"])
+
+            # A later curated, evidence-backed edge dominates the model-proposed one.
+            study_memory.log_answer(
+                conn, session_id="s", topic="acdf", concept="Dysphagia",
+                question="q", answer="a", correct=0, error_type="reasoning_gap",
+                tested_claim="Dysphagia follows esophageal retraction.")
+            crid = conn.execute("SELECT id FROM claim_results LIMIT 1").fetchone()[0]
+            ver = study_memory.curation_status(conn)["last_curation_version"]
+            apply_curation_payload(conn, {
+                "built_at_version": ver, "summaries": [], "shadow_rules": [],
+                "relationships": [{
+                    "source_concept_id": c2, "target_concept_id": c1,
+                    "relation_type": "prerequisite", "strength": 0.85,
+                    "origin": "curated", "evidence_claim_result_ids": [crid],
+                }],
+            })
+            row = conn.execute("SELECT origin, strength FROM concept_relationships").fetchone()
+            self.assertEqual(row["origin"], "curated")
+            self.assertEqual(round(float(row["strength"]), 2), 0.85)
+
+            signals = graph_signals_for_summary(conn, must_retest_concept_ids=[c1])
+            self.assertTrue(signals)
+            self.assertEqual(signals[0]["origin"], "curated")
+            conn.close()
+        finally:
+            tmp.cleanup()
+
+    def test_model_proposed_edge_requires_rationale(self) -> None:
+        from memory_operations import apply_curation_payload, CurationError
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            path = Path(tmp.name) / "m.db"
+            conn = study_memory._get_db(path)
+            t = study_memory.resolve_topic(conn, "acdf", "")
+            tid = study_memory._ensure_topic(conn, t)
+            c1 = conn.execute(
+                "INSERT INTO concepts (topic_id, canonical_slug, display_name) VALUES (?,?,?)",
+                (tid, "a", "A")).lastrowid
+            c2 = conn.execute(
+                "INSERT INTO concepts (topic_id, canonical_slug, display_name) VALUES (?,?,?)",
+                (tid, "b", "B")).lastrowid
+            conn.commit()
+            ver = study_memory.curation_status(conn)["last_curation_version"]
+            with self.assertRaises(CurationError):
+                apply_curation_payload(conn, {
+                    "built_at_version": ver, "summaries": [], "shadow_rules": [],
+                    "relationships": [{
+                        "source_concept_id": c2, "target_concept_id": c1,
+                        "relation_type": "prerequisite", "strength": 0.6,
+                        "origin": "model_proposed",  # no rationale, no evidence
+                    }],
+                })
+            conn.close()
+        finally:
+            tmp.cleanup()
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -818,6 +818,192 @@ def search_sections(
     }
 
 
+DEFAULT_CATALOG_PATH = DATA_DIR / "acgme_curriculum.json"
+CONTRAST_TOKENS = frozenset({"versus", "vs", "differential", "mimic", "mimics", "contrast"})
+# Folder roles drive light edge typing. Concepts are atomic part-of nodes;
+# Reports/Operative Guides/Study Material are composite artifacts a concept is
+# part-of; Brain Dumps/Consults are associated experiential context.
+PART_OF_FOLDERS = frozenset({"Reports", "Operative Guides", "Study Material"})
+
+
+def _resolve_anchor_note(conn: sqlite3.Connection, note: str) -> sqlite3.Row | None:
+    candidates = [note, note if note.endswith(".md") else f"{note}.md"]
+    row = conn.execute(
+        "SELECT note_path, title, folder, domain_json FROM vault_notes "
+        "WHERE note_path IN (?, ?) OR title = ? LIMIT 1",
+        (candidates[0], candidates[1], note),
+    ).fetchone()
+    return row
+
+
+def _infer_edge_type(neighbor_folder: str, neighbor_title: str, direction: str) -> str:
+    title_tokens = set(_tokens(neighbor_title))
+    if title_tokens & CONTRAST_TOKENS:
+        return "contrasts-with"
+    if direction == "outbound" and neighbor_folder == "Concepts":
+        return "part-of"
+    if direction == "inbound" and neighbor_folder in PART_OF_FOLDERS:
+        return "part-of"
+    return "associated-with"
+
+
+def _acgme_neighbors(catalog_path: Path, anchor_title: str, anchor_domain: list[str], limit: int) -> list[dict[str, object]]:
+    try:
+        catalog = json.loads(catalog_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return []
+    anchor_tokens = set(_tokens(anchor_title))
+    if not anchor_tokens:
+        return []
+    domain_lower = {str(d).lower() for d in anchor_domain}
+    scored: list[tuple[float, dict[str, object]]] = []
+    for _key, milestone in (catalog.get("milestones") or {}).items():
+        for topic in milestone.get("topics", []) or []:
+            title = str(topic.get("title", ""))
+            topic_tokens = set(_tokens(title))
+            if not topic_tokens:
+                continue
+            overlap = anchor_tokens & topic_tokens
+            if not overlap:
+                continue
+            # Skip the anchor itself; surface only *adjacent* competencies.
+            if topic_tokens <= anchor_tokens and anchor_tokens <= topic_tokens:
+                continue
+            score = len(overlap) / len(anchor_tokens | topic_tokens)
+            if str(topic.get("domain", "")).lower() in domain_lower:
+                score += 0.1
+            scored.append((score, {
+                "competency": title,
+                "domain": topic.get("domain", ""),
+                "pgy_target": topic.get("pgy_target"),
+                "priority": topic.get("priority", ""),
+                "shared_tokens": sorted(overlap),
+            }))
+    scored.sort(key=lambda x: (-x[0], str(x[1]["competency"])))
+    seen: set[str] = set()
+    out: list[dict[str, object]] = []
+    for _score, item in scored:
+        if item["competency"] in seen:
+            continue
+        seen.add(str(item["competency"]))
+        out.append(item)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def landscape_map(
+    *,
+    db_path: Path = DEFAULT_INDEX_DB,
+    catalog_path: Path = DEFAULT_CATALOG_PATH,
+    note: str,
+    max_neighbors: int = 8,
+    include_acgme: bool = True,
+) -> dict[str, object]:
+    """Deterministic pre-session knowledge landscape for an artifact-anchored review.
+
+    Curriculum adjacency comes from the vault wikilink graph (outbound links the
+    artifact makes plus inbound links other notes make to it), never embedding
+    similarity. Branching is capped at `max_neighbors`; edge types are inferred
+    from folder role and link direction. ACGME competency neighbors are added by
+    token overlap against the catalog. No embeddings, no LLM, no textbook RAG.
+
+    The result is meant to populate the agent's context before the session so it
+    has neighboring nodes ready to probe, repair, or extend mid-session, even
+    when the neighbors are never surfaced to the learner (brief 4a).
+    """
+    with _connect(db_path) as conn:
+        anchor = _resolve_anchor_note(conn, note)
+        if anchor is None:
+            return {"ok": False, "reason": "anchor_note_not_found", "note": note,
+                    "neighbors": [], "acgme_neighbors": [], "knowledge_boundary": KNOWLEDGE_BOUNDARY}
+        anchor_path = anchor["note_path"]
+        anchor_title = anchor["title"]
+        anchor_domain = list(_json_tuple(anchor["domain_json"]))
+        anchor_link_keys = {anchor_path[:-3] if anchor_path.endswith(".md") else anchor_path, anchor_title}
+
+        # Outbound: every wikilink the anchor's sections make.
+        outbound_targets: list[str] = []
+        for row in conn.execute(
+            "SELECT wikilinks_json FROM vault_sections WHERE note_path = ?", (anchor_path,)
+        ):
+            for target in _json_tuple(row["wikilinks_json"]):
+                target = str(target)
+                if target not in outbound_targets and target not in anchor_link_keys:
+                    outbound_targets.append(target)
+
+        # Inbound: notes whose sections link to the anchor.
+        inbound_paths: list[str] = []
+        for row in conn.execute(
+            "SELECT DISTINCT note_path, wikilinks_json FROM vault_sections "
+            "WHERE note_path != ? AND wikilinks_json LIKE ?",
+            (anchor_path, f'%{anchor_title}%'),
+        ):
+            links = {str(t) for t in _json_tuple(row["wikilinks_json"])}
+            if links & anchor_link_keys and row["note_path"] not in inbound_paths:
+                inbound_paths.append(row["note_path"])
+
+        neighbors: list[dict[str, object]] = []
+        seen_paths: set[str] = {anchor_path}
+
+        def resolve_note(link_or_path: str) -> sqlite3.Row | None:
+            cand = link_or_path if link_or_path.endswith(".md") else f"{link_or_path}.md"
+            return conn.execute(
+                "SELECT note_path, title, folder, domain_json, summary FROM vault_notes "
+                "WHERE note_path = ? OR title = ? LIMIT 1",
+                (cand, link_or_path),
+            ).fetchone()
+
+        def add_neighbor(link_or_path: str, direction: str) -> None:
+            row = resolve_note(link_or_path)
+            if row is None or row["note_path"] in seen_paths:
+                return
+            seen_paths.add(row["note_path"])
+            ndomain = list(_json_tuple(row["domain_json"]))
+            shared_domain = bool(set(ndomain) & set(anchor_domain))
+            neighbors.append({
+                "note_path": row["note_path"],
+                "title": row["title"],
+                "folder": row["folder"],
+                "domain": ndomain,
+                "summary": row["summary"],
+                "direction": direction,
+                "edge_type": _infer_edge_type(row["folder"], row["title"], direction),
+                "edge_type_inferred": True,
+                "shared_domain": shared_domain,
+            })
+
+        for target in outbound_targets:
+            add_neighbor(target, "outbound")
+        for path in inbound_paths:
+            add_neighbor(path, "inbound")
+
+        # Branching cap: prioritize same-domain Concepts/part-of edges, then the rest.
+        neighbors.sort(key=lambda n: (
+            0 if n["shared_domain"] else 1,
+            0 if n["edge_type"] in ("part-of", "contrasts-with") else 1,
+            str(n["title"]),
+        ))
+        capped = neighbors[:max(0, max_neighbors)]
+
+        acgme = (
+            _acgme_neighbors(catalog_path, anchor_title, anchor_domain, max_neighbors)
+            if include_acgme else []
+        )
+
+    return {
+        "ok": True,
+        "anchor": {"note_path": anchor_path, "title": anchor_title, "domain": anchor_domain},
+        "max_neighbors": max_neighbors,
+        "neighbor_count": len(capped),
+        "neighbors_available": len(neighbors),
+        "neighbors": capped,
+        "acgme_neighbors": acgme,
+        "adjacency_source": "vault_wikilinks+acgme_catalog",
+        "knowledge_boundary": KNOWLEDGE_BOUNDARY,
+    }
+
+
 def get_section(
     *,
     db_path: Path = DEFAULT_INDEX_DB,
@@ -1363,6 +1549,12 @@ def main() -> None:
     get_parser.add_argument("--heading", default="")
     get_parser.add_argument("--pretty", action="store_true", default=argparse.SUPPRESS)
 
+    landscape_parser = sub.add_parser("landscape")
+    landscape_parser.add_argument("--note", required=True)
+    landscape_parser.add_argument("--max-neighbors", type=int, default=8)
+    landscape_parser.add_argument("--no-acgme", action="store_true")
+    landscape_parser.add_argument("--pretty", action="store_true", default=argparse.SUPPRESS)
+
     plan_parser = sub.add_parser("plan")
     plan_parser.add_argument("task")
     plan_parser.add_argument("--pretty", action="store_true", default=argparse.SUPPRESS)
@@ -1430,6 +1622,13 @@ def main() -> None:
             note=args.note,
             section_type=args.section_type,
             heading=args.heading,
+        )
+    elif args.command == "landscape":
+        payload = landscape_map(
+            db_path=db_path,
+            note=args.note,
+            max_neighbors=args.max_neighbors,
+            include_acgme=not args.no_acgme,
         )
     elif args.command == "plan":
         payload = task_plan(args.task)

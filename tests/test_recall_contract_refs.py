@@ -328,6 +328,37 @@ class RecallContractReferenceTests(unittest.TestCase):
         self.assertIn("`startup-recall` itself is SQLite learner-state plus optional Anki overlay, not Obsidian vault search", retrieval)
         self.assertIn("do not query the vault at startup for the same document", retrieval)
         self.assertIn("Do not query vault intelligence at startup", startup)
+        # The approved landscape pass is a deterministic graph lookup, distinct
+        # from banned semantic vault recall. Guard both: it must be present and
+        # must not reintroduce semantic recall at startup.
+        self.assertIn("vault_index.py landscape", startup)
+        self.assertIn("deterministic graph lookup", startup)
+        self.assertNotIn("vault_retriever.py", startup)
+
+    def test_study_review_contracts_carry_deterministic_policy_invariant(self) -> None:
+        startup = (ROOT / ".agents/shared/commands/study-review-startup.md").read_text()
+        turn = (ROOT / ".agents/shared/commands/study-review-turn.md").read_text()
+        doctrine = (ROOT / ".agents/shared/commands/adaptive-teaching-doctrine.md").read_text()
+        # The mode/phase is deterministic and the five named modes plus the two
+        # interrupts must be addressable from the contracts.
+        for fragment in ("comprehensive_schema_map", "sequential_teaching_plan",
+                         "ORIENT", "DEEPEN", "CONNECT", "interrupts.remediate", "interrupts.consolidate"):
+            with self.subTest(startup_fragment=fragment):
+                self.assertIn(fragment, startup)
+        self.assertIn("policy=", turn)
+        for fragment in ("ORIENT", "DEEPEN", "CONNECT", "REMEDIATE", "CONSOLIDATE",
+                         "never pick the macro phase yourself", "interrupts"):
+            with self.subTest(doctrine_fragment=fragment):
+                self.assertIn(fragment, doctrine)
+        # The graph-leads/model-completes principle (brief 4b) must be instructed.
+        self.assertIn("skeleton, not a ceiling", doctrine.lower())
+        self.assertIn("model_proposed", doctrine)
+        # The interpretation contract must document the new planning_brief surfaces.
+        retrieval = (ROOT / ".agents/shared/commands/memory-retrieval.md").read_text()
+        for fragment in ("comprehensive_schema_map", "sequential_teaching_plan",
+                         "interrupts.remediate", "interrupts.consolidate", "exposure_status"):
+            with self.subTest(retrieval_policy_fragment=fragment):
+                self.assertIn(fragment, retrieval)
 
     def test_core_workflows_reference_vault_intelligence(self) -> None:
         paths = (

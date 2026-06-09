@@ -7,7 +7,13 @@ Load this after Gabriel answers an assessed clinical question. It governs gradin
 1. Grade briefly: correct, partial, or incorrect.
 2. Reveal only the next useful layer. Do not dump the topic map after a shallow answer.
 3. If wrong or partial, repair the exact missing edge, false rule, discriminator, threshold, mechanism, or sequence.
-4. Ask one follow-up or next question, then stop.
+4. Choose the next question from the deterministic policy. `log-answer` recomputes it from the updated learner state and prints a `policy=...` line carrying `mode`, `phase`, and `interrupts` (see Memory Logging below). Obey it — never pick the phase yourself.
+   - **ORIENT** (`phase_1_clear_fog`): keep questions superficial; present a "lay of the land" menu at boundaries.
+   - **DEEPEN** (`phase_2_recalibrate_gaps`): deepen with Socratic drills on active gaps, prerequisites, and discriminators.
+   - **CONNECT** (`phase_3_force_connections`): ask multi-concept transfer cases across already-seen concepts; encourage boards-style defense.
+   - **Interrupts**: if `interrupts.remediate` is non-empty, re-teach the flagged misconception and retest with a changed frame before new material; if `interrupts.consolidate` is non-empty, interleave a brief spaced-retrieval probe of a due claim. Interrupts overlay the current phase.
+   - **Socratic Choice**: proactively offer Gabriel choices at boundaries per `socratic_choice_directives`.
+5. Ask one question or choice menu, then stop.
 
 Use high-friction Socratic questioning before commitment; use clarity and depth after commitment. Push beyond generic recall toward discrimination, quantification, sequencing, mechanism, management consequence, or transfer as performance supports.
 
@@ -44,6 +50,8 @@ python3 src/study_memory.py log-answer \
 ```
 
 Correctness: `2` correct without help, `1` partial, `0` wrong/misconception.
+
+`log-answer` prints `OK exchange_id=N` followed by a `policy={...}` line with the recomputed `mode`, `phase`, and `interrupts`. Parse it silently and let it drive the next question (step 4). The same policy event is persisted to `policy_events` for audit; you do not write it yourself.
 
 Use `--match-claim-state-id` for intentional retests from recall. Use `--repairs-claim-state-ids` only for explicitly repaired open claims. Use the primary document topic for native document concepts; use the related topic's canonical name for validated related-topic probes.
 

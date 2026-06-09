@@ -166,6 +166,115 @@ class VaultIndexTests(unittest.TestCase):
         self.assertIn("quick_reference", plan["preferred_section_types"])
         self.assertIn("evidence_card", plan["preferred_section_types"])
 
+    def _build_linked_vault(self, root: Path) -> Path:
+        vault = root / "vault"
+        reports = vault / "Reports"
+        concepts = vault / "Concepts"
+        brain_dumps = vault / "Brain Dumps"
+        for d in (reports, concepts, brain_dumps):
+            d.mkdir(parents=True)
+        # Anchor report links out to two concepts.
+        (reports / "Acute Spinal Cord Injury.md").write_text(
+            "**Anchor**: acute SCI management.\n\n"
+            "## Related In This Vault\n\n"
+            "- [[Concepts/MAP Augmentation|MAP Augmentation]]\n"
+            "- [[Concepts/Steroid Decision|Steroid Decision]]\n\n"
+            "---\ndomain: spine\nsummary: \"Acute spinal cord injury anchor.\"\n"
+            "tags: [type/report, domain/spine]\n---\n",
+            encoding="utf-8",
+        )
+        (concepts / "MAP Augmentation.md").write_text(
+            "**MAP Augmentation**: vasopressor target.\n\n"
+            "---\ndomain: spine\nsummary: \"MAP goals in SCI.\"\ntags: [type/concept, domain/spine]\n---\n",
+            encoding="utf-8",
+        )
+        (concepts / "Steroid Decision.md").write_text(
+            "**Steroid Decision**: NASCIS controversy.\n\n"
+            "---\ndomain: spine\nsummary: \"Steroid decision in SCI.\"\ntags: [type/concept, domain/spine]\n---\n",
+            encoding="utf-8",
+        )
+        # A brain dump links *into* the anchor (inbound edge).
+        (brain_dumps / "SCI Service Note.md").write_text(
+            "## Clinical Focus\n\n- Inbound link test.\n\n"
+            "## Related In This Vault\n\n- [[Reports/Acute Spinal Cord Injury|Acute Spinal Cord Injury]]\n\n"
+            "---\ndomain: spine\nsummary: \"Service note linking to the anchor.\"\n"
+            "tags: [type/reference, domain/spine]\n---\n",
+            encoding="utf-8",
+        )
+        return vault
+
+    def _catalog(self, root: Path) -> Path:
+        path = root / "acgme.json"
+        path.write_text(json.dumps({
+            "milestones": {
+                "SPINE": {"name": "Spine", "topics": [
+                    {"title": "Acute Spinal Cord Injury - ASIA Classification",
+                     "domain": "spine", "pgy_target": 1, "priority": "core"},
+                    {"title": "Brain Tumor Craniotomy",
+                     "domain": "tumor", "pgy_target": 3, "priority": "important"},
+                ]},
+            },
+            "total_topics": 2,
+        }), encoding="utf-8")
+        return path
+
+    def test_landscape_traverses_wikilinks_with_branching_cap(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            vault = self._build_linked_vault(root)
+            db = root / "vault_index.db"
+            catalog = self._catalog(root)
+            vault_index.sync_vault(vault_root=vault, db_path=db)
+
+            res = vault_index.landscape_map(
+                db_path=db, catalog_path=catalog,
+                note="Reports/Acute Spinal Cord Injury.md", max_neighbors=8,
+            )
+            self.assertTrue(res["ok"], res)
+            titles = {n["title"] for n in res["neighbors"]}
+            # Outbound concept links and the inbound brain-dump link are all found.
+            self.assertIn("MAP Augmentation", titles)
+            self.assertIn("Steroid Decision", titles)
+            self.assertIn("SCI Service Note", titles)
+            directions = {n["title"]: n["direction"] for n in res["neighbors"]}
+            self.assertEqual(directions["MAP Augmentation"], "outbound")
+            self.assertEqual(directions["SCI Service Note"], "inbound")
+            # Adjacency comes from the wikilink graph, never embedding similarity.
+            self.assertEqual(res["adjacency_source"], "vault_wikilinks+acgme_catalog")
+
+    def test_landscape_branching_factor_is_capped(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            vault = self._build_linked_vault(root)
+            db = root / "vault_index.db"
+            catalog = self._catalog(root)
+            vault_index.sync_vault(vault_root=vault, db_path=db)
+
+            res = vault_index.landscape_map(
+                db_path=db, catalog_path=catalog,
+                note="Reports/Acute Spinal Cord Injury.md", max_neighbors=1,
+            )
+            self.assertEqual(res["neighbor_count"], 1)
+            self.assertGreaterEqual(res["neighbors_available"], 3)
+            self.assertLessEqual(len(res["neighbors"]), 1)
+
+    def test_landscape_acgme_neighbors_match_token_overlap(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            vault = self._build_linked_vault(root)
+            db = root / "vault_index.db"
+            catalog = self._catalog(root)
+            vault_index.sync_vault(vault_root=vault, db_path=db)
+
+            res = vault_index.landscape_map(
+                db_path=db, catalog_path=catalog,
+                note="Reports/Acute Spinal Cord Injury.md", max_neighbors=8,
+            )
+            competencies = {a["competency"] for a in res["acgme_neighbors"]}
+            self.assertIn("Acute Spinal Cord Injury - ASIA Classification", competencies)
+            # An unrelated competency (tumor) must not appear.
+            self.assertNotIn("Brain Tumor Craniotomy", competencies)
+
     def test_refresh_after_vault_write_skips_temp_vaults(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch.object(vault_index, "sync_vault") as sync:

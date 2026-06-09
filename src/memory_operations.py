@@ -579,14 +579,30 @@ def _validate_relationship(rel: dict[str, Any], idx: int) -> None:
         isinstance(strength, (int, float)) and 0.0 <= float(strength) <= 1.0,
         f"relationships[{idx}].strength must be a number in [0, 1]",
     )
-    evidence_claims = rel.get("evidence_claim_result_ids") or []
-    evidence_summary_client = rel.get("evidence_summary_client_id") or ""
+    origin = rel.get("origin", "curated")
     _require(
-        bool(evidence_claims) or bool(evidence_summary_client),
-        f"relationships[{idx}] must cite evidence (claim_result_ids or evidence_summary_client_id)",
+        origin in ("curated", "model_proposed"),
+        f"relationships[{idx}].origin must be 'curated' or 'model_proposed', got {origin!r}",
     )
-    for j, eid in enumerate(evidence_claims):
-        _validate_int(eid, f"relationships[{idx}].evidence_claim_result_ids[{j}]")
+    if origin == "model_proposed":
+        # Native-knowledge discovery (brief 4b): the agent spotted a missing
+        # prerequisite/confusion the per-turn log does not yet evidence. It is
+        # persisted distinctly and requires a rationale instead of claim
+        # evidence, so it stays auditable and never poses as evidence-backed
+        # learner-model truth.
+        _require(
+            isinstance(rel.get("rationale"), str) and rel["rationale"].strip(),
+            f"relationships[{idx}].origin='model_proposed' requires a non-empty rationale",
+        )
+    else:
+        evidence_claims = rel.get("evidence_claim_result_ids") or []
+        evidence_summary_client = rel.get("evidence_summary_client_id") or ""
+        _require(
+            bool(evidence_claims) or bool(evidence_summary_client),
+            f"relationships[{idx}] must cite evidence (claim_result_ids or evidence_summary_client_id)",
+        )
+        for j, eid in enumerate(evidence_claims):
+            _validate_int(eid, f"relationships[{idx}].evidence_claim_result_ids[{j}]")
 
 
 def _validate_shadow_rule(rule: dict[str, Any], idx: int) -> None:
@@ -810,14 +826,28 @@ def apply_curation_payload(
                 not evidence_client or evidence_summary_id is not None,
                 f"relationships[{i}].evidence_summary_client_id={evidence_client!r} does not match any summary in this payload",
             )
+            origin = r.get("origin", "curated")
+            rationale = str(r.get("rationale", "")).strip()
+            # Reconciliation: an evidence-backed ('curated') edge always dominates a
+            # model_proposed one, so native-knowledge discovery is additive and
+            # never silently overwrites learner-model structure. A model_proposed
+            # edge landing on an existing curated edge leaves strength/evidence
+            # untouched; only a curated update may raise them.
             cur = conn.execute(
                 """INSERT INTO concept_relationships
                        (source_concept_id, target_concept_id, relation_type, strength,
-                        evidence_summary_id, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                        evidence_summary_id, origin, rationale, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(source_concept_id, target_concept_id, relation_type) DO UPDATE SET
-                       strength = excluded.strength,
-                       evidence_summary_id = COALESCE(excluded.evidence_summary_id, concept_relationships.evidence_summary_id),
+                       strength = CASE WHEN excluded.origin = 'curated'
+                                       THEN excluded.strength ELSE concept_relationships.strength END,
+                       evidence_summary_id = CASE WHEN excluded.origin = 'curated'
+                                       THEN COALESCE(excluded.evidence_summary_id, concept_relationships.evidence_summary_id)
+                                       ELSE concept_relationships.evidence_summary_id END,
+                       origin = CASE WHEN excluded.origin = 'curated' OR concept_relationships.origin = 'curated'
+                                       THEN 'curated' ELSE 'model_proposed' END,
+                       rationale = CASE WHEN excluded.origin = 'curated' THEN concept_relationships.rationale
+                                       ELSE COALESCE(NULLIF(excluded.rationale, ''), concept_relationships.rationale) END,
                        updated_at = excluded.updated_at""",
                 (
                     int(r["source_concept_id"]),
@@ -825,6 +855,8 @@ def apply_curation_payload(
                     r["relation_type"],
                     float(r.get("strength", 0.5)),
                     evidence_summary_id,
+                    origin,
+                    rationale,
                     ts,
                     ts,
                 ),
@@ -1049,7 +1081,7 @@ def graph_signals_for_summary(
     for cid in concept_ids:
         rows = conn.execute(
             """SELECT cr.id, cr.relation_type, cr.source_concept_id, cr.target_concept_id,
-                      cr.strength, cr.evidence_summary_id, cr.updated_at,
+                      cr.strength, cr.evidence_summary_id, cr.updated_at, cr.origin, cr.rationale,
                       cs.display_name AS source_name,
                       ct.display_name AS target_name
                  FROM concept_relationships cr
@@ -1079,6 +1111,8 @@ def graph_signals_for_summary(
                 "direction": direction,
                 "strength": float(r["strength"]),
                 "evidence_summary_id": int(r["evidence_summary_id"]) if r["evidence_summary_id"] is not None else None,
+                "origin": r["origin"] if "origin" in r.keys() else "curated",
+                "rationale": (r["rationale"] if "rationale" in r.keys() else "") or "",
             })
     return signals
 

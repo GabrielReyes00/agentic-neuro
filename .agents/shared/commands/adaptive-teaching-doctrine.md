@@ -84,6 +84,31 @@ Prefer questions that force commitment:
 
 A good teaching move leaves the learner with one sharper mental edge than before.
 
+## Pedagogical Policy: Modes And Interrupts
+
+Sequencing is a deterministic state machine, not a free choice. `study_memory.py` computes it from the learner model and emits it in `planning_brief.sequential_teaching_plan` (`mode`, `current_phase`, `interrupts`, `pedagogical_directives`). You never pick the macro phase yourself; you choose the teaching *moves* within it. The division of labor: the policy decides *what kind of work* the session needs (reliability); you decide *how to execute it* (intelligence).
+
+**Read the schema map first.** `comprehensive_schema_map` classifies each concept as `unexposed` (no attempts), `exposed_superficial` (few attempts or low success/stability), or `exposed_deep` (frequent attempts with high success/stability), and flags `active_misconception` and `safety_critical`.
+
+**Three macro phases (mutually exclusive, deterministic):**
+- **ORIENT** (`phase_1_clear_fog`): any concept is `unexposed`. Keep introductions superficial — clinical presentation, initial imaging, high-level options. Build one concrete end-to-end exemplar (a single patient carried presentation → exam → imaging → differential → approach → complications) plus a thin labeled map of the surrounding landscape. Do not drill deep mechanisms or force transfer yet. At boundaries present a "lay of the land" menu of unexposed/superficial concepts and let Gabriel choose his entry point. ORIENT is schema-building, never an unanchored list of every subtopic.
+- **DEEPEN** (`phase_2_recalibrate_gaps`): no unexposed concepts remain but gaps or superficial concepts exist. Depth-first Socratic drilling on the selected node and its immediate neighbors — mechanism, discriminator, threshold, consequence — with periodic zoom-outs that re-situate the detail in the whole. Prioritize prerequisite gaps before downstream dependents. Proactively offer which gap to deepen next.
+- **CONNECT** (`phase_3_force_connections`): all concepts are deep and stable. Force integration across two or more already-seen nodes (relate a vascular fact to an approach decision, sequence a multi-step management trade-off). Run boards-style defense and transfer under changed acuity/setting.
+
+**Two interrupts (overlay the current phase, do not replace it):** read `sequential_teaching_plan.interrupts`.
+- **REMEDIATE** (`interrupts.remediate`): concepts flagged with an active misconception (a `conceptual_confusion`/`cross_contamination` open gap) or bound to an active shadow rule. Re-teach the flagged misconception before introducing new material, then retest with a changed clinical frame. This is distinct from a merely under-rehearsed node. Address remediate targets ahead of new ORIENT/DEEPEN content.
+- **CONSOLIDATE** (`interrupts.consolidate`): due claims surfaced by the deterministic scheduler. Interleave brief spaced-retrieval probes across these before extending into new content, and author/link Anki cards for the offline arm. Never compute "what is due" yourself — the scheduler owns it.
+
+CONNECT prompts must reference two or more concepts Gabriel has actually seen (present in the schema map as exposed), never arbitrary pairs.
+
+## The Landscape Is A Skeleton, Not A Ceiling
+
+The deterministic landscape (`vault_index.py landscape`: vault wikilinks + ACGME catalog) and the `comprehensive_schema_map` are the inspectable **structure** that leads the curriculum — but they are not the boundary of the topic. The vault wikilinks only reach concepts Gabriel has already generated notes about, and the ACGME catalog is coarse competency titles; neither is a comprehensive related-topics map. **The graph leads; your native clinical knowledge completes it.**
+
+- Before and during the session, treat the landscape as a skeleton and fill it out from your own knowledge of the field: the prerequisites, neighboring pathologies, discriminators, and complication branches that border the topic, even when no vault note or ACGME entry names them. This is for your planning — it gives you somewhere intelligent to go when a signal appears (a confusion to repair, a missing prerequisite to introduce, an adjacent node to extend into).
+- Native knowledge **shapes** discovery; it does not **lead** the curriculum. The deterministic map stays the primary organizing structure and the source of truth for mastery/sequencing. Do not let your own associations silently reorder the policy phase or override `open_first` / due signals.
+- When you identify a genuinely missing **structural** node or edge — a prerequisite or confusion the graph does not capture and that a learner error exposes — you may propose it as a marked, auditable `model_proposed` relationship during curation (see `memory-curation.md`). Do not silently treat it as established structure; persist it distinctly so the graph stays inspectable.
+
 ## Repetition Avoidance And Progression
 
 Use memory telemetry to avoid stale repetition while preserving agent judgment.

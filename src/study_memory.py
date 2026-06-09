@@ -404,6 +404,8 @@ CREATE TABLE IF NOT EXISTS concept_relationships (
     relation_type TEXT NOT NULL CHECK(relation_type IN ('confused_with', 'prerequisite')),
     strength REAL NOT NULL DEFAULT 0.5 CHECK(strength >= 0 AND strength <= 1),
     evidence_summary_id INTEGER,
+    origin TEXT NOT NULL DEFAULT 'curated' CHECK(origin IN ('curated', 'model_proposed')),
+    rationale TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CHECK(source_concept_id != target_concept_id),
@@ -472,6 +474,23 @@ CREATE TABLE IF NOT EXISTS shadow_rule_checks (
 );
 CREATE INDEX IF NOT EXISTS idx_shadow_rule_checks_rule ON shadow_rule_checks(shadow_rule_id);
 
+CREATE TABLE IF NOT EXISTS policy_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL DEFAULT '',
+    ts TEXT NOT NULL,
+    event_type TEXT NOT NULL CHECK(event_type IN ('startup', 'turn')),
+    topic_id INTEGER,
+    mode TEXT NOT NULL,
+    phase TEXT NOT NULL,
+    interrupts_json TEXT NOT NULL DEFAULT '{}',
+    inputs_json TEXT NOT NULL DEFAULT '{}',
+    claim_result_id INTEGER,
+    FOREIGN KEY(topic_id) REFERENCES topics(id),
+    FOREIGN KEY(claim_result_id) REFERENCES claim_results(id)
+);
+CREATE INDEX IF NOT EXISTS idx_policy_events_session ON policy_events(session_id);
+CREATE INDEX IF NOT EXISTS idx_policy_events_topic ON policy_events(topic_id);
+
 """
 SCHEMA_SQL += SERVICE_SCHEMA_SQL
 
@@ -515,6 +534,18 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
         if "rotation_id" not in cols:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN rotation_id INTEGER")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_claim_state_origin ON claim_state(origin)")
+    # Mark model-originated graph edges distinctly so native-knowledge discovery
+    # is auditable and never silently overwrites evidence-backed learner-graph
+    # structure (brief 4b). Pre-existing edges backfill to 'curated'.
+    rel_cols = {row["name"] for row in conn.execute("PRAGMA table_info(concept_relationships)")}
+    if "origin" not in rel_cols:
+        conn.execute(
+            "ALTER TABLE concept_relationships ADD COLUMN origin TEXT NOT NULL DEFAULT 'curated'"
+        )
+    if "rationale" not in rel_cols:
+        conn.execute(
+            "ALTER TABLE concept_relationships ADD COLUMN rationale TEXT NOT NULL DEFAULT ''"
+        )
     _backfill_memory_schedule(conn)
     _normalize_session_cards(conn)
 
@@ -2078,6 +2109,23 @@ def log_answer(
                 doc_path=doc_path,
                 now=now,
             )
+        if origin == "assessed":
+            # Recompute the deterministic teaching policy from the updated
+            # learner state and append an auditable per-turn policy event.
+            # Policy logging must never block answer logging.
+            try:
+                plan = _current_policy_for_topic(conn, topic_id=topic_id, topic_slug=resolution.slug)
+                _record_policy_event(
+                    conn,
+                    session_id=session_id,
+                    event_type="turn",
+                    topic_id=topic_id,
+                    plan=plan,
+                    claim_result_id=result_id,
+                    now=now,
+                )
+            except Exception:
+                pass
     if competency_target and service_row:
         # Touching a rubric target during service learning advances it off 'open'.
         conn.execute(
@@ -3147,9 +3195,302 @@ def _claim_state_repair_stats(conn: sqlite3.Connection, claim_state_id: int) -> 
     }
 
 
+MISCONCEPTION_GAP_TYPES = frozenset({"conceptual_confusion", "cross_contamination"})
+OPEN_GAP_STATES = frozenset({"missed", "partially_repaired", "regressed"})
+POLICY_MODE_FOR_PHASE = {
+    "phase_1_clear_fog": "orient",
+    "phase_2_recalibrate_gaps": "deepen",
+    "phase_3_force_connections": "connect",
+}
+
+
+def _concept_relations(conn: sqlite3.Connection, cid: int) -> dict[str, list[str]]:
+    """Return prerequisite and confused-with neighbors for a concept from the learner graph."""
+    rows = conn.execute(
+        """SELECT cr.relation_type, cr.source_concept_id, cr.target_concept_id,
+                  c_src.display_name AS source_name, c_tgt.display_name AS target_name
+           FROM concept_relationships cr
+           JOIN concepts c_src ON c_src.id = cr.source_concept_id
+           JOIN concepts c_tgt ON c_tgt.id = cr.target_concept_id
+           WHERE cr.source_concept_id = ? OR cr.target_concept_id = ?""",
+        (cid, cid),
+    ).fetchall()
+    prereqs = []
+    competitors = []
+    for r in rows:
+        rel = r["relation_type"]
+        src_id = int(r["source_concept_id"])
+        tgt_id = int(r["target_concept_id"])
+        if rel == "prerequisite":
+            if tgt_id == cid:
+                prereqs.append(r["source_name"])
+        elif rel == "confused_with":
+            other_name = r["target_name"] if src_id == cid else r["source_name"]
+            competitors.append(other_name)
+    res: dict[str, list[str]] = {}
+    if prereqs:
+        res["prerequisites"] = prereqs
+    if competitors:
+        res["semantic_competitors"] = competitors
+    return res
+
+
+def _active_prereq_gaps(conn: sqlite3.Connection, cid: int) -> list[str]:
+    """Return prerequisite concepts of `cid` that currently have open assessed gaps."""
+    rows = conn.execute(
+        """SELECT c_src.display_name
+           FROM concept_relationships cr
+           JOIN concepts c_src ON c_src.id = cr.source_concept_id
+           JOIN claim_state cs ON cs.concept_id = cr.source_concept_id
+           WHERE cr.target_concept_id = ? AND cr.relation_type = 'prerequisite'
+             AND cs.state IN ('missed', 'partially_repaired', 'regressed')
+             AND (cs.origin IS NULL OR cs.origin = 'assessed')""",
+        (cid,),
+    ).fetchall()
+    return [r["display_name"] for r in rows]
+
+
+def _build_schema_map(conn: sqlite3.Connection, topic_slug: str) -> list[dict[str, object]]:
+    """Deterministic per-concept exposure/mastery map for a topic from the learner model."""
+    topic_row = conn.execute("SELECT id FROM topics WHERE canonical_slug = ?", (topic_slug,)).fetchone()
+    if not topic_row:
+        return []
+    topic_id = int(topic_row[0])
+    concepts_rows = conn.execute(
+        "SELECT id, display_name, canonical_slug FROM concepts WHERE topic_id = ?",
+        (topic_id,),
+    ).fetchall()
+    attempts_rows = conn.execute(
+        """SELECT concept_id, COUNT(*) as cnt, SUM(CASE WHEN score >= 2.0 THEN 1 ELSE 0 END) as success_cnt
+           FROM claim_results
+           WHERE topic_id = ?
+           GROUP BY concept_id""",
+        (topic_id,),
+    ).fetchall()
+    attempts_map = {r[0]: (r[1], r[2]) for r in attempts_rows}
+    state_rows = conn.execute(
+        """SELECT concept_id, state, priority, stability, gap_type
+           FROM claim_state
+           WHERE topic_id = ?""",
+        (topic_id,),
+    ).fetchall()
+    concept_claims: dict[int, list[dict[str, object]]] = {}
+    for r in state_rows:
+        concept_claims.setdefault(r[0], []).append({
+            "state": r[1],
+            "priority": r[2],
+            "stability": r[3],
+            "gap_type": r[4],
+        })
+    state_priority = {
+        "missed": 0,
+        "partially_repaired": 1,
+        "regressed": 2,
+        "repaired_same_session": 3,
+        "passed": 4,
+    }
+    schema_map: list[dict[str, object]] = []
+    for c_row in concepts_rows:
+        cid = int(c_row[0])
+        c_display = str(c_row[1])
+        relations = _concept_relations(conn, cid)
+        prereqs = relations.get("prerequisites", [])
+        competitors = relations.get("semantic_competitors", [])
+        active_gaps = _active_prereq_gaps(conn, cid)
+        att_cnt, succ_cnt = attempts_map.get(cid, (0, 0))
+        sqlite_rate = round(succ_cnt / att_cnt, 3) if att_cnt > 0 else 0.0
+        claims = concept_claims.get(cid, [])
+        worst_state = None
+        worst_val = 999
+        safety_critical = False
+        active_misconception = False
+        avg_stability = 1.0
+        if claims:
+            stabilities = [cl["stability"] for cl in claims if cl["stability"] is not None]
+            avg_stability = sum(stabilities) / len(stabilities) if stabilities else 1.0
+            for cl in claims:
+                st = cl["state"]
+                if cl["priority"] in ("urgent", "high"):
+                    safety_critical = True
+                if st in OPEN_GAP_STATES and str(cl.get("gap_type") or "") in MISCONCEPTION_GAP_TYPES:
+                    active_misconception = True
+                if st in state_priority and state_priority[st] < worst_val:
+                    worst_val = state_priority[st]
+                    worst_state = st
+        if att_cnt == 0:
+            exposure_status = "unexposed"
+        elif att_cnt == 1 or avg_stability < 2.0 or sqlite_rate < 0.6:
+            exposure_status = "exposed_superficial"
+        else:
+            exposure_status = "exposed_deep"
+        schema_map.append({
+            "concept_id": cid,
+            "concept": c_display,
+            "exposure_status": exposure_status,
+            "knowledge_state": worst_state or "untested",
+            "attempts_count": att_cnt,
+            "sqlite_success_rate": sqlite_rate,
+            "anki_reviews_count": 0,
+            "anki_success_rate": 0.0,
+            "prerequisites": prereqs,
+            "active_prerequisite_gaps": active_gaps,
+            "semantic_competitors": competitors,
+            "safety_critical": safety_critical,
+            "active_misconception": active_misconception,
+        })
+    return schema_map
+
+
+def _compute_teaching_policy(
+    schema_map: list[dict[str, object]],
+    *,
+    due_claims: list[dict[str, object]] | tuple = (),
+    shadow_rule_signals: list[dict[str, object]] | tuple = (),
+) -> dict[str, object]:
+    """Deterministic pedagogical policy: macro phase plus interrupt overlays.
+
+    The phase (orient -> deepen -> connect) is a pure function of the schema map.
+    REMEDIATE and CONSOLIDATE are interrupts, not phases: they are detectable at
+    any time from misconception flags / shadow rules and from due claims, and
+    they overlay the current phase rather than replacing it. The agent chooses
+    teaching moves within this policy; it never chooses the phase.
+    """
+    if not schema_map:
+        return {}
+    unexposed_concepts = [c for c in schema_map if c["exposure_status"] == "unexposed"]
+    gap_or_superficial = [
+        c for c in schema_map
+        if c["exposure_status"] == "exposed_superficial" or c["knowledge_state"] in OPEN_GAP_STATES
+    ]
+    if unexposed_concepts:
+        phase = "phase_1_clear_fog"
+        desc = "Superficial clinical introductions to unexposed concepts to clear the fog of war and build a schema map."
+        targets = [c["concept"] for c in unexposed_concepts]
+        directives = [
+            "Start with brief, superficial clinical introductions to unexposed concepts.",
+            "At boundaries, present a 'lay of the land' menu to invite Gabriel to pick his entry point.",
+            "Keep questions high-level (e.g. clinical presentations, initial imaging, common options) before drilling deep mechanisms.",
+        ]
+        socratic_choice = "Present a clear 'lay of the land' choice listing remaining unexposed concepts, letting the user direct the focus."
+    elif gap_or_superficial:
+        phase = "phase_2_recalibrate_gaps"
+        desc = "Deepen understanding of active gaps and superficial concepts using mechanistic Socratic drills."
+        targets = [c["concept"] for c in gap_or_superficial]
+        directives = [
+            "Drill deep mechanisms, thresholds, and clinical discriminators for active gaps.",
+            "Prioritize prerequisite concepts before their dependent concepts.",
+            "Contrast semantic competitors if confused.",
+        ]
+        socratic_choice = "Invite the user to choose which specific gap or concept they want to deep-dive into next, or recommend a prerequisite gap."
+    else:
+        phase = "phase_3_force_connections"
+        desc = "Synthesize connections and test transfer reasoning across deep, stable concepts."
+        targets = [c["concept"] for c in schema_map]
+        directives = [
+            "Ask multi-concept clinical cases requiring complex sequencing or management trade-offs.",
+            "Force transfer reasoning under changed acuity or clinical settings.",
+            "Encourage oral-board-style defense of clinical decisions.",
+        ]
+        socratic_choice = "Ask the user to choose a complex scenario type (e.g., intraoperative complication, post-op complication firefight) to test their synthesis."
+
+    remediate = {str(c["concept"]) for c in schema_map if c.get("active_misconception")}
+    for rule in shadow_rule_signals:
+        if not isinstance(rule, dict) or str(rule.get("status") or "active") not in ("active", "regressed"):
+            continue
+        for binding in rule.get("bindings", []) or []:
+            if isinstance(binding, dict) and binding.get("binding_type") == "trigger" and binding.get("concept"):
+                remediate.add(str(binding["concept"]))
+    consolidate = [
+        {
+            "concept": item.get("concept"),
+            "claim_state_id": item.get("claim_state_id"),
+            "retrievability": item.get("retrievability"),
+        }
+        for item in due_claims
+        if isinstance(item, dict)
+    ]
+    if remediate:
+        directives.append(
+            "REMEDIATE interrupt: re-teach the flagged misconception concepts before introducing new material, "
+            "then retest each with a changed clinical frame."
+        )
+    if consolidate:
+        directives.append(
+            "CONSOLIDATE interrupt: interleave brief spaced-retrieval probes for the due claims listed in "
+            "interrupts.consolidate before extending into new content."
+        )
+    return {
+        "current_phase": phase,
+        "mode": POLICY_MODE_FOR_PHASE[phase],
+        "phase_description": desc,
+        "target_concepts": targets,
+        "pedagogical_directives": directives,
+        "socratic_choice_directives": socratic_choice,
+        "interrupts": {
+            "remediate": sorted(remediate),
+            "consolidate": consolidate,
+        },
+        "decision_inputs": {
+            "concepts_total": len(schema_map),
+            "unexposed": len(unexposed_concepts),
+            "gap_or_superficial": len(gap_or_superficial),
+            "remediate_flags": len(remediate),
+            "due_claims": len(consolidate),
+        },
+    }
+
+
+def _record_policy_event(
+    conn: sqlite3.Connection,
+    *,
+    session_id: str,
+    event_type: str,
+    topic_id: int | None,
+    plan: dict[str, object],
+    claim_result_id: int | None = None,
+    now: str | None = None,
+) -> None:
+    """Append an auditable policy mode/transition event derived from deterministic state."""
+    if not plan:
+        return
+    conn.execute(
+        """INSERT INTO policy_events
+           (session_id, ts, event_type, topic_id, mode, phase, interrupts_json, inputs_json, claim_result_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            session_id,
+            now or datetime.now(timezone.utc).isoformat(),
+            event_type,
+            topic_id,
+            str(plan.get("mode") or ""),
+            str(plan.get("current_phase") or ""),
+            _json_dumps(plan.get("interrupts") or {}),
+            _json_dumps(plan.get("decision_inputs") or {}),
+            claim_result_id,
+        ),
+    )
+
+
+def _current_policy_for_topic(
+    conn: sqlite3.Connection,
+    *,
+    topic_id: int,
+    topic_slug: str,
+) -> dict[str, object]:
+    """Recompute the deterministic teaching policy from current learner state."""
+    schema_map = _build_schema_map(conn, topic_slug)
+    if not schema_map:
+        return {}
+    due = _due_claims_for_summary(conn, topic_id=topic_id, limit=8)
+    concept_ids = [int(c["concept_id"]) for c in schema_map if c.get("concept_id") is not None]
+    shadows = shadow_rule_signals_for_summary(conn, relevant_concept_ids=concept_ids, limit=4)
+    return _compute_teaching_policy(schema_map, due_claims=due, shadow_rule_signals=shadows)
+
+
 def _planning_brief_for_summary(
     conn: sqlite3.Connection | None,
     *,
+    topic_slug: str | None = None,
     cards: list[dict[str, object]],
     curated_summaries: list[dict[str, object]],
     graph_signals: list[dict[str, object]],
@@ -3165,47 +3506,68 @@ def _planning_brief_for_summary(
     low_confidence_leads: list[dict[str, object]],
 ) -> dict[str, object]:
     """Return a first-read tutor brief while preserving raw evidence surfaces."""
+    session_topic = topic_slug
+
     def compact_card(card: dict[str, object]) -> dict[str, object]:
         state_id = card.get("claim_state_id")
         concept_id = card.get("concept_id")
+        card_topic = card.get("topic")
         res = {
             "claim_state_id": state_id,
             "concept_id": concept_id,
-            "topic": card.get("topic"),
             "concept": card.get("concept"),
             "priority": card.get("priority"),
             "state": card.get("state"),
             "summary": card.get("summary"),
             "next_action": card.get("next_action"),
         }
+        if card_topic and card_topic != session_topic:
+            res["topic"] = card_topic
         if conn and state_id is not None:
             res["repair_velocity"] = _claim_state_repair_stats(conn, int(state_id))
         if conn and concept_id is not None:
             res["historical_misconceptions"] = _verbatim_misconceptions(conn, int(concept_id))
+            relations = _concept_relations(conn, int(concept_id))
+            if "prerequisites" in relations:
+                res["prerequisites"] = relations["prerequisites"]
+                active_gaps = _active_prereq_gaps(conn, int(concept_id))
+                if active_gaps:
+                    res["active_prerequisite_gaps"] = active_gaps
+            if "semantic_competitors" in relations:
+                res["semantic_competitors"] = relations["semantic_competitors"]
         return res
 
     def compact_due(item: dict[str, object]) -> dict[str, object]:
         state_id = item.get("claim_state_id")
         concept_id = item.get("concept_id")
+        item_topic = item.get("topic")
         res = {
             "claim_state_id": state_id,
             "concept_id": concept_id,
-            "topic": item.get("topic"),
             "concept": item.get("concept"),
             "priority": item.get("priority"),
             "retrievability": item.get("retrievability"),
             "next_action": item.get("next_action"),
         }
+        if item_topic and item_topic != session_topic:
+            res["topic"] = item_topic
         if conn and state_id is not None:
             res["repair_velocity"] = _claim_state_repair_stats(conn, int(state_id))
         if conn and concept_id is not None:
             res["historical_misconceptions"] = _verbatim_misconceptions(conn, int(concept_id))
+            relations = _concept_relations(conn, int(concept_id))
+            if "prerequisites" in relations:
+                res["prerequisites"] = relations["prerequisites"]
+                active_gaps = _active_prereq_gaps(conn, int(concept_id))
+                if active_gaps:
+                    res["active_prerequisite_gaps"] = active_gaps
+            if "semantic_competitors" in relations:
+                res["semantic_competitors"] = relations["semantic_competitors"]
         return res
 
     def compact_high_confidence_miss(item: dict[str, object]) -> dict[str, object]:
         return {
             "claim_result_id": item.get("claim_result_id"),
-            "topic": item.get("topic"),
             "concept": item.get("concept"),
             "score": item.get("score"),
             "teaching_note": item.get("teaching_note"),
@@ -3221,6 +3583,51 @@ def _planning_brief_for_summary(
             "teaching_note": item.get("teaching_note"),
         }
 
+    def compact_frontier(item: dict[str, object]) -> dict[str, object]:
+        return {
+            "candidate_id": item.get("candidate_id"),
+            "source_surface": item.get("source_surface"),
+            "concept": item.get("concept"),
+            "relationship": item.get("relationship"),
+            "reason": item.get("relevance_reason"),
+            "agent_validation_required": True,
+        }
+
+    def compact_pattern(item: dict[str, object]) -> dict[str, object]:
+        return {
+            "summary_type": item.get("summary_type"),
+            "content": item.get("content"),
+            "importance_score": item.get("importance_score"),
+        }
+
+    def compact_shadow_rule(item: dict[str, object]) -> dict[str, object]:
+        return {
+            "shadow_rule_id": item.get("shadow_rule_id"),
+            "false_rule": item.get("false_rule"),
+            "corrected_rule": item.get("corrected_rule"),
+            "clinical_consequence": item.get("clinical_consequence"),
+            "probe_shape": item.get("probe_shape"),
+            "bindings": item.get("bindings"),
+        }
+
+    def compact_efficacy(item: dict[str, object]) -> dict[str, object]:
+        return {
+            "teaching_move": item.get("teaching_move"),
+            "attempts": item.get("attempts"),
+            "retention_passes": item.get("retention_passes"),
+            "transfer_passes": item.get("transfer_passes"),
+            "regressions": item.get("regressions"),
+            "evidence_level": item.get("evidence_level"),
+        }
+
+    def compact_move_profile(item: dict[str, object]) -> dict[str, object]:
+        return {
+            "teaching_move": item.get("teaching_move"),
+            "attempts": item.get("attempts"),
+            "mastery_after_move": item.get("mastery_after_move"),
+            "miss_rate": item.get("miss_rate"),
+        }
+
     handoffs = [card for card in cards if card.get("type") == "session_handoff"]
     must_retest = [card for card in cards if card.get("type") == "must_retest"]
     repairs = [card for card in cards if card.get("type") == "recent_repair"]
@@ -3229,8 +3636,55 @@ def _planning_brief_for_summary(
         item for item in operation_profile
         if float(item.get("miss_rate", 0) or 0) > 0
     ]
+
+    # Topological dependency sorting: adjust priority of must_retest cards based on prerequisites
+    must_retest_cids = {int(card.get("concept_id")) for card in must_retest if card.get("concept_id") is not None}
+    prereq_adjustments: dict[int, float] = {}
+    if conn:
+        for cid in must_retest_cids:
+            dependents = conn.execute(
+                """SELECT target_concept_id FROM concept_relationships
+                   WHERE source_concept_id = ? AND relation_type = 'prerequisite'""",
+                (cid,)
+            ).fetchall()
+            for dep in dependents:
+                dep_id = int(dep[0])
+                if dep_id in must_retest_cids:
+                    # cid is a prerequisite for a dependent concept that is also due
+                    prereq_adjustments[cid] = prereq_adjustments.get(cid, 0.0) + 10.0
+                    prereq_adjustments[dep_id] = prereq_adjustments.get(dep_id, 0.0) - 10.0
+
+    priority_map = {"urgent": 4.0, "high": 3.0, "medium": 2.0, "low": 1.0}
+    for card in must_retest:
+        cid = card.get("concept_id")
+        base_priority = priority_map.get(str(card.get("priority")), 0.0)
+        if cid is not None:
+            adj = prereq_adjustments.get(int(cid), 0.0)
+            card["adjusted_priority"] = base_priority + adj
+        else:
+            card["adjusted_priority"] = base_priority
+
+    must_retest.sort(key=lambda x: (-x.get("adjusted_priority", 0.0), -float(x.get("updated_ts", 0.0) or 0.0) if x.get("updated_ts") else 0))
+
+    # Build the comprehensive schema map and deterministic teaching policy.
+    schema_map: list[dict[str, object]] = []
+    teaching_plan: dict[str, object] = {}
+    if conn and session_topic:
+        try:
+            schema_map = _build_schema_map(conn, session_topic)
+        except Exception:
+            schema_map = []
+    if schema_map:
+        teaching_plan = _compute_teaching_policy(
+            schema_map,
+            due_claims=due_claims,
+            shadow_rule_signals=shadow_rule_signals,
+        )
+
     return {
         "read_first": True,
+        "comprehensive_schema_map": schema_map,
+        "sequential_teaching_plan": teaching_plan,
         "handoff": {
             "topic": handoffs[0].get("topic"),
             "summary": handoffs[0].get("summary"),
@@ -3239,21 +3693,20 @@ def _planning_brief_for_summary(
         "open_first": [compact_card(card) for card in must_retest],
         "recent_repairs": [compact_card(card) for card in repairs],
         "known_scaffolds_due": [compact_due(item) for item in due_claims],
-        "domain_patterns": curated_summaries,
-        "misconception_rules": shadow_rule_signals,
+        "domain_patterns": [compact_pattern(item) for item in curated_summaries],
+        "misconception_rules": [compact_shadow_rule(item) for item in shadow_rule_signals],
         "coverage_frontier": coverage_frontier,
-        "contextual_frontier": contextual_frontier,
-        "low_confidence_leads": low_confidence_leads,
+        "contextual_frontier": [compact_frontier(item) for item in contextual_frontier],
+        "low_confidence_leads": [compact_card(card) for card in low_confidence_leads],
         "question_design_bias": {
             "high_confidence_misses": [compact_high_confidence_miss(item) for item in high_confidence_misses],
             "weak_operations": [compact_operation(item) for item in weak_operations],
-            "teaching_move_observations": teaching_move_profile,
-            "tutor_efficacy": tutor_efficacy_profile,
+            "teaching_move_observations": [compact_move_profile(item) for item in teaching_move_profile],
+            "tutor_efficacy": [compact_efficacy(item) for item in tutor_efficacy_profile],
         },
         "diagnostics": {
             "learner_graph_signal_count": len(graph_signals),
             "assessed_claim_results": telemetry_profile.get("assessed_claim_results", 0),
-            "telemetry_field_completeness": telemetry_profile.get("field_completeness", {}),
         },
         "agent_validation_checkpoint": {
             "required_before_teaching": True,
@@ -3269,6 +3722,62 @@ def _planning_brief_for_summary(
             ],
         },
     }
+
+
+def _refine_brief_with_anki(brief: dict[str, object], anki_profile: dict[str, object]) -> None:
+    schema_map = brief.get("comprehensive_schema_map")
+    if not isinstance(schema_map, list) or not schema_map:
+        return
+    
+    # Get all concept rollup entries from full_concept_rollup if it exists, else concept_rollup
+    rollup = anki_profile.get("full_concept_rollup") or anki_profile.get("concept_rollup", [])
+    if not isinstance(rollup, list):
+        return
+        
+    # Build a lookup of Anki stats by normalized concept name (using slug)
+    anki_stats = {}
+    for item in rollup:
+        if isinstance(item, dict) and "concept" in item:
+            c_name = item["concept"]
+            revs = item.get("reviews_count", 0)
+            rate = item.get("success_rate", 0.0)
+            anki_stats[_slug(c_name)] = (revs, rate)
+            
+    # Update schema map
+    for entry in schema_map:
+        c_name = entry.get("concept", "")
+        slug_name = _slug(c_name)
+        if slug_name in anki_stats:
+            revs, rate = anki_stats[slug_name]
+            entry["anki_reviews_count"] = revs
+            entry["anki_success_rate"] = rate
+            
+            # Refine exposure status using Anki stats
+            exp_status = entry.get("exposure_status", "unexposed")
+            if exp_status == "unexposed" and revs > 0:
+                if revs <= 2 or rate < 0.6:
+                    entry["exposure_status"] = "exposed_superficial"
+                else:
+                    entry["exposure_status"] = "exposed_deep"
+            elif exp_status == "exposed_superficial" and revs > 2 and rate >= 0.6:
+                entry["exposure_status"] = "exposed_deep"
+                
+    # Recompute the deterministic policy over the Anki-refined schema map.
+    # Anki is advisory only: it adjusts exposure status above, never claim
+    # state, and the interrupt inputs (due claims, shadow rules) are unchanged
+    # by Anki, so the prior plan's interrupts are preserved.
+    prior_plan = brief.get("sequential_teaching_plan")
+    plan = _compute_teaching_policy(schema_map)
+    if isinstance(prior_plan, dict) and prior_plan.get("interrupts"):
+        plan["interrupts"] = prior_plan["interrupts"]
+        for directive in prior_plan.get("pedagogical_directives", []) or []:
+            if (
+                isinstance(directive, str)
+                and directive.startswith(("REMEDIATE interrupt", "CONSOLIDATE interrupt"))
+                and directive not in plan["pedagogical_directives"]
+            ):
+                plan["pedagogical_directives"].append(directive)
+    brief["sequential_teaching_plan"] = plan
 
 
 def _compact_doc_review_payload(
@@ -3299,6 +3808,12 @@ def _compact_doc_review_payload(
             res["repair_velocity"] = item["repair_velocity"]
         if "historical_misconceptions" in item:
             res["historical_misconceptions"] = item["historical_misconceptions"]
+        if "prerequisites" in item:
+            res["prerequisites"] = item["prerequisites"]
+        if "active_prerequisite_gaps" in item:
+            res["active_prerequisite_gaps"] = item["active_prerequisite_gaps"]
+        if "semantic_competitors" in item:
+            res["semantic_competitors"] = item["semantic_competitors"]
         return res
 
     def compact_frontier(item: dict[str, object]) -> dict[str, object]:
@@ -3308,6 +3823,7 @@ def _compact_doc_review_payload(
             "concept": item.get("concept"),
             "relationship": item.get("relationship"),
             "reason": item.get("relevance_reason"),
+            "agent_validation_required": True,
         }
 
     def compact_pattern(item: dict[str, object]) -> dict[str, object]:
@@ -3377,6 +3893,8 @@ def _compact_doc_review_payload(
             "when_to_expand": "blocked_or_explicit_audit_only",
             "audit_profile_available": True,
         },
+        "comprehensive_schema_map": brief.get("comprehensive_schema_map", []),
+        "sequential_teaching_plan": brief.get("sequential_teaching_plan", {}),
     }
     if isinstance(brief.get("anki_overlay"), dict):
         doc_brief["anki_overlay"] = brief["anki_overlay"]
@@ -3597,8 +4115,10 @@ def retrieval_summary(
     topic_filter = ""
     params: list[str | int] = []
     resolved_topic_id: int | None = None
+    resolved_topic_slug: str | None = None
     if topic:
         resolution = resolve_topic(conn, topic)
+        resolved_topic_slug = resolution.slug
         topic_row = conn.execute("SELECT id FROM topics WHERE canonical_slug = ?", (resolution.slug,)).fetchone()
         if not topic_row:
             related_topics = _related_topic_matches_for_hint(conn, topic)
@@ -3912,6 +4432,7 @@ def retrieval_summary(
         )
         payload["planning_brief"] = _planning_brief_for_summary(
             conn,
+            topic_slug=resolved_topic_slug,
             cards=payload["cards"],  # type: ignore[arg-type]
             curated_summaries=payload.get("curated_summaries", []),  # type: ignore[arg-type]
             graph_signals=payload.get("graph_signals", []),  # type: ignore[arg-type]
@@ -4060,13 +4581,36 @@ def startup_recall(
                     if isinstance(brief, dict)
                     else []
                 ),
+                keep_full_rollup=True,
             )
             if isinstance(anki_profile, dict):
                 anki_feedback_status = _compact_anki_feedback_status(anki_profile)
                 if not global_mode and isinstance(brief, dict):
+                    # Refine comprehensive_schema_map with Anki stats
+                    _refine_brief_with_anki(brief, anki_profile)
+                    # Clean up full_concept_rollup to prevent token bloat
+                    if "full_concept_rollup" in anki_profile:
+                        del anki_profile["full_concept_rollup"]
                     brief["anki_overlay"] = anki_profile
         except Exception as e:  # noqa: BLE001 - startup recall must remain available.
             anki_feedback_status = {"status": "error", "message": str(e)[:200]}
+
+    if not global_mode and resolved and isinstance(brief, dict) and brief.get("sequential_teaching_plan"):
+        # Auditable session-start policy event; failure must not block recall.
+        try:
+            topic_row = conn.execute(
+                "SELECT id FROM topics WHERE canonical_slug = ?", (resolved.slug,)
+            ).fetchone()
+            _record_policy_event(
+                conn,
+                session_id="",
+                event_type="startup",
+                topic_id=int(topic_row[0]) if topic_row else None,
+                plan=brief["sequential_teaching_plan"],  # type: ignore[arg-type]
+            )
+            conn.commit()
+        except Exception:
+            pass
 
     payload["startup_recall"] = {
         "mode": "global" if global_mode else "topic",
@@ -4344,6 +4888,17 @@ def main() -> None:
                 brain_dump_candidate_id=args.brain_dump_candidate_id,
             )
             print(f"OK exchange_id={exchange_id}")
+            policy_row = conn.execute(
+                """SELECT mode, phase, interrupts_json FROM policy_events
+                   WHERE session_id = ? ORDER BY id DESC LIMIT 1""",
+                (args.session,),
+            ).fetchone()
+            if policy_row:
+                print("policy=" + _json_dumps({
+                    "mode": policy_row["mode"],
+                    "phase": policy_row["phase"],
+                    "interrupts": json.loads(policy_row["interrupts_json"] or "{}"),
+                }))
         elif args.command == "end-session":
             result = end_session(conn, session_id=args.session, summary=args.summary, next_strategy=args.next_strategy, stats_json=args.stats_json)
             if args.as_json:

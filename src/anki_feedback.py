@@ -987,7 +987,15 @@ def _build_teaching_directives(
     return directives[:5]
 
 
-def _enforce_cap(profile: dict[str, Any], max_chars: int) -> dict[str, Any]:
+def _enforce_cap(profile: dict[str, Any], max_chars: int, keep_full_rollup: bool = False) -> dict[str, Any]:
+    full_rollup = profile.pop("full_concept_rollup", None)
+    res = _enforce_cap_inner(profile, max_chars)
+    if keep_full_rollup and full_rollup is not None:
+        res["full_concept_rollup"] = full_rollup
+    return res
+
+
+def _enforce_cap_inner(profile: dict[str, Any], max_chars: int) -> dict[str, Any]:
     if len(_json_dumps(profile)) <= max_chars:
         return profile
 
@@ -1087,11 +1095,16 @@ def _concept_rollup(rows: list[dict[str, Any]], *, limit: int = 4) -> list[dict[
     for concept, items in grouped.items():
         states = Counter(str(item.get("category")) for item in items)
         worst = min(states, key=lambda state: CATEGORY_ORDER.get(state, 99))
+        reps_sum = sum(int(item.get("reps") or 0) for item in items)
+        lapses_sum = sum(int(item.get("lapses") or 0) for item in items)
+        success_rate = round(max(0.0, float(reps_sum - lapses_sum) / reps_sum), 3) if reps_sum > 0 else 0.0
         rollup.append({
             "concept": concept,
             "worst": worst,
             "cards": len(items),
             "states": dict(sorted(states.items())),
+            "reviews_count": reps_sum,
+            "success_rate": success_rate,
         })
     rollup.sort(key=lambda item: (CATEGORY_ORDER.get(str(item["worst"]), 99), -int(item["cards"]), str(item["concept"])))
     return rollup[:limit]
@@ -1105,6 +1118,7 @@ def _rollup_profile(
     scope: str,
     now_ms: int,
     max_chars: int,
+    keep_full_rollup: bool = False,
 ) -> dict[str, Any]:
     macro_counts: Counter[str] = Counter()
     mapping_counts: Counter[str] = Counter()
@@ -1166,6 +1180,7 @@ def _rollup_profile(
         "atomic_scaffolds": atomic_scaffolds,
         "atomic_primes": atomic_primes,
         "concept_rollup": _concept_rollup(atomic_rows),
+        "full_concept_rollup": _concept_rollup(atomic_rows, limit=999),
         "avoid_direct_quiz": avoid_direct_quiz,
         "teaching_directives": _build_teaching_directives(
             atomic_focus,
@@ -1174,7 +1189,7 @@ def _rollup_profile(
             avoid_direct_quiz,
         ),
     }
-    return _enforce_cap(profile, max_chars)
+    return _enforce_cap(profile, max_chars, keep_full_rollup=keep_full_rollup)
 
 
 def _build_global_profile(now_ms: int) -> dict[str, Any]:
@@ -1240,6 +1255,7 @@ def build_session_anki_profile(
     planning_concepts: list[str] | None = None,
     max_chars: int = NORMAL_PROFILE_CHAR_CAP,
     now_ms: int | None = None,
+    keep_full_rollup: bool = False,
 ) -> dict[str, Any]:
     """Return a compact Anki overlay for startup-recall planning."""
     now_ms = now_ms if now_ms is not None else _now_ms()
@@ -1306,6 +1322,7 @@ def build_session_anki_profile(
             scope="topic",
             now_ms=now_ms,
             max_chars=max_chars,
+            keep_full_rollup=keep_full_rollup,
         )
     except ConnectionError:
         return {"status": "offline", "message": "AnkiConnect offline, skipping Anki overlay."}

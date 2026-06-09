@@ -50,7 +50,12 @@ Inspect the full non-brief summary, raw exchange rows, or claim rows only when t
 
 ## Planning Brief
 
-In `profile=doc`, read `planning_brief` as a compact session-start contract:
+**`comprehensive_schema_map` and `sequential_teaching_plan` lead the brief.** They are present in both `profile=doc` and `profile=memory`/`audit`, carried verbatim (no cap, no truncation). The schema map is the per-concept exposure/mastery view; the teaching plan is the deterministic pedagogical policy. Read them first and obey the policy — you never pick the macro phase yourself (see `adaptive-teaching-doctrine.md`):
+
+- **`comprehensive_schema_map`**: one entry per concept in the topic, each with `exposure_status` (`unexposed` | `exposed_superficial` | `exposed_deep`), `knowledge_state`, `attempts_count`, `sqlite_success_rate`, `anki_reviews_count`/`anki_success_rate` (advisory overlay only), `prerequisites`, `active_prerequisite_gaps`, `semantic_competitors`, `safety_critical`, and `active_misconception`.
+- **`sequential_teaching_plan`**: `mode` (`orient` | `deepen` | `connect`) and `current_phase`, plus `interrupts.remediate` (misconception/shadow-rule re-teach targets) and `interrupts.consolidate` (due claims to interleave), `target_concepts`, `pedagogical_directives`, and `decision_inputs` (the counts that produced the phase, for audit). The same decision is logged to `policy_events` each turn. Interrupts overlay the current phase; handle them ahead of new content.
+
+In `profile=doc`, read the rest of `planning_brief` as a compact session-start contract:
 
 1. **`handoff`**: the previous session directive, if any. Use `handoff.next_action` as private question-design input. Treat `handoff.summary` as audit/debug context only; do not narrate it to the learner.
 2. **`teaching_priorities`**: the ranked blend of open gaps, recent repairs, and stale scaffolds.
@@ -63,7 +68,7 @@ In `profile=doc`, read `planning_brief` as a compact session-start contract:
 In `profile=memory` or `profile=audit`, read `planning_brief` in order:
 
 1. **`handoff`**: the latest learner-session directive. Use `handoff.next_action` to select the next probe; do not quote or paraphrase `handoff.summary` as an opening recap. Artifact-generation anchors do not compete with this surface.
-2. **`open_first`**: unresolved claims that deserve the first questions.
+2. **`open_first`**: unresolved claims that deserve the first questions. Each card may carry `prerequisites`, `active_prerequisite_gaps`, and `semantic_competitors` (the same graph relations as the schema map); `open_first` is pre-sorted so prerequisite concepts precede their dependents.
 3. **`recent_repairs`** and **`known_scaffolds_due`**: changed-frame retention checks and stale premises.
 4. **`domain_patterns`** and **`misconception_rules`**: curated cross-session fault lines and evidence-backed false rules.
 5. **`contextual_frontier`**: bounded neighboring foundations from learner graph edges, reviewed reference-graph paths, report-local scaffolds, and cautious cross-topic overlap.
