@@ -17,20 +17,24 @@ Startup is silent. Do not announce the workflow or send intermediary progress up
 
 ### Per-Turn Sequence (mandatory, after every assessed clinical answer)
 
-After the learner answers an assessed clinical question and you grade/correct, execute this two-step sequence silently before asking the next question:
+Load `.agents/shared/commands/study-review-turn.md` once, after the first assessed answer; it governs every later turn. After the learner answers an assessed clinical question and you grade/correct, execute this sequence silently before asking the next question:
 
-1. Load `.agents/shared/commands/study-review-turn.md`.
-2. **Log the answer**: `python3 src/study_memory.py log-answer ...`. Read the output -- it prints `OK exchange_id=N`.
-3. **Enqueue Anki cards** if warranted using `python3 src/anki_queue.py enqueue ...` and the exchange_id from logging.
+1. **Log the answer**: `python3 src/study_memory.py log-answer ...`. Read the output — it prints `OK exchange_id=N` and a self-sufficient `policy=...` line; obey the policy for the next question.
+2. **Enqueue Anki cards** if warranted using `python3 src/anki_queue.py enqueue ...` and the exchange_id from logging.
 
 Both steps use the same `SESSION_TS`. Do not defer enqueue to session end — cards must be enqueued per turn so the queue reflects the full session.
 
 ### Session End
 
-At session end, follow the shared contract's Anki Queue Validation and Flush protocol:
-0. Load `.agents/shared/commands/study-review-end.md`.
-1. `python3 src/anki_queue.py review --session "$SESSION_TS" --json`
-2. `python3 src/anki_queue.py check --session "$SESSION_TS"` — mandatory duplicate-candidate and quality-warning review
-3. `python3 src/anki_queue.py flush --session "$SESSION_TS"`
+Load `.agents/shared/commands/study-review-end.md` and follow it in full and in order. Do not skip ahead to the Anki queue:
+
+1. **Synthesis challenge**: ask the closing metacognitive question per the shared contract (not a tracked claim).
+2. **End session**: `python3 src/study_memory.py end-session --session "$SESSION_TS" --summary "..." --next-strategy "..." --stats-json '<json>' --json`. The `--next-strategy` must be specific and actionable. Read `curation.recommended` silently.
+3. **Integrity check**: verify all assessed exchanges were logged; run any missing `log-answer` before closing.
+4. **Anki queue** (only after `end-session`):
+   - `python3 src/anki_queue.py review --session "$SESSION_TS" --json`
+   - `python3 src/anki_queue.py check --session "$SESSION_TS"` — mandatory duplicate-candidate and quality-warning review
+   - `python3 src/anki_queue.py flush --session "$SESSION_TS"`
+5. **Curation**: if `curation.recommended=true` after the flush, load `.agents/shared/commands/memory-curation.md` and run the curation and escalation pass.
 
 All Anki card work uses `anki_queue.py`. There is no other pipeline.

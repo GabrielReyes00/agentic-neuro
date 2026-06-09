@@ -7,11 +7,11 @@ Load this after Gabriel answers an assessed clinical question. It governs gradin
 1. Grade briefly: correct, partial, or incorrect.
 2. Reveal only the next useful layer. Do not dump the topic map after a shallow answer.
 3. If wrong or partial, repair the exact missing edge, false rule, discriminator, threshold, mechanism, or sequence.
-4. Choose the next question from the deterministic policy. `log-answer` recomputes it from the updated learner state and prints a `policy=...` line carrying `mode`, `phase`, and `interrupts` (see Memory Logging below). Obey it — never pick the phase yourself.
+4. Choose the next question from the deterministic policy. `log-answer` recomputes it from the updated learner state and prints a self-sufficient `policy=...` line carrying `mode`, `phase`, `interrupts`, `target_concepts`, `pedagogical_directives`, and `socratic_choice_directives` (see Memory Logging below). Obey it — never pick the phase yourself. Each turn's policy line supersedes the startup plan; you do not need to retain the startup brief to follow it.
    - **ORIENT** (`phase_1_clear_fog`): keep questions superficial; present a "lay of the land" menu at boundaries.
    - **DEEPEN** (`phase_2_recalibrate_gaps`): deepen with Socratic drills on active gaps, prerequisites, and discriminators.
    - **CONNECT** (`phase_3_force_connections`): ask multi-concept transfer cases across already-seen concepts; encourage boards-style defense.
-   - **Interrupts**: if `interrupts.remediate` is non-empty, re-teach the flagged misconception and retest with a changed frame before new material; if `interrupts.consolidate` is non-empty, interleave a brief spaced-retrieval probe of a due claim. Interrupts overlay the current phase.
+   - **Interrupts**: if `interrupts.remediate` is non-empty, re-teach the flagged misconception and retest with a changed frame before new material; if `interrupts.consolidate` is non-empty, interleave a brief spaced-retrieval probe of a due claim. Interrupts overlay the current phase. When both fire, remediate comes first; the full tie-break order is "Signal Precedence" in `adaptive-teaching-doctrine.md`.
    - **Socratic Choice**: proactively offer Gabriel choices at boundaries per `socratic_choice_directives`.
 5. Ask one question or choice menu, then stop.
 
@@ -51,7 +51,9 @@ python3 src/study_memory.py log-answer \
 
 Correctness: `2` correct without help, `1` partial, `0` wrong/misconception.
 
-`log-answer` prints `OK exchange_id=N` followed by a `policy={...}` line with the recomputed `mode`, `phase`, and `interrupts`. Parse it silently and let it drive the next question (step 4). The same policy event is persisted to `policy_events` for audit; you do not write it yourself.
+`log-answer` prints `OK exchange_id=N` followed by a `policy={...}` line with the recomputed `mode`, `phase`, `interrupts`, `target_concepts` (capped, with `target_concepts_omitted` when truncated), `pedagogical_directives`, `socratic_choice_directives`, and `decision_inputs`. Parse it silently and let it drive the next question (step 4). The same full plan is persisted to `policy_events.plan_json` for audit; you do not write it yourself. If a `policy_status={"status":"unavailable",...}` line appears instead, keep the current phase, continue teaching, and rerun `startup-recall` if it persists — never invent a phase change yourself.
+
+`--coverage-role` in study-review uses `primary_doc`, `related_topic_probe`, `repair_probe`, or `memory_probe`. The `synthesis` value exists for other workflows only; study-review never logs synthesis prompts (see below).
 
 Use `--match-claim-state-id` for intentional retests from recall. Use `--repairs-claim-state-ids` only for explicitly repaired open claims. Use the primary document topic for native document concepts; use the related topic's canonical name for validated related-topic probes.
 

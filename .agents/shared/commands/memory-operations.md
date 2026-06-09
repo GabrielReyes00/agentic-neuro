@@ -146,10 +146,11 @@ python3 src/study_memory.py end-session \
   --session "$SESSION_TS" \
   --summary "<1-3 sentence recap>" \
   --next-strategy "<specific directive for next session>" \
+  --stats-json '<json>' \
   --json
 ```
 
-Always pass `--json`. Read the returned `curation.recommended` flag silently, then continue to the Anki queue workflow. The default text output is preserved for ad-hoc CLI use; skills use JSON so the curation hook is visible.
+Always pass `--json`. `--stats-json` carries compact session statistics (e.g. exchange counts by score) and matches the `study-review-end.md` recipe; pass `'{}'` when no stats apply. Read the returned `curation.recommended` flag silently, then continue to the Anki queue workflow. The default text output is preserved for ad-hoc CLI use; skills use JSON so the curation hook is visible.
 
 ## Post-Session Integrity Verification
 

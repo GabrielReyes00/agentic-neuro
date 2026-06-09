@@ -585,7 +585,7 @@ def _validate_relationship(rel: dict[str, Any], idx: int) -> None:
         f"relationships[{idx}].origin must be 'curated' or 'model_proposed', got {origin!r}",
     )
     if origin == "model_proposed":
-        # Native-knowledge discovery (brief 4b): the agent spotted a missing
+        # Native-knowledge discovery (landscape-is-a-skeleton rule): the agent spotted a missing
         # prerequisite/confusion the per-turn log does not yet evidence. It is
         # persisted distinctly and requires a rationale instead of claim
         # evidence, so it stays auditable and never poses as evidence-backed

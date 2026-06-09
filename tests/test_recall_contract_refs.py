@@ -466,6 +466,88 @@ class RecallContractReferenceTests(unittest.TestCase):
     def test_legacy_study_review_contract_is_absent(self) -> None:
         self.assertFalse((ROOT / ".agents/shared/commands/study-review.md").exists())
 
+    def test_postures_are_subordinate_to_deterministic_policy(self) -> None:
+        doctrine = (ROOT / ".agents/shared/commands/adaptive-teaching-doctrine.md").read_text()
+        root = (ROOT / "AGENTS.md").read_text()
+        self.assertIn("Postures are subordinate to the deterministic policy", doctrine)
+        self.assertIn("the user picks the posture, the policy picks the phase", doctrine)
+        self.assertIn("posture subordinate to the deterministic teaching policy", root)
+
+    def test_signal_precedence_order_is_defined_once(self) -> None:
+        doctrine = (ROOT / ".agents/shared/commands/adaptive-teaching-doctrine.md").read_text()
+        startup = (ROOT / ".agents/shared/commands/study-review-startup.md").read_text()
+        turn = (ROOT / ".agents/shared/commands/study-review-turn.md").read_text()
+        self.assertIn("## Signal Precedence", doctrine)
+        # Remediate outranks consolidate outranks phase work outranks handoff.
+        remediate_pos = doctrine.index("`interrupts.remediate`", doctrine.index("## Signal Precedence"))
+        consolidate_pos = doctrine.index("`interrupts.consolidate`", remediate_pos)
+        phase_pos = doctrine.index("Phase work", consolidate_pos)
+        handoff_pos = doctrine.index("`handoff.next_action`", phase_pos)
+        self.assertTrue(remediate_pos < consolidate_pos < phase_pos < handoff_pos)
+        # Startup and turn defer to the doctrine's precedence section.
+        self.assertIn("Signal Precedence", startup)
+        self.assertIn("Signal Precedence", turn)
+        self.assertIn("the plan and interrupts win", startup)
+
+    def test_empty_plan_rule_is_deterministic(self) -> None:
+        doctrine = (ROOT / ".agents/shared/commands/adaptive-teaching-doctrine.md").read_text()
+        startup = (ROOT / ".agents/shared/commands/study-review-startup.md").read_text()
+        retrieval = (ROOT / ".agents/shared/commands/memory-retrieval.md").read_text()
+        for text, label in ((doctrine, "doctrine"), (startup, "startup"), (retrieval, "retrieval")):
+            with self.subTest(contract=label):
+                self.assertIn("empty_no_learner_concepts", text)
+        self.assertIn("ORIENT by definition", doctrine)
+        self.assertIn("ORIENT by definition", startup)
+
+    def test_doc_profile_field_names_match_emitter(self) -> None:
+        startup = (ROOT / ".agents/shared/commands/study-review-startup.md").read_text()
+        retrieval = (ROOT / ".agents/shared/commands/memory-retrieval.md").read_text()
+        implementation = (ROOT / "src/study_memory.py").read_text()
+        # Doc-mode startup must name the compact brief's real field.
+        self.assertIn("teaching_priorities", startup)
+        self.assertIn("there is no separate `open_first` list in doc mode", startup)
+        for field in ("teaching_priorities", "schema_map_status", "schema_map_omitted",
+                      "target_concepts_omitted", "socratic_choice_directives"):
+            with self.subTest(field=field):
+                self.assertIn(field, retrieval)
+                self.assertIn(field, implementation)
+        # memory-retrieval.md owns the planning_brief schema.
+        self.assertIn("canonical owner of the `planning_brief` JSON schema", retrieval)
+        self.assertNotIn("carried verbatim (no cap, no truncation)", retrieval)
+
+    def test_turn_policy_line_is_self_sufficient(self) -> None:
+        turn = (ROOT / ".agents/shared/commands/study-review-turn.md").read_text()
+        for fragment in ("target_concepts", "pedagogical_directives", "socratic_choice_directives",
+                         "policy_status", "keep the current phase"):
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, turn)
+        self.assertIn("never invent a phase change yourself", turn)
+
+    def test_end_session_recipes_agree_on_stats_json(self) -> None:
+        end = (ROOT / ".agents/shared/commands/study-review-end.md").read_text()
+        memory_ops = (ROOT / ".agents/shared/commands/memory-operations.md").read_text()
+        self.assertIn("--stats-json", end)
+        self.assertIn("--stats-json", memory_ops)
+
+    def test_gemini_adapter_runs_full_session_end_in_order(self) -> None:
+        gemini = (ROOT / ".gemini/commands/study-review.md").read_text()
+        self.assertIn("end-session", gemini)
+        self.assertIn("Synthesis challenge", gemini)
+        self.assertIn("memory-curation.md", gemini)
+        # end-session must come before the Anki queue work.
+        self.assertLess(gemini.index("end-session"), gemini.index("anki_queue.py review"))
+        # The TOML wrapper must not preload the orchestration index at startup.
+        toml = (ROOT / ".gemini/commands/study-review.toml").read_text()
+        self.assertNotIn("@{.agents/shared/commands/learning-session-contract.md}", toml)
+
+    def test_no_dead_brief_4b_references_in_contracts(self) -> None:
+        for relative_path in (
+            ".agents/shared/commands/memory-curation.md",
+            ".agents/shared/commands/adaptive-teaching-doctrine.md",
+        ):
+            with self.subTest(path=relative_path):
+                self.assertNotIn("brief 4b", (ROOT / relative_path).read_text())
+
 
 if __name__ == "__main__":
     unittest.main()

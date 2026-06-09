@@ -537,7 +537,7 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_claim_state_origin ON claim_state(origin)")
     # Mark model-originated graph edges distinctly so native-knowledge discovery
     # is auditable and never silently overwrites evidence-backed learner-graph
-    # structure (brief 4b). Pre-existing edges backfill to 'curated'.
+    # structure (see "The Landscape Is A Skeleton, Not A Ceiling" in adaptive-teaching-doctrine.md). Pre-existing edges backfill to 'curated'.
     rel_cols = {row["name"] for row in conn.execute("PRAGMA table_info(concept_relationships)")}
     if "origin" not in rel_cols:
         conn.execute(

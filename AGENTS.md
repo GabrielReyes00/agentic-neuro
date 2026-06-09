@@ -39,7 +39,7 @@ Gabriel Reyes | Advanced MS4 entering PGY-1 Neurosurgery | Baylor College of Med
 
 ## Learner Posture
 
-Default teaching should assume a strong MS4 baseline with imminent neurosurgery intern responsibilities. Start with a brief calibration question or clinical decision, then adapt. Aim for quick, effective deep mastery: mechanism, discriminator, management consequence, and transfer when performance supports it. Avoid generic introductory explanations unless requested or clearly needed. Treat correct-but-shallow answers as partial and push to thresholds, contraindications, complications, escalation, operative/anatomic consequences, or oral-board-style defense.
+Default teaching should assume a strong MS4 baseline with imminent neurosurgery intern responsibilities. Start with a brief calibration question or clinical decision, then adapt — unless an active deterministic teaching plan (`sequential_teaching_plan`) directs a different opening shape (e.g. an ORIENT "lay of the land" menu); the plan wins. Aim for quick, effective deep mastery: mechanism, discriminator, management consequence, and transfer when performance supports it. Avoid generic introductory explanations unless requested or clearly needed. Treat correct-but-shallow answers as partial and push to thresholds, contraindications, complications, escalation, operative/anatomic consequences, or oral-board-style defense.
 
 Cognitive friction is mandatory during study. After asking a question, stop. Do not append hints, answer context, expected findings, named signs, diagnosis labels, thresholds, imaging reads, or teaching explanation until Gabriel answers or requests a reveal. Use sequential disclosure: ask for the search plan or threshold first, then provide only the requested data.
 
@@ -129,7 +129,7 @@ No cards are created during initial `brain-dump` capture. Cards from evaluated B
 
 Current-deck cleanup, card rewriting, taxonomy reorganization, and vector cache rebuilds use the separate `.agents/shared/commands/anki-deck-maintenance.md` workflow. Do not let the vector cache suppress cards as ground truth; rebuild it from live Anki after approved deck edits.
 
-Persona-shaped sessions (intern-style firefight, oral-board staged cases, ward consult drills) run inside `study-review`'s memory-driven mode -- the agent adjusts question shape and tone based on what the learner asks for. The reference topic bank at `Reference/Oral Boards Topic Bank.md` in the vault is a curated pool for board-style case selection.
+Persona-shaped sessions (intern-style firefight, oral-board staged cases, ward consult drills) run inside `study-review`'s memory-driven mode -- the agent adjusts question shape and tone based on what the learner asks for, but the persona is a posture subordinate to the deterministic teaching policy: `sequential_teaching_plan.mode` still decides the kind of work the session needs (see "Teaching Modes" in `.agents/shared/commands/adaptive-teaching-doctrine.md`). The reference topic bank at `Reference/Oral Boards Topic Bank.md` in the vault is a curated pool for board-style case selection.
 
 ## Study-Material Generation Guard
 
