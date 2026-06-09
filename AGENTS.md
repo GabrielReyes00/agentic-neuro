@@ -25,7 +25,6 @@ Key shared contracts:
 - `.agents/shared/commands/study-review-turn.md` — per-answer grading, memory logging, Anki enqueue, and next-question behavior.
 - `.agents/shared/commands/study-review-vault-repair.md` — point-of-need Obsidian supplementation during review, not startup.
 - `.agents/shared/commands/study-review-end.md` — synthesis, `end-session`, Anki flush, and curation/escalation.
-- `.agents/shared/commands/study-review.md` — legacy full study-review reference; do not load at startup.
 - `.agents/shared/commands/consult.md` — lecture-first clinical consult, verification, Anki, pocket-card write, provenance-tiered citations.
 - `.agents/shared/commands/brain-dump.md` — de-identified service-teaching capture, targeted verification, artifact-anchor memory logging, pending atomic review candidates, service-origin tagging, and optional Socratic review.
 - `.agents/shared/commands/service-log.md` — service-debrief alias that routes through `/brain-dump` while preserving service-memory primitives.
