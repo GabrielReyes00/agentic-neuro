@@ -2827,9 +2827,53 @@ class CurationLayerTests(unittest.TestCase):
             # Both are now deep, phase should transition to phase_3_force_connections
             refined_plan = brief_refined["sequential_teaching_plan"]
             self.assertEqual(refined_plan["current_phase"], "phase_3_force_connections")
-            
         finally:
             conn.close()
+
+    def test_anki_refine_preserves_interrupt_decision_inputs(self) -> None:
+        schema_map = [
+            {
+                "concept": "Concept Two",
+                "concept_id": 2,
+                "exposure_status": "exposed_superficial",
+                "knowledge_state": "partially_repaired",
+            },
+        ]
+        due_claims = [
+            {"concept": "Due Claim A", "claim_state_id": 11, "retrievability": 0.4},
+            {"concept": "Due Claim B", "claim_state_id": 12, "retrievability": 0.3},
+        ]
+        shadow_rules = [
+            {
+                "shadow_rule_id": 7,
+                "false_rule": "wrong rule",
+                "corrected_rule": "right rule",
+                "bindings": [{"binding_type": "trigger", "concept": "Shadow Trigger"}],
+            },
+        ]
+        prior_plan = study_memory._compute_teaching_policy(
+            schema_map,
+            due_claims=due_claims,
+            shadow_rule_signals=shadow_rules,
+        )
+        brief_refined = {
+            "knowledge_map": [dict(schema_map[0])],
+            "sequential_teaching_plan": prior_plan,
+            "misconception_rules": shadow_rules,
+        }
+        study_memory._refine_brief_with_anki(
+            brief_refined,
+            {
+                "concept_rollup": [
+                    {"concept": "Concept Two", "reviews_count": 5, "success_rate": 1.0},
+                ],
+            },
+        )
+        refined_plan = brief_refined["sequential_teaching_plan"]
+        self.assertEqual(len(refined_plan["interrupts"]["consolidate"]), 2)
+        self.assertIn("Shadow Trigger", refined_plan["interrupts"]["remediate"])
+        self.assertEqual(refined_plan["decision_inputs"]["due_claims"], 2)
+        self.assertEqual(refined_plan["decision_inputs"]["remediate_flags"], 1)
 
 
 class PedagogicalPolicyTests(unittest.TestCase):

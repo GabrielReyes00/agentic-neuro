@@ -3952,14 +3952,36 @@ def _refine_brief_with_anki(brief: dict[str, object], anki_profile: dict[str, ob
             elif exp_status == "exposed_superficial" and revs > 2 and rate >= 0.6:
                 entry["exposure_status"] = "exposed_deep"
                 
-    # Recompute the deterministic policy over the Anki-refined schema map.
+    # Recompute the deterministic policy over the Anki-refined knowledge map.
     # Anki is advisory only: it adjusts exposure status above, never claim
-    # state, and the interrupt inputs (due claims, shadow rules) are unchanged
-    # by Anki, so the prior plan's interrupts are preserved.
+    # state. Interrupt inputs (due claims, shadow rules) are unchanged by Anki,
+    # so pass them through for accurate decision_inputs audit counters.
     prior_plan = brief.get("sequential_teaching_plan")
-    plan = _compute_teaching_policy(schema_map)
+    due_claims: list[dict[str, object]] = []
+    shadow_rule_signals: list[dict[str, object]] = []
+    if isinstance(prior_plan, dict):
+        interrupts = prior_plan.get("interrupts")
+        if isinstance(interrupts, dict) and isinstance(interrupts.get("consolidate"), list):
+            due_claims = [item for item in interrupts["consolidate"] if isinstance(item, dict)]
+    raw_shadows = brief.get("misconception_rules", [])
+    if isinstance(raw_shadows, list):
+        shadow_rule_signals = [item for item in raw_shadows if isinstance(item, dict)]
+    plan = _compute_teaching_policy(
+        schema_map,
+        due_claims=due_claims,
+        shadow_rule_signals=shadow_rule_signals,
+    )
     if isinstance(prior_plan, dict) and prior_plan.get("interrupts"):
         plan["interrupts"] = prior_plan["interrupts"]
+        prior_inputs = prior_plan.get("decision_inputs")
+        if isinstance(prior_inputs, dict) and isinstance(plan.get("decision_inputs"), dict):
+            # Interrupt lists are authoritative; keep audit counters aligned with them.
+            plan["decision_inputs"]["due_claims"] = prior_inputs.get(
+                "due_claims", plan["decision_inputs"].get("due_claims", 0)
+            )
+            plan["decision_inputs"]["remediate_flags"] = prior_inputs.get(
+                "remediate_flags", plan["decision_inputs"].get("remediate_flags", 0)
+            )
         for directive in prior_plan.get("pedagogical_directives", []) or []:
             if (
                 isinstance(directive, str)
@@ -3967,6 +3989,9 @@ def _refine_brief_with_anki(brief: dict[str, object], anki_profile: dict[str, ob
                 and directive not in plan["pedagogical_directives"]
             ):
                 plan["pedagogical_directives"].append(directive)
+        for key in ("teaching_priority", "artifact_native_targets", "map_context_targets"):
+            if key in prior_plan:
+                plan[key] = prior_plan[key]
     brief["sequential_teaching_plan"] = plan
 
 
