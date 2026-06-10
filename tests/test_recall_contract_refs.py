@@ -574,6 +574,34 @@ class RecallContractReferenceTests(unittest.TestCase):
             with self.subTest(path=relative_path):
                 self.assertNotIn("brief 4b", (ROOT / relative_path).read_text())
 
+    def test_phase3_mastery_intelligence_contracts(self) -> None:
+        turn = (ROOT / ".agents/shared/commands/study-review-turn.md").read_text()
+        retrieval = (ROOT / ".agents/shared/commands/memory-retrieval.md").read_text()
+        doctrine = (ROOT / ".agents/shared/commands/adaptive-teaching-doctrine.md").read_text()
+        impl = (ROOT / "src/study_memory.py").read_text()
+        for fragment in (
+            "probe_feedback",
+            "cognitive-op",
+            "escalate",
+            "orient_skip",
+            "weak_operations",
+            "binding_quality",
+        ):
+            with self.subTest(turn_fragment=fragment):
+                self.assertIn(fragment, turn)
+        for fragment in (
+            "acgme_readiness",
+            "escalation_directives",
+            "orient_skip",
+            "cognitive_op",
+        ):
+            with self.subTest(retrieval_fragment=fragment):
+                self.assertIn(fragment, retrieval)
+        self.assertIn("Mastery Velocity", doctrine)
+        self.assertIn("probe_feedback", impl)
+        self.assertIn("acgme_readiness", impl)
+        self.assertIn("binding_match_count", impl)
+
     def test_phase2_node_recall_and_orient_menu_contracts(self) -> None:
         turn = (ROOT / ".agents/shared/commands/study-review-turn.md").read_text()
         end = (ROOT / ".agents/shared/commands/study-review-end.md").read_text()

@@ -90,6 +90,8 @@ def create_from_projection(
         entry.setdefault("binding_source", "startup_projection")
         entry.setdefault("session_probed", False)
         entry.setdefault("artifact_native", bool(doc_path and profile == "doc"))
+        entry.setdefault("stuck_probe_count", 0)
+        entry.setdefault("last_miss_cognitive_op", "")
     return {
         "version": 1,
         "session_id": session_id,
@@ -224,6 +226,7 @@ def patch_after_log(
     exchange_id: int,
     coverage_role: str = "",
     learner_concept_id: int | None = None,
+    cognitive_op: str = "",
 ) -> tuple[dict[str, Any], str]:
     """Incrementally update one knowledge-map node after an assessed exchange."""
     inv_id, binding_tier, match_score = resolve_inventory_id(
@@ -270,6 +273,12 @@ def patch_after_log(
         correct=correct,
     )
 
+    stuck_probe_count = int(entry.get("stuck_probe_count", 0) or 0)
+    if correct >= 2:
+        stuck_probe_count = 0
+    elif delta in {"reviewed", "regressed"} or new_state in OPEN_GAP_STATES:
+        stuck_probe_count += 1
+
     entry.update({
         "exposure_status": new_exposure,
         "knowledge_state": new_state,
@@ -283,7 +292,11 @@ def patch_after_log(
         "binding_tier": binding_tier,
         "match_score": round(match_score, 3),
         "active_misconception": correct == 0 and bool(entry.get("active_misconception")),
+        "stuck_probe_count": stuck_probe_count,
+        "last_cognitive_op": cognitive_op or entry.get("last_cognitive_op", ""),
     })
+    if correct < 2 and cognitive_op:
+        entry["last_miss_cognitive_op"] = cognitive_op
     if coverage_role == "primary_doc":
         entry["artifact_native"] = True
     if learner_concept_id is not None:
@@ -370,6 +383,12 @@ def compute_policy_from_session(
     topic_id: int,
     topic_slug: str,
 ) -> dict[str, Any]:
+    from cognitive_ops import weak_operations_from_map  # noqa: PLC0415
+    from mastery_intelligence import (  # noqa: PLC0415
+        binding_quality_summary,
+        orient_skip_metadata,
+        stuck_escalation_targets,
+    )
     from study_memory import (  # noqa: PLC0415
         _compute_teaching_policy,
         _due_claims_for_summary,
@@ -388,7 +407,23 @@ def compute_policy_from_session(
         if isinstance(m, dict) and m.get("learner_concept_id") is not None
     ]
     shadows = shadow_rule_signals_for_summary(conn, relevant_concept_ids=concept_ids, limit=4)
-    plan = _compute_teaching_policy(knowledge_map, due_claims=due, shadow_rule_signals=shadows)
+    plan = _compute_teaching_policy(
+        knowledge_map,
+        due_claims=due,
+        shadow_rule_signals=shadows,
+        stuck_escalations=stuck_escalation_targets(knowledge_map),
+        orient_skip=orient_skip_metadata(knowledge_map),
+    )
+    weak_ops = weak_operations_from_map(knowledge_map)
+    if weak_ops:
+        decision_inputs = dict(plan.get("decision_inputs") or {})
+        decision_inputs["weak_operations"] = weak_ops
+        plan["decision_inputs"] = decision_inputs
+    binding_quality = binding_quality_summary(knowledge_map)
+    if any(binding_quality.values()):
+        decision_inputs = dict(plan.get("decision_inputs") or {})
+        decision_inputs["binding_quality"] = binding_quality
+        plan["decision_inputs"] = decision_inputs
     plan = apply_artifact_priority(
         plan,
         knowledge_map,
@@ -502,9 +537,25 @@ def promote_inventory_binding(
     ).fetchone()
     existing = row["inventory_concept_id"] if row else None
     if existing and existing == inventory_concept_id:
+        conn.execute(
+            """UPDATE concepts
+               SET binding_match_count = MAX(COALESCE(binding_match_count, 0), ?)
+               WHERE id = ?""",
+            (count, learner_concept_id),
+        )
         return
     if count >= STABLE_BINDING_COUNT or (count >= 1 and not existing):
         conn.execute(
-            "UPDATE concepts SET inventory_concept_id = ? WHERE id = ?",
-            (inventory_concept_id, learner_concept_id),
+            """UPDATE concepts
+               SET inventory_concept_id = ?,
+                   binding_match_count = MAX(COALESCE(binding_match_count, 0), ?)
+               WHERE id = ?""",
+            (inventory_concept_id, count, learner_concept_id),
+        )
+    else:
+        conn.execute(
+            """UPDATE concepts
+               SET binding_match_count = MAX(COALESCE(binding_match_count, 0), ?)
+               WHERE id = ?""",
+            (count, learner_concept_id),
         )

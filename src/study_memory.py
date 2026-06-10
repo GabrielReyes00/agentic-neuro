@@ -150,6 +150,7 @@ CREATE TABLE IF NOT EXISTS concepts (
     canonical_slug TEXT NOT NULL,
     display_name TEXT NOT NULL,
     inventory_concept_id TEXT,
+    binding_match_count INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT '',
     UNIQUE(topic_id, canonical_slug),
     FOREIGN KEY(topic_id) REFERENCES topics(id)
@@ -565,6 +566,11 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     summary_cols = {row["name"] for row in conn.execute("PRAGMA table_info(memory_summaries)")}
     if "inventory_concept_id" not in summary_cols:
         conn.execute("ALTER TABLE memory_summaries ADD COLUMN inventory_concept_id TEXT")
+    concept_cols = {row["name"] for row in conn.execute("PRAGMA table_info(concepts)")}
+    if "binding_match_count" not in concept_cols:
+        conn.execute(
+            "ALTER TABLE concepts ADD COLUMN binding_match_count INTEGER NOT NULL DEFAULT 0"
+        )
     _backfill_memory_schedule(conn)
     _normalize_session_cards(conn)
 
@@ -1368,18 +1374,9 @@ def _normalize_gap_type(error_type: str, score: int, missing_edge: str) -> str:
 
 
 def _learning_operation(concept: str, question: str, explicit: str = "") -> str:
-    if explicit:
-        return _normalize(explicit).replace(" ", "_")
-    hay = _normalize(f"{concept} {question}")
-    if any(x in hay for x in ("what map", "dose", "target", "threshold", "how fast", "mg", "mmhg", "mcg")):
-        return "quantification"
-    if any(x in hay for x in ("for each", "distinguish", " vs ", "same sbp", "different", "contrast")):
-        return "discrimination"
-    if any(x in hay for x in ("first", "sequence", "next 5 minutes", "order")):
-        return "sequencing"
-    if any(x in hay for x in ("why", "equation", "physiologic", "mechanism")):
-        return "mechanism"
-    return "transfer"
+    from cognitive_ops import classify_cognitive_op  # noqa: PLC0415
+
+    return classify_cognitive_op(concept=concept, question=question, explicit=explicit)
 
 
 VALID_PRIORITIES = frozenset({"urgent", "high", "medium", "low"})
@@ -2161,6 +2158,13 @@ def log_answer(
                 now=now,
             )
         if origin == "assessed":
+            from cognitive_ops import classify_cognitive_op, probe_feedback  # noqa: PLC0415
+
+            cognitive_op = classify_cognitive_op(
+                concept=concept,
+                question=tested_claim or question,
+                explicit=learning_operation,
+            )
             # Recompute policy from the session knowledge map when available.
             try:
                 plan, progress = _policy_after_log_answer(
@@ -2176,7 +2180,35 @@ def log_answer(
                     exchange_id=exchange_id,
                     coverage_role=coverage_role,
                     learner_concept_id=concept_id,
+                    cognitive_op=cognitive_op,
                 )
+                feedback = probe_feedback(
+                    cognitive_op=cognitive_op,
+                    score=correct,
+                    inventory_concept_id=inventory_concept_id,
+                )
+                if feedback:
+                    plan = dict(plan)
+                    plan["probe_feedback"] = feedback
+                binding_tier = ""
+                try:
+                    from session_map import load as load_session_map  # noqa: PLC0415
+
+                    smap = load_session_map(session_id)
+                    if smap and inventory_concept_id:
+                        for entry in smap.get("knowledge_map") or []:
+                            if isinstance(entry, dict) and entry.get("concept_id") == inventory_concept_id:
+                                binding_tier = str(entry.get("binding_tier") or "")
+                                break
+                except Exception:
+                    pass
+                probe_meta = {
+                    "cognitive_op": cognitive_op,
+                    "score": correct,
+                    "inventory_concept_id": inventory_concept_id or "",
+                    "binding_tier": binding_tier,
+                    "phase": str(plan.get("current_phase") or ""),
+                }
                 _record_policy_event(
                     conn,
                     session_id=session_id,
@@ -2184,9 +2216,13 @@ def log_answer(
                     topic_id=topic_id,
                     plan=plan,
                     claim_result_id=result_id,
+                    probe_meta=probe_meta,
                     now=now,
                 )
                 if progress:
+                    telemetry = _lean_probe_telemetry(conn, session_id=session_id)
+                    if telemetry:
+                        progress = {**progress, "probe_quality": telemetry}
                     print("session_progress=" + _json_dumps(progress))
             except Exception as exc:
                 print(f"WARN policy_event_failed: {exc}", file=sys.stderr)
@@ -2199,6 +2235,76 @@ def log_answer(
         )
     conn.commit()
     return exchange_id
+
+
+def _lean_probe_telemetry(conn: sqlite3.Connection, *, session_id: str) -> dict[str, object]:
+    """Compact per-session probe quality for session_progress lines."""
+    rows = conn.execute(
+        """SELECT inputs_json FROM policy_events
+           WHERE session_id = ? AND event_type = 'turn'
+           ORDER BY id""",
+        (session_id,),
+    ).fetchall()
+    probed = improved = 0
+    for row in rows:
+        try:
+            inputs = json.loads(row["inputs_json"] or "{}")
+        except (ValueError, TypeError):
+            continue
+        meta = inputs.get("probe_meta")
+        if not isinstance(meta, dict):
+            continue
+        probed += 1
+        if int(meta.get("score", 0) or 0) >= 2:
+            improved += 1
+    if probed == 0:
+        return {}
+    return {
+        "probed": probed,
+        "clean_passes": improved,
+        "pass_rate": round(improved / probed, 3),
+    }
+
+
+def _audit_probe_telemetry(conn: sqlite3.Connection, *, session_id: str) -> dict[str, object]:
+    """Rich probe telemetry for end-session audit stats only."""
+    rows = conn.execute(
+        """SELECT inputs_json, phase, mode FROM policy_events
+           WHERE session_id = ? AND event_type = 'turn'
+           ORDER BY id""",
+        (session_id,),
+    ).fetchall()
+    by_op: dict[str, dict[str, int]] = {}
+    by_binding: dict[str, int] = {}
+    events: list[dict[str, object]] = []
+    for row in rows:
+        try:
+            inputs = json.loads(row["inputs_json"] or "{}")
+        except (ValueError, TypeError):
+            inputs = {}
+        meta = inputs.get("probe_meta")
+        if not isinstance(meta, dict):
+            continue
+        op = str(meta.get("cognitive_op") or "unknown")
+        bucket = by_op.setdefault(op, {"probed": 0, "misses": 0})
+        bucket["probed"] += 1
+        if int(meta.get("score", 0) or 0) < 2:
+            bucket["misses"] += 1
+        tier = str(meta.get("binding_tier") or "unknown")
+        by_binding[tier] = by_binding.get(tier, 0) + 1
+        events.append({
+            "cognitive_op": op,
+            "score": meta.get("score"),
+            "inventory_concept_id": meta.get("inventory_concept_id"),
+            "binding_tier": tier,
+            "phase": row["phase"],
+            "mode": row["mode"],
+        })
+    return {
+        "probe_events": events,
+        "by_cognitive_op": by_op,
+        "by_binding_tier": by_binding,
+    }
 
 
 def end_session(conn: sqlite3.Connection, *, session_id: str, summary: str, next_strategy: str, ended: str | None = None, stats_json: str = "{}") -> dict[str, object]:
@@ -2221,6 +2327,7 @@ def end_session(conn: sqlite3.Connection, *, session_id: str, summary: str, next
             audit.update(handoff_skeleton)
             if smap.get("scope"):
                 audit.setdefault("inventory_scope", smap["scope"])
+            audit["probe_telemetry"] = _audit_probe_telemetry(conn, session_id=session_id)
             stats_json = _json_dumps(audit)
         delete_session_map(session_id)
     except Exception as exc:
@@ -3438,6 +3545,8 @@ def _compute_teaching_policy(
     *,
     due_claims: list[dict[str, object]] | tuple = (),
     shadow_rule_signals: list[dict[str, object]] | tuple = (),
+    stuck_escalations: list[dict[str, object]] | tuple = (),
+    orient_skip: dict[str, object] | None = None,
 ) -> dict[str, object]:
     """Deterministic pedagogical policy: macro phase plus interrupt overlays.
 
@@ -3449,7 +3558,15 @@ def _compute_teaching_policy(
     """
     if not schema_map:
         return {}
-    unexposed_concepts = [c for c in schema_map if c["exposure_status"] == "unexposed"]
+    from mastery_intelligence import should_skip_orient  # noqa: PLC0415
+
+    orient_skip_meta = orient_skip or {}
+    skip_orient = bool(orient_skip_meta.get("skipped")) or should_skip_orient(schema_map)
+    unexposed_concepts = (
+        []
+        if skip_orient
+        else [c for c in schema_map if c["exposure_status"] == "unexposed"]
+    )
     gap_or_superficial = [
         c for c in schema_map
         if c["exposure_status"] == "exposed_superficial" or c["knowledge_state"] in OPEN_GAP_STATES
@@ -3487,7 +3604,10 @@ def _compute_teaching_policy(
 
     remediate = {str(c["concept"]) for c in schema_map if c.get("active_misconception")}
     for rule in shadow_rule_signals:
-        if not isinstance(rule, dict) or str(rule.get("status") or "active") not in ("active", "regressed"):
+        if not isinstance(rule, dict):
+            continue
+        status = str(rule.get("status") or "active")
+        if status not in ("active", "regressed"):
             continue
         for binding in rule.get("bindings", []) or []:
             if isinstance(binding, dict) and binding.get("binding_type") == "trigger" and binding.get("concept"):
@@ -3511,6 +3631,15 @@ def _compute_teaching_policy(
             "CONSOLIDATE interrupt: interleave brief spaced-retrieval probes for the due claims listed in "
             "interrupts.consolidate before extending into new content."
         )
+    escalate = [
+        item for item in stuck_escalations
+        if isinstance(item, dict) and item.get("inventory_concept_id")
+    ]
+    if escalate:
+        directives.append(
+            "ESCALATE interrupt: the listed nodes were probed repeatedly without improvement this session. "
+            "Narrow to one node, repair the last missed cognitive operation, then retest with a changed frame."
+        )
     plan: dict[str, object] = {
         "current_phase": phase,
         "mode": POLICY_MODE_FOR_PHASE[phase],
@@ -3521,6 +3650,7 @@ def _compute_teaching_policy(
         "interrupts": {
             "remediate": sorted(remediate),
             "consolidate": consolidate,
+            "escalate": escalate,
         },
         "decision_inputs": {
             "concepts_total": len(schema_map),
@@ -3528,8 +3658,15 @@ def _compute_teaching_policy(
             "gap_or_superficial": len(gap_or_superficial),
             "remediate_flags": len(remediate),
             "due_claims": len(consolidate),
+            "escalate_targets": len(escalate),
         },
     }
+    if skip_orient:
+        plan["orient_skip"] = {
+            "skipped": True,
+            "reason": orient_skip_meta.get("reason") or "all_entry_nodes_have_prior_exposure",
+            "entry_nodes_prior_deep": orient_skip_meta.get("entry_nodes_prior_deep", 0),
+        }
     if phase == "phase_1_clear_fog":
         from node_recall import build_orient_menu  # noqa: PLC0415
         orient_menu = build_orient_menu(schema_map)
@@ -3546,11 +3683,15 @@ def _record_policy_event(
     topic_id: int | None,
     plan: dict[str, object],
     claim_result_id: int | None = None,
+    probe_meta: dict[str, object] | None = None,
     now: str | None = None,
 ) -> None:
     """Append an auditable policy mode/transition event derived from deterministic state."""
     if not plan:
         return
+    inputs = dict(plan.get("decision_inputs") or {})
+    if probe_meta:
+        inputs["probe_meta"] = probe_meta
     conn.execute(
         """INSERT INTO policy_events
            (session_id, ts, event_type, topic_id, mode, phase, interrupts_json, inputs_json, plan_json, claim_result_id)
@@ -3563,7 +3704,7 @@ def _record_policy_event(
             str(plan.get("mode") or ""),
             str(plan.get("current_phase") or ""),
             _json_dumps(plan.get("interrupts") or {}),
-            _json_dumps(plan.get("decision_inputs") or {}),
+            _json_dumps(inputs),
             _json_dumps(plan),
             claim_result_id,
         ),
@@ -3600,6 +3741,7 @@ def _policy_after_log_answer(
     exchange_id: int,
     coverage_role: str,
     learner_concept_id: int,
+    cognitive_op: str = "",
 ) -> tuple[dict[str, object], dict[str, int]]:
     """Patch session knowledge map and return the next-turn policy."""
     from session_map import (  # noqa: PLC0415
@@ -3629,6 +3771,7 @@ def _policy_after_log_answer(
             exchange_id=exchange_id,
             coverage_role=coverage_role,
             learner_concept_id=learner_concept_id,
+            cognitive_op=cognitive_op,
         )
         if delta == "unbound":
             plan = _current_policy_for_topic(conn, topic_id=topic_id, topic_slug=topic_slug)
@@ -3639,6 +3782,57 @@ def _policy_after_log_answer(
         return plan, session_progress(data)
     plan = _current_policy_for_topic(conn, topic_id=topic_id, topic_slug=topic_slug)
     return plan, {}
+
+
+def _recompute_inventory_teaching_plan(
+    conn: sqlite3.Connection,
+    *,
+    knowledge_map: list[dict[str, object]],
+    teaching_plan: dict[str, object],
+    topic: str,
+) -> dict[str, object]:
+    """Recompute policy from inventory map surfaces after enrichment/overlays."""
+    from cognitive_ops import weak_operations_from_map  # noqa: PLC0415
+    from mastery_intelligence import (  # noqa: PLC0415
+        binding_quality_summary,
+        orient_skip_metadata,
+        stuck_escalation_targets,
+    )
+
+    topic_row = conn.execute(
+        "SELECT id FROM topics WHERE canonical_slug = ?", (topic,)
+    ).fetchone()
+    topic_id = int(topic_row[0]) if topic_row else None
+    due: list[dict[str, object]] = []
+    shadows: list[dict[str, object]] = []
+    concept_ids: list[int] = []
+    if topic_id is not None:
+        due = _due_claims_for_summary(conn, topic_id=topic_id, limit=8)
+        concept_ids = [
+            int(m["learner_concept_id"])
+            for entry in knowledge_map
+            for m in (entry.get("matched_learner_concepts") or [])
+            if isinstance(m, dict) and m.get("learner_concept_id") is not None
+        ]
+        shadows = shadow_rule_signals_for_summary(conn, relevant_concept_ids=concept_ids, limit=4)
+    plan = _compute_teaching_policy(
+        knowledge_map,
+        due_claims=due,
+        shadow_rule_signals=shadows,
+        stuck_escalations=stuck_escalation_targets(knowledge_map),
+        orient_skip=orient_skip_metadata(knowledge_map),
+    )
+    weak_ops = weak_operations_from_map(knowledge_map)
+    if weak_ops:
+        decision_inputs = dict(plan.get("decision_inputs") or {})
+        decision_inputs["weak_operations"] = weak_ops
+        plan["decision_inputs"] = decision_inputs
+    binding_quality = binding_quality_summary(knowledge_map)
+    if any(binding_quality.values()):
+        decision_inputs = dict(plan.get("decision_inputs") or {})
+        decision_inputs["binding_quality"] = binding_quality
+        plan["decision_inputs"] = decision_inputs
+    return plan or teaching_plan
 
 
 def _integrate_inventory_knowledge_map(
@@ -3672,8 +3866,39 @@ def _integrate_inventory_knowledge_map(
         profile=profile,
         doc_path=doc_path,
     )
+    from mastery_intelligence import (  # noqa: PLC0415
+        attach_escalation_directives,
+        escalation_directives_for_summary,
+        mark_inventory_binding_tiers,
+        orient_skip_metadata,
+    )
     from node_recall import enrich_knowledge_map_learner_surfaces  # noqa: PLC0415
+
     enrich_knowledge_map_learner_surfaces(conn, knowledge_map)
+    mark_inventory_binding_tiers(conn, knowledge_map)
+    concept_ids = [
+        int(m["learner_concept_id"])
+        for entry in knowledge_map
+        for m in (entry.get("matched_learner_concepts") or [])
+        if isinstance(m, dict) and m.get("learner_concept_id") is not None
+    ]
+    escalation_directives = escalation_directives_for_summary(
+        conn,
+        relevant_concept_ids=concept_ids,
+        limit=3,
+    )
+    if escalation_directives:
+        attach_escalation_directives(knowledge_map, escalation_directives)
+        brief["escalation_directives"] = escalation_directives
+    teaching_plan = _recompute_inventory_teaching_plan(
+        conn,
+        knowledge_map=knowledge_map,
+        teaching_plan=teaching_plan,
+        topic=topic,
+    )
+    orient_meta = orient_skip_metadata(knowledge_map)
+    if orient_meta.get("skipped"):
+        brief["orient_skip"] = orient_meta
     brief["knowledge_map"] = knowledge_map
     brief["knowledge_map_status"] = "ok"
     brief["sequential_teaching_plan"] = teaching_plan
@@ -3732,6 +3957,15 @@ def _planning_brief_for_summary(
             res["topic"] = card_topic
         if conn and state_id is not None:
             res["repair_velocity"] = _claim_state_repair_stats(conn, int(state_id))
+            op_row = conn.execute(
+                """SELECT cr.learning_operation
+                     FROM claim_state cs
+                     JOIN claim_results cr ON cr.id = cs.last_result_id
+                    WHERE cs.id = ?""",
+                (int(state_id),),
+            ).fetchone()
+            if op_row and op_row["learning_operation"]:
+                res["cognitive_op"] = op_row["learning_operation"]
         if conn and concept_id is not None:
             res["historical_misconceptions"] = _verbatim_misconceptions(conn, int(concept_id))
             relations = _concept_relations(conn, int(concept_id))
@@ -3760,6 +3994,15 @@ def _planning_brief_for_summary(
             res["topic"] = item_topic
         if conn and state_id is not None:
             res["repair_velocity"] = _claim_state_repair_stats(conn, int(state_id))
+            op_row = conn.execute(
+                """SELECT cr.learning_operation
+                     FROM claim_state cs
+                     JOIN claim_results cr ON cr.id = cs.last_result_id
+                    WHERE cs.id = ?""",
+                (int(state_id),),
+            ).fetchone()
+            if op_row and op_row["learning_operation"]:
+                res["cognitive_op"] = op_row["learning_operation"]
         if conn and concept_id is not None:
             res["historical_misconceptions"] = _verbatim_misconceptions(conn, int(concept_id))
             relations = _concept_relations(conn, int(concept_id))
@@ -3808,14 +4051,19 @@ def _planning_brief_for_summary(
         }
 
     def compact_shadow_rule(item: dict[str, object]) -> dict[str, object]:
-        return {
+        payload = {
             "shadow_rule_id": item.get("shadow_rule_id"),
             "false_rule": item.get("false_rule"),
             "corrected_rule": item.get("corrected_rule"),
             "clinical_consequence": item.get("clinical_consequence"),
             "probe_shape": item.get("probe_shape"),
             "bindings": item.get("bindings"),
+            "status": item.get("status"),
         }
+        progress = item.get("extinction_progress")
+        if isinstance(progress, dict) and not progress.get("extinguished"):
+            payload["extinction_progress"] = progress
+        return payload
 
     def compact_efficacy(item: dict[str, object]) -> dict[str, object]:
         return {
@@ -3834,6 +4082,19 @@ def _planning_brief_for_summary(
             "mastery_after_move": item.get("mastery_after_move"),
             "miss_rate": item.get("miss_rate"),
         }
+
+    from mastery_intelligence import escalation_directives_for_summary  # noqa: PLC0415
+
+    relevant_ids = sorted({
+        int(card["concept_id"])
+        for card in cards
+        if card.get("concept_id") is not None
+    })
+    escalation_directives = (
+        escalation_directives_for_summary(conn, relevant_concept_ids=relevant_ids, limit=3)
+        if conn
+        else []
+    )
 
     handoffs = [card for card in cards if card.get("type") == "session_handoff"]
     must_retest = [card for card in cards if card.get("type") == "must_retest"]
@@ -3907,6 +4168,7 @@ def _planning_brief_for_summary(
         "recent_repairs": [compact_card(card) for card in repairs],
         "known_scaffolds_due": [compact_due(item) for item in due_claims],
         "domain_patterns": [compact_pattern(item) for item in curated_summaries],
+        "escalation_directives": escalation_directives,
         "misconception_rules": [compact_shadow_rule(item) for item in shadow_rule_signals],
         "coverage_frontier": coverage_frontier,
         "contextual_frontier": [compact_frontier(item) for item in contextual_frontier],
@@ -4921,6 +5183,21 @@ def startup_recall(
                     if "full_concept_rollup" in anki_profile:
                         del anki_profile["full_concept_rollup"]
                     brief["anki_overlay"] = anki_profile
+                    km = brief.get("knowledge_map")
+                    if isinstance(km, list) and km and recall_topic:
+                        brief["sequential_teaching_plan"] = _recompute_inventory_teaching_plan(
+                            conn,
+                            knowledge_map=km,  # type: ignore[arg-type]
+                            teaching_plan=dict(brief.get("sequential_teaching_plan") or {}),
+                            topic=recall_topic,
+                        )
+                        orient_meta = brief.get("orient_skip")
+                        if not orient_meta:
+                            from mastery_intelligence import orient_skip_metadata  # noqa: PLC0415
+
+                            orient_meta = orient_skip_metadata(km)  # type: ignore[arg-type]
+                            if orient_meta.get("skipped"):
+                                brief["orient_skip"] = orient_meta
         except Exception as e:  # noqa: BLE001 - startup recall must remain available.
             anki_feedback_status = {"status": "error", "message": str(e)[:200]}
 
@@ -4940,6 +5217,14 @@ def startup_recall(
             conn.commit()
         except Exception as exc:
             print(f"WARN policy_event_failed: {exc}", file=sys.stderr)
+
+    if global_mode and isinstance(brief, dict):
+        try:
+            from acgme_readiness import build_acgme_readiness_overlay  # noqa: PLC0415
+
+            brief["acgme_readiness"] = build_acgme_readiness_overlay(conn, pgy_target=1)
+        except Exception as exc:
+            print(f"WARN acgme_readiness_failed: {exc}", file=sys.stderr)
 
     payload["startup_recall"] = {
         "mode": "global" if global_mode else "topic",
@@ -5030,6 +5315,7 @@ def main() -> None:
     p_log.add_argument("--clinical-consequence", default="")
     p_log.add_argument("--retest-prompt-shape", default="")
     p_log.add_argument("--learning-operation", default="")
+    p_log.add_argument("--cognitive-op", default="", help="Alias for --learning-operation: discrimination|quantification|sequencing|mechanism|transfer")
     p_log.add_argument("--teaching-intent", default="")
     p_log.add_argument("--expected-answer-edge", default="")
     p_log.add_argument("--coverage-role", default="")
@@ -5208,7 +5494,7 @@ def main() -> None:
                 corrected_rule=args.corrected_rule,
                 clinical_consequence=args.clinical_consequence,
                 retest_prompt_shape=args.retest_prompt_shape,
-                learning_operation=args.learning_operation,
+                learning_operation=args.cognitive_op or args.learning_operation,
                 teaching_intent=args.teaching_intent,
                 expected_answer_edge=args.expected_answer_edge,
                 coverage_role=args.coverage_role,
@@ -5256,6 +5542,8 @@ def main() -> None:
                     "socratic_choice_directives",
                     "decision_inputs",
                     "orient_menu",
+                    "orient_skip",
+                    "probe_feedback",
                 ):
                     if key in plan_snapshot:
                         policy_payload[key] = plan_snapshot[key]

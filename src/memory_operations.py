@@ -1075,8 +1075,11 @@ def curated_summaries_for_summary(
             if len(picked) >= take:
                 break
 
-    return [
-        {
+    from mastery_intelligence import parse_escalation_clause  # noqa: PLC0415
+
+    out: list[dict[str, Any]] = []
+    for r in picked:
+        item = {
             "summary_id": int(r["id"]),
             "summary_type": r["summary_type"],
             "topic": r["topic"] or "",
@@ -1085,8 +1088,11 @@ def curated_summaries_for_summary(
             "importance_score": float(r["importance_score"]),
             "generated_at": r["generated_at"],
         }
-        for r in picked
-    ]
+        directive = parse_escalation_clause(str(r["content"] or ""))
+        if directive:
+            item["escalation_directive"] = directive
+        out.append(item)
+    return out
 
 
 def graph_signals_for_summary(
@@ -1163,7 +1169,7 @@ def shadow_rule_signals_for_summary(
     """Surface bounded active false-rule probes linked to today's concepts."""
     concept_ids = sorted({int(value) for value in relevant_concept_ids})
     params: list[Any] = []
-    where = "WHERE sr.status IN ('active', 'repaired', 'regressed')"
+    where = "WHERE sr.status IN ('active', 'regressed', 'repaired')"
     if concept_ids:
         placeholders = ",".join("?" * len(concept_ids))
         where += f" AND srb.concept_id IN ({placeholders})"
@@ -1182,6 +1188,23 @@ def shadow_rule_signals_for_summary(
     ).fetchall()
     out: list[dict[str, Any]] = []
     for row in rows:
+        status = str(row["status"])
+        counts = conn.execute(
+            """SELECT
+                   SUM(CASE WHEN check_type = 'changed_frame' AND outcome = 'pass' THEN 1 ELSE 0 END) AS changed_frames,
+                   COUNT(DISTINCT CASE WHEN check_type = 'transfer' AND outcome = 'pass' THEN context_label END) AS transfer_contexts
+               FROM shadow_rule_checks WHERE shadow_rule_id = ?""",
+            (int(row["id"]),),
+        ).fetchone()
+        changed_frames = int(counts["changed_frames"] or 0)
+        transfer_contexts = int(counts["transfer_contexts"] or 0)
+        extinction_progress = {
+            "changed_frame_passes": changed_frames,
+            "transfer_context_passes": transfer_contexts,
+            "extinguished": changed_frames >= 1 and transfer_contexts >= 2,
+        }
+        if status == "repaired" and extinction_progress["extinguished"]:
+            continue
         bindings = conn.execute(
             """SELECT srb.concept_id, srb.binding_type, c.display_name AS concept
                  FROM shadow_rule_bindings srb
@@ -1190,6 +1213,12 @@ def shadow_rule_signals_for_summary(
                 ORDER BY srb.binding_type, c.display_name""",
             (int(row["id"]),),
         ).fetchall()
+        next_action = "Inject one changed-frame discriminator probe. Do not telegraph the false rule."
+        if status == "repaired":
+            next_action = (
+                "Shadow rule is partially extinguished; continue changed-frame and transfer-context probes "
+                "before treating the false rule as gone."
+            )
         out.append({
             "shadow_rule_id": int(row["id"]),
             "false_rule": row["false_rule"],
@@ -1197,7 +1226,8 @@ def shadow_rule_signals_for_summary(
             "clinical_consequence": row["clinical_consequence"],
             "probe_shape": row["probe_shape"],
             "severity": row["severity"],
-            "status": row["status"],
+            "status": status,
+            "extinction_progress": extinction_progress,
             "bindings": [
                 {
                     "concept_id": int(binding["concept_id"]),
@@ -1206,6 +1236,6 @@ def shadow_rule_signals_for_summary(
                 }
                 for binding in bindings
             ],
-            "next_action": "Inject one changed-frame discriminator probe. Do not telegraph the false rule.",
+            "next_action": next_action,
         })
     return out
