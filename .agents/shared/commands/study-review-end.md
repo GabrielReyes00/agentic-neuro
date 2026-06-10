@@ -23,7 +23,7 @@ python3 src/study_memory.py end-session \
 
 `--next-strategy` must be actionable and inventory-ID-aware when possible (e.g. `vas.vasospasm_threshold`). Name the concept, gap, and next move. Do not write generic handoffs like "continue reviewing."
 
-`--stats-json` may carry audit coverage (`session_progress`, `priority_inventory_ids`, `phase_at_close`); startup recall does not pull this — it is for dashboards and audits only. The session knowledge map file is deleted automatically by `end-session`.
+`end-session` returns `handoff_skeleton` with `priority_inventory_ids`, `improved_inventory_ids`, and `session_progress` derived from the live session map. Merge these into `--stats-json` for audit; use `priority_inventory_ids` to author inventory-ID-aware `--next-strategy`. Startup recall does not pull full stats — only lean `handoff.next_action`. The session knowledge map file is deleted automatically by `end-session`.
 
 Read the JSON silently and remember `curation.recommended`.
 

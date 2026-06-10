@@ -37,7 +37,7 @@ When curation is triggered (due to `curation.recommended=true` or to escalate re
    python3 src/study_memory.py merge-topics --from-topic "<source>" --into-topic "<target>"
    ```
 
-4. Present the curated candidates (summaries, shadow rules, concept relationships) and any proposed topic merges as a single proposal for explicit user validation.
+4. Present the curated candidates (summaries, shadow rules, concept relationships) and any proposed topic merges as a single proposal for explicit user validation. Prefer `inventory_concept_id` on shadow-rule bindings and concept-scoped summaries when the inventory node is known — this speeds the next session's knowledge-map projection.
 
 5. On confirmation, apply in sequence, then clean up payload files under `data/Sessions/`:
    ```bash
@@ -63,7 +63,7 @@ The summaries, learner-graph edges, and shadow rules produced here are durable c
 - **Strength is required for visibility**: set `strength` on every relationship. Retrieval filters `graph_signals` at `strength >= 0.6`. Use 0.6-0.7 for real, useful confusion or prerequisite edges and 0.8-0.9 for dominant fault lines.
 - **Importance is required for useful ordering**: set `importance_score` on summaries with the same intent as relationship strength.
 - **Compactness**: summary `content` should be 1-3 sentences naming a recurring pattern, not recapping a session.
-- **Scope discipline**: set exactly one of `topic_slug` or `concept_id`, or neither only for genuinely global synthesis.
+- **Scope discipline**: set exactly one of `topic_slug`, `concept_id`, or `inventory_concept_id`, or none only for genuinely global synthesis.
 
 ## Shadow-Rule Extinction
 

@@ -56,6 +56,7 @@ CATEGORY_ORDER = {
 class CardMapping:
     topic: str
     concept: str
+    inventory_concept_id: str
     mapping_quality: str
     mapping_source: str
     source_workflow: str
@@ -441,6 +442,7 @@ def _resolve_card_mapping(card_detail: dict[str, Any], chroma_collection: Any | 
 
     topic = "General"
     concept = "General"
+    inventory_concept_id = ""
     mapping_source = "fallback_deck"
     mapping_quality = "low"
 
@@ -476,11 +478,16 @@ def _resolve_card_mapping(card_detail: dict[str, Any], chroma_collection: Any | 
             concept = _display_from_slug(tag.split("/", 1)[1])
             mapping_source = "explicit_tag"
             mapping_quality = "high"
+        elif lower.startswith("inv/"):
+            inventory_concept_id = tag.split("/", 1)[1].strip()
+            mapping_source = "explicit_tag"
+            mapping_quality = "high"
 
     source_workflow = _resolve_source_workflow(tags, deck_name)
     return CardMapping(
         topic=topic or "General",
         concept=concept or topic or "General",
+        inventory_concept_id=inventory_concept_id,
         mapping_quality=mapping_quality,
         mapping_source=mapping_source,
         source_workflow=source_workflow,
@@ -1098,8 +1105,14 @@ def _concept_rollup(rows: list[dict[str, Any]], *, limit: int = 4) -> list[dict[
         reps_sum = sum(int(item.get("reps") or 0) for item in items)
         lapses_sum = sum(int(item.get("lapses") or 0) for item in items)
         success_rate = round(max(0.0, float(reps_sum - lapses_sum) / reps_sum), 3) if reps_sum > 0 else 0.0
+        inv_ids = sorted({
+            str(item.get("inventory_concept_id") or "").strip()
+            for item in items
+            if str(item.get("inventory_concept_id") or "").strip()
+        })
         rollup.append({
             "concept": concept,
+            "inventory_concept_id": inv_ids[0] if len(inv_ids) == 1 else "",
             "worst": worst,
             "cards": len(items),
             "states": dict(sorted(states.items())),
@@ -1136,6 +1149,7 @@ def _rollup_profile(
         enriched_card.update(lifecycle)
         enriched_card["concept"] = mapping.concept or mapping.topic or "General"
         enriched_card["topic"] = mapping.topic
+        enriched_card["inventory_concept_id"] = mapping.inventory_concept_id
         enriched_card["mapping_quality"] = mapping.mapping_quality
         enriched_card["fact"] = _card_fact_snippet(enriched_card)
         atomic_rows.append(enriched_card)

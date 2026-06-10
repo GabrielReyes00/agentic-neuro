@@ -373,6 +373,7 @@ CREATE TABLE IF NOT EXISTS memory_summaries (
     summary_type TEXT NOT NULL CHECK(summary_type IN ('thematic', 'proficiency_map')),
     topic_id INTEGER,
     concept_id INTEGER,
+    inventory_concept_id TEXT,
     content TEXT NOT NULL,
     importance_score REAL NOT NULL DEFAULT 0.5 CHECK(importance_score >= 0 AND importance_score <= 1),
     generated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -561,6 +562,9 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_memory_concepts_inventory ON concepts(inventory_concept_id)"
     )
+    summary_cols = {row["name"] for row in conn.execute("PRAGMA table_info(memory_summaries)")}
+    if "inventory_concept_id" not in summary_cols:
+        conn.execute("ALTER TABLE memory_summaries ADD COLUMN inventory_concept_id TEXT")
     _backfill_memory_schedule(conn)
     _normalize_session_cards(conn)
 
@@ -2198,8 +2202,10 @@ def log_answer(
 
 
 def end_session(conn: sqlite3.Connection, *, session_id: str, summary: str, next_strategy: str, ended: str | None = None, stats_json: str = "{}") -> dict[str, object]:
+    handoff_skeleton: dict[str, object] = {}
     try:
-        from session_map import delete as delete_session_map, load as load_session_map, session_progress  # noqa: PLC0415
+        from node_recall import session_handoff_from_map  # noqa: PLC0415
+        from session_map import delete as delete_session_map, load as load_session_map  # noqa: PLC0415
         smap = load_session_map(session_id)
         if smap:
             try:
@@ -2208,7 +2214,11 @@ def end_session(conn: sqlite3.Connection, *, session_id: str, summary: str, next
                 audit = {}
             if not isinstance(audit, dict):
                 audit = {}
-            audit.setdefault("session_progress", session_progress(smap))
+            handoff_skeleton = session_handoff_from_map(smap)
+            plan = smap.get("last_plan") if isinstance(smap.get("last_plan"), dict) else {}
+            if isinstance(plan, dict) and plan.get("current_phase"):
+                handoff_skeleton["phase_at_close"] = plan["current_phase"]
+            audit.update(handoff_skeleton)
             if smap.get("scope"):
                 audit.setdefault("inventory_scope", smap["scope"])
             stats_json = _json_dumps(audit)
@@ -2241,7 +2251,7 @@ def end_session(conn: sqlite3.Connection, *, session_id: str, summary: str, next
     newly_counted = False if excluded_from_count else mark_session_counted(conn, session_id, now)
     conn.commit()
     status_payload = curation_status(conn)
-    return {
+    result: dict[str, object] = {
         "ok": True,
         "session_id": session_id,
         "newly_counted": newly_counted,
@@ -2249,6 +2259,9 @@ def end_session(conn: sqlite3.Connection, *, session_id: str, summary: str, next
         "artifact_anchor": is_artifact_anchor,
         "curation": status_payload,
     }
+    if handoff_skeleton:
+        result["handoff_skeleton"] = handoff_skeleton
+    return result
 
 
 def _upsert_session_card(
@@ -3498,7 +3511,7 @@ def _compute_teaching_policy(
             "CONSOLIDATE interrupt: interleave brief spaced-retrieval probes for the due claims listed in "
             "interrupts.consolidate before extending into new content."
         )
-    return {
+    plan: dict[str, object] = {
         "current_phase": phase,
         "mode": POLICY_MODE_FOR_PHASE[phase],
         "phase_description": desc,
@@ -3517,6 +3530,12 @@ def _compute_teaching_policy(
             "due_claims": len(consolidate),
         },
     }
+    if phase == "phase_1_clear_fog":
+        from node_recall import build_orient_menu  # noqa: PLC0415
+        orient_menu = build_orient_menu(schema_map)
+        if orient_menu:
+            plan["orient_menu"] = orient_menu
+    return plan
 
 
 def _record_policy_event(
@@ -3611,11 +3630,12 @@ def _policy_after_log_answer(
             coverage_role=coverage_role,
             learner_concept_id=learner_concept_id,
         )
-        write_session_map(session_id, data)
         if delta == "unbound":
             plan = _current_policy_for_topic(conn, topic_id=topic_id, topic_slug=topic_slug)
         else:
             plan = compute_policy_from_session(data, conn, topic_id=topic_id, topic_slug=topic_slug)
+        data["last_plan"] = plan
+        write_session_map(session_id, data)
         return plan, session_progress(data)
     plan = _current_policy_for_topic(conn, topic_id=topic_id, topic_slug=topic_slug)
     return plan, {}
@@ -3652,6 +3672,8 @@ def _integrate_inventory_knowledge_map(
         profile=profile,
         doc_path=doc_path,
     )
+    from node_recall import enrich_knowledge_map_learner_surfaces  # noqa: PLC0415
+    enrich_knowledge_map_learner_surfaces(conn, knowledge_map)
     brief["knowledge_map"] = knowledge_map
     brief["knowledge_map_status"] = "ok"
     brief["sequential_teaching_plan"] = teaching_plan
@@ -3668,6 +3690,7 @@ def _integrate_inventory_knowledge_map(
             doc_path=doc_path,
             learner_topics=[topic] if topic else [],
         )
+        session_data["last_plan"] = teaching_plan
         write_session_map(session_id, session_data)
 
 
@@ -3924,21 +3947,30 @@ def _refine_brief_with_anki(brief: dict[str, object], anki_profile: dict[str, ob
     if not isinstance(rollup, list):
         return
         
-    # Build a lookup of Anki stats by normalized concept name (using slug)
-    anki_stats = {}
+    # Build lookups by inventory id (preferred) and normalized concept slug.
+    anki_by_inventory: dict[str, tuple[int, float]] = {}
+    anki_by_slug: dict[str, tuple[int, float]] = {}
     for item in rollup:
-        if isinstance(item, dict) and "concept" in item:
-            c_name = item["concept"]
-            revs = item.get("reviews_count", 0)
-            rate = item.get("success_rate", 0.0)
-            anki_stats[_slug(c_name)] = (revs, rate)
-            
-    # Update schema map
+        if not isinstance(item, dict) or "concept" not in item:
+            continue
+        c_name = item["concept"]
+        revs = int(item.get("reviews_count", 0) or 0)
+        rate = float(item.get("success_rate", 0.0) or 0.0)
+        inv_id = str(item.get("inventory_concept_id") or "").strip()
+        if inv_id:
+            anki_by_inventory[inv_id] = (revs, rate)
+        anki_by_slug[_slug(c_name)] = (revs, rate)
+
+    # Update knowledge map
     for entry in schema_map:
         c_name = entry.get("concept", "")
         slug_name = _slug(c_name)
-        if slug_name in anki_stats:
-            revs, rate = anki_stats[slug_name]
+        inv_id = str(entry.get("concept_id", "")).strip()
+        stats = anki_by_inventory.get(inv_id) if inv_id else None
+        if stats is None:
+            stats = anki_by_slug.get(slug_name)
+        if stats:
+            revs, rate = stats
             entry["anki_reviews_count"] = revs
             entry["anki_success_rate"] = rate
             
@@ -5087,6 +5119,11 @@ def main() -> None:
         help="Session id; when set, writes the live knowledge map file for per-turn patching",
     )
 
+    p_node = sub.add_parser("node-recall")
+    p_node.add_argument("--inventory-concept-id", required=True)
+    p_node.add_argument("--topic", default="")
+    p_node.add_argument("--session", default="")
+
     sub.add_parser("status")
     sub.add_parser("identity-audit")
     sub.add_parser("telemetry-audit")
@@ -5218,6 +5255,7 @@ def main() -> None:
                     "pedagogical_directives",
                     "socratic_choice_directives",
                     "decision_inputs",
+                    "orient_menu",
                 ):
                     if key in plan_snapshot:
                         policy_payload[key] = plan_snapshot[key]
@@ -5303,6 +5341,14 @@ def main() -> None:
             print(_json_dumps(end_rotation(conn, rotation_id=args.rotation) or {"error": "rotation not found"}))
         elif args.command == "service-rubric":
             print(_json_dumps(service_rubric_view(conn, service=args.service, seed=args.seed, pgy=args.pgy)))
+        elif args.command == "node-recall":
+            from node_recall import node_recall as node_recall_fn  # noqa: PLC0415
+            print(_json_dumps(node_recall_fn(
+                conn,
+                inventory_concept_id=args.inventory_concept_id,
+                topic=args.topic,
+                session=args.session,
+            )))
         elif args.command == "status":
             print(status(conn))
         elif args.command == "identity-audit":

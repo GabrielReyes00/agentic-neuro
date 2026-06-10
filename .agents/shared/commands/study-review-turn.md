@@ -52,7 +52,15 @@ python3 src/study_memory.py log-answer \
 
 Correctness: `2` correct without help, `1` partial, `0` wrong/misconception.
 
-`log-answer` prints `OK exchange_id=N` followed by a `policy={...}` line with the recomputed `mode`, `phase`, `interrupts`, `target_concepts` (capped, with `target_concepts_omitted` when truncated), `pedagogical_directives`, `socratic_choice_directives`, and `decision_inputs`, plus an optional compact `session_progress={...}` line with in-session coverage counts. Parse both silently. Policy is computed from the live session knowledge map (patched incrementally each turn). Pass `--inventory-concept-id` whenever the probed concept is on the session map — required for assessed `study-review` exchanges when resolvable. Legacy concepts without IDs are lexically matched when possible; unmatched rows retry on future surfacing.
+`log-answer` prints `OK exchange_id=N` followed by a `policy={...}` line with the recomputed `mode`, `phase`, `interrupts`, `target_concepts` (capped, with `target_concepts_omitted` when truncated), `pedagogical_directives`, `socratic_choice_directives`, `decision_inputs`, and during ORIENT an `orient_menu` of inventory nodes, plus an optional compact `session_progress={...}` line with in-session coverage counts. Parse both silently. Policy is computed from the live session knowledge map (patched incrementally each turn). Pass `--inventory-concept-id` whenever the probed concept is on the session map — required for assessed `study-review` exchanges when resolvable. Legacy concepts without IDs are lexically matched when possible; unmatched rows retry on future surfacing.
+
+Before probing a map node whose `learner_surface` is absent or thin, run point-of-need drilldown:
+
+```bash
+python3 src/study_memory.py node-recall --inventory-concept-id "<id>" --topic "<topic>" --session "$SESSION_TS"
+```
+
+Use `learner_surfaces`, `shadow_rules`, and `inventory_edges` silently to design the next question.
 
 The same full plan is persisted to `policy_events.plan_json` for audit only; you do not write it yourself. If a `policy_status={"status":"unavailable",...}` line appears instead, keep the current phase, continue teaching, and rerun `startup-recall` if it persists — never invent a phase change yourself.
 

@@ -574,6 +574,34 @@ class RecallContractReferenceTests(unittest.TestCase):
             with self.subTest(path=relative_path):
                 self.assertNotIn("brief 4b", (ROOT / relative_path).read_text())
 
+    def test_phase2_node_recall_and_orient_menu_contracts(self) -> None:
+        turn = (ROOT / ".agents/shared/commands/study-review-turn.md").read_text()
+        end = (ROOT / ".agents/shared/commands/study-review-end.md").read_text()
+        retrieval = (ROOT / ".agents/shared/commands/memory-retrieval.md").read_text()
+        curation = (ROOT / ".agents/shared/commands/memory-curation.md").read_text()
+        impl = (ROOT / "src/study_memory.py").read_text()
+        for fragment in (
+            "node-recall",
+            "orient_menu",
+            "learner_surface",
+            "inventory_edges",
+            "shadow_rules",
+        ):
+            with self.subTest(turn_fragment=fragment):
+                self.assertIn(fragment, turn)
+        for fragment in (
+            "handoff_skeleton",
+            "priority_inventory_ids",
+            "improved_inventory_ids",
+        ):
+            with self.subTest(end_fragment=fragment):
+                self.assertIn(fragment, end)
+        self.assertIn("learner_surface", retrieval)
+        self.assertIn("inventory_concept_id", curation)
+        self.assertIn("node-recall", impl)
+        self.assertIn("orient_menu", impl)
+        self.assertIn("handoff_skeleton", impl)
+
 
 if __name__ == "__main__":
     unittest.main()

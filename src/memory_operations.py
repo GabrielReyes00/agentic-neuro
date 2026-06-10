@@ -543,10 +543,11 @@ def _validate_summary(summary: dict[str, Any], idx: int) -> None:
         _validate_int(eid, f"summaries[{idx}].evidence_claim_result_ids[{j}]")
     topic_slug = summary.get("topic_slug") or None
     concept_id = summary.get("concept_id")
-    scope_present = sum(1 for v in (topic_slug, concept_id) if v not in (None, ""))
+    inventory_concept_id = str(summary.get("inventory_concept_id") or "").strip()
+    scope_present = sum(1 for v in (topic_slug, concept_id, inventory_concept_id) if v not in (None, ""))
     _require(
         scope_present <= 1,
-        f"summaries[{idx}] must set at most one of topic_slug / concept_id (got both)",
+        f"summaries[{idx}] must set at most one of topic_slug / concept_id / inventory_concept_id",
     )
     importance = summary.get("importance_score", 0.5)
     _require(
@@ -605,6 +606,30 @@ def _validate_relationship(rel: dict[str, Any], idx: int) -> None:
             _validate_int(eid, f"relationships[{idx}].evidence_claim_result_ids[{j}]")
 
 
+def _resolve_inventory_concept_id(conn: sqlite3.Connection, inventory_concept_id: str) -> int | None:
+    inv = str(inventory_concept_id or "").strip()
+    if not inv:
+        return None
+    row = conn.execute(
+        "SELECT id FROM concepts WHERE inventory_concept_id = ? ORDER BY id LIMIT 1",
+        (inv,),
+    ).fetchone()
+    return int(row["id"]) if row else None
+
+
+def _resolve_shadow_binding_concept_id(conn: sqlite3.Connection, binding: dict[str, Any], idx: int, rule_idx: int) -> int:
+    if binding.get("concept_id") not in (None, ""):
+        return _validate_int(binding.get("concept_id"), f"shadow_rules[{rule_idx}].bindings[{idx}].concept_id")
+    inv = str(binding.get("inventory_concept_id") or "").strip()
+    _require(inv, f"shadow_rules[{rule_idx}].bindings[{idx}] requires concept_id or inventory_concept_id")
+    resolved = _resolve_inventory_concept_id(conn, inv)
+    _require(
+        resolved is not None,
+        f"shadow_rules[{rule_idx}].bindings[{idx}].inventory_concept_id={inv!r} did not resolve to a learner concept",
+    )
+    return int(resolved)
+
+
 def _validate_shadow_rule(rule: dict[str, Any], idx: int) -> None:
     _require(isinstance(rule, dict), f"shadow_rules[{idx}] must be an object")
     for field in ("false_rule", "corrected_rule", "clinical_consequence", "probe_shape"):
@@ -628,7 +653,14 @@ def _validate_shadow_rule(rule: dict[str, Any], idx: int) -> None:
     _require(isinstance(bindings, list) and bindings, f"shadow_rules[{idx}].bindings must not be empty")
     for j, binding in enumerate(bindings):
         _require(isinstance(binding, dict), f"shadow_rules[{idx}].bindings[{j}] must be an object")
-        _validate_int(binding.get("concept_id"), f"shadow_rules[{idx}].bindings[{j}].concept_id")
+        has_concept = binding.get("concept_id") not in (None, "")
+        has_inv = bool(str(binding.get("inventory_concept_id") or "").strip())
+        _require(
+            has_concept or has_inv,
+            f"shadow_rules[{idx}].bindings[{j}] requires concept_id or inventory_concept_id",
+        )
+        if has_concept:
+            _validate_int(binding.get("concept_id"), f"shadow_rules[{idx}].bindings[{j}].concept_id")
         binding_type = binding.get("binding_type", "trigger")
         _require(
             binding_type in ALLOWED_SHADOW_BINDING_TYPES,
@@ -782,17 +814,21 @@ def apply_curation_payload(
             slug = s.get("topic_slug")
             topic_id = topic_slug_to_id[slug] if slug else None
             concept_id = s.get("concept_id")
+            inventory_concept_id = str(s.get("inventory_concept_id") or "").strip() or None
+            if concept_id is None and inventory_concept_id:
+                concept_id = _resolve_inventory_concept_id(conn, inventory_concept_id)
             client_id = s.get("client_id", "")
             cur = conn.execute(
                 """INSERT INTO memory_summaries
-                       (client_id, summary_type, topic_id, concept_id, content,
+                       (client_id, summary_type, topic_id, concept_id, inventory_concept_id, content,
                         importance_score, generated_at, version, status)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active')""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')""",
                 (
                     client_id,
                     s["summary_type"],
                     topic_id,
                     concept_id,
+                    inventory_concept_id,
                     s["content"].strip(),
                     float(s.get("importance_score", 0.5)),
                     ts,
@@ -916,11 +952,12 @@ def apply_curation_payload(
                     "INSERT OR IGNORE INTO shadow_rule_evidence (shadow_rule_id, claim_result_id) VALUES (?, ?)",
                     (shadow_rule_id, int(eid)),
                 )
-            for binding in rule.get("bindings", []):
+            for j, binding in enumerate(rule.get("bindings", [])):
+                concept_id = _resolve_shadow_binding_concept_id(conn, binding, j, i)
                 conn.execute(
                     """INSERT OR IGNORE INTO shadow_rule_bindings
                        (shadow_rule_id, concept_id, binding_type) VALUES (?, ?, ?)""",
-                    (shadow_rule_id, int(binding["concept_id"]), binding.get("binding_type", "trigger")),
+                    (shadow_rule_id, concept_id, binding.get("binding_type", "trigger")),
                 )
 
         conn.execute(
