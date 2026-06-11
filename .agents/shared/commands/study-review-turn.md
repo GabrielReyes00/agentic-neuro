@@ -52,6 +52,26 @@ python3 src/study_memory.py log-answer \
 
 Correctness: `2` correct without help, `1` partial, `0` wrong/misconception.
 
+### Field Discipline (four layers)
+
+A log entry has four layers, each with one job. Keep them separate:
+
+- **Identity** (`--inventory-concept-id`, topic, claim-state ids): the canonical key. Matching, sequencing, and calibration run on this layer only. Resolve the probed concept to its inventory id; never let a prose label stand in as identity.
+- **Categorical** (`--cognitive-op`, `--error-type`, `--answer-mode`, `--confidence-observed`, `--teaching-move`, `--coverage-role`, `--priority`, `--correct`): controlled-vocabulary signal that drives calibration.
+- **Numerical** (attempts, successes, stability — managed by the engine): pure counts and scheduler state.
+- **Subjective** (`--tested-claim`, `--learner-claim`, `--misconception`, `--corrected-rule`, `--clinical-consequence`, `--retest-prompt-shape`): verbatim judgment the next agent *reads* to design a probe. Put all specifics here — thresholds, trial names, the exact discrimination — not in the concept label.
+
+`--concept` must be a short, atomic, canonical concept name (ideally the inventory node's name). Do not conflate two concepts (`"X and Y"`), name both sides of a comparison (`"X vs Y"`), or embed evidence/trial detail in it — those belong in `--tested-claim`. `log-answer` prints `WARN atomicity ...` advisories when a label violates this; treat them as a prompt to relabel, not noise.
+
+### Binding Status
+
+After an assessed `study-review` exchange, `log-answer` prints a `binding={...}` line with `status`:
+- `explicit` — you passed a verified `--inventory-concept-id`. This is the target state.
+- `inferred` — the concept was lexically matched to a scoped node (with a `score`). Provisional: confirm it and pass `--inventory-concept-id` explicitly next turn so the binding becomes stable.
+- `unresolved` — no node matched; the line carries near-miss `candidates`. The concept may be a genuine inventory gap. Continue teaching, but flag it for a node proposal (see inventory authoring) rather than forcing a wrong binding.
+
+Parse `binding=` silently. A persistent `unresolved`/low-score `inferred` on a central concept is a signal the inventory is missing a node, not a reason to stop.
+
 `log-answer` prints `OK exchange_id=N` followed by a `policy={...}` line with the recomputed `mode`, `phase`, `interrupts` (`remediate`, `consolidate`, `escalate`), `target_concepts` (capped, with `target_concepts_omitted` when truncated), `pedagogical_directives`, `socratic_choice_directives`, `decision_inputs` (including lean `weak_operations` and `binding_quality`), optional `probe_feedback` after misses/partials (`cognitive_op` + `retest_hint`), optional `orient_skip`, and during ORIENT an `orient_menu` of inventory nodes. An optional compact `session_progress={...}` line may include `probe_quality`. Parse both silently. Policy is computed from the live session knowledge map (patched incrementally each turn). Pass `--inventory-concept-id` whenever the probed concept is on the session map — required for assessed `study-review` exchanges when resolvable. Pass `--cognitive-op` when the failed operation is obvious; otherwise the classifier infers it from the tested claim. Legacy concepts without IDs are lexically matched when possible; unmatched rows retry on future surfacing.
 
 Before probing a map node whose `learner_surface` is absent or thin, run point-of-need drilldown:
@@ -72,9 +92,18 @@ Never log a tracked claim for a synthesis/self-assessment prompt.
 
 ## Anki Enqueue
 
-After `log-answer`, use the printed `exchange_id` for any card enqueue. Create cards for incorrect, partial, high-yield corrected rules, and fragile transfer edges; skip trivial correct recall.
+IMMEDIATE ACTION REQUIRED: Immediately after every `log-answer` call, you MUST evaluate if the exchange is card-eligible. 
 
-Load `.agents/shared/commands/anki-card-quality.md` before drafting cards if card wording is nontrivial. Use `anki_queue.py enqueue` per turn (flush at session end); pass `--inventory-concept-id` when known. Do not write directly to Anki. Preserve stable metadata tags produced by flush: `topic/<slug>`, `concept/<slug>`, `claim/<claim_id>`, `inv/<inventory_concept_id>`, and provenance tags.
+You MUST generate and enqueue 1–3 atomic cards (via `anki_queue.py enqueue`) in the same turn for any exchange where:
+- The score is incorrect (`0`) or partial (`1`).
+- The user's response is correct (`2`) but missed critical nominal or numeric details (e.g., anatomical levels, ranges, thresholds, time windows) that you corrected or supplemented.
+- The exchange exposed a safety-critical clinical rule, complication, or key management discriminator.
+
+Do not defer card drafting to the end of the session; perform it inline, turn-by-turn. For each enqueued card:
+1. Load `.agents/shared/commands/anki-card-quality.md` to ensure correct cloze/QA design, ensuring all numbers, thresholds, and anatomical structures are explicitly tested.
+2. Use the exact `exchange_id` printed by `log-answer`.
+3. Pass `--inventory-concept-id` whenever resolvable.
+4. Do not write directly to Anki; always use `anki_queue.py enqueue` and preserve stable metadata tags.
 
 ## Continue Or End
 

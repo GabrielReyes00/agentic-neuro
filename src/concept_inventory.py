@@ -45,8 +45,16 @@ EDGE_TYPES = ("prereq", "discriminator", "related")
 DEFAULT_SCOPE_BUDGET = 80
 DEFAULT_ENTRY_LIMIT = 30
 TOPIC_ANCHOR_THRESHOLD = 0.6
+# A topic also anchors when at least this many of its concepts match the query —
+# essential when the canonical topic name shares no tokens with learner phrasing.
+CONCEPT_ANCHOR_MIN_CONCEPTS = 2
 CONCEPT_MATCH_THRESHOLD = 0.34
-LEARNER_MATCH_THRESHOLD = 0.5
+# Learner→inventory projection recall. Verbose, multi-qualifier learner labels
+# ("xanthochromia mechanism" vs node "LP and xanthochromia") legitimately land at
+# 0.85*0.5 = 0.425 — a real same-concept hit that the old 0.5 floor dropped,
+# leaving studied nodes "unexposed" and mislabeling drilled topics as ORIENT. This
+# is the startup projection floor only; per-turn session binding stays stricter.
+LEARNER_MATCH_THRESHOLD = 0.4
 
 _STOPWORDS = frozenset({
     "of", "the", "in", "and", "or", "vs", "for", "a", "an", "to", "with", "on",
@@ -461,6 +469,8 @@ def scope_subgraph(
     query: str = "",
     topic_id: str = "",
     domain: str = "",
+    domain_hint: str = "",
+    anchor_tokens: frozenset[str] = frozenset(),
     budget: int = DEFAULT_SCOPE_BUDGET,
     entry_limit: int = DEFAULT_ENTRY_LIMIT,
 ) -> dict:
@@ -477,21 +487,75 @@ def scope_subgraph(
         entries = [(1.0, c["id"]) for c in concepts if c["topic_id"] == topic_id]
     elif query:
         query_tokens = _tokens(query)
+        # Learner concept tokens pull the concepts the learner actually studied into
+        # scope, so a short topic string that under-recalls does not collapse the map.
+        anchor_only = frozenset(anchor_tokens) - query_tokens
+        # First pass: score every concept by the query (no topic boost yet).
+        base_scores: dict[str, float] = {}
+        topic_match_count: dict[str, int] = {}
+        topic_match_mass: dict[str, float] = {}
+        for c in concepts:
+            score = _lexical_score(query_tokens, c["match_tokens"])
+            if anchor_only:
+                score = max(score, _lexical_score(anchor_only, c["match_tokens"]))
+            base_scores[c["id"]] = score
+            if score >= CONCEPT_MATCH_THRESHOLD:
+                topic_match_count[c["topic_id"]] = topic_match_count.get(c["topic_id"], 0) + 1
+                topic_match_mass[c["topic_id"]] = topic_match_mass.get(c["topic_id"], 0.0) + score
+        # Anchor a topic by NAME match, or because several of its concepts match the
+        # query. The latter is essential when the topic name shares no tokens with
+        # the learner's phrasing (topic "Aneurysmal Subarachnoid Hemorrhage" vs query
+        # "sah vasospasm") — concept-based anchoring still pulls the whole topic in.
         topic_rows = conn.execute("SELECT id, name FROM topics ORDER BY id").fetchall()
-        topic_scores = sorted(
-            ((_lexical_score(query_tokens, _tokens(r["name"])), r["id"]) for r in topic_rows),
-            key=lambda x: (-x[0], x[1]),
-        )
-        anchored_topics = [tid for score, tid in topic_scores if score >= TOPIC_ANCHOR_THRESHOLD][:3]
+        name_anchored = [
+            r["id"] for r in topic_rows
+            if _lexical_score(query_tokens, _tokens(r["name"])) >= TOPIC_ANCHOR_THRESHOLD
+        ][:3]
+        concept_anchored = sorted(
+            (tid for tid, cnt in topic_match_count.items() if cnt >= CONCEPT_ANCHOR_MIN_CONCEPTS),
+            key=lambda tid: (-topic_match_mass[tid], tid),
+        )[:3]
+        anchored_topics = list(dict.fromkeys([*name_anchored, *concept_anchored]))[:4]
         anchored_set = set(anchored_topics)
         scored = []
         for c in concepts:
-            score = _lexical_score(query_tokens, c["match_tokens"])
+            score = base_scores[c["id"]]
             if c["topic_id"] in anchored_set:
                 score = max(score, 0.75)
             if score >= CONCEPT_MATCH_THRESHOLD:
                 scored.append((score, c["id"]))
         scored.sort(key=lambda x: (-x[0], x[1]))
+        # Domain-coherence guard: a single study session is almost always within
+        # one clinical domain. A lexical collision across domains (e.g.
+        # "subarachnoid hemorrhage" matching a *traumatic* SAH node while the
+        # session is aneurysmal/vascular) must not seed entry nodes from an
+        # unrelated domain. Prune before the entry cap so the budget is spent on
+        # in-domain concepts. Neighbor (1-hop edge) expansion may still legitimately
+        # cross domains and is intentionally left untouched.
+        anchored_domains = {c["domain"] for c in concepts if c["topic_id"] in anchored_set}
+        if scored:
+            scored_domains = {by_id[cid]["domain"] for _, cid in scored}
+            # anchored_domains comes from the anchored topics, not the matched
+            # concepts, so intersect first — never filter to a domain that has no
+            # matches, which would collapse the scope to nothing.
+            allowed_anchored = anchored_domains & scored_domains
+            if allowed_anchored:
+                scored = [t for t in scored if by_id[t[1]]["domain"] in allowed_anchored]
+            elif domain_hint and domain_hint in scored_domains:
+                # The learner topic's domain disambiguates a cross-domain lexical
+                # collision (e.g. aneurysmal vs traumatic SAH) deterministically,
+                # but only when it actually names a domain present in the matches.
+                scored = [t for t in scored if by_id[t[1]]["domain"] == domain_hint]
+            else:
+                domain_mass: dict[str, float] = {}
+                for s, cid in scored:
+                    domain_mass[by_id[cid]["domain"]] = domain_mass.get(by_id[cid]["domain"], 0.0) + s
+                total = sum(domain_mass.values())
+                top_domain, top_mass = max(domain_mass.items(), key=lambda kv: kv[1])
+                # Only prune on a clear majority so genuinely multi-domain lexical
+                # queries (no strong topic anchor) are left intact.
+                if len(domain_mass) > 1 and total > 0 and (top_mass / total) >= 0.6:
+                    scored = [t for t in scored if by_id[t[1]]["domain"] == top_domain]
         entries = scored[: max(entry_limit, len([s for s in scored if by_id[s[1]]["topic_id"] in anchored_set]))]
     else:
         return {"ok": False, "reason": "query_or_topic_required"}
@@ -609,6 +673,33 @@ def _learner_topic_ids(mem: sqlite3.Connection, learner_topics: list[str], resol
     return resolved
 
 
+# Learner-memory domain labels do not all share the inventory's domain slugs.
+# Map the known divergences so a learner topic's domain can hint inventory scope.
+_MEMORY_DOMAIN_ALIASES = {"critical-care": "neurocritical-care"}
+
+
+def _resolved_topic_domain_hint(mem: sqlite3.Connection, topic_ids: list[int]) -> str:
+    """Most common concrete domain across resolved learner topics, as an inventory hint.
+
+    The catch-all 'general' label and empty domains are ignored. The returned slug
+    is only a hint; scope_subgraph applies it solely when it names a domain actually
+    present in the lexical matches, so a vocabulary mismatch is harmless.
+    """
+    if not topic_ids:
+        return ""
+    placeholders = ",".join("?" for _ in topic_ids)
+    rows = mem.execute(
+        f"""SELECT domain, COUNT(*) AS n FROM topics
+            WHERE id IN ({placeholders}) AND COALESCE(domain, '') NOT IN ('', 'general')
+            GROUP BY domain ORDER BY n DESC, domain""",
+        topic_ids,
+    ).fetchall()
+    if not rows:
+        return ""
+    domain = str(rows[0]["domain"])
+    return _MEMORY_DOMAIN_ALIASES.get(domain, domain)
+
+
 def map_learner(
     *,
     inventory_conn: sqlite3.Connection,
@@ -620,10 +711,6 @@ def map_learner(
     budget: int = DEFAULT_SCOPE_BUDGET,
 ) -> dict:
     """Project learner memory onto a scoped inventory subgraph (memory DB opened read-only)."""
-    scope = scope_subgraph(inventory_conn, query=query, topic_id=topic_id, domain=domain, budget=budget)
-    if not scope.get("ok"):
-        return scope
-
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from study_memory import (  # noqa: PLC0415 - shared deterministic policy semantics
         TARGET_CONCEPTS_COMPACT_CAP,
@@ -639,16 +726,44 @@ def map_learner(
     resolved_topics: dict[str, int] = {}
     due_claims: list[dict] = []
     shadow_signals: list[dict] = []
+    domain_hint = ""
+    anchor_tokens: frozenset[str] = frozenset()
     if mem is None:
         learner_status = "memory_db_absent"
     else:
         resolved_topics = _learner_topic_ids(mem, learner_topics, resolve_topic)
         if learner_topics and not resolved_topics:
             learner_status = "no_learner_topics_resolved"
+        topic_id_list = sorted(resolved_topics.values())
+        domain_hint = _resolved_topic_domain_hint(mem, topic_id_list)
+        if topic_id_list:
+            placeholders = ",".join("?" for _ in topic_id_list)
+            token_acc: set[str] = set()
+            for r in mem.execute(
+                f"SELECT display_name FROM concepts WHERE topic_id IN ({placeholders})",
+                topic_id_list,
+            ):
+                token_acc |= set(_tokens(r["display_name"]))
+            anchor_tokens = frozenset(token_acc)
+
+    # Scope after the learner topic domain and studied-concept tokens are known so
+    # a cross-domain lexical collision is disambiguated toward the learner's domain
+    # and the concepts the learner actually drilled are pulled into the map.
+    scope = scope_subgraph(
+        inventory_conn, query=query, topic_id=topic_id, domain=domain,
+        domain_hint=domain_hint, anchor_tokens=anchor_tokens, budget=budget,
+    )
+    if not scope.get("ok"):
+        if mem is not None:
+            mem.close()
+        return scope
+
+    if mem is not None:
         topic_ids = sorted(resolved_topics.values())
         for tid in topic_ids:
             rows = mem.execute(
                 """SELECT c.id, c.display_name, c.canonical_slug,
+                          COALESCE(c.inventory_concept_id, '') AS inventory_concept_id,
                           COALESCE(a.cnt, 0) AS attempts,
                           COALESCE(a.success_cnt, 0) AS successes
                    FROM concepts c
@@ -674,6 +789,7 @@ def map_learner(
                     "learner_concept_id": int(r["id"]),
                     "name": r["display_name"],
                     "slug": r["canonical_slug"],
+                    "inventory_concept_id": str(r["inventory_concept_id"] or ""),
                     "attempts": int(r["attempts"]),
                     "successes": int(r["successes"]),
                     "states": [
@@ -685,14 +801,15 @@ def map_learner(
                 })
             try:
                 due_claims.extend(_due_claims_for_summary(mem, topic_id=tid, limit=8))
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001 - optional signal, but observe the loss
+                print(f"WARN map_learner_due_claims_failed topic_id={tid}: {exc}", file=sys.stderr)
         matched_ids = [lc["learner_concept_id"] for lc in learner_concepts]
         if matched_ids:
             try:
                 shadow_signals = shadow_rule_signals_for_summary(mem, relevant_concept_ids=matched_ids, limit=4)
-            except Exception:
+            except Exception as exc:  # noqa: BLE001 - optional signal, but observe the loss
                 shadow_signals = []
+                print(f"WARN map_learner_shadow_signals_failed: {exc}", file=sys.stderr)
         mem.close()
 
     # Deterministic lexical projection of learner concepts onto scoped inventory nodes.
@@ -707,9 +824,17 @@ def map_learner(
             toks = toks | _tokens(alias)
         node_tokens[node["id"]] = toks
 
+    scope_node_ids = {node["id"] for node in scope["nodes"]}
     assignments: dict[str, list[dict]] = {}
     unmatched: list[dict] = []
     for lc in learner_concepts:
+        # Identity layer wins: an explicit inventory binding is honored directly so
+        # the projection aggregates by the canonical node (and many fragmented rows
+        # for one node consolidate) instead of re-deriving from the prose label.
+        explicit = lc.get("inventory_concept_id")
+        if explicit and explicit in scope_node_ids:
+            assignments.setdefault(explicit, []).append({**lc, "match_score": 1.0, "binding_source": "explicit"})
+            continue
         best: tuple[float, str] | None = None
         for node in scope["nodes"]:
             score = _lexical_score(lc["tokens"], node_tokens[node["id"]])
@@ -754,6 +879,7 @@ def map_learner(
             "exposure_status": exposure,
             "knowledge_state": worst_state or "untested",
             "attempts_count": attempts,
+            "successes_count": successes,
             "sqlite_success_rate": success_rate,
             "safety_critical": any(s["priority"] in ("urgent", "high") for s in all_states),
             "active_misconception": any(
@@ -761,7 +887,8 @@ def map_learner(
                 for s in all_states
             ),
             "matched_learner_concepts": [
-                {"learner_concept_id": m["learner_concept_id"], "name": m["name"], "match_score": m["match_score"]}
+                {"learner_concept_id": m["learner_concept_id"], "name": m["name"],
+                 "match_score": m["match_score"], "binding_source": m.get("binding_source", "lexical")}
                 for m in mapped
             ],
         })
@@ -856,7 +983,10 @@ def main(argv: list[str] | None = None) -> int:
     p_map.add_argument("--topic-id", default="")
     p_map.add_argument("--domain", default="")
     p_map.add_argument("--budget", type=int, default=DEFAULT_SCOPE_BUDGET)
-    p_map.add_argument("--memory-db", default=str(BASE_DIR / "data" / "study_memory.db"))
+    p_map.add_argument(
+        "--memory-db",
+        default=__import__("os").environ.get("NEURO_STUDY_MEMORY_DB", str(BASE_DIR / "data" / "study_memory.db")),
+    )
     p_map.add_argument("--learner-topic", action="append", default=[],
                        help="Learner-memory topic slug/name to project (repeatable)")
 

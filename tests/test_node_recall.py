@@ -124,6 +124,37 @@ class NodeRecallTests(unittest.TestCase):
         self.assertEqual(entry["anki_reviews_count"], 6)
         self.assertEqual(entry["exposure_status"], "exposed_deep")
 
+    def test_node_recall_cli_path_runs(self) -> None:
+        """The node-recall CLI must wire --session through without a kwarg error."""
+        import contextlib
+        import io
+        import unittest.mock
+        import session_map as sm  # noqa: E402
+
+        tmp = tempfile.TemporaryDirectory()
+        sessions_dir = Path(tmp.name) / "Sessions"
+        sessions_dir.mkdir()
+        try:
+            db_path = Path(tmp.name) / "m.db"
+            study_memory._get_db(db_path).close()
+            argv = [
+                "study_memory.py", "node-recall",
+                "--inventory-concept-id", "vasc.sah.clinical-presentation",
+                "--topic", "subarachnoid hemorrhage",
+                "--session", "cli-sess",
+            ]
+            buf = io.StringIO()
+            with unittest.mock.patch.object(study_memory, "DB_PATH", db_path), \
+                    unittest.mock.patch.object(sm, "SESSIONS_DIR", sessions_dir), \
+                    unittest.mock.patch.object(sys, "argv", argv), \
+                    contextlib.redirect_stdout(buf):
+                study_memory.main()
+            payload = json.loads(buf.getvalue().strip().splitlines()[-1])
+            self.assertTrue(payload.get("ok"))
+            self.assertEqual(payload["inventory_node"]["concept_id"], "vasc.sah.clinical-presentation")
+        finally:
+            tmp.cleanup()
+
     def test_end_session_returns_handoff_skeleton(self) -> None:
         import unittest.mock
         import session_map as sm  # noqa: E402

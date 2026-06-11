@@ -83,12 +83,46 @@ def orient_entry_nodes(knowledge_map: list[dict[str, Any]]) -> list[dict[str, An
     ]
 
 
-def should_skip_orient(knowledge_map: list[dict[str, Any]]) -> bool:
-    """Skip ORIENT when every entry node already has deep prior exposure."""
+# A topic with a substantial existing schema (most entries already exposed) has no
+# "fog to clear": a minority of unexposed entries should not force full ORIENT when
+# the learner has clearly engaged the topic. They are deepened/introduced within
+# DEEPEN instead. ORIENT still fires for predominantly-new topics.
+ORIENT_SKIP_EXPOSED_FRACTION = 0.6
+ORIENT_SKIP_MIN_EXPOSED = 3
+# A substantial body of partially-learned concepts is a schema worth DEEPENing even
+# when the scope is broad and unexposed neighbors dominate by count. This keeps the
+# ORIENT/DEEPEN decision robust to scope breadth (a focal study area inside a broadly
+# anchored topic should DEEPEN the gaps, not re-orient the whole topic).
+ORIENT_SKIP_MIN_DEEPENABLE = 4
+
+
+def _orient_skip_reason(knowledge_map: list[dict[str, Any]]) -> str:
     entries = orient_entry_nodes(knowledge_map)
     if not entries:
-        return False
-    return all(str(entry.get("exposure_status", "unexposed")) != "unexposed" for entry in entries)
+        return ""
+    exposed = [e for e in entries if str(e.get("exposure_status", "unexposed")) != "unexposed"]
+    if len(exposed) == len(entries):
+        return "all_entry_nodes_have_prior_exposure"
+    if len(exposed) >= ORIENT_SKIP_MIN_EXPOSED and len(exposed) / len(entries) >= ORIENT_SKIP_EXPOSED_FRACTION:
+        return "predominant_prior_exposure"
+    deepenable = [
+        e for e in exposed
+        if str(e.get("exposure_status")) == "exposed_superficial"
+        or str(e.get("knowledge_state", "")) in OPEN_GAP_STATES
+    ]
+    if len(deepenable) >= ORIENT_SKIP_MIN_DEEPENABLE:
+        return "substantial_deepenable_core"
+    return ""
+
+
+def should_skip_orient(knowledge_map: list[dict[str, Any]]) -> bool:
+    """Skip ORIENT when the learner already holds a schema for the topic.
+
+    True when every entry node is exposed, OR when exposed entries predominate
+    (>= 60% and >= 3), so a couple of unexposed entries do not force a learner who
+    has clearly engaged the topic back into superficial fog-clearing.
+    """
+    return bool(_orient_skip_reason(knowledge_map))
 
 
 def orient_skip_metadata(knowledge_map: list[dict[str, Any]]) -> dict[str, Any]:
@@ -98,11 +132,12 @@ def orient_skip_metadata(knowledge_map: list[dict[str, Any]]) -> dict[str, Any]:
         for entry in entries
         if str(entry.get("exposure_status", "unexposed")) != "unexposed"
     ]
+    reason = _orient_skip_reason(knowledge_map)
     return {
-        "skipped": should_skip_orient(knowledge_map),
+        "skipped": bool(reason),
         "entry_nodes_total": len(entries),
         "entry_nodes_prior_deep": len(deep_entries),
-        "reason": "all_entry_nodes_have_prior_exposure" if should_skip_orient(knowledge_map) else "",
+        "reason": reason,
     }
 
 

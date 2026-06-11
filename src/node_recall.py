@@ -259,8 +259,8 @@ def node_recall(
                     (int(topic_row["id"]), inventory_concept_id, inventory_node["concept"]),
                 ).fetchall()
                 learner_concept_ids = [int(r["id"]) for r in rows]
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - optional fallback lookup, but observe the loss
+            print(f"WARN node_recall_topic_lookup_failed topic={topic}: {exc}", file=sys.stderr)
 
     surfaces = [learner_surface_for_concept(conn, cid) for cid in learner_concept_ids[:3]]
     shadows = shadow_rule_signals_for_summary(conn, relevant_concept_ids=learner_concept_ids, limit=4)
@@ -277,8 +277,8 @@ def node_recall(
                     if isinstance(item, dict)
                     and str(item.get("concept", "")).lower() in surface_names
                 ]
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - optional signal, but observe the loss
+            print(f"WARN node_recall_due_claims_failed topic={topic}: {exc}", file=sys.stderr)
 
     return {
         "ok": True,

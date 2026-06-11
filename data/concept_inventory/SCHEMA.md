@@ -37,6 +37,19 @@ no generated content goes in without validation.
 }
 ```
 
+## Canonical File Layout
+
+Every domain file uses one **canonical layout**: scalar keys (`domain`, `code`,
+`display_name`) inline, and the `topics` and `concepts` arrays with **one object
+per line** and inline sub-arrays (`aliases`/`prereqs`/`discriminators`/`related`/
+`acgme`). This keeps edits diff-friendly — changing one concept is a one-line diff.
+
+Do not hand-format or pretty-print (no `json.dumps(indent=2)`, which explodes
+sub-arrays and produces noisy diffs). All writers emit this layout:
+`src/inventory_authoring.py` (`propose --apply`, `add_aliases`) writes it directly,
+and `python3 src/inventory_authoring.py --normalize` rewrites every file into it
+(round-trips through JSON, so content is unchanged) and rebuilds.
+
 ## Field Rules
 
 - **`domain`**: canonical slug — one of `general`, `anatomy`, `vascular`, `tumor`,

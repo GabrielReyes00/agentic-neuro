@@ -12,6 +12,9 @@ data/concept_inventory.db.building
 data/study_memory.db
 data/study_memory.db-wal
 data/study_memory.db-shm
+data/study_memory.legacy.db
+data/study_memory.legacy.db-wal
+data/study_memory.legacy.db-shm
 data/vault_index.db
 data/chromadb_store_anki_memory/
 data/study_memory_backup_*.db
@@ -53,3 +56,6 @@ build/
 # === Model Caches (downloaded at runtime) ===
 .cache/
 models/
+data/study_memory.migration.db
+data/study_memory.migration.db-wal
+data/study_memory.migration.db-shm

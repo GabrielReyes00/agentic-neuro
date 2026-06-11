@@ -103,10 +103,13 @@ python3 src/study_memory.py log-answer \
   [--priority "<urgent|high|medium|low>"] \
   [--match-claim-state-id <id>] [--new-claim] \
   [--repairs-claim-state-ids "<id,id,...>"] \
-  [--brain-dump-candidate-id <id>]
+  [--brain-dump-candidate-id <id>] \
+  [--inventory-concept-id "<inventory.concept_id>"] [--cognitive-op "<discrimination|quantification|sequencing|mechanism|transfer>"]
 ```
 
 Correctness: `2` = correct without hints | `1` = right direction, missing details | `0` = wrong or misconception.
+
+**Identity layer.** Pass `--inventory-concept-id` whenever the probed concept resolves to a canonical inventory node — it is the key the policy, mastery, and ACGME readiness run on (matching is Identity-first; lexical is only a fallback for unbound concepts). After each assessed study-review exchange, `log-answer` prints a `binding={status}` line: `explicit` (you passed the id), `inferred` (lexically matched — provisional, pass the id next turn), or `unresolved` (no node matched — a possible inventory gap; see `inventory-authoring.md`, do not force a wrong binding). `--cognitive-op` is an alias for `--learning-operation`; pass it when the failed operation is obvious. The full field taxonomy is in `memory-retrieval.md` ("Writing Better Memory").
 
 Agent judgment fields are required when applicable:
 

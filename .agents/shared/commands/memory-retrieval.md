@@ -54,10 +54,11 @@ This file is the canonical owner of the `planning_brief` JSON schema. If another
 
 **`knowledge_map` and `sequential_teaching_plan` lead the brief.** `startup-recall` builds them from the scoped concept inventory plus SQLite learner-state overlay. They are present in both `profile=doc` and `profile=memory`/`audit`. In `profile=memory`/`audit` they are carried verbatim. In `profile=doc` the emitted map is deterministically bounded: capped at the highest-signal entries (misconceptions, safety-critical, open states, superficial first) with `knowledge_map_omitted` reporting `{count, by_exposure_status}`, and `target_concepts` is capped with `target_concepts_omitted` when truncated. The policy is always computed from the full map before truncation — trust the phase even when the emitted map is capped. Per-turn `policy=` lines patch the live session map incrementally. Read them first and obey the policy — you never pick the macro phase yourself (see `adaptive-teaching-doctrine.md`):
 
-- **`knowledge_map`**: one entry per scoped inventory concept, each with inventory `concept_id`, `exposure_status` (`unexposed` | `exposed_superficial` | `exposed_deep`), `knowledge_state`, `attempts_count`, `sqlite_success_rate`, `anki_reviews_count`/`anki_success_rate` (advisory overlay only), `matched_learner_concepts`, optional compact `learner_surface` (`open_claims`, `top_gap`, `last_misconception_verbatim`), optional `escalation_directive`, `binding_tier`, `safety_critical`, `active_misconception`, `tier`, and `role`.
+- **`knowledge_map`**: one entry per scoped inventory concept, each with inventory `concept_id`, `exposure_status` (`unexposed` | `exposed_superficial` | `exposed_deep`), `knowledge_state`, `attempts_count`, `sqlite_success_rate`, `anki_reviews_count`/`anki_success_rate` (advisory overlay only), `matched_learner_concepts` (each carrying `binding_source` = `explicit` when an inventory binding drove the match, else `lexical`), optional compact `learner_surface` (`open_claims`, `top_gap`, `last_misconception_verbatim`), optional `escalation_directive`, `binding_tier`, `safety_critical`, `active_misconception`, `tier`, and `role`. Matching is **Identity-first**: a learner concept with an explicit `inventory_concept_id` is assigned directly to that node (so many fragmented legacy rows consolidate onto one canonical concept); only unbound concepts fall back to lexical matching.
 - **`escalation_directives`**: capped curated summaries with explicit `Escalation:` clauses, preferably inventory-ID scoped. Use silently to raise demand after demonstrated mastery; never quote prior-session handoffs across unrelated topics.
-- **`acgme_readiness`** (global memory-driven startup only): lean PGY-scoped `domain_gaps` and `top_blind_spots` from inventory ACGME links + learner bindings. Use for “what should I study before PGY2?” style reviews, not doc-anchored sessions.
-- **`orient_skip`**: when all entry nodes already have prior deep exposure, ORIENT is bypassed deterministically.
+- **`acgme_readiness`** (global memory-driven startup only): lean PGY-scoped `domain_gaps` and `top_blind_spots` from inventory ACGME links + learner bindings. Reports `explicit_inventory_bindings` vs `lexically_projected_concepts` so you can see how much is firm binding vs estimate. Use for “what should I study before PGY2?” style reviews, not doc-anchored sessions.
+- **`orient_skip`**: ORIENT is bypassed deterministically when the learner already holds a schema — `reason` is `all_entry_nodes_have_prior_exposure` (every entry exposed) or `predominant_prior_exposure` (exposed entries ≥ 60% and ≥ 3). The few still-unexposed entries fold into DEEPEN; do not re-orient a clearly-engaged topic.
+- **`knowledge_map_provenance`**: `inventory` (the rich inventory-grounded map — the healthy path), `sqlite_fallback` (degraded: SQLite-only map, no graph structure/domain boundaries), or `none`. If it is not `inventory`, the session is running degraded; proceed but treat the map as thin.
 - **Open-gap cards** may include `cognitive_op` from the last assessed miss on that claim.
 - **`knowledge_map_status`**: `ok`, `empty_no_inventory_scope`, `empty_no_learner_concepts` (SQLite-only fallback), `no_topic`, or `error: ...`.
 - **`inventory_unmatched_learner_concepts`**: legacy learner concepts not yet bound to inventory IDs; retry matching when resurfaced.
@@ -99,6 +100,7 @@ Read the JSON in this order:
 
 ## Cards
 
+- Each card and due-claim carries `inventory_concept_id` when its concept is bound. Group hits that share an `inventory_concept_id` — they are the same canonical concept (one node may have several distinct open claims); address them together rather than as unrelated rows.
 - Open from the most recent `session_handoff.next_action` when present; it is the previous agent's directive. Convert it into a question or case setup, not a learner-facing recap.
 - Map each `must_retest` card to a question that forces confrontation with the specific `missing_edge` or `corrected_rule`.
 - Repeated misses on the same concept mean the previous teaching approach failed; use a different teaching move.
@@ -172,10 +174,16 @@ Do not echo summary content, paste curated summary text, list previously reviewe
 
 Each `log-answer` entry must let a future agent reconstruct what was tested, what the learner got wrong, and what the correct rule is.
 
-- `concept`: specific testable fact, not the topic name.
-- `misconception`: specific wrong belief when `correct=0`.
-- `correction`: right answer replacing the misconception.
-- `error_type`: teaching-relevant failure mode.
-- Structured fields: `tested_claim`, `learner_claim`, `missing_edge`, `corrected_rule`, `clinical_consequence`, and `retest_prompt_shape` are the agent's judgment layer.
-- Retrieval metadata: `teaching_intent`, `expected_answer_edge`, `coverage_role`, source fields, `answer_mode`, and `confidence_observed` make future retrieval concise.
+**Four-layer field discipline.** A log entry has four layers, each with one job; keep them separate (this is the canonical statement — `study-review-turn.md` summarizes it):
+
+1. **Identity** — `--inventory-concept-id` (the canonical key), topic, claim-state ids. Matching, sequencing, and calibration run on this layer **only**. Resolve the probed concept to its inventory id; never let a prose label stand in as identity.
+2. **Categorical** — controlled vocabularies: `--cognitive-op`, `--error-type`, `--answer-mode`, `--confidence-observed`, `--teaching-move`, `--coverage-role`, `--priority`, `--correct`. These drive calibration.
+3. **Numerical** — attempts, successes, stability, retrievability. Managed by the engine; never reconstructed from a rounded value.
+4. **Subjective** — verbatim judgment the next agent *reads*: `tested_claim`, `learner_claim`, `misconception`, `corrected_rule`, `clinical_consequence`, `retest_prompt_shape`. Put all specifics here.
+
+- `concept`: a short, atomic, canonical concept name (ideally the inventory node's name) — **not** a verbose phrase, a conjunction (`"X and Y"`), a comparison (`"X vs Y"`), or a sentence with embedded trial/evidence detail. Those belong in `tested_claim`. `log-answer` emits `WARN atomicity ...` when a label violates this; relabel rather than ignore.
+- `tested_claim`: the atomic rule/threshold/discriminator under test — the agent's verdict on the answer ("Correct:", "Partial —") does not belong here.
+- `misconception`: specific wrong belief when `correct=0`. `correction`: right answer. `error_type`: teaching-relevant failure mode.
+- Retrieval metadata: `teaching_intent`, `expected_answer_edge`, `coverage_role`, source fields make future retrieval concise.
 - Claim-state flags: use `--match-claim-state-id`, `--repairs-claim-state-ids`, and `--new-claim` instead of relying on token overlap.
+- Read the `binding={...}` line after each assessed exchange: `explicit` (target state), `inferred` (provisional — pass `--inventory-concept-id` next turn), or `unresolved` (a possible inventory gap — propose a node via `inventory-authoring.md`, do not force a wrong binding).

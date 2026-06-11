@@ -164,6 +164,58 @@ class ScopeTests(_InventoryFixture):
         self.assertFalse(scope["ok"])
         self.assertEqual(scope["reason"], "unknown_topic_id")
 
+    def test_domain_hint_prunes_cross_domain_collision(self) -> None:
+        conn = self._open()
+        # "monro vasospasm" is a true 1v1 collision: Monro-Kellie (general) and
+        # Cerebral vasospasm (vascular) tie, so the majority fallback leaves both
+        # intact; the learner's domain hint disambiguates to vascular only.
+        no_hint = concept_inventory.scope_subgraph(conn, query="monro vasospasm", budget=20)
+        hinted = concept_inventory.scope_subgraph(conn, query="monro vasospasm", domain_hint="vascular", budget=20)
+        conn.close()
+        no_hint_domains = {n["domain"] for n in no_hint["nodes"] if n["role"] == "entry"}
+        hinted_domains = {n["domain"] for n in hinted["nodes"] if n["role"] == "entry"}
+        self.assertIn("vascular", no_hint_domains)
+        self.assertIn("general", no_hint_domains)
+        self.assertEqual(hinted_domains, {"vascular"})
+
+    def test_anchored_domain_guard_never_empties_scope(self) -> None:
+        # A domain_hint that names no matched domain must not prune everything:
+        # "hunt hess" only matches a vascular node; a 'general' hint should leave
+        # the scope intact rather than collapse it.
+        conn = self._open()
+        scope = concept_inventory.scope_subgraph(
+            conn, query="hunt hess", domain_hint="general", budget=20,
+        )
+        conn.close()
+        self.assertTrue(scope["ok"])
+        entry_ids = {n["id"] for n in scope["nodes"] if n["role"] == "entry"}
+        self.assertIn("vasc.sah.hunt-hess", entry_ids)
+
+    def test_anchor_tokens_pull_studied_concept_into_scope(self) -> None:
+        conn = self._open()
+        base = concept_inventory.scope_subgraph(conn, query="hunt hess", budget=20)
+        anchored = concept_inventory.scope_subgraph(
+            conn, query="hunt hess", anchor_tokens=frozenset({"vasospasm"}), budget=20,
+        )
+        conn.close()
+        base_entries = {n["id"] for n in base["nodes"] if n["role"] == "entry"}
+        anchored_entries = {n["id"] for n in anchored["nodes"] if n["role"] == "entry"}
+        self.assertNotIn("vasc.sah.vasospasm", base_entries)
+        self.assertIn("vasc.sah.vasospasm", anchored_entries)
+
+    def test_concept_based_topic_anchoring(self) -> None:
+        # The topic name "Subarachnoid Hemorrhage" shares no tokens with this query,
+        # but several of its concepts match -> the topic still anchors and its whole
+        # concept set is pulled into scope (the nimodipine-omission fix).
+        conn = self._open()
+        scope = concept_inventory.scope_subgraph(conn, query="cerebral vasospasm ischemia", budget=20)
+        conn.close()
+        self.assertTrue(scope["ok"])
+        self.assertIn("vasc.sah", scope["scope"]["anchored_topics"])
+        ids = {n["id"] for n in scope["nodes"]}
+        # Hunt-Hess grading shares no token with the query yet rides in via anchoring
+        self.assertIn("vasc.sah.hunt-hess", ids)
+
     def test_scope_is_deterministic(self) -> None:
         conn = self._open()
         a = concept_inventory.scope_subgraph(conn, query="vasospasm vs dci", budget=10)

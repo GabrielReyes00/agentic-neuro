@@ -132,6 +132,36 @@ def delete(session_id: str) -> bool:
     return False
 
 
+# Live maps belong to a single short study session; anything older than this was
+# abandoned (crash, agent never reached end-session) and is safe to sweep.
+SESSION_MAP_TTL_SECONDS = 48 * 3600
+
+
+def prune_stale_session_maps(
+    max_age_seconds: int = SESSION_MAP_TTL_SECONDS,
+    now: float | None = None,
+) -> int:
+    """Delete abandoned live session maps so data/Sessions does not grow unbounded.
+
+    end-session deletes a map on the normal path; this opportunistic sweep (run at
+    session start) reclaims maps from sessions that never reached end-session.
+    """
+    import time  # noqa: PLC0415
+
+    if not SESSIONS_DIR.exists():
+        return 0
+    cutoff = (now if now is not None else time.time()) - max_age_seconds
+    removed = 0
+    for path in SESSIONS_DIR.glob("knowledge_map_*.json"):
+        try:
+            if path.stat().st_mtime < cutoff:
+                path.unlink()
+                removed += 1
+        except OSError:
+            continue
+    return removed
+
+
 def _node_index(data: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return {
         str(entry["concept_id"]): entry
@@ -227,6 +257,7 @@ def patch_after_log(
     coverage_role: str = "",
     learner_concept_id: int | None = None,
     cognitive_op: str = "",
+    gap_type: str = "",
 ) -> tuple[dict[str, Any], str]:
     """Incrementally update one knowledge-map node after an assessed exchange."""
     inv_id, binding_tier, match_score = resolve_inventory_id(
@@ -252,10 +283,18 @@ def patch_after_log(
     prior_exposure = str(entry.get("exposure_status", "unexposed"))
     prior_state = str(entry.get("knowledge_state", "untested"))
 
-    attempts = int(entry.get("attempts_count", 0)) + 1
-    successes = int(entry.get("sqlite_success_rate", 0) * int(entry.get("attempts_count", 0)))
-    if correct >= 2:
-        successes += 1
+    prior_attempts = int(entry.get("attempts_count", 0))
+    # Prefer the stored integer success count; fall back to the rounded rate only
+    # for nodes created before successes_count existed (round, never truncate).
+    # MIGRATION BRIDGE (retire after Pillar B): once legacy session maps no longer
+    # exist and every projection emits successes_count, delete this fallback and
+    # read entry["successes_count"] directly.
+    prior_successes = int(entry.get(
+        "successes_count",
+        round(float(entry.get("sqlite_success_rate", 0) or 0) * prior_attempts),
+    ))
+    attempts = prior_attempts + 1
+    successes = prior_successes + (1 if correct >= 2 else 0)
     success_rate = round(successes / attempts, 3) if attempts else 0.0
     avg_stability = float(entry.get("avg_stability", 1.0))
     if correct >= 2:
@@ -279,10 +318,21 @@ def patch_after_log(
     elif delta in {"reviewed", "regressed"} or new_state in OPEN_GAP_STATES:
         stuck_probe_count += 1
 
+    # A correct answer clears the misconception flag; a miss whose gap_type is a
+    # misconception class (re)flags it even when the node carried no prior
+    # misconception, so REMEDIATE can fire for confusions discovered this session.
+    if correct >= 2:
+        active_misconception = False
+    elif str(gap_type) in MISCONCEPTION_GAP_TYPES:
+        active_misconception = True
+    else:
+        active_misconception = bool(entry.get("active_misconception"))
+
     entry.update({
         "exposure_status": new_exposure,
         "knowledge_state": new_state,
         "attempts_count": attempts,
+        "successes_count": successes,
         "sqlite_success_rate": success_rate,
         "avg_stability": avg_stability,
         "session_probed": True,
@@ -291,7 +341,7 @@ def patch_after_log(
         "binding_source": "explicit" if inventory_concept_id else "lexical_backfill",
         "binding_tier": binding_tier,
         "match_score": round(match_score, 3),
-        "active_misconception": correct == 0 and bool(entry.get("active_misconception")),
+        "active_misconception": active_misconception,
         "stuck_probe_count": stuck_probe_count,
         "last_cognitive_op": cognitive_op or entry.get("last_cognitive_op", ""),
     })

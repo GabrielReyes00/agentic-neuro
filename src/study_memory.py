@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import re
 import sqlite3
 import sys
@@ -52,7 +53,9 @@ from service_memory import (
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
-DB_PATH = DATA_DIR / "study_memory.db"
+# NEURO_STUDY_MEMORY_DB lets a session run against a copy of the live memory DB
+# (e.g. the migration working copy) without touching data/study_memory.db.
+DB_PATH = Path(os.environ.get("NEURO_STUDY_MEMORY_DB", DATA_DIR / "study_memory.db"))
 LOW_STAKES_REFERENCE_SKILLS = frozenset({"quick-answer"})
 LOW_STAKES_TEACHING_INTENTS = frozenset({"quick_answer_reference"})
 
@@ -1334,9 +1337,29 @@ def record_shadow_rule_check(
     return result
 
 
-def _ensure_concept(conn: sqlite3.Connection, topic_id: int, topic_slug: str, concept: str, question: str = "", correction: str = "") -> int:
+def _ensure_concept(
+    conn: sqlite3.Connection, topic_id: int, topic_slug: str, concept: str,
+    question: str = "", correction: str = "", inventory_concept_id: str = "",
+) -> int:
     now = datetime.now(timezone.utc).isoformat()
     slug = _slug(concept)
+    # Identity-first: when the probed concept resolves to a canonical inventory node,
+    # reuse the existing learner row already bound to that node in this topic instead
+    # of minting a new row per label variant. This keeps the consolidated
+    # one-concept-per-inventory-node model from re-fragmenting as new claims log; the
+    # specific label is preserved as an alias and the specifics live in the claim.
+    if inventory_concept_id:
+        existing = conn.execute(
+            "SELECT id FROM concepts WHERE topic_id = ? AND inventory_concept_id = ? ORDER BY id LIMIT 1",
+            (topic_id, inventory_concept_id),
+        ).fetchone()
+        if existing:
+            concept_id = int(existing[0])
+            conn.execute(
+                "INSERT OR IGNORE INTO concept_aliases (concept_id, alias, source, confidence) VALUES (?, ?, ?, ?)",
+                (concept_id, _normalize(concept), "agent", 1.0),
+            )
+            return concept_id
     conn.execute(
         """INSERT OR IGNORE INTO concepts
            (topic_id, canonical_slug, display_name, created_at)
@@ -1347,6 +1370,14 @@ def _ensure_concept(conn: sqlite3.Connection, topic_id: int, topic_slug: str, co
         "SELECT id FROM concepts WHERE topic_id = ? AND canonical_slug = ?",
         (topic_id, slug),
     ).fetchone()[0])
+    # Bind a brand-new row to the inventory node immediately when given.
+    if inventory_concept_id:
+        conn.execute(
+            """UPDATE concepts SET inventory_concept_id = ?,
+                   binding_match_count = MAX(COALESCE(binding_match_count, 0), 2)
+               WHERE id = ? AND COALESCE(inventory_concept_id, '') = ''""",
+            (inventory_concept_id, concept_id),
+        )
     conn.execute(
         "INSERT OR IGNORE INTO concept_aliases (concept_id, alias, source, confidence) VALUES (?, ?, ?, ?)",
         (concept_id, _normalize(concept), "agent", 1.0),
@@ -2015,22 +2046,35 @@ def log_answer(
     brain_dump_candidate_id: int | None = None,
     inventory_concept_id: str = "",
 ) -> int:
-    if skill == "study-review" and origin == "assessed" and not inventory_concept_id:
+    binding_resolution = None
+    if skill == "study-review" and origin == "assessed":
+        from memory_logging import atomicity_warnings, resolve_inventory_binding  # noqa: PLC0415
+
+        # Atomic-concept guard (advisory): a label that conflates concepts or
+        # carries evidence detail cannot bind reliably; nudge toward a canonical
+        # label with the specifics moved into tested_claim.
+        for advisory in atomicity_warnings(concept):
+            print(f"WARN atomicity {advisory}", file=sys.stderr)
+        knowledge_map = None
         try:
-            from session_map import bootstrap_session_map, lexical_match_inventory_id, load as load_session_map  # noqa: PLC0415
-            smap = load_session_map(session_id) or bootstrap_session_map(
-                conn, session_id=session_id, topic=topic, doc_path=doc_path, skill=skill,
-            )
-            if smap:
-                matched, _ = lexical_match_inventory_id(concept, smap)
-                if matched:
-                    inventory_concept_id = matched
-                    print(
-                        f"WARN inventory_concept_id inferred={matched}; pass --inventory-concept-id explicitly",
-                        file=sys.stderr,
-                    )
-        except Exception:
-            pass
+            from session_map import bootstrap_session_map, load as load_session_map  # noqa: PLC0415
+            smap = load_session_map(session_id)
+            if smap is None and not inventory_concept_id:
+                smap = bootstrap_session_map(
+                    conn, session_id=session_id, topic=topic, doc_path=doc_path, skill=skill,
+                )
+            knowledge_map = smap.get("knowledge_map") if isinstance(smap, dict) else None
+        except Exception as exc:  # noqa: BLE001 - binding is best-effort, never blocks a log
+            print(f"WARN session_map_load_failed: {exc}", file=sys.stderr)
+        binding_resolution = resolve_inventory_binding(
+            explicit_id=inventory_concept_id, concept=concept, knowledge_map=knowledge_map,
+        )
+        if binding_resolution.status == "inferred":
+            inventory_concept_id = binding_resolution.inventory_concept_id
+        # Loud, structured binding status — explicit/inferred/unresolved — so a
+        # missing canonical binding is visible (and routable to a node proposal)
+        # instead of silently degrading to lexical matching.
+        print("binding=" + _json_dumps(binding_resolution.as_dict()))
     if strict_telemetry:
         _validate_strict_telemetry(
             concept=concept,
@@ -2063,7 +2107,7 @@ def log_answer(
     site_slug = site_row["slug"] if site_row else ""
     resolution = resolve_topic(conn, topic, doc_path)
     topic_id = _ensure_topic(conn, resolution, doc_path)
-    concept_id = _ensure_concept(conn, topic_id, resolution.slug, concept, question, correction)
+    concept_id = _ensure_concept(conn, topic_id, resolution.slug, concept, question, correction, inventory_concept_id)
     _ensure_session(conn, session_id, now, skill, topic_id, doc_path)
     if turn is None:
         turn = int(conn.execute("SELECT COUNT(*) FROM exchanges WHERE session_id = ?", (session_id,)).fetchone()[0]) + 1
@@ -2165,6 +2209,11 @@ def log_answer(
                 question=tested_claim or question,
                 explicit=learning_operation,
             )
+            # Mirror the gap_type the claim_result stored so a misconception
+            # discovered this turn flags the live node for REMEDIATE.
+            turn_gap_type = "convention" if convention else _normalize_gap_type(
+                error_type, correct, missing_edge.strip()
+            )
             # Recompute policy from the session knowledge map when available.
             try:
                 plan, progress = _policy_after_log_answer(
@@ -2181,6 +2230,7 @@ def log_answer(
                     coverage_role=coverage_role,
                     learner_concept_id=concept_id,
                     cognitive_op=cognitive_op,
+                    gap_type=turn_gap_type,
                 )
                 feedback = probe_feedback(
                     cognitive_op=cognitive_op,
@@ -3528,6 +3578,7 @@ def _build_schema_map(conn: sqlite3.Connection, topic_slug: str) -> list[dict[st
             "exposure_status": exposure_status,
             "knowledge_state": worst_state or "untested",
             "attempts_count": att_cnt,
+            "successes_count": succ_cnt,
             "sqlite_success_rate": sqlite_rate,
             "anki_reviews_count": 0,
             "anki_success_rate": 0.0,
@@ -3571,6 +3622,18 @@ def _compute_teaching_policy(
         c for c in schema_map
         if c["exposure_status"] == "exposed_superficial" or c["knowledge_state"] in OPEN_GAP_STATES
     ]
+    if skip_orient:
+        # Predominant-exposure skip: fold the few still-unexposed ENTRY nodes into
+        # DEEPEN so a central concept is introduced, not orphaned by the skip.
+        have = {c.get("concept_id") for c in gap_or_superficial}
+        for c in schema_map:
+            if (
+                c.get("exposure_status") == "unexposed"
+                and str(c.get("role", "entry")) == "entry"
+                and c.get("concept_id") not in have
+            ):
+                gap_or_superficial.append(c)
+                have.add(c.get("concept_id"))
     if unexposed_concepts:
         phase = "phase_1_clear_fog"
         desc = "Superficial clinical introductions to unexposed concepts to clear the fog of war and build a schema map."
@@ -3742,6 +3805,7 @@ def _policy_after_log_answer(
     coverage_role: str,
     learner_concept_id: int,
     cognitive_op: str = "",
+    gap_type: str = "",
 ) -> tuple[dict[str, object], dict[str, int]]:
     """Patch session knowledge map and return the next-turn policy."""
     from session_map import (  # noqa: PLC0415
@@ -3772,6 +3836,7 @@ def _policy_after_log_answer(
             coverage_role=coverage_role,
             learner_concept_id=learner_concept_id,
             cognitive_op=cognitive_op,
+            gap_type=gap_type,
         )
         if delta == "unbound":
             plan = _current_policy_for_topic(conn, topic_id=topic_id, topic_slug=topic_slug)
@@ -3902,12 +3967,20 @@ def _integrate_inventory_knowledge_map(
     brief["knowledge_map"] = knowledge_map
     brief["knowledge_map_status"] = "ok"
     brief["sequential_teaching_plan"] = teaching_plan
+    brief["knowledge_map_provenance"] = "inventory"
     brief["inventory_unmatched_learner_concepts"] = projection.get("unmatched_learner_concepts", [])
     brief["inventory_counts"] = projection.get("counts", {})
     if profile == "doc" and doc_path:
         brief["document_priority"] = "requested_doc_primary"
         brief["teaching_priority"] = "artifact_primary"
     if session_id:
+        # Opportunistic sweep of abandoned maps from sessions that never reached
+        # end-session, so data/Sessions does not grow unbounded.
+        try:
+            from session_map import prune_stale_session_maps  # noqa: PLC0415
+            prune_stale_session_maps()
+        except Exception:
+            pass
         session_data = create_from_projection(
             projection,
             session_id=session_id,
@@ -3967,6 +4040,14 @@ def _planning_brief_for_summary(
             if op_row and op_row["learning_operation"]:
                 res["cognitive_op"] = op_row["learning_operation"]
         if conn and concept_id is not None:
+            # Tag the hit with its canonical inventory node so the agent can group
+            # multiple review hits onto one concept instead of treating them as
+            # unrelated rows.
+            inv_row = conn.execute(
+                "SELECT inventory_concept_id FROM concepts WHERE id = ?", (int(concept_id),),
+            ).fetchone()
+            if inv_row and inv_row["inventory_concept_id"]:
+                res["inventory_concept_id"] = inv_row["inventory_concept_id"]
             res["historical_misconceptions"] = _verbatim_misconceptions(conn, int(concept_id))
             relations = _concept_relations(conn, int(concept_id))
             if "prerequisites" in relations:
@@ -4004,6 +4085,11 @@ def _planning_brief_for_summary(
             if op_row and op_row["learning_operation"]:
                 res["cognitive_op"] = op_row["learning_operation"]
         if conn and concept_id is not None:
+            inv_row = conn.execute(
+                "SELECT inventory_concept_id FROM concepts WHERE id = ?", (int(concept_id),),
+            ).fetchone()
+            if inv_row and inv_row["inventory_concept_id"]:
+                res["inventory_concept_id"] = inv_row["inventory_concept_id"]
             res["historical_misconceptions"] = _verbatim_misconceptions(conn, int(concept_id))
             relations = _concept_relations(conn, int(concept_id))
             if "prerequisites" in relations:
@@ -4158,6 +4244,11 @@ def _planning_brief_for_summary(
         "read_first": True,
         "knowledge_map": knowledge_map,
         "knowledge_map_status": knowledge_map_status,
+        # Degradation signal: this brief is built from the SQLite-only schema map.
+        # startup-recall overwrites this to "inventory" when the richer
+        # inventory-grounded map is available; if it stays "sqlite_fallback" the
+        # session is running degraded (no graph structure / domain boundaries).
+        "knowledge_map_provenance": "sqlite_fallback" if knowledge_map else "none",
         "sequential_teaching_plan": teaching_plan,
         "handoff": {
             "topic": handoffs[0].get("topic"),
@@ -4227,8 +4318,12 @@ def _refine_brief_with_anki(brief: dict[str, object], anki_profile: dict[str, ob
     for entry in schema_map:
         c_name = entry.get("concept", "")
         slug_name = _slug(c_name)
+        # Inventory-grounded maps key concept_id as a dotted inventory id
+        # ("vasc.sah.hunt-hess"); the SQLite-fallback map keys it as an integer
+        # learner concept id. Only the former can match the inventory rollup, so
+        # skip the inventory lookup for numeric ids and go straight to slug.
         inv_id = str(entry.get("concept_id", "")).strip()
-        stats = anki_by_inventory.get(inv_id) if inv_id else None
+        stats = anki_by_inventory.get(inv_id) if inv_id and not inv_id.isdigit() else None
         if stats is None:
             stats = anki_by_slug.get(slug_name)
         if stats:
@@ -4459,6 +4554,8 @@ def _compact_doc_review_payload(
         doc_brief["knowledge_map_omitted"] = knowledge_map_omitted
     if brief.get("knowledge_map_status"):
         doc_brief["knowledge_map_status"] = brief["knowledge_map_status"]
+    if brief.get("knowledge_map_provenance"):
+        doc_brief["knowledge_map_provenance"] = brief["knowledge_map_provenance"]
     if brief.get("document_priority"):
         doc_brief["document_priority"] = brief["document_priority"]
     if brief.get("teaching_priority"):
@@ -5140,7 +5237,12 @@ def startup_recall(
 
     brief = payload.get("planning_brief", {})
     routing_required = bool(isinstance(brief, dict) and brief.get("resolution_warning"))
-    if isinstance(brief, dict) and not routing_required and not global_mode and recall_topic:
+    # An unresolved topic still deserves an inventory-grounded ORIENT map — that is
+    # exactly when ORIENT matters (a topic the learner has not studied). The
+    # resolution_warning and candidates remain on the brief so the agent can still
+    # validate an existing-topic anchor when one genuinely applies; the map just
+    # means a new topic is teachable instead of dead-ending on the warning.
+    if isinstance(brief, dict) and not global_mode and recall_topic:
         try:
             _integrate_inventory_knowledge_map(
                 conn,
@@ -5635,7 +5737,7 @@ def main() -> None:
                 conn,
                 inventory_concept_id=args.inventory_concept_id,
                 topic=args.topic,
-                session=args.session,
+                session_id=args.session,
             )))
         elif args.command == "status":
             print(status(conn))

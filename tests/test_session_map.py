@@ -99,6 +99,90 @@ class SessionMapTests(unittest.TestCase):
         self.assertEqual(delta, "newly_exposed")
         self.assertEqual(patched["knowledge_map"][0]["binding_tier"], "provisional")
 
+    def test_fresh_misconception_flags_node_for_remediate(self) -> None:
+        node = {
+            "concept_id": "vas.threshold",
+            "concept": "Vasospasm threshold",
+            "exposure_status": "exposed_superficial",
+            "knowledge_state": "untested",
+            "attempts_count": 1,
+            "sqlite_success_rate": 1.0,
+            "active_misconception": False,
+            "role": "entry",
+        }
+        # A misconception-class miss flags the node even with no prior flag.
+        data = {"knowledge_map": [dict(node)], "session_stats": {}}
+        patched, _ = session_map.patch_after_log(
+            data, inventory_concept_id="vas.threshold", concept_text="Vasospasm threshold",
+            correct=0, exchange_id=1, gap_type="conceptual_confusion",
+        )
+        self.assertTrue(patched["knowledge_map"][0]["active_misconception"])
+
+        # A plain omission miss does not manufacture a misconception.
+        data2 = {"knowledge_map": [dict(node)], "session_stats": {}}
+        patched2, _ = session_map.patch_after_log(
+            data2, inventory_concept_id="vas.threshold", concept_text="Vasospasm threshold",
+            correct=0, exchange_id=1, gap_type="omission",
+        )
+        self.assertFalse(patched2["knowledge_map"][0]["active_misconception"])
+
+        # A correct answer clears an existing misconception.
+        flagged = dict(node, active_misconception=True)
+        data3 = {"knowledge_map": [flagged], "session_stats": {}}
+        patched3, _ = session_map.patch_after_log(
+            data3, inventory_concept_id="vas.threshold", concept_text="Vasospasm threshold",
+            correct=2, exchange_id=1,
+        )
+        self.assertFalse(patched3["knowledge_map"][0]["active_misconception"])
+
+    def test_success_count_does_not_drift(self) -> None:
+        node = {
+            "concept_id": "vas.threshold",
+            "concept": "Vasospasm threshold",
+            "exposure_status": "unexposed",
+            "knowledge_state": "untested",
+            "attempts_count": 0,
+            "successes_count": 0,
+            "sqlite_success_rate": 0.0,
+            "role": "entry",
+        }
+        data = {"knowledge_map": [dict(node)], "session_stats": {}}
+        # 1 correct then 2 wrong -> true rate 1/3; the old rounded reconstruction
+        # truncated int(0.333*3)=0, losing the success.
+        for correct in (2, 0, 0):
+            data, _ = session_map.patch_after_log(
+                data, inventory_concept_id="vas.threshold", concept_text="Vasospasm threshold",
+                correct=correct, exchange_id=1,
+            )
+        entry = data["knowledge_map"][0]
+        self.assertEqual(entry["attempts_count"], 3)
+        self.assertEqual(entry["successes_count"], 1)
+        self.assertEqual(entry["sqlite_success_rate"], round(1 / 3, 3))
+
+    def test_prune_stale_session_maps(self) -> None:
+        import os
+        import time
+
+        fresh = session_map.create_from_projection(
+            {"knowledge_map": [], "edges": [], "scope": {}, "unmatched_learner_concepts": []},
+            session_id="fresh", profile="memory",
+        )
+        session_map.write("fresh", fresh)
+        stale = session_map.create_from_projection(
+            {"knowledge_map": [], "edges": [], "scope": {}, "unmatched_learner_concepts": []},
+            session_id="stale", profile="memory",
+        )
+        session_map.write("stale", stale)
+        # Backdate the stale map well past the TTL.
+        stale_path = session_map.session_map_path("stale")
+        old = time.time() - session_map.SESSION_MAP_TTL_SECONDS - 3600
+        os.utime(stale_path, (old, old))
+
+        removed = session_map.prune_stale_session_maps()
+        self.assertEqual(removed, 1)
+        self.assertFalse(session_map.session_map_path("stale").exists())
+        self.assertTrue(session_map.session_map_path("fresh").exists())
+
     def test_delete_on_end_session_hook(self) -> None:
         data = session_map.create_from_projection(
             {"knowledge_map": [], "edges": [], "scope": {}, "unmatched_learner_concepts": []},
