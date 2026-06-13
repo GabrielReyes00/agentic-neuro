@@ -623,6 +623,9 @@ class StudyMemoryTests(unittest.TestCase):
                 corrected_rule="Minimize sterile system breaks.",
             )
             conn.execute("UPDATE claim_state SET next_due_ts = ''")
+            # Simulate a pre-scheduler (legacy) DB so the one-time data migration
+            # re-runs on the next open (schema-version gating runs it once per version).
+            conn.execute("PRAGMA user_version = 0")
             conn.commit()
         finally:
             conn.close()

@@ -15,7 +15,7 @@ Key shared contracts:
 - `.agents/shared/commands/memory-retrieval.md` — cards, learner graph signals, model/context surfaces, and truncation metadata.
 - `.agents/shared/commands/vault-intelligence.md` — field-aware Obsidian vault retrieval, task routing, provenance boundaries, and supplemental-context rules.
 - `.agents/shared/commands/memory-curation.md` — post-flush curated summaries, learner graph edges, shadow rules, and escalation.
-- `.agents/shared/commands/memory-maintenance.md` — deliberate identity audits, guarded topic merges, telemetry audits, and reviewed reference-graph loading.
+- `.agents/shared/commands/memory-maintenance.md` — deliberate identity audits, guarded topic merges, telemetry audits, reviewed reference-graph loading, database maintenance (`maintain`: ANALYZE/optimize/optional VACUUM), and the read-only `knowledge-map` domain rollup.
 - `.agents/shared/commands/adaptive-teaching-doctrine.md` — tutor voice, teaching modes, cognitive friction, field-to-teaching-move mapping, repair/retest logic, and repetition avoidance.
 - `.agents/shared/commands/anki-session-workflow.md` — per-answer Anki decisions, queue review/check/flush.
 - `.agents/shared/commands/anki-card-quality.md` — short card-quality, cloze, deck taxonomy, and duplicate-judgment rules for all Anki creation/review.
@@ -113,7 +113,7 @@ Default: answer clinical questions directly from model knowledge. Use tools/skil
 Always intercept:
 - Inbox/email -> `inbox-workflow`
 - "What should I study/review", "drill my weak spots", "go after my open errors", "build me a custom session", "board-style case" -> `study-review` (memory-driven mode)
-- Gaps/dashboard/ACGME readiness -> use `python3 src/study_memory.py summary --limit 12 --scaffold-limit 0 --include-curated --include-model` for active learner state.
+- Gaps/dashboard/ACGME readiness -> use `python3 src/study_memory.py summary --limit 12 --scaffold-limit 0 --include-curated --include-model` for active learner state. For a cross-domain mastery rollup ("where am I weakest across domains"), use `python3 src/study_memory.py knowledge-map` (read-only; see `memory-maintenance.md`).
 - Textbook inventory -> recipe: `python3 src/lance_retriever.py list_textbooks`
 - Calendar/scheduling/events -> GCal MCP
 

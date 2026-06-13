@@ -239,6 +239,10 @@ CREATE TABLE IF NOT EXISTS claim_results (
 CREATE INDEX IF NOT EXISTS idx_memory_claim_results_exchange ON claim_results(exchange_id);
 CREATE INDEX IF NOT EXISTS idx_memory_claim_results_topic ON claim_results(topic_id);
 CREATE INDEX IF NOT EXISTS idx_memory_claim_results_score ON claim_results(score);
+-- concept_id is the most-queried filter after topic (per-concept aggregation,
+-- relations, surfaces); without these every WHERE concept_id=? was a full scan.
+CREATE INDEX IF NOT EXISTS idx_memory_claim_results_concept ON claim_results(concept_id);
+CREATE INDEX IF NOT EXISTS idx_memory_claim_results_topic_concept ON claim_results(topic_id, concept_id);
 
 CREATE TABLE IF NOT EXISTS claim_state (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -267,6 +271,11 @@ CREATE TABLE IF NOT EXISTS claim_state (
 CREATE INDEX IF NOT EXISTS idx_memory_claim_state_state ON claim_state(state);
 CREATE INDEX IF NOT EXISTS idx_memory_claim_state_priority ON claim_state(priority);
 CREATE INDEX IF NOT EXISTS idx_memory_claim_state_topic ON claim_state(topic_id);
+-- (concept_id, state) serves WHERE concept_id=? [prefix] and concept+state filters
+-- directly instead of scanning the low-selectivity state index. (topic_id,
+-- next_due_ts) serves the spaced-retrieval scheduler's due-window range + order.
+CREATE INDEX IF NOT EXISTS idx_memory_claim_state_concept_state ON claim_state(concept_id, state);
+CREATE INDEX IF NOT EXISTS idx_memory_claim_state_due ON claim_state(topic_id, next_due_ts);
 
 CREATE TABLE IF NOT EXISTS state_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -499,6 +508,34 @@ CREATE TABLE IF NOT EXISTS policy_events (
 CREATE INDEX IF NOT EXISTS idx_policy_events_session ON policy_events(session_id);
 CREATE INDEX IF NOT EXISTS idx_policy_events_topic ON policy_events(topic_id);
 
+-- Canonical per-concept mastery rollup: ONE definition of "the learner's state
+-- for a concept" that every consumer (knowledge-map, ACGME readiness, planning)
+-- can read instead of re-deriving it differently. Fan-out-safe (each aggregate is
+-- an independent correlated subquery, no join multiplication) and fast now that
+-- claim_results/claim_state carry concept_id indexes.
+CREATE VIEW IF NOT EXISTS v_concept_mastery AS
+SELECT
+    c.id AS concept_id,
+    c.topic_id,
+    c.inventory_concept_id,
+    c.display_name,
+    (SELECT MAX(CASE WHEN cs.priority IN ('urgent','high') THEN 1 ELSE 0 END)
+       FROM claim_state cs WHERE cs.concept_id = c.id AND cs.origin = 'assessed') AS safety_critical,
+    (SELECT COUNT(*) FROM claim_results cr
+       WHERE cr.concept_id = c.id AND cr.origin = 'assessed') AS attempts,
+    (SELECT COUNT(*) FROM claim_results cr
+       WHERE cr.concept_id = c.id AND cr.origin = 'assessed' AND cr.score >= 2) AS successes,
+    (SELECT COUNT(*) FROM claim_state cs
+       WHERE cs.concept_id = c.id AND cs.origin = 'assessed'
+         AND cs.state IN ('missed','partially_repaired','regressed')) AS open_gaps,
+    (SELECT MAX(cr.created_at) FROM claim_results cr
+       WHERE cr.concept_id = c.id AND cr.origin = 'assessed') AS last_seen_ts,
+    (SELECT MIN(NULLIF(cs.next_due_ts, '')) FROM claim_state cs
+       WHERE cs.concept_id = c.id AND cs.origin = 'assessed') AS next_due_ts,
+    (SELECT ROUND(AVG(cs.stability), 3) FROM claim_state cs
+       WHERE cs.concept_id = c.id AND cs.origin = 'assessed') AS avg_stability
+FROM concepts c;
+
 """
 SCHEMA_SQL += SERVICE_SCHEMA_SQL
 
@@ -512,17 +549,130 @@ class TopicResolution:
     confidence: float = 0.85
 
 
+# Bump whenever SCHEMA_SQL or _migrate_schema changes so existing DBs re-run the
+# (idempotent) schema/migration exactly once, then skip it on every later open.
+SCHEMA_VERSION = 3
+
+
+def _apply_connection_pragmas(conn: sqlite3.Connection) -> None:
+    """Per-connection pragmas (not persisted — must run on every open)."""
+    conn.execute("PRAGMA foreign_keys=ON")        # integrity (consolidation depends on it)
+    conn.execute("PRAGMA journal_mode=WAL")       # concurrent readers; persisted, cheap to reassert
+    conn.execute("PRAGMA synchronous=NORMAL")     # WAL-safe, far fewer fsyncs on the write path
+    conn.execute("PRAGMA temp_store=MEMORY")      # GROUP BY / ORDER BY temp b-trees stay in RAM
+    conn.execute("PRAGMA cache_size=-16000")      # ~16 MB page cache
+    conn.execute("PRAGMA mmap_size=268435456")    # 256 MB memory-mapped reads
+
+
 def _get_db(path: Path | None = None) -> sqlite3.Connection:
     db_path = path or DB_PATH
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.executescript(SCHEMA_SQL)
-    ensure_reference_graph_schema(conn)
-    _migrate_schema(conn)
-    conn.commit()
+    _apply_connection_pragmas(conn)
+    # Run the schema script + migration only when the DB is below the current
+    # schema version, instead of re-creating ~30 tables and ~40 indexes on every
+    # CLI invocation. Both are idempotent, so a one-time run per version is safe.
+    version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+    if version < SCHEMA_VERSION:
+        conn.executescript(SCHEMA_SQL)
+        ensure_reference_graph_schema(conn)
+        _migrate_schema(conn)
+        conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+        conn.execute("ANALYZE")  # give the query planner real statistics
+        conn.commit()
     return conn
+
+
+def maintain_db(conn: sqlite3.Connection, *, vacuum: bool = False) -> dict[str, object]:
+    """Refresh planner statistics (and optionally reclaim space).
+
+    ANALYZE rebuilds sqlite_stat1 so the planner keeps choosing good indexes as the
+    learner model grows; VACUUM compacts free pages left by deletes (e.g. consolidation).
+    Run occasionally — not on every write — via the `maintain` CLI command.
+    """
+    conn.execute("ANALYZE")
+    conn.execute("PRAGMA optimize")
+    conn.commit()
+    result: dict[str, object] = {"ok": True, "analyzed": True}
+    if vacuum:
+        conn.execute("VACUUM")  # rewrites the DB file; cannot run inside a transaction
+        result["vacuumed"] = True
+    return result
+
+
+def _mastery_exposure(attempts: int, success_rate: float, avg_stability: float, open_gaps: int) -> str:
+    if attempts == 0:
+        return "unexposed"
+    if attempts == 1 or avg_stability < 2.0 or success_rate < 0.6 or open_gaps > 0:
+        return "exposed_superficial"
+    return "exposed_deep"
+
+
+def knowledge_map_overview(
+    conn: sqlite3.Connection, *, domain: str = "", as_of: str | None = None, limit: int = 20,
+) -> dict[str, object]:
+    """The learner's mastery across their whole knowledge base, rolled up from the
+    canonical v_concept_mastery view — a fast, queryable map for directing review
+    toward mastery (which domains are weak, what is due, where the open gaps are).
+    """
+    now = as_of or datetime.now(timezone.utc).isoformat()
+    params: list[object] = []
+    where = "WHERE COALESCE(m.inventory_concept_id, '') != ''"
+    if domain:
+        where += " AND t.domain = ?"
+        params.append(domain)
+    rows = conn.execute(
+        f"""SELECT m.inventory_concept_id, m.display_name, m.attempts, m.successes,
+                   m.open_gaps, m.last_seen_ts, m.next_due_ts, m.avg_stability,
+                   m.safety_critical, COALESCE(t.domain, 'general') AS domain
+              FROM v_concept_mastery m JOIN topics t ON t.id = m.topic_id
+              {where}
+             ORDER BY domain, m.display_name""",
+        params,
+    ).fetchall()
+
+    domains: dict[str, dict[str, object]] = {}
+    due_now: list[dict[str, object]] = []
+    weak_spots: list[dict[str, object]] = []
+    for r in rows:
+        attempts = int(r["attempts"] or 0)
+        rate = round(int(r["successes"] or 0) / attempts, 3) if attempts else 0.0
+        avg_stab = float(r["avg_stability"] or 1.0)
+        gaps = int(r["open_gaps"] or 0)
+        exposure = _mastery_exposure(attempts, rate, avg_stab, gaps)
+        bucket = domains.setdefault(r["domain"], {
+            "domain": r["domain"], "concepts": 0, "deep": 0, "superficial": 0,
+            "unexposed": 0, "open_gaps": 0,
+        })
+        bucket["concepts"] = int(bucket["concepts"]) + 1
+        bucket["open_gaps"] = int(bucket["open_gaps"]) + gaps
+        bucket[{"exposed_deep": "deep", "exposed_superficial": "superficial", "unexposed": "unexposed"}[exposure]] += 1
+        if r["next_due_ts"] and str(r["next_due_ts"]) <= now:
+            due_now.append({"inventory_concept_id": r["inventory_concept_id"], "concept": r["display_name"],
+                            "domain": r["domain"], "due": r["next_due_ts"], "open_gaps": gaps})
+        if gaps or (attempts and rate < 0.6):
+            weak_spots.append({"inventory_concept_id": r["inventory_concept_id"], "concept": r["display_name"],
+                               "domain": r["domain"], "success_rate": rate, "open_gaps": gaps,
+                               "safety_critical": bool(r["safety_critical"])})
+    weak_spots.sort(key=lambda w: (not w["safety_critical"], -int(w["open_gaps"]), w["success_rate"]))
+    due_now.sort(key=lambda d: str(d["due"]))
+    domain_rollup = sorted(
+        domains.values(),
+        key=lambda b: (-(int(b["superficial"]) + int(b["unexposed"]) + int(b["open_gaps"])), str(b["domain"])),
+    )
+    return {
+        "ok": True,
+        "bound_concepts": len(rows),
+        "domain": domain or "all",
+        "domain_rollup": domain_rollup,
+        "due_now": due_now[:limit],
+        "weak_spots": weak_spots[:limit],
+        "teaching_note": (
+            "Use weak_spots and due_now to direct the next review toward mastery; "
+            "domain_rollup shows where the knowledge map is thin."
+        ),
+    }
 
 
 def _migrate_schema(conn: sqlite3.Connection) -> None:
@@ -2407,6 +2557,12 @@ def end_session(conn: sqlite3.Connection, *, session_id: str, summary: str, next
         _upsert_session_card(conn, int(session_row["primary_topic_id"]), session_id, summary, next_strategy, now, card_type=card_type)
     newly_counted = False if excluded_from_count else mark_session_counted(conn, session_id, now)
     conn.commit()
+    # Lightweight per-session maintenance: re-analyze only the tables that have
+    # changed enough to matter, keeping planner stats fresh as the model grows.
+    try:
+        conn.execute("PRAGMA optimize")
+    except sqlite3.Error:
+        pass
     status_payload = curation_status(conn)
     result: dict[str, object] = {
         "ok": True,
@@ -5516,6 +5672,11 @@ def main() -> None:
     sub.add_parser("identity-audit")
     sub.add_parser("telemetry-audit")
     sub.add_parser("curation-status")
+    p_maintain = sub.add_parser("maintain")
+    p_maintain.add_argument("--vacuum", action="store_true", help="Also VACUUM to reclaim free pages from deletes")
+    p_kmap = sub.add_parser("knowledge-map")
+    p_kmap.add_argument("--domain", default="", help="Scope to one inventory domain (e.g. vascular)")
+    p_kmap.add_argument("--limit", type=int, default=20)
 
     p_merge_topics = sub.add_parser("merge-topics")
     p_merge_topics.add_argument("--from-topic", required=True)
@@ -5741,6 +5902,10 @@ def main() -> None:
             )))
         elif args.command == "status":
             print(status(conn))
+        elif args.command == "maintain":
+            print(_json_dumps(maintain_db(conn, vacuum=args.vacuum)))
+        elif args.command == "knowledge-map":
+            print(_json_dumps(knowledge_map_overview(conn, domain=args.domain, limit=args.limit)))
         elif args.command == "identity-audit":
             print(_json_dumps(identity_audit(conn)))
         elif args.command == "telemetry-audit":
