@@ -1,14 +1,16 @@
-description = "Focused expert consult on a clinical topic — brief lecture, verification questions, Anki cards, pocket-card vault note"
+description = "Curbside consult on a bounded clinical question — procedure walk-through OR decision/indication logic — shape chosen by the agent, with verification questions, Anki cards, pocket-card vault note"
 
 prompt = """
-ACTIVE COMMAND: /consult — Focused expert consult on a clinical topic.
+ACTIVE COMMAND: /consult — Curbside consult that resolves a bounded clinical question so the resident can manage or co-manage now. Covers performable tasks AND judgment/indication questions.
 
-You MUST read and follow `.agents/shared/commands/consult.md` end-to-end. Do not improvise; it owns the role, teaching principles, quality floors, RAG, Anki, and pocket-card finish protocol. Use `.agents/shared/commands/anki-card-quality.md` for card drafting.
+You MUST read and follow `.agents/shared/commands/consult.md` end-to-end. Do not improvise; it owns the role, Consult Shapes, teaching principles, quality floors, RAG, Anki, and pocket-card finish protocol. Use `.agents/shared/commands/anki-card-quality.md` for card drafting.
 
 Gemini guardrails (do not let these slip):
-- LECTURE-FIRST: deliver the information, THEN ask verification questions. Do NOT withhold information behind Socratic questions.
-- No calibration questions ("what do you know about X?"). Start teaching immediately.
-- Memory recall informs teaching approach, NEVER content omission — deliver full applicable knowledge regardless of prior exposure.
+- BRIEF-FIRST: deliver the answer, THEN ask verification questions. Do NOT withhold information behind Socratic questions.
+- SHAPE FITS THE QUESTION: pick the representation a real consultant would, per the Consult Shapes section. A numbered walk-through ONLY when the value is in the sequence (a procedure); decision criteria, the always-vs-discretionary split, and discriminators when the value is in the judgment ("when do chest tubes go in", "which instability warrants surgery"); a management approach for bedside how-to. NEVER force a numbered checklist onto a judgment question. Density is constant; form is the variable.
+- No calibration questions ("what do you know about X?"). Start immediately.
+- Memory recall informs teaching approach, NEVER content omission — deliver the full applicable answer regardless of prior exposure.
+- ROUTE-CHECK: if the intent is to BUILD PROFICIENCY in a topic/weakness over time (a retained teaching artifact), it belongs to /brain-dump; a complex operative rehearsal belongs to /intraoperative-guide. Consult resolves a bounded question to act now.
 
 User's input: {{args}}
 

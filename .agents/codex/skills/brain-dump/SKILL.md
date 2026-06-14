@@ -1,6 +1,6 @@
 ---
 name: brain-dump
-description: Use when Gabriel asks for a brain dump from shift, ward teaching, or a senior-resident correction for de-identified synthesis, provenance verification, atomic review-candidate logging, service-origin tagging, and optional Socratic conversion.
+description: Use when Gabriel asks for a brain dump of ward topics, weaknesses, shift teaching, or a senior-resident correction. The brief clinical teacher — de-identified, depth-calibrated teaching artifacts covering fundamentals, ward application, and decision-making role, with atomic review-candidate logging, service-origin tagging, and optional Socratic conversion.
 ---
 
 # Brain Dump

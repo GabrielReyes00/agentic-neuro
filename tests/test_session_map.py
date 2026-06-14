@@ -213,6 +213,37 @@ class SessionMapTests(unittest.TestCase):
         self.assertEqual(adjusted["target_concepts"][0], "Doc Native Concept")
         self.assertTrue(any("Artifact Priority" in d for d in adjusted["pedagogical_directives"]))
 
+    def test_precise_artifact_map_keeps_entry_neighbors_out_of_artifact_native_targets(self) -> None:
+        knowledge_map = [
+            {
+                "concept": "Graph Entry Neighbor",
+                "artifact_native": False,
+                "artifact_map_available": True,
+                "role": "entry",
+                "exposure_status": "unexposed",
+            },
+            {
+                "concept": "Artifact Native Concept",
+                "artifact_native": True,
+                "artifact_map_available": True,
+                "role": "neighbor_1",
+                "exposure_status": "unexposed",
+            },
+        ]
+        plan = {
+            "target_concepts": ["Graph Entry Neighbor", "Artifact Native Concept"],
+            "pedagogical_directives": [],
+        }
+        adjusted = session_map.apply_artifact_priority(
+            plan,
+            knowledge_map,
+            profile="doc",
+            doc_path="Reports/Test Artifact.md",
+        )
+        self.assertEqual(adjusted["target_concepts"][0], "Artifact Native Concept")
+        self.assertEqual(adjusted["artifact_native_targets"], ["Artifact Native Concept"])
+        self.assertIn("Graph Entry Neighbor", adjusted["map_context_targets"])
+
     def test_inventory_concept_id_migration(self) -> None:
         tmp = tempfile.TemporaryDirectory()
         try:
@@ -222,6 +253,13 @@ class SessionMapTests(unittest.TestCase):
             cols_c = {r["name"] for r in conn.execute("PRAGMA table_info(concepts)")}
             self.assertIn("inventory_concept_id", cols_cr)
             self.assertIn("inventory_concept_id", cols_c)
+            tables = {
+                r["name"] for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                )
+            }
+            self.assertIn("artifact_maps", tables)
+            self.assertIn("artifact_map_concepts", tables)
             conn.close()
         finally:
             tmp.cleanup()

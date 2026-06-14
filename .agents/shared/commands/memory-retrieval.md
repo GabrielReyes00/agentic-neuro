@@ -11,25 +11,25 @@ Memory is not the only knowledge source. `startup-recall` itself is SQLite learn
 Use a staged agent-facing read path:
 
 ```bash
-python3 src/study_memory.py startup-recall --profile doc --topic "<topic>" --doc "<folder>/<file>.md"
+python3 src/study_memory.py startup-recall --profile doc --topic "<topic>" --doc "<folder>/<file>.md" --session "$SESSION_TS"
 ```
 
 For topic-only or memory-driven review:
 
 ```bash
-python3 src/study_memory.py startup-recall --topic "<topic>" --lens general
+python3 src/study_memory.py startup-recall --topic "<topic>" --lens general --session "$SESSION_TS"
 ```
 
 For memory-driven global review only:
 
 ```bash
-python3 src/study_memory.py startup-recall --global --lens general
+python3 src/study_memory.py startup-recall --global --lens general --session "$SESSION_TS"
 ```
 
 For service/site-specific review only:
 
 ```bash
-python3 src/study_memory.py startup-recall --lens service --service "<service>" --site "<site>"
+python3 src/study_memory.py startup-recall --lens service --service "<service>" --site "<site>" --session "$SESSION_TS"
 ```
 
 Always read `startup_recall`, `planning_brief`, `counts`, `omitted`, and `retrieval_guidance` before teaching. `planning_brief` is the ordered first-read tutor context.
@@ -54,25 +54,27 @@ This file is the canonical owner of the `planning_brief` JSON schema. If another
 
 **`knowledge_map` and `sequential_teaching_plan` lead the brief.** `startup-recall` builds them from the scoped concept inventory plus SQLite learner-state overlay. They are present in both `profile=doc` and `profile=memory`/`audit`. In `profile=memory`/`audit` they are carried verbatim. In `profile=doc` the emitted map is deterministically bounded: capped at the highest-signal entries (misconceptions, safety-critical, open states, superficial first) with `knowledge_map_omitted` reporting `{count, by_exposure_status}`, and `target_concepts` is capped with `target_concepts_omitted` when truncated. The policy is always computed from the full map before truncation — trust the phase even when the emitted map is capped. Per-turn `policy=` lines patch the live session map incrementally. Read them first and obey the policy — you never pick the macro phase yourself (see `adaptive-teaching-doctrine.md`):
 
-- **`knowledge_map`**: one entry per scoped inventory concept, each with inventory `concept_id`, `exposure_status` (`unexposed` | `exposed_superficial` | `exposed_deep`), `knowledge_state`, `attempts_count`, `sqlite_success_rate`, `anki_reviews_count`/`anki_success_rate` (advisory overlay only), `matched_learner_concepts` (each carrying `binding_source` = `explicit` when an inventory binding drove the match, else `lexical`), optional compact `learner_surface` (`open_claims`, `top_gap`, `last_misconception_verbatim`), optional `escalation_directive`, `binding_tier`, `safety_critical`, `active_misconception`, `tier`, and `role`. Matching is **Identity-first**: a learner concept with an explicit `inventory_concept_id` is assigned directly to that node (so many fragmented legacy rows consolidate onto one canonical concept); only unbound concepts fall back to lexical matching.
+- **`knowledge_map`**: one entry per scoped inventory concept, each with inventory `concept_id`, `exposure_status` (`unexposed` | `exposed_superficial` | `exposed_deep`), `knowledge_state`, `attempts_count`, `sqlite_success_rate`, `anki_reviews_count`/`anki_success_rate` (advisory overlay only), `matched_learner_concepts` (each carrying `binding_source` = `explicit` when an inventory binding drove the match, else `lexical`), optional compact `learner_surface` (`open_claims`, `top_gap`, `last_misconception_verbatim`), optional `escalation_directive`, `binding_tier`, `safety_critical`, `active_misconception`, `tier`, and `role`. Matching is **Identity-first**: a learner concept with an explicit `inventory_concept_id` is assigned directly to that node when the node is in scope; explicit out-of-scope rows stay unmatched; only unbound concepts fall back to lexical matching.
+- **`artifact_alignment`** (`profile=doc` only): `source_model = three_map_v1`. It keeps three named layers separate: `map_context` is the scoped inventory graph, `artifact_map` is the persisted SQL map of document concepts linked to inventory IDs, and `learner_map` is the SQLite claim-state/Anki overlay projected onto those IDs. If `status` is missing or cache status is stale/family-unverified, build or verify the map from the full artifact and rerun startup once before teaching. Read `artifact_concepts`, `artifact_remaining_high_yield`, `map_context_only`, `horizon_expansion`, and `unresolved_artifact_concepts`. `artifact_native`/`artifact_native_targets` mean the concept is linked from the artifact map; graph neighbors are context until deliberately pulled in.
 - **`escalation_directives`**: capped curated summaries with explicit `Escalation:` clauses, preferably inventory-ID scoped. Use silently to raise demand after demonstrated mastery; never quote prior-session handoffs across unrelated topics.
 - **`acgme_readiness`** (global memory-driven startup only): lean PGY-scoped `domain_gaps` and `top_blind_spots` from inventory ACGME links + learner bindings. Reports `explicit_inventory_bindings` vs `lexically_projected_concepts` so you can see how much is firm binding vs estimate. Use for “what should I study before PGY2?” style reviews, not doc-anchored sessions.
-- **`orient_skip`**: ORIENT is bypassed deterministically when the learner already holds a schema — `reason` is `all_entry_nodes_have_prior_exposure` (every entry exposed) or `predominant_prior_exposure` (exposed entries ≥ 60% and ≥ 3). The few still-unexposed entries fold into DEEPEN; do not re-orient a clearly-engaged topic.
+- **`orient_skip`**: ORIENT is bypassed deterministically when the learner already holds a schema — `reason` is `all_entry_nodes_have_prior_exposure` (every entry exposed), `predominant_prior_exposure` (exposed entries ≥ 60% and ≥ 3), or `substantial_deepenable_core` (≥ 4 exposed-superficial/open entry nodes). The few still-unexposed entries fold into DEEPEN; do not re-orient a clearly-engaged topic.
 - **`knowledge_map_provenance`**: `inventory` (the rich inventory-grounded map — the healthy path), `sqlite_fallback` (degraded: SQLite-only map, no graph structure/domain boundaries), or `none`. If it is not `inventory`, the session is running degraded; proceed but treat the map as thin.
 - **Open-gap cards** may include `cognitive_op` from the last assessed miss on that claim.
 - **`knowledge_map_status`**: `ok`, `empty_no_inventory_scope`, `empty_no_learner_concepts` (SQLite-only fallback), `no_topic`, or `error: ...`.
-- **`inventory_unmatched_learner_concepts`**: legacy learner concepts not yet bound to inventory IDs; retry matching when resurfaced.
+- **`inventory_unmatched_learner_concepts`**: learner rows not placed into the current scoped `knowledge_map`. Some are legacy unbound rows; some carry `binding_source=explicit_out_of_scope` with a valid `inventory_concept_id` outside this session scope. Do not rebind them automatically. If one also appears in `teaching_priorities`/`open_first`/must-retest cards and is clinically relevant, use it as an active off-scope retest target or transfer bridge.
 - **`sequential_teaching_plan`**: `mode` (`orient` | `deepen` | `connect`) and `current_phase`, plus `interrupts.remediate` (misconception/shadow-rule re-teach targets) and `interrupts.consolidate` (due claims to interleave), `target_concepts`, `pedagogical_directives`, `socratic_choice_directives` (how to offer Gabriel a choice at phase boundaries), and `decision_inputs` (the counts that produced the phase, for audit). The same full plan is persisted to `policy_events.plan_json` and re-emitted after every assessed `log-answer` as a self-sufficient `policy=` line. Interrupts overlay the current phase; the tie-break order is "Signal Precedence" in `adaptive-teaching-doctrine.md`.
 
 In `profile=doc`, read the rest of `planning_brief` as a compact session-start contract:
 
 1. **`handoff`**: the previous session directive, if any. Use `handoff.next_action` as private question-design input. Treat `handoff.summary` as audit/debug context only; do not narrate it to the learner.
-2. **`teaching_priorities`**: the ranked blend of open gaps, recent repairs, and stale scaffolds.
-3. **`contextual_frontier`**: capped related-context candidates. Accept only candidates central to the requested document.
-4. **`question_design_bias`** and **`domain_patterns`**: small shaping signals, not a mandate.
-5. **`anki_overlay`**: optional scoped Anki feedback. Use it only to shape sequencing, scaffolds, and redundant-card avoidance after the document curriculum and SQLite priorities are set.
-6. **`deferred_evidence`**: compacted-evidence counts retained for awareness; do not fetch them before the first question.
-7. **`fallback.audit_profile_available`**: reminder that a richer audit exists for blocked or explicit audit situations; it is not a pre-question step.
+2. **`artifact_alignment`**: document coverage, remaining artifact-native concepts, graph-only bridge candidates, horizon-expansion candidates, and unresolved map gaps.
+3. **`teaching_priorities`**: the ranked blend of open gaps, recent repairs, and stale scaffolds.
+4. **`contextual_frontier`**: capped related-context candidates. Accept only candidates central to the requested document.
+5. **`question_design_bias`** and **`domain_patterns`**: small shaping signals, not a mandate.
+6. **`anki_overlay`**: optional scoped Anki feedback. Use it only to shape sequencing, scaffolds, and redundant-card avoidance after the document curriculum and SQLite priorities are set.
+7. **`deferred_evidence`**: compacted-evidence counts retained for awareness; do not fetch them before the first question.
+8. **`fallback.audit_profile_available`**: reminder that a richer audit exists for blocked or explicit audit situations; it is not a pre-question step.
 
 In `profile=memory` or `profile=audit`, read `planning_brief` in order:
 
@@ -129,10 +131,6 @@ Each summary should name a pattern, not a recap.
 - `active` or `regressed` rules deserve changed-frame testing. `repaired` rules still need transfer evidence.
 - Do not declare a rule extinguished from conversation alone. Extinction is enforced through `record-shadow-check` per `memory-curation.md`.
 
-## Quick-Answer Entries
-
-Quick-answer entries normally do not appear as `cards` because they do not create `claim_state` or `retrieval_cards`. If encountered in curation packets or raw `claim_results`, interpret `skill = quick-answer` as "Gabriel asked about this concept and received an explanation." It is useful for topic adjacency and future context, but it is not evidence that the learner knew, missed, repaired, or mastered the concept.
-
 ## Model Surfaces
 
 - `due_claims`: conceptual claims whose retrievability has decayed, deduplicated against the active triage cards — a claim already shown as a `must_retest` or `recent_repair` card is omitted here, so this surface is the pure-decay remainder (including decayed scaffolds). Use changed-frame retention checks; do not repeat the original wording. Each entry carries `claim_state_id`, matching the `claim_state_id` now on every card for cross-reference.
@@ -143,7 +141,7 @@ Quick-answer entries normally do not appear as `cards` because they do not creat
 - `tutor_efficacy_profile`: repair-episode outcomes. Treat `evidence_level = insufficient` as instrumentation only; use directional preferences only after the returned gate is satisfied.
 - `coverage_frontier`: read-only ACGME coverage map, populated only in memory-driven/global review — it is emitted empty during a topic-anchored drill, where the global map is irrelevant. Coverage is tiered by token overlap against tested learner topics: `tested_catalog_topics` counts catalog topics with strong overlap, `frontier_candidates` are adjacent untested topics (a single shared term), and `blind_spots` are high-yield topics with no overlap. Untested means unknown, not weak.
 - `brain_dump_review_candidates`: atomic concepts captured from Brain Dumps but not yet tested. They are outstanding review opportunities, not mastery evidence, misses, or durable claims. Ask a Socratic probe before assigning learner state, and pass the candidate id to `log-answer`.
-- `shadow_queue`: low-weight implied interest from quick answers, generated artifacts, and pending Brain Dump candidates. Probe later, but never treat it as mastery or a miss until tested.
+- `shadow_queue`: low-weight implied interest from generated artifacts and pending Brain Dump candidates. Probe later, but never treat it as mastery or a miss until tested.
 - `contextual_frontier`: bounded candidate foundations for agent validation. It is intentionally broader than the final session plan. Reject weakly connected candidates rather than treating lexical or graph adjacency as a teaching mandate.
 - `context_focus`: only appears when the command includes `--context "<case/rotation/upcoming focus>"`; use it to weight, not override, due and safety-critical gaps.
 - `context_graph_focus`: reviewed reference-graph paths, capped at two hops and filtered by context predicates. Verify the path makes clinical sense before using it. Learner graph edges and the reference graph are separate layers.
@@ -161,7 +159,7 @@ Scoping uses explicit deck/tag/phrase matches plus SQLite vector cache semantic 
 - `concept_rollup` and `macro_counts`: orientation only. `concept_rollup` may be structured dictionaries or compact `Concept:worst_state(count)` strings; never use it as a question queue.
 
 Guardrails:
-- SQLite precedence: Anki shapes the queue; it does not own the queue. Anki never overrides `handoff`, `open_first`, `recent_repairs`, urgent `due_claims`, or requested-document priority.
+- SQLite precedence: Anki shapes the queue; it does not own the queue. Anki never overrides `handoff`, `open_first`, `recent_repairs`, urgent `due_claims`, or artifact-native requested-document priority.
 - Mastery evidence: Do not let Anki success clear a SQLite misconception. Anki success does not clear a known misconception, and Anki lapse does not become `claim_state` until Gabriel answers an agent-assessed probe.
 - Scope: ignore off-topic atomic facts, service-local cards in formal/doc review when identifiable, and low-confidence mappings unless the fact is clinically central and independently sensible.
 - Visibility: use Anki signals silently. Do not narrate Anki scheduling, lapses, or ease ratings to Gabriel unless he asks.

@@ -17,9 +17,11 @@ def _valid_note(extra: str = "") -> str:
 
 - Confirm drain state before transport; do not treat unverified local memory as a protocol.
 
-## Clinical & Anatomical Synthesis
+## Clinical Teaching
 
-A patient with an external ventricular drain can experience clinically meaningful pressure-gradient changes when drainage height, clamping state, or transport positioning changes. The generalizable principle is not a universal clamp-or-do-not-clamp rule; it is that drain state, leveling, and monitoring plan must be made explicit before movement (Youmans & Winn, 8th ed., Vol. 4, p. 122).
+### EVD Drain State During Transport
+
+A patient with an external ventricular drain can experience clinically meaningful pressure-gradient changes when drainage height, clamping state, or transport positioning changes. The generalizable principle is not a universal clamp-or-do-not-clamp rule; it is that drain state, leveling, and monitoring plan must be made explicit before movement (Youmans & Winn, 8th ed., Vol. 4, p. 122). On the wards: confirm open versus clamped, re-level at the tragus after any position change, and escalate if the waveform dampens after transport.
 
 ## Operational Mental Models
 
@@ -114,7 +116,11 @@ class BrainDumpGuardTests(unittest.TestCase):
         )
         result = guard.validate_text(note, path=Path("draft.md"))
         self.assertFalse(result.ok)
-        self.assertIn("References must include at least one linked external reference", result.errors)
+        self.assertIn(
+            "References must include at least one linked external reference"
+            " or an explicit no-source declaration",
+            result.errors,
+        )
 
     def test_rejects_unlabelled_reference_bullets(self) -> None:
         note = _valid_note().replace("Guideline/formal guidance: ", "")
@@ -132,15 +138,67 @@ class BrainDumpGuardTests(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertIn("Clinical Focus must include concise bullet topics", result.errors)
 
-    def test_rejects_missing_synthesis_inline_citation(self) -> None:
+    def test_rejects_uncited_teaching_without_internal_knowledge_declaration(self) -> None:
         note = _valid_note().replace(
             " (Youmans & Winn, 8th ed., Vol. 4, p. 122)",
             "",
         )
         result = guard.validate_text(note, path=Path("draft.md"))
         self.assertFalse(result.ok)
+        self.assertTrue(
+            any("must declare internal_knowledge_used: true" in error for error in result.errors),
+            result.errors,
+        )
+
+    def test_allows_uncited_teaching_with_internal_knowledge_declared(self) -> None:
+        note = _valid_note().replace(
+            " (Youmans & Winn, 8th ed., Vol. 4, p. 122)",
+            "",
+        ).replace("internal_knowledge_used: false", "internal_knowledge_used: true")
+        result = guard.validate_text(note, path=Path("draft.md"))
+        self.assertTrue(result.ok, result.errors)
+
+    def test_accepts_legacy_synthesis_heading(self) -> None:
+        note = _valid_note().replace(
+            "## Clinical Teaching\n\n### EVD Drain State During Transport",
+            "## Clinical & Anatomical Synthesis",
+        )
+        result = guard.validate_text(note, path=Path("draft.md"))
+        self.assertTrue(result.ok, result.errors)
+
+    def test_rejects_clinical_teaching_without_topic_subsection(self) -> None:
+        note = _valid_note().replace("### EVD Drain State During Transport\n\n", "")
+        result = guard.validate_text(note, path=Path("draft.md"))
+        self.assertFalse(result.ok)
         self.assertIn(
-            "Clinical & Anatomical Synthesis must include academic inline citations",
+            "Clinical Teaching must include at least one ### teaching-point subsection",
+            result.errors,
+        )
+
+    def test_accepts_no_source_references_declaration(self) -> None:
+        note = _valid_note().replace(
+            "- Guideline/formal guidance: [Verification source](https://doi.org/10.1000/example)",
+            "- No source-grounded references; teaching from clinical knowledge. Verify high-stakes specifics at the point of care.",
+        ).replace(
+            "- Confirm the exact institutional transport protocol with the supervising team.",
+            "- No guideline/formal guidance or primary study was identified for the local transport protocol; confirm it with the supervising team.",
+        )
+        result = guard.validate_text(note, path=Path("draft.md"))
+        self.assertTrue(result.ok, result.errors)
+
+    def test_no_source_declaration_does_not_excuse_unlabeled_reference_bullets(self) -> None:
+        note = _valid_note().replace(
+            "- Guideline/formal guidance: [Verification source](https://doi.org/10.1000/example)",
+            "- No source-grounded references; teaching from clinical knowledge.\n"
+            "- Some unlabeled trailing reference",
+        )
+        result = guard.validate_text(note, path=Path("draft.md"))
+        self.assertFalse(result.ok)
+        self.assertTrue(
+            any(
+                error.startswith("reference bullet missing evidence-type label")
+                for error in result.errors
+            ),
             result.errors,
         )
 

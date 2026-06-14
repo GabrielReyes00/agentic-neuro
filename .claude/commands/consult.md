@@ -1,6 +1,6 @@
 ---
 name: consult
-description: Focused expert consult on a clinical topic — brief lecture, verification questions, Anki cards, pocket-card vault note in Consults/.
+description: Curbside consult on a bounded clinical question — procedure walk-through or decision/indication logic, shape chosen by the agent — with verification questions, Anki cards, pocket-card vault note in Consults/.
 ---
 
 # Consult

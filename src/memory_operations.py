@@ -142,7 +142,7 @@ def _recent_sessions(
     limit: int,
     topic_id: int | None,
 ) -> list[dict[str, Any]]:
-    where = "WHERE ended != '' AND COALESCE(s.skill, '') != 'quick-answer'"
+    where = "WHERE ended != ''"
     params: list[Any] = []
     if topic_id is not None:
         where += " AND (s.primary_topic_id = ? OR EXISTS (SELECT 1 FROM session_topics st WHERE st.session_id = s.session_id AND st.topic_id = ?))"
@@ -483,16 +483,6 @@ def build_curation_candidates(
                     "Set source = the foundation, target = the dependent concept; order is meaningful. "
                     "Surfaced at recall so the agent can shore up the prerequisite before re-drilling the target."
                 ),
-            },
-            "skill_weighting": {
-                "quick-answer": (
-                    "Low-stakes reference capture. It records what the user asked and what was explained, "
-                    "not demonstrated learner mastery or an active miss. Do not treat quick-answer evidence "
-                    "as proof of durable knowledge, an open error, or a session-level pattern by itself. "
-                    "Use it as topic/concept context, weak supporting evidence, or a clue for adjacent future probes. "
-                    "Require independent non-quick-answer evidence before creating high-importance summaries "
-                    "or confused_with/prerequisite graph edges from it."
-                )
             },
             "shadow_rule_doctrine": (
                 "Author a shadow rule only for a coherent false decision rule that can leak across contexts. "

@@ -22,18 +22,32 @@ Every memory command in this contract must be executed, not simulated. Do not re
 
 Context-pulling is mode-conditional. The wrong command at the wrong time causes topic drift.
 
+Set one `SESSION_TS` before startup recall and reuse it for all logging, Anki, and session-end commands:
+
+```bash
+SESSION_TS=$(date -u +%Y-%m-%dT%H:%M:%S+00:00)
+```
+
 **Document-anchored sessions**: user named a vault document, including doc-anchored `/study-review`, `/study-material` drill, brain-dump review, and procedure-specific workflows. Pass `--profile doc --doc` so document-family identity is resolved and the agent receives the compact document-primary startup brief.
 
 ```bash
-python3 src/study_memory.py startup-recall --profile doc --topic "<topic>" --doc "<folder>/<file>.md"
+python3 src/study_memory.py startup-recall --profile doc --topic "<topic>" --doc "<folder>/<file>.md" --session "$SESSION_TS"
 ```
 
 Do not expand just because counts or omitted fields are nonzero. If `startup_recall.ready_to_teach=true` and `startup_recall.pre_question_expansion_allowed=false`, begin from the compact brief and ask the first question. Use `--profile audit` only after startup is blocked, the compact brief is incoherent, or the learner explicitly asks for a memory audit.
 
+For document review, also read `planning_brief.artifact_alignment`. If it is missing, stale, or only a family match, build/verify the persisted artifact map from the full artifact and rerun startup once:
+
+```bash
+python3 src/study_memory.py artifact-map-upsert --topic "<topic>" --doc "<folder>/<file>.md" --stdin
+```
+
+The payload is compact JSON: `artifact_title`, optional `content_hash`, and `concepts[]` with `artifact_concept`, `inventory_concept_id` when resolvable, `role`, `confidence`, `source_sections`, and `unresolved_reason`. This stores the artifact map in SQLite, separate from the vault note body.
+
 **Topic-anchored sessions without a vault document**: user named a topic or clinical question but no artifact is known.
 
 ```bash
-python3 src/study_memory.py startup-recall --topic "<topic>" --lens general
+python3 src/study_memory.py startup-recall --topic "<topic>" --lens general --session "$SESSION_TS"
 ```
 
 This command is topic-scoped. It resolves canonical topic identity, loads the personalized planning brief, includes pending Brain Dump review candidates for that topic, and automatically expands omitted high-signal cards before returning. Do not run global retrieval in this mode. Unrelated open errors must not influence a chosen-topic session.
@@ -41,7 +55,7 @@ This command is topic-scoped. It resolves canonical topic identity, loads the pe
 **Service/site-specific sessions**: user asks how a condition is handled on a named service or site.
 
 ```bash
-python3 src/study_memory.py startup-recall --lens service --service "<service>" --site "<site>" [--context "<case/topic>"]
+python3 src/study_memory.py startup-recall --lens service --service "<service>" --site "<site>" --session "$SESSION_TS" [--context "<case/topic>"]
 ```
 
 Use only `service_gaps` and `conventions` unless the learner explicitly asks to compare local practice against formal study knowledge.
@@ -49,7 +63,7 @@ Use only `service_gaps` and `conventions` unless the learner explicitly asks to 
 **Memory-driven custom review only**: user asked what to study, to drill weak spots, to build a custom session, to go after open errors, or a similar memory-first request with no named topic.
 
 ```bash
-python3 src/study_memory.py startup-recall --global --lens general
+python3 src/study_memory.py startup-recall --global --lens general --session "$SESSION_TS"
 ```
 
 Global startup recall surfaces a compact high-signal candidate set, due conceptual checks, pending Brain Dump candidates, learner-model profiles, and recent session handoff state while suppressing scaffolds by default. It intentionally returns `startup_recall.ready_to_teach = false`: read `startup_recall.deferred_high_signal`, select candidate topics, then run topic-scoped `startup-recall --topic "<candidate>" --lens general` for each chosen topic. Use `--include-global-scaffolds` only if no stronger due gaps dominate and broad target selection needs scaffold context.
@@ -64,15 +78,9 @@ After running the appropriate `startup-recall` command, read the full JSON and v
 
 1. **Retrieval completeness**: inspect `startup_recall`, `counts`, `omitted`, and `retrieval_guidance`. `profile=doc` is intentionally compact and may report omitted material; `retrieval_guidance.deferred_high_signal_counts` preserves awareness of compacted evidence but is not a pre-question fetch instruction. When `ready_to_teach=true`, do not run audit expansion before the first question. Topic-only `startup-recall` automatically expands omitted high-signal cards; if any remain, stop and troubleshoot before teaching. Global startup intentionally keeps `startup_recall.deferred_high_signal` compact: select candidate topics and run topic-scoped startup recall before teaching.
 2. **Planning-brief validation**: read `planning_brief.agent_validation_checkpoint`. Accept only 1-3 `contextual_frontier` candidates that are clinically central, scope-compatible, and useful for explaining an active gap or deepening transfer. Reject tangents. Record the accepted and rejected candidate ids in a silent internal note.
-3. **Returning session**: if `startup_recall.routing_required = true`, validate a returned `resolution_candidate`, then rerun `startup-recall --profile doc --topic "<canonical candidate>" --doc "<folder>/<file>.md"` for document review or `startup-recall --topic "<canonical candidate>"` for topic-only review. Clarify with the learner only if the intended curriculum remains ambiguous.
-4. **Coherence**: handoff, open claims, repairs, and accepted frontier candidates must relate to the requested topic. If output is unrelated, resolve the topic and re-run summary.
-5. **New topic**: if no review file exists and summary is genuinely empty, proceed with calibration.
-
-Set one `SESSION_TS` at the first learner-facing question and reuse it for the whole session:
-
-```bash
-SESSION_TS=$(date -u +%Y-%m-%dT%H:%M:%S+00:00)
-```
+3. **Returning session**: if `startup_recall.routing_required = true`, validate a returned `resolution_candidate`, then rerun `startup-recall --profile doc --topic "<canonical candidate>" --doc "<folder>/<file>.md" --session "$SESSION_TS"` for document review or `startup-recall --topic "<canonical candidate>" --lens general --session "$SESSION_TS"` for topic-only review. Clarify with the learner only if the intended curriculum remains ambiguous.
+4. **Coherence**: handoff, open claims, repairs, and accepted frontier candidates must relate to the requested topic. If output is unrelated, resolve the topic and rerun topic/doc-scoped `startup-recall`.
+5. **New topic**: if no review file exists and startup recall is genuinely empty, proceed with calibration.
 
 ## After Every Assessed Q&A
 
@@ -109,11 +117,11 @@ python3 src/study_memory.py log-answer \
 
 Correctness: `2` = correct without hints | `1` = right direction, missing details | `0` = wrong or misconception.
 
-**Identity layer.** Pass `--inventory-concept-id` whenever the probed concept resolves to a canonical inventory node — it is the key the policy, mastery, and ACGME readiness run on (matching is Identity-first; lexical is only a fallback for unbound concepts). After each assessed study-review exchange, `log-answer` prints a `binding={status}` line: `explicit` (you passed the id), `inferred` (lexically matched — provisional, pass the id next turn), or `unresolved` (no node matched — a possible inventory gap; see `inventory-authoring.md`, do not force a wrong binding). `--cognitive-op` is an alias for `--learning-operation`; pass it when the failed operation is obvious. The full field taxonomy is in `memory-retrieval.md` ("Writing Better Memory").
+**Identity layer.** Pass `--inventory-concept-id` whenever the probed concept resolves to a canonical inventory node — it is the key the policy, mastery, and ACGME readiness run on. Matching is Identity-first inside the scoped map; explicit out-of-scope rows stay unmatched; lexical is only a fallback for unbound concepts. After each assessed study-review exchange, `log-answer` prints a `binding={status}` line: `explicit` (you passed the id), `inferred` (lexically matched — provisional, pass the id next turn), or `unresolved` (no node matched — a possible inventory gap; see `inventory-authoring.md`, do not force a wrong binding). `--cognitive-op` is an alias for `--learning-operation`; pass it when the failed operation is obvious. The full field taxonomy is in `memory-retrieval.md` ("Writing Better Memory").
 
 Agent judgment fields are required when applicable:
 
-- For assessed learning exchanges, always pass `--strict-telemetry`, `--answer-mode`, `--confidence-observed`, and `--teaching-move`. Strict mode also requires `--tested-claim` (or `--corrected-rule`/`--correction`) so the stored claim is a real testable statement rather than auto-generated boilerplate. It rejects incomplete or uncontrolled telemetry before writing. Do not use strict mode for quick-answer or artifact-anchor bookkeeping.
+- For assessed learning exchanges, always pass `--strict-telemetry`, `--answer-mode`, `--confidence-observed`, and `--teaching-move`. Strict mode also requires `--tested-claim` (or `--corrected-rule`/`--correction`) so the stored claim is a real testable statement rather than auto-generated boilerplate, and a partial or miss (`--correct 0|1`) additionally requires `--error-type` plus `--missing-edge`/`--misconception` and `--corrected-rule`/`--correction`. It rejects incomplete or uncontrolled telemetry before writing: on rejection it prints `ALERT strict-telemetry rejected: ...` with a `Remedy:` line and writes nothing — read it and re-run the same `log-answer` with the named field added. Do not use strict mode for artifact-anchor bookkeeping.
 - Use `--priority` when clinical or educational stakes are clearer than fallback heuristics. Default to `urgent` for safety-critical intern errors, `high` for active management-changing gaps, `medium` for partial/lower-stakes gaps, and `low` only for durable scaffolds or low-stakes context.
 - Use `--match-claim-state-id` for intentional retests of existing `must_retest` or `recent_repair` cards.
 - Use `--new-claim` when wording overlaps an existing claim but the cognitive target is genuinely different.

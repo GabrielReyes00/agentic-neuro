@@ -30,60 +30,84 @@ def _acgme_title_pgy() -> dict[str, int]:
     return out
 
 
-def _exposure_status(attempts: int, success_rate: float, open_gaps: int) -> str:
+def _exposure_status(
+    attempts: int,
+    success_rate: float,
+    open_gaps: int,
+    last_score: int = 0,
+    recent_success_rate: float | None = None,
+) -> str:
+    # Same canonical rule as study_memory._mastery_exposure (no avg_stability in the
+    # readiness overlay): last-attempt dominance, single-attempt guard, open gap holds
+    # at superficial, recency-weighted threshold when available.
     if attempts == 0:
         return "unexposed"
-    if attempts == 1 or success_rate < 0.6 or open_gaps > 0:
+    has_gap = open_gaps > 0
+    if last_score == 2 and not has_gap and attempts > 1:
+        return "exposed_deep"
+    rate = success_rate if recent_success_rate is None else recent_success_rate
+    if attempts == 1 or rate < 0.6 or has_gap:
         return "exposed_superficial"
     return "exposed_deep"
 
 
 def aggregate_learner_concept_stats(conn: sqlite3.Connection) -> list[dict[str, Any]]:
-    """Per-learner-concept assessed stats (fan-out safe), only concepts ever attempted.
+    """Per-(concept, claim-inventory) assessed units across all topics.
 
-    Attempts and open gaps are aggregated in separate pre-aggregated subqueries so
-    the two one-to-many joins never multiply against each other (a claim_results x
-    claim_state cartesian would inflate every count by the number of claim_state
-    rows). The quick-answer exclusion lives inside the attempts subquery's WHERE so
-    it actually drops those rows instead of merely nulling the exchange join. The
-    learner display name and explicit binding are kept so the readiness overlay can
-    lexically project concepts that carry assessed history but no explicit binding.
+    CLAIM-LEVEL: a concept's assessed attempts are split by each claim's OWN inventory
+    binding (falling back to the concept binding when a claim carries none), so a
+    concept whose claims were tested against several canonical nodes contributes to
+    each instead of collapsing onto one. Each unit carries its recency-ordered scored
+    attempts (so the overlay can derive last_score and the recency-weighted rate) plus
+    the open-gap count routed to the same node via the claim_slug join. Only units with
+    at least one attempt are returned (a never-attempted concept is not "studied").
     """
-    rows = conn.execute(
-        """SELECT c.id, c.display_name,
-                  COALESCE(c.inventory_concept_id, '') AS inventory_concept_id,
-                  att.attempts AS attempts,
-                  COALESCE(att.successes, 0) AS successes,
-                  COALESCE(gap.open_gaps, 0) AS open_gaps
-             FROM concepts c
-             JOIN (
-                 SELECT cr.concept_id,
-                        COUNT(*) AS attempts,
-                        SUM(CASE WHEN cr.score >= 2 THEN 1 ELSE 0 END) AS successes
-                   FROM claim_results cr
-                   LEFT JOIN exchanges ex ON ex.id = cr.exchange_id
-                  WHERE COALESCE(ex.skill, '') != 'quick-answer'
-                  GROUP BY cr.concept_id
-             ) att ON att.concept_id = c.id
-             LEFT JOIN (
-                 SELECT concept_id, COUNT(*) AS open_gaps
-                   FROM claim_state
-                  WHERE origin = 'assessed'
-                    AND state IN ('missed','partially_repaired','regressed')
-                  GROUP BY concept_id
-             ) gap ON gap.concept_id = c.id
-            WHERE att.attempts > 0"""
-    ).fetchall()
-    return [
-        {
-            "display_name": str(r["display_name"] or ""),
-            "inventory_concept_id": str(r["inventory_concept_id"] or ""),
-            "attempts": int(r["attempts"] or 0),
-            "successes": int(r["successes"] or 0),
-            "open_gaps": int(r["open_gaps"] or 0),
-        }
-        for r in rows
-    ]
+    concept_binding = {
+        int(r["id"]): str(r["inventory_concept_id"] or "")
+        for r in conn.execute(
+            "SELECT id, COALESCE(inventory_concept_id, '') AS inventory_concept_id FROM concepts"
+        )
+    }
+    concept_name = {
+        int(r["id"]): str(r["display_name"] or "")
+        for r in conn.execute("SELECT id, display_name FROM concepts")
+    }
+    units: dict[tuple[int, str], dict[str, Any]] = {}
+    slug_inv: dict[tuple[int, str], str] = {}
+    for cr in conn.execute(
+        """SELECT concept_id, COALESCE(inventory_concept_id, '') AS claim_inv,
+                  claim_slug, score, created_at, id
+             FROM claim_results WHERE origin = 'assessed'
+            ORDER BY created_at DESC, id DESC"""
+    ):
+        cid = int(cr["concept_id"])
+        eff_inv = str(cr["claim_inv"]) or concept_binding.get(cid, "")
+        units.setdefault((cid, eff_inv), {"scored": [], "open_gaps": 0})["scored"].append(
+            (str(cr["created_at"]), int(cr["id"]), int(cr["score"]))
+        )
+        slug_inv[(cid, str(cr["claim_slug"]))] = eff_inv
+    for sr in conn.execute(
+        """SELECT concept_id, claim_slug FROM claim_state
+            WHERE origin = 'assessed' AND state IN ('missed','partially_repaired','regressed')"""
+    ):
+        cid = int(sr["concept_id"])
+        eff_inv = slug_inv.get((cid, str(sr["claim_slug"])), concept_binding.get(cid, ""))
+        unit = units.get((cid, eff_inv))  # only count gaps for attempted units
+        if unit is not None:
+            unit["open_gaps"] += 1
+    out: list[dict[str, Any]] = []
+    for (cid, eff_inv), unit in units.items():
+        scored = unit["scored"]
+        out.append({
+            "display_name": concept_name.get(cid, ""),
+            "inventory_concept_id": eff_inv,
+            "scored": scored,
+            "attempts": len(scored),
+            "successes": sum(1 for _t, _i, s in scored if s >= 2),
+            "open_gaps": int(unit["open_gaps"]),
+            "last_score": scored[0][2] if scored else 0,
+        })
+    return out
 
 
 def project_learner_history_onto_inventory(
@@ -108,7 +132,7 @@ def project_learner_history_onto_inventory(
         if cid in inv_tokens:
             inv_tokens[cid] = inv_tokens[cid] | _tokens(r["alias"])
 
-    raw: dict[str, list[int]] = {}
+    raw: dict[str, dict[str, Any]] = {}
     explicit_ids: set[str] = set()
     projected = 0
     for cs in aggregate_learner_concept_stats(conn):
@@ -126,18 +150,26 @@ def project_learner_history_onto_inventory(
                 continue
             inv_id = best[1]
             projected += 1
-        acc = raw.setdefault(inv_id, [0, 0, 0])
-        acc[0] += cs["attempts"]
-        acc[1] += cs["successes"]
-        acc[2] += cs["open_gaps"]
-    learner_by_inv = {
-        iid: {
-            "attempts": a,
-            "success_rate": round(s / max(1, a), 3),
-            "open_gaps": g,
+        acc = raw.setdefault(inv_id, {"scored": [], "open_gaps": 0})
+        acc["scored"].extend(cs["scored"])
+        acc["open_gaps"] += cs["open_gaps"]
+    # Recompute per node from the merged, recency-ordered attempts so last_score and
+    # the recency-weighted rate reflect the node's true most-recent attempts (the old
+    # max(last_score) over-promoted a node off a single stale pass).
+    learner_by_inv: dict[str, dict[str, Any]] = {}
+    for iid, acc in raw.items():
+        merged = sorted(acc["scored"], key=lambda x: (x[0], x[1]), reverse=True)
+        attempts = len(merged)
+        successes = sum(1 for _t, _i, s in merged if s >= 2)
+        recent = merged[:3]
+        recent_rate = round(sum(1 for _t, _i, s in recent if s >= 2) / len(recent), 3) if recent else 0.0
+        learner_by_inv[iid] = {
+            "attempts": attempts,
+            "success_rate": round(successes / max(1, attempts), 3),
+            "recent_success_rate": recent_rate,
+            "open_gaps": int(acc["open_gaps"]),
+            "last_score": merged[0][2] if merged else 0,
         }
-        for iid, (a, s, g) in raw.items()
-    }
     return learner_by_inv, len(explicit_ids), projected
 
 
@@ -179,11 +211,14 @@ def build_acgme_readiness_overlay(
     for row in inv_rows:
         inv_id = str(row["id"])
         domain = str(row["domain"] or "general")
-        learner = learner_by_inv.get(inv_id, {"attempts": 0, "success_rate": 0.0, "open_gaps": 0})
+        learner = learner_by_inv.get(inv_id, {"attempts": 0, "success_rate": 0.0, "open_gaps": 0, "last_score": 0})
+        recent_rate = learner.get("recent_success_rate")
         exposure = _exposure_status(
             int(learner["attempts"]),
             float(learner["success_rate"]),
             int(learner["open_gaps"]),
+            int(learner.get("last_score", 0)),
+            float(recent_rate) if recent_rate is not None else None,
         )
         bucket = domain_stats.setdefault(domain, {
             "domain": domain,

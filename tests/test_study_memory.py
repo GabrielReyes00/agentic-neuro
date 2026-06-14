@@ -76,42 +76,6 @@ class StudyMemoryTests(unittest.TestCase):
         finally:
             conn.close()
 
-    def test_quick_answer_logs_evidence_without_claim_state_or_curation_count(self) -> None:
-        conn = self._memory_conn()
-        try:
-            study_memory.log_answer(
-                conn,
-                session_id="quick-1",
-                topic="induced hypertension vasospasm",
-                concept="pressor choice for induced hypertension",
-                question="Which pressor is best for induced hypertension and why?",
-                answer="Norepinephrine is usually preferred because it raises MAP with predictable alpha effect and less tachycardia than dopamine.",
-                correct=2,
-                skill="quick-answer",
-                tested_claim="Norepinephrine is the default pressor for induced hypertension in DCI when cardiac profile allows.",
-                learner_claim="Question-only exchange; no learner performance assessed.",
-                learning_operation="mechanism",
-                teaching_intent="quick_answer_reference",
-                coverage_role="synthesis",
-                answer_mode="after_teaching",
-            )
-            result = study_memory.end_session(
-                conn,
-                session_id="quick-1",
-                summary="Answered a quick reference question about pressor selection for induced hypertension.",
-                next_strategy="If revisited, test norepinephrine versus phenylephrine and dopamine in DCI vignettes.",
-            )
-
-            self.assertFalse(result["newly_counted"])
-            self.assertTrue(result["excluded_from_curation_count"])
-            self.assertEqual(result["curation"]["sessions_since_last_curation"], 0)
-            self.assertEqual(conn.execute("SELECT COUNT(*) FROM exchanges").fetchone()[0], 1)
-            self.assertEqual(conn.execute("SELECT COUNT(*) FROM claim_results").fetchone()[0], 1)
-            self.assertEqual(conn.execute("SELECT COUNT(*) FROM claim_state").fetchone()[0], 0)
-            self.assertEqual(conn.execute("SELECT COUNT(*) FROM retrieval_cards").fetchone()[0], 0)
-        finally:
-            conn.close()
-
     def test_artifact_anchor_logs_discovery_without_claim_state_or_curation_count(self) -> None:
         conn = self._memory_conn()
         try:
@@ -722,20 +686,6 @@ class StudyMemoryTests(unittest.TestCase):
             )
             study_memory.log_answer(
                 conn,
-                session_id="quick-shadow",
-                topic="tbi management",
-                concept="hyperosmolar choice",
-                question="Mannitol or hypertonic saline for impending herniation?",
-                answer="Both are temporizing options; choose based on hemodynamics and sodium/osmolality context.",
-                correct=2,
-                skill="quick-answer",
-                tested_claim="Hyperosmolar choice depends on hemodynamics and sodium/osmolality context.",
-                learner_claim="Question-only exchange; no learner performance assessed.",
-                teaching_intent="quick_answer_reference",
-                answer_mode="after_teaching",
-            )
-            study_memory.log_answer(
-                conn,
                 session_id="report-shadow",
                 topic="tbi management",
                 concept="report coverage anchor",
@@ -758,7 +708,6 @@ class StudyMemoryTests(unittest.TestCase):
             self.assertGreaterEqual(coverage["tested_catalog_topics"], 1)
             self.assertTrue(coverage["frontier_candidates"] or coverage["blind_spots"])
             shadow_types = {item["type"] for item in payload["shadow_queue"]}
-            self.assertIn("quick_answer_interest", shadow_types)
             self.assertIn("artifact_review_anchor", shadow_types)
             self.assertTrue(payload["context_focus"])
             self.assertTrue(any(item["surface"] == "shadow_queue" for item in payload["context_focus"]))
@@ -1012,6 +961,31 @@ class StudyMemoryTests(unittest.TestCase):
                     tested_claim="External troubleshooting precedes invasive EVD manipulation.",
                     strict_telemetry=True,
                 )
+            # A partial/incorrect answer (score < 2) with everything else present but
+            # NO error_type must raise a typed, actionable StrictTelemetryError (not an
+            # opaque ValueError) so the CLI can alert the agent to retry, never write.
+            with self.assertRaises(study_memory.StrictTelemetryError) as ctx:
+                study_memory.log_answer(
+                    conn,
+                    session_id="strict-missing",
+                    topic="evd management",
+                    concept="evd troubleshooting",
+                    question="What next?",
+                    answer="Check the system.",
+                    correct=1,
+                    tested_claim="External troubleshooting precedes invasive EVD manipulation.",
+                    missing_edge="external troubleshooting before invasive manipulation",
+                    corrected_rule="Check leveling, clamps, tubing, and position first.",
+                    answer_mode="unaided",
+                    confidence_observed="low",
+                    teaching_move="initial_probe",
+                    strict_telemetry=True,
+                )
+            self.assertIn("error_type", str(ctx.exception))
+            self.assertIn("--error-type", ctx.exception.remedy)  # actionable retry hint
+            # StrictTelemetryError stays a ValueError subclass for back-compat callers.
+            self.assertIsInstance(ctx.exception, ValueError)
+            # None of the rejected calls may have written a row.
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM exchanges").fetchone()[0], 0)
         finally:
             conn.close()
@@ -1566,6 +1540,178 @@ class StudyMemoryTests(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_artifact_map_persists_exact_stale_and_family_matches(self) -> None:
+        conn = self._memory_conn()
+        try:
+            doc = "Reports/SAH Vasospasm Review_v1.md"
+            payload = {
+                "artifact_title": "SAH Vasospasm Review",
+                "concepts": [
+                    {
+                        "artifact_concept": "DCI versus angiographic vasospasm",
+                        "inventory_concept_id": "vasc.sah.dci",
+                        "role": "primary",
+                        "confidence": "high",
+                        "source_sections": ["Delayed cerebral ischemia"],
+                    },
+                    {
+                        "artifact_concept": "Local attending pearl",
+                        "role": "mentioned",
+                        "confidence": "low",
+                        "source_sections": ["Pitfalls"],
+                        "unresolved_reason": "No stable inventory node for this artifact-specific pearl.",
+                    },
+                ],
+            }
+
+            saved = study_memory.artifact_map_upsert(
+                conn,
+                doc_path=doc,
+                topic="sah vasospasm",
+                payload=payload,
+                content_hash="hash-v1",
+            )
+            self.assertTrue(saved["ok"])
+            self.assertEqual(saved["counts"], {"concepts": 2, "mapped": 1, "unresolved": 1})
+
+            exact = study_memory.artifact_map_get(conn, doc_path=doc, current_hash="hash-v1")
+            self.assertEqual(exact["status"], "available")
+            self.assertEqual(exact["cache_status"], "available_hash_matched")
+            self.assertEqual(exact["match_type"], "exact")
+
+            stale = study_memory.artifact_map_get(conn, doc_path=doc, current_hash="hash-v2")
+            self.assertEqual(stale["cache_status"], "stale")
+
+            family = study_memory.artifact_map_get(
+                conn,
+                doc_path="Reports/SAH Vasospasm Review_v2.md",
+            )
+            self.assertEqual(family["status"], "available")
+            self.assertEqual(family["cache_status"], "family_match_unverified")
+            self.assertEqual(family["match_type"], "doc_family")
+        finally:
+            conn.close()
+
+    def test_doc_startup_recall_surfaces_three_map_artifact_alignment(self) -> None:
+        conn = self._memory_conn()
+        try:
+            doc = "Reports/SAH Vasospasm Review.md"
+            topic = "sah vasospasm"
+            for idx in range(3):
+                study_memory.log_answer(
+                    conn,
+                    session_id=f"sah-hunt-hess-{idx}",
+                    topic=topic,
+                    concept="Hunt-Hess clinical grading",
+                    question="What does Hunt-Hess grade?",
+                    answer="Clinical severity.",
+                    correct=2,
+                    tested_claim="Hunt-Hess grades clinical SAH severity.",
+                    corrected_rule="Hunt-Hess grades clinical SAH severity.",
+                    inventory_concept_id="vasc.sah.hunt-hess",
+                )
+            study_memory.log_answer(
+                conn,
+                session_id="sah-dci-gap",
+                topic=topic,
+                concept="Delayed cerebral ischemia",
+                question="Is DCI synonymous with angiographic vasospasm?",
+                answer="Yes.",
+                correct=0,
+                correction="DCI is clinical deterioration or infarction and is not synonymous with angiographic vasospasm.",
+                error_type="conceptual_confusion",
+                tested_claim="DCI is not synonymous with angiographic vasospasm.",
+                learner_claim="Equated DCI with vasospasm.",
+                missing_edge="clinical syndrome versus angiographic narrowing",
+                corrected_rule="Separate clinical DCI from angiographic vasospasm.",
+                inventory_concept_id="vasc.sah.dci",
+            )
+            study_memory.artifact_map_upsert(
+                conn,
+                doc_path=doc,
+                topic=topic,
+                payload={
+                    "artifact_title": "SAH Vasospasm Review",
+                    "concepts": [
+                        {
+                            "artifact_concept": "DCI versus vasospasm",
+                            "inventory_concept_id": "vasc.sah.dci",
+                            "role": "primary",
+                            "confidence": "high",
+                            "source_sections": ["Core distinction"],
+                        },
+                        {
+                            "artifact_concept": "Cerebral vasospasm timeline",
+                            "inventory_concept_id": "vasc.sah.vasospasm",
+                            "role": "supporting",
+                            "confidence": "high",
+                            "source_sections": ["Timeline"],
+                        },
+                        {
+                            "artifact_concept": "Hunt-Hess grading",
+                            "inventory_concept_id": "vasc.sah.hunt-hess",
+                            "role": "objective",
+                            "confidence": "high",
+                            "source_sections": ["Mastery Objectives"],
+                        },
+                        {
+                            "artifact_concept": "Unmapped artifact pearl",
+                            "role": "mentioned",
+                            "confidence": "low",
+                            "source_sections": ["Pitfalls"],
+                            "unresolved_reason": "No canonical inventory node selected.",
+                        },
+                    ],
+                },
+            )
+
+            with patch.object(study_memory, "DB_PATH", self.memory_path):
+                payload = json.loads(
+                    study_memory.startup_recall(
+                        conn,
+                        topic=topic,
+                        doc_path=doc,
+                    )
+                )
+
+            brief = payload["planning_brief"]
+            alignment = brief["artifact_alignment"]
+            self.assertEqual(alignment["status"], "available")
+            self.assertEqual(alignment["source_model"], "three_map_v1")
+            self.assertEqual(alignment["maps"]["map_context"], "scoped_inventory_graph")
+            self.assertEqual(alignment["maps"]["artifact_map"], "persisted_sql_artifact_map")
+            self.assertEqual(alignment["maps"]["learner_map"], "sqlite_claim_state_overlay")
+            self.assertEqual(alignment["counts"]["unresolved_artifact_concepts"], 1)
+
+            artifact_ids = {item["inventory_concept_id"] for item in alignment["artifact_concepts"]}
+            self.assertIn("vasc.sah.dci", artifact_ids)
+            self.assertIn("vasc.sah.vasospasm", artifact_ids)
+            remaining_ids = {
+                item["inventory_concept_id"]
+                for item in alignment["artifact_remaining_high_yield"]
+            }
+            self.assertIn("vasc.sah.dci", remaining_ids)
+            self.assertIn("vasc.sah.vasospasm", remaining_ids)
+            self.assertTrue(alignment["horizon_expansion"])
+
+            km_by_id = {
+                item["concept_id"]: item
+                for item in brief["knowledge_map"]
+                if item.get("concept_id") in artifact_ids
+            }
+            self.assertTrue(km_by_id["vasc.sah.dci"]["artifact_native"])
+            self.assertEqual(km_by_id["vasc.sah.dci"]["artifact_presence"], "primary")
+            self.assertTrue(km_by_id["vasc.sah.vasospasm"]["artifact_native"])
+
+            plan = brief["sequential_teaching_plan"]
+            self.assertEqual(plan["teaching_priority"], "artifact_primary")
+            self.assertIn("Delayed cerebral ischemia", plan["artifact_native_targets"])
+            self.assertEqual(plan["artifact_native_targets"][0], "Delayed cerebral ischemia")
+            remediate = plan["interrupts"]["remediate"]
+            self.assertIn("Delayed cerebral ischemia", remediate)
+        finally:
+            conn.close()
+
     def test_doc_startup_recall_defaults_to_compact_profile_with_audit_fallback(self) -> None:
         conn = self._memory_conn()
         try:
@@ -1958,45 +2104,6 @@ class CurationLayerTests(unittest.TestCase):
                 self.assertNotIn("raw_answer", row)
                 self.assertNotIn("corrected_rule", row)
             self.assertIn("instructions", packet)
-        finally:
-            conn.close()
-
-    def test_quick_answer_claim_results_can_inform_curation_without_recent_session_weight(self) -> None:
-        from memory_operations import build_curation_candidates
-
-        conn = self._conn()
-        try:
-            study_memory.log_answer(
-                conn,
-                session_id="quick-curation-1",
-                topic="pupillary pathways",
-                concept="edinger westphal pathway",
-                question="How does the Edinger-Westphal pathway work?",
-                answer="The preganglionic parasympathetic fibers travel with CN III to the ciliary ganglion, then short ciliary nerves constrict the pupil.",
-                correct=2,
-                skill="quick-answer",
-                tested_claim="Edinger-Westphal parasympathetic output reaches the sphincter pupillae through CN III, ciliary ganglion, and short ciliary nerves.",
-                learner_claim="Question-only exchange; no learner performance assessed.",
-                teaching_intent="quick_answer_reference",
-                learning_operation="sequencing",
-                coverage_role="synthesis",
-                answer_mode="after_teaching",
-            )
-            study_memory.end_session(
-                conn,
-                session_id="quick-curation-1",
-                summary="Answered a quick reference question about the Edinger-Westphal pathway.",
-                next_strategy="If revisited, ask for the afferent and efferent limbs of the pupillary light reflex.",
-            )
-
-            packet = build_curation_candidates(conn, mode="compact")
-            self.assertEqual(packet["recent_sessions"], [])
-            self.assertEqual(packet["curation_state"]["sessions_since_last_curation"], 0)
-            self.assertEqual(len(packet["recent_claim_results"]), 1)
-            self.assertEqual(packet["recent_claim_results"][0]["skill"], "quick-answer")
-            self.assertEqual(packet["recent_claim_results"][0]["topic"], "pupillary-pathways")
-            self.assertIn("quick-answer", packet["instructions"]["skill_weighting"])
-            self.assertIn("Low-stakes reference capture", packet["instructions"]["skill_weighting"]["quick-answer"])
         finally:
             conn.close()
 
@@ -3331,6 +3438,457 @@ class CompactSchemaMapCapTests(unittest.TestCase):
         )
         # Phase was computed from the full map and is untouched by truncation.
         self.assertEqual(capped_plan["current_phase"], "phase_1_clear_fog")
+
+
+class ConceptRealignmentTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.memory_path = Path(self.tmp.name) / "study_memory.db"
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def _conn(self) -> sqlite3.Connection:
+        return study_memory._get_db(self.memory_path)
+
+    def test_realign_concept_dry_run_and_apply(self) -> None:
+        conn = self._conn()
+        try:
+            # Seed topic and concept
+            t_res = study_memory.TopicResolution("test-realign-topic", "Test Realign Topic", "general", (), 1.0)
+            topic_id = study_memory._ensure_topic(conn, t_res)
+            concept_id = conn.execute(
+                "INSERT INTO concepts (topic_id, canonical_slug, display_name, inventory_concept_id) VALUES (?, 'old-slug', 'Old Display Name', 'old.inv.id')",
+                (topic_id,),
+            ).lastrowid
+
+            # Log some answers to populate claim_results/exchanges
+            study_memory.log_answer(
+                conn,
+                session_id="session-realign",
+                topic="test-realign-topic",
+                concept="Old Display Name",
+                question="Q",
+                answer="A",
+                correct=2,
+                tested_claim="Claim A",
+                inventory_concept_id="old.inv.id",
+            )
+
+            # Assert they have the old ID
+            row = conn.execute("SELECT inventory_concept_id FROM concepts WHERE id = ?", (concept_id,)).fetchone()
+            self.assertEqual(row["inventory_concept_id"], "old.inv.id")
+
+            cr_row = conn.execute("SELECT inventory_concept_id FROM claim_results WHERE concept_id = ?", (concept_id,)).fetchone()
+            self.assertEqual(cr_row["inventory_concept_id"], "old.inv.id")
+
+            # Try dry run realignment (synthetic id -> allow_unknown)
+            res_dry = study_memory.realign_concept(
+                conn,
+                concept_id=concept_id,
+                inventory_concept_id="new.inv.id",
+                apply=False,
+                allow_unknown=True,
+            )
+            self.assertTrue(res_dry["ok"])
+            self.assertTrue(res_dry["dry_run"])
+            self.assertEqual(res_dry["affected_rows"]["claim_results"], 1)
+
+            # Ensure nothing changed
+            row = conn.execute("SELECT inventory_concept_id FROM concepts WHERE id = ?", (concept_id,)).fetchone()
+            self.assertEqual(row["inventory_concept_id"], "old.inv.id")
+
+            # Apply realignment
+            res_apply = study_memory.realign_concept(
+                conn,
+                concept_id=concept_id,
+                inventory_concept_id="new.inv.id",
+                apply=True,
+                allow_unknown=True,
+            )
+            self.assertTrue(res_apply["ok"])
+            self.assertFalse(res_apply["dry_run"])
+
+            # Verify update took place
+            row = conn.execute("SELECT inventory_concept_id FROM concepts WHERE id = ?", (concept_id,)).fetchone()
+            self.assertEqual(row["inventory_concept_id"], "new.inv.id")
+
+            cr_row = conn.execute("SELECT inventory_concept_id FROM claim_results WHERE concept_id = ?", (concept_id,)).fetchone()
+            self.assertEqual(cr_row["inventory_concept_id"], "new.inv.id")
+
+        finally:
+            conn.close()
+
+
+class RecallRealignmentIntelligenceTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.memory_path = Path(self.tmp.name) / "study_memory.db"
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def _conn(self) -> sqlite3.Connection:
+        return study_memory._get_db(self.memory_path)
+
+    def _log(self, conn, concept, tested_claim, inv_id, score=1, session="s1"):
+        return study_memory.log_answer(
+            conn,
+            session_id=session,
+            topic="spine-emergencies",
+            concept=concept,
+            question="q",
+            answer="a",
+            correct=score,
+            tested_claim=tested_claim,
+            inventory_concept_id=inv_id,
+            skill="study-review",
+        )
+
+    def test_alignment_hook_finds_buried_claim_text(self) -> None:
+        """NASCIS history buried in the CLAIM TEXT of a STASCIS-named concept must
+        surface for the unexposed steroids node — the old name-only match could not."""
+        conn = self._conn()
+        try:
+            self._log(
+                conn,
+                "Timing of decompression (STASCIS)",
+                "STASCIS early decompression; NASCIS-II methylprednisolone is a level III clinical option",
+                "spi.sci.timing-decompression-stascis",
+            )
+            km = [{
+                "concept_id": "spi.sci.steroids-nascis",
+                "concept": "Methylprednisolone in SCI (NASCIS)",
+                "exposure_status": "unexposed",
+                "attempts_count": 0,
+            }]
+            proposals = study_memory._suggest_concept_realignments(conn, km)
+            self.assertEqual(len(proposals), 1)
+            p = proposals[0]
+            self.assertEqual(p["unexposed_inventory_concept_id"], "spi.sci.steroids-nascis")
+            self.assertEqual(p["current_binding"], "spi.sci.timing-decompression-stascis")
+            self.assertIn("nascis", p["matched_terms"])
+            self.assertEqual(p["attempts"], 1)
+        finally:
+            conn.close()
+
+    def test_alignment_hook_skips_already_bound_no_pingpong(self) -> None:
+        """A claim already bound to the unexposed node is left alone (no ping-pong)."""
+        conn = self._conn()
+        try:
+            # Correctly bound NASCIS history.
+            self._log(
+                conn,
+                "Methylprednisolone in SCI (NASCIS)",
+                "NASCIS-II methylprednisolone 30 mg/kg is a level III option",
+                "spi.sci.steroids-nascis",
+            )
+            km = [{
+                "concept_id": "spi.sci.steroids-nascis",
+                "concept": "Methylprednisolone in SCI (NASCIS)",
+                "exposure_status": "unexposed",
+                "attempts_count": 0,
+            }]
+            self.assertEqual(study_memory._suggest_concept_realignments(conn, km), [])
+        finally:
+            conn.close()
+
+    def test_alignment_hook_relative_fit_guard(self) -> None:
+        """A claim is not pulled toward a node whose signature term is already present
+        in the claim's own binding id (prevents the A->B->A swap)."""
+        conn = self._conn()
+        try:
+            # Claim bound to map-goals that mentions "map"; an unexposed node that also
+            # carries "map" in its id must NOT reclaim it.
+            self._log(
+                conn,
+                "MAP augmentation after SCI",
+                "2024 AO Spine GRADE recommends MAP 75-80 mmHg",
+                "spi.sci.map-goals",
+            )
+            km = [{
+                "concept_id": "spi.other.map-something",
+                "concept": "MAP something else",
+                "exposure_status": "unexposed",
+                "attempts_count": 0,
+            }]
+            # "map" is in the claim's binding id (spi.sci.map-goals) -> guarded out.
+            self.assertEqual(study_memory._suggest_concept_realignments(conn, km), [])
+        finally:
+            conn.close()
+
+    def test_coverage_gap_flags_unexposed_primary_concept(self) -> None:
+        conn = self._conn()
+        try:
+            study_memory.artifact_map_upsert(
+                conn,
+                doc_path="Reports/Test Spine.md",
+                topic="spine-emergencies",
+                payload={"artifact_title": "Test Spine", "concepts": [
+                    {"artifact_concept": "MAP augmentation after SCI",
+                     "inventory_concept_id": "spi.sci.map-goals", "role": "primary",
+                     "mapping_status": "explicit"},
+                    {"artifact_concept": "Neurogenic shock",
+                     "inventory_concept_id": "spi.sci.neurogenic-shock", "role": "primary",
+                     "mapping_status": "explicit"},
+                ]},
+            )
+            km = [
+                {"concept_id": "spi.sci.map-goals", "attempts_count": 0, "exposure_status": "unexposed"},
+                {"concept_id": "spi.sci.neurogenic-shock", "attempts_count": 3, "exposure_status": "exposed_deep"},
+            ]
+            gaps = study_memory._coverage_gaps_for_brief(
+                conn, doc_path="Reports/Test Spine.md", knowledge_map=km
+            )
+            self.assertEqual([g["inventory_concept_id"] for g in gaps], ["spi.sci.map-goals"])
+            self.assertEqual(gaps[0]["role"], "primary")
+        finally:
+            conn.close()
+
+    def test_realign_rejects_unknown_inventory_id(self) -> None:
+        conn = self._conn()
+        try:
+            tid = study_memory._ensure_topic(
+                conn, study_memory.TopicResolution("t", "T", "general", (), 1.0)
+            )
+            cid = conn.execute(
+                "INSERT INTO concepts (topic_id, canonical_slug, display_name, inventory_concept_id) "
+                "VALUES (?, 'slug', 'Name', 'old.id')",
+                (tid,),
+            ).lastrowid
+            with patch.object(study_memory, "_inventory_concept_exists", return_value=False):
+                res = study_memory.realign_concept(
+                    conn, concept_id=cid, inventory_concept_id="bogus.id", apply=True
+                )
+                self.assertFalse(res["ok"])
+                self.assertEqual(res["error"], "unknown_inventory_concept_id")
+                # unchanged
+                row = conn.execute("SELECT inventory_concept_id FROM concepts WHERE id = ?", (cid,)).fetchone()
+                self.assertEqual(row["inventory_concept_id"], "old.id")
+                # allow_unknown overrides
+                res2 = study_memory.realign_concept(
+                    conn, concept_id=cid, inventory_concept_id="bogus.id", apply=True, allow_unknown=True
+                )
+                self.assertTrue(res2["ok"])
+        finally:
+            conn.close()
+
+    def test_realign_no_restamp_preserves_claim_bindings(self) -> None:
+        conn = self._conn()
+        try:
+            self._log(conn, "Concept A", "claim text", "claim.specific.id", score=2)
+            cid = conn.execute(
+                "SELECT concept_id FROM claim_results WHERE inventory_concept_id = 'claim.specific.id'"
+            ).fetchone()["concept_id"]
+            study_memory.realign_concept(
+                conn, concept_id=cid, inventory_concept_id="new.concept.id",
+                apply=True, restamp_claims=False, allow_unknown=True,
+            )
+            concept_inv = conn.execute("SELECT inventory_concept_id FROM concepts WHERE id = ?", (cid,)).fetchone()[0]
+            claim_inv = conn.execute("SELECT inventory_concept_id FROM claim_results WHERE concept_id = ?", (cid,)).fetchone()[0]
+            self.assertEqual(concept_inv, "new.concept.id")
+            self.assertEqual(claim_inv, "claim.specific.id")  # left intact
+        finally:
+            conn.close()
+
+    def test_claim_level_projection_splits_one_concept(self) -> None:
+        """Two claims under ONE concept, bound to two different inventory nodes, must
+        project as two separate units (the keystone claim-level behavior)."""
+        import acgme_readiness  # noqa: PLC0415
+
+        conn = self._conn()
+        try:
+            self._log(conn, "Compound concept", "STASCIS early decompression", "spi.sci.timing-decompression-stascis", score=2)
+            self._log(conn, "Compound concept", "NASCIS methylprednisolone level III", "spi.sci.steroids-nascis", score=1)
+            units = acgme_readiness.aggregate_learner_concept_stats(conn)
+            by_inv = {u["inventory_concept_id"]: u for u in units}
+            self.assertIn("spi.sci.timing-decompression-stascis", by_inv)
+            self.assertIn("spi.sci.steroids-nascis", by_inv)
+            self.assertEqual(by_inv["spi.sci.timing-decompression-stascis"]["attempts"], 1)
+            self.assertEqual(by_inv["spi.sci.steroids-nascis"]["attempts"], 1)
+            self.assertEqual(by_inv["spi.sci.steroids-nascis"]["last_score"], 1)
+        finally:
+            conn.close()
+
+    def test_recall_realignment_migration(self) -> None:
+        conn = self._conn()
+        try:
+            def seed(concept, claim, inv, session):
+                self._log(conn, concept, claim, inv, session=session)
+                return conn.execute(
+                    "SELECT concept_id FROM claim_results WHERE inventory_concept_id = ? ORDER BY id DESC LIMIT 1",
+                    (inv,),
+                ).fetchone()[0]
+
+            map_cid = seed("mapbucket", "MAP 75-80 perfusion target", "tmp.map", "s1")
+            seed("mapbucket", "NASCIS-II methylprednisolone perfusion targets MAP", "tmp.map", "s1")
+            ao_cid = seed("aobucket", "2024 AO Spine GRADE recommends MAP 75-80", "tmp.ao", "s2")
+            st_cid = seed("stbucket", "STASCIS 24h decompression; NASCIS-II methylprednisolone level III", "tmp.st", "s3")
+            seed("stbucket", "STASCIS early decompression NASCIS methylprednisolone risks", "tmp.st", "s3")
+            tr_cid = seed("trbucket", "STASCIS decompression NASCIS methylprednisolone", "tmp.tr", "s4")
+
+            # Force the live regression signatures (name + mis-binding) onto the seeds.
+            for cid, name, binding in [
+                (map_cid, "CPP calculation and targets", "spi.sci.map-goals"),
+                (ao_cid, "AO Spine classification", "spi.sci.map-goals"),
+                (st_cid, "Timing of decompression (STASCIS)", "spi.sci.timing-decompression-stascis"),
+                (tr_cid, "Spinal cord tracts", "spi.sci.timing-decompression-stascis"),
+            ]:
+                conn.execute("UPDATE concepts SET display_name = ?, inventory_concept_id = ? WHERE id = ?", (name, binding, cid))
+                conn.execute("UPDATE claim_results SET inventory_concept_id = ? WHERE concept_id = ?", (binding, cid))
+            conn.commit()
+
+            dry = study_memory.migrate_recall_realignment(conn, apply=False)
+            self.assertTrue(dry["dry_run"])
+            self.assertEqual(dry["nascis_attempts_freed"], 4)
+
+            res = study_memory.migrate_recall_realignment(conn, apply=True)
+            self.assertEqual(res["nascis_attempts_freed"], 4)
+            self.assertEqual(
+                conn.execute("SELECT display_name FROM concepts WHERE id = ?", (map_cid,)).fetchone()[0],
+                "MAP augmentation after SCI",
+            )
+            self.assertEqual(
+                conn.execute("SELECT inventory_concept_id FROM concepts WHERE id = ?", (ao_cid,)).fetchone()[0],
+                "spi.trauma.ao-spine-classification",
+            )
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM claim_results WHERE concept_id = ?", (ao_cid,)).fetchone()[0], 0)
+            self.assertEqual(
+                conn.execute("SELECT inventory_concept_id FROM concepts WHERE id = ?", (tr_cid,)).fetchone()[0],
+                "ana.spine.spinal-cord-tracts",
+            )
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM claim_results WHERE concept_id = ?", (tr_cid,)).fetchone()[0], 0)
+            nascis = conn.execute("SELECT id FROM concepts WHERE inventory_concept_id = 'spi.sci.steroids-nascis'").fetchone()
+            self.assertIsNotNone(nascis)
+            cnt, max_score = conn.execute(
+                "SELECT COUNT(*), MAX(score) FROM claim_results WHERE concept_id = ? AND inventory_concept_id = 'spi.sci.steroids-nascis'",
+                (nascis["id"],),
+            ).fetchone()
+            self.assertEqual(cnt, 4)
+            self.assertLessEqual(max_score, 1)
+            # idempotent: a second apply derives nothing more
+            res2 = study_memory.migrate_recall_realignment(conn, apply=True)
+            self.assertEqual(res2["nascis_attempts_freed"], 0)
+            self.assertEqual(
+                conn.execute("SELECT COUNT(*) FROM claim_results WHERE inventory_concept_id = 'spi.sci.steroids-nascis'").fetchone()[0],
+                4,
+            )
+        finally:
+            conn.close()
+
+    def test_ad_vte_separation_migration(self) -> None:
+        conn = self._conn()
+        try:
+            study_memory.log_answer(
+                conn,
+                session_id="session-ad-vte",
+                topic="spine-emergencies",
+                concept="Autonomic dysreflexia",
+                question="q",
+                answer="a",
+                correct=1,
+                error_type="conceptual_confusion",
+                tested_claim=(
+                    "Autonomic dysreflexia above T6 management is trigger removal and short-acting "
+                    "agents; VTE prophylaxis LMWH within 24-72 hours post-injury once stable."
+                ),
+                learner_claim="Handled AD but was unsure of VTE prophylaxis details.",
+                missing_edge="VTE prophylaxis in acute SCI requires LMWH starting within 24-72h of injury for 3 months.",
+                corrected_rule=(
+                    "For AD, remove the noxious trigger and use short-acting vasodilators; "
+                    "VTE prophylaxis requires LMWH within 24-72h of injury for 3 months."
+                ),
+                clinical_consequence="VTE timing changes ICU prophylaxis orders.",
+                retest_prompt_shape="Use a new vignette testing AD management.",
+                inventory_concept_id="spi.sci.autonomic-dysreflexia",
+                skill="study-review",
+            )
+            ad_state = conn.execute(
+                """SELECT cs.id, cs.state
+                   FROM claim_state cs
+                   JOIN concepts c ON c.id = cs.concept_id
+                  WHERE c.inventory_concept_id = 'spi.sci.autonomic-dysreflexia'"""
+            ).fetchone()
+            self.assertEqual(ad_state["state"], "partially_repaired")
+
+            dry = study_memory.migrate_ad_vte_separation(conn, apply=False)
+            self.assertTrue(dry["dry_run"])
+            self.assertEqual(dry["derived_claims"], 1)
+            self.assertEqual(dry["deblended_claim_states"], 1)
+            self.assertIsNone(conn.execute(
+                "SELECT id FROM concepts WHERE inventory_concept_id = 'ncc.hematology.vte-prophylaxis-timing'"
+            ).fetchone())
+
+            res = study_memory.migrate_ad_vte_separation(conn, apply=True)
+            self.assertFalse(res["dry_run"])
+            self.assertEqual(res["derived_claims"], 1)
+            self.assertEqual(res["deblended_claim_states"], 1)
+
+            ad_after = conn.execute(
+                "SELECT state, priority, gap_type, reason FROM claim_state WHERE id = ?",
+                (ad_state["id"],),
+            ).fetchone()
+            self.assertEqual(ad_after["state"], "durable")
+            self.assertEqual(ad_after["priority"], "low")
+            self.assertEqual(ad_after["gap_type"], "")
+            self.assertIn("deblended", ad_after["reason"])
+            self.assertEqual(conn.execute(
+                "SELECT status FROM retrieval_cards WHERE claim_state_id = ?",
+                (ad_state["id"],),
+            ).fetchone()["status"], "inactive")
+
+            vte = conn.execute(
+                "SELECT id, display_name FROM concepts WHERE inventory_concept_id = 'ncc.hematology.vte-prophylaxis-timing'"
+            ).fetchone()
+            self.assertIsNotNone(vte)
+            self.assertEqual(vte["display_name"], "VTE chemoprophylaxis timing")
+            vte_claim = conn.execute(
+                """SELECT score, gap_type, learning_operation, inventory_concept_id, agent_signal_json
+                   FROM claim_results
+                  WHERE concept_id = ? AND claim_slug = ?""",
+                (vte["id"], study_memory._AD_VTE_DERIVED_SLUG),
+            ).fetchone()
+            self.assertEqual(vte_claim["score"], 1)
+            self.assertEqual(vte_claim["gap_type"], "numerical_recall")
+            self.assertEqual(vte_claim["learning_operation"], "derived_subclaim")
+            self.assertEqual(vte_claim["inventory_concept_id"], "ncc.hematology.vte-prophylaxis-timing")
+            self.assertIn("derived_from_claim_result", vte_claim["agent_signal_json"])
+            vte_state = conn.execute(
+                "SELECT id, state, priority, gap_type FROM claim_state WHERE concept_id = ?",
+                (vte["id"],),
+            ).fetchone()
+            self.assertEqual(vte_state["state"], "partially_repaired")
+            self.assertEqual(vte_state["priority"], "high")
+            self.assertEqual(vte_state["gap_type"], "numerical_recall")
+            self.assertEqual(conn.execute(
+                "SELECT status FROM retrieval_cards WHERE claim_state_id = ?",
+                (vte_state["id"],),
+            ).fetchone()["status"], "active")
+
+            res2 = study_memory.migrate_ad_vte_separation(conn, apply=True)
+            self.assertEqual(res2["derived_claims"], 0)
+            self.assertEqual(res2["deblended_claim_states"], 0)
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM claim_results WHERE inventory_concept_id = 'ncc.hematology.vte-prophylaxis-timing'"
+            ).fetchone()[0], 1)
+        finally:
+            conn.close()
+
+    def test_rename_concept(self) -> None:
+        conn = self._conn()
+        try:
+            tid = study_memory._ensure_topic(
+                conn, study_memory.TopicResolution("t", "T", "general", (), 1.0)
+            )
+            cid = conn.execute(
+                "INSERT INTO concepts (topic_id, canonical_slug, display_name) VALUES (?, 'slug', 'Old Name')",
+                (tid,),
+            ).lastrowid
+            study_memory.rename_concept(conn, concept_id=cid, display_name="New Name", apply=True)
+            row = conn.execute("SELECT display_name FROM concepts WHERE id = ?", (cid,)).fetchone()
+            self.assertEqual(row["display_name"], "New Name")
+        finally:
+            conn.close()
 
 
 if __name__ == "__main__":

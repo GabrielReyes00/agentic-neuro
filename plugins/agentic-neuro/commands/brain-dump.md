@@ -1,6 +1,6 @@
 ---
-description: capture de-identified teaching learned on service, log atomic review candidates, and offer Socratic conversion.
-argument-hint: [de-identified-shift-teaching-or-correction]
+description: Brief clinical teacher — turn de-identified ward topics into depth-calibrated teaching artifacts (fundamentals, ward application, decision-making role), log atomic review candidates, and offer Socratic conversion.
+argument-hint: [de-identified-ward-topics-or-teaching]
 ---
 
 # Brain Dump

@@ -245,17 +245,11 @@ class AcgmeLearnerStatsTests(unittest.TestCase):
                     question="Q", answer=ans, correct=score, tested_claim=claim,
                     inventory_concept_id="vasc.vasospasm.threshold",
                 )
-            # A quick-answer exchange on the same concept must be excluded from attempts.
-            study_memory.log_answer(
-                conn, session_id="s", topic="sah vasospasm", concept="Vasospasm threshold",
-                question="Q", answer="info", correct=2, tested_claim="Quick aside on vasospasm imaging.",
-                inventory_concept_id="vasc.vasospasm.threshold", skill="quick-answer", origin="reference",
-            )
             stats = acgme_readiness.aggregate_learner_concept_stats(conn)
             rows = [r for r in stats if r["inventory_concept_id"] == "vasc.vasospasm.threshold"]
             self.assertEqual(len(rows), 1)
             row = rows[0]
-            # True assessed attempts = 3 (not 3*2=6 from fan-out, not 4 incl quick-answer).
+            # True assessed attempts = 3 (not 3*2=6 from a claim_results x claim_state fan-out).
             self.assertEqual(row["attempts"], 3)
             # "peaks" claim missed then corrected -> repaired (not open); "nimodipine" still missed.
             self.assertEqual(row["open_gaps"], 1)

@@ -105,7 +105,7 @@ TASK_SECTION_POLICY: dict[str, tuple[str, ...]] = {
         "execution_check",
         "clinical_use",
     ),
-    "quick-answer": (
+    "consult": (
         "quick_reference",
         "bedside_decision_rule",
         "evidence_card",

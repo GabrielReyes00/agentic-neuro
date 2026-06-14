@@ -1,6 +1,6 @@
 ---
 name: consult
-description: Use when Gabriel asks for /consult, consult, or the related workflow. Focused expert consult on a clinical topic — brief lecture, verification questions, Anki cards, pocket-card vault note in Consults/. Follows the shared agent-agnostic command contract.
+description: Use when Gabriel asks for /consult, consult, how to perform a bedside task, or a bounded clinical decision ("when do you", "which X warrants Y"). Curbside consult — agent-chosen shape (procedure walk-through or decision/indication logic), verification questions, Anki cards, pocket-card vault note in Consults/. Follows the shared agent-agnostic command contract.
 ---
 
 # Consult

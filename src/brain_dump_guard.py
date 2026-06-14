@@ -16,12 +16,17 @@ BRAIN_DUMP_DIRNAME = "Brain Dumps"
 REQUIRED_HEADINGS = (
     "Clinical Focus",
     "Priority Takeaways",
-    "Clinical & Anatomical Synthesis",
     "Operational Mental Models",
     "Institutional & Local Clarifications",
     "Mastery Objectives",
     "Related In This Vault",
     "References",
+)
+# Current teaching scaffold first; legacy synthesis heading accepted for
+# pre-redesign notes being merged or reinstalled.
+CORE_TEACHING_HEADINGS = (
+    "Clinical Teaching",
+    "Clinical & Anatomical Synthesis",
 )
 REQUIRED_METADATA_KEYS = {
     "tags",
@@ -56,6 +61,9 @@ HIGH_STAKES_NO_GUIDELINE_RE = re.compile(
     r"\b(?:no|not|none|unable to identify|did not identify|not located|not found)\b"
     r"[\s\S]{0,120}\b(?:guideline|formal guidance|primary stud(?:y|ies)|primary source)\b",
     re.I,
+)
+NO_SOURCE_DECLARATION_RE = re.compile(
+    r"^\s*[-*]\s+No source-grounded references\b.*$", re.I | re.M
 )
 PRIORITY_TAKEAWAY_MAX_WORDS = 32
 
@@ -163,25 +171,60 @@ def validate_text(text: str, *, path: Path) -> ValidationResult:
                     f"({len(words)} words, max {PRIORITY_TAKEAWAY_MAX_WORDS}): {bullet[:80]}"
                 )
 
-    synthesis_body = _section_body(text, "Clinical & Anatomical Synthesis")
-    if synthesis_body and not INLINE_CITATION_RE.search(synthesis_body):
+    teaching_heading = next(
+        (
+            heading
+            for heading in CORE_TEACHING_HEADINGS
+            if re.search(rf"^## {re.escape(heading)}\s*$", text, flags=re.M)
+        ),
+        None,
+    )
+    teaching_body = _section_body(text, teaching_heading) if teaching_heading else None
+    if teaching_heading is None:
         errors.append(
-            "Clinical & Anatomical Synthesis must include academic inline citations"
+            "missing required heading: ## Clinical Teaching"
+            " (or legacy ## Clinical & Anatomical Synthesis)"
         )
+    elif teaching_heading == "Clinical Teaching" and teaching_body is not None:
+        if not re.search(r"^###\s+\S+", teaching_body, flags=re.M):
+            errors.append(
+                "Clinical Teaching must include at least one ### teaching-point subsection"
+            )
+    if teaching_body and not INLINE_CITATION_RE.search(teaching_body):
+        declares_internal = bool(
+            yaml_text
+            and re.search(r"^internal_knowledge_used:\s*true\s*$", yaml_text, flags=re.M)
+        )
+        if not declares_internal:
+            errors.append(
+                f"{teaching_heading} has no inline citations; clinical-knowledge teaching"
+                " must declare internal_knowledge_used: true (never fabricate citations)"
+            )
 
     mental_models_body = _section_body(text, "Operational Mental Models")
     if mental_models_body and not re.search(r"^###\s+\S+", mental_models_body, flags=re.M):
         errors.append("Operational Mental Models must include at least one named model subheading")
 
     references_body = _section_body(text, "References")
-    if references_body and not re.search(r"\[[^\]]+\]\(https?://[^)]+\)", references_body):
-        errors.append("References must include at least one linked external reference")
-    if references_body and not any(f"{label}:" in references_body for label in SOURCE_TIER_LABELS):
-        errors.append("References must label evidence type for each support item")
+    no_source_declared = bool(
+        references_body and NO_SOURCE_DECLARATION_RE.search(references_body)
+    )
+    if references_body and not no_source_declared:
+        if not re.search(r"\[[^\]]+\]\(https?://[^)]+\)", references_body):
+            errors.append(
+                "References must include at least one linked external reference"
+                " or an explicit no-source declaration"
+            )
+        if not any(f"{label}:" in references_body for label in SOURCE_TIER_LABELS):
+            errors.append("References must label evidence type for each support item")
     if references_body:
         for line in references_body.splitlines():
             stripped_line = line.strip()
-            if stripped_line.startswith("- ") and not any(
+            if not stripped_line.startswith("- "):
+                continue
+            if NO_SOURCE_DECLARATION_RE.match(stripped_line):
+                continue
+            if not any(
                 stripped_line.startswith(f"- {label}:") for label in SOURCE_TIER_LABELS
             ):
                 errors.append(f"reference bullet missing evidence-type label: {stripped_line[:80]}")

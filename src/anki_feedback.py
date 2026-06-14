@@ -343,7 +343,7 @@ def _chroma_metadata_for_card(card: dict[str, Any], chroma_collection: Any | Non
 
 def _resolve_source_workflow(tags: list[str], deck_name: str) -> str:
     lower = {tag.lower() for tag in tags}
-    for value in ("brain-dump", "study-review", "quick-answer", "consult", "intraoperative-guide"):
+    for value in ("brain-dump", "study-review", "consult", "intraoperative-guide"):
         if value in lower:
             return value
     if "brain dumps" in deck_name.lower():

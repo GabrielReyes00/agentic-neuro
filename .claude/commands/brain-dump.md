@@ -1,6 +1,6 @@
 ---
 name: brain-dump
-description: Brain dump capture of de-identified service teaching with atomic review candidates and optional Socratic conversion.
+description: Brief clinical teacher for de-identified ward topics — depth-calibrated teaching artifacts covering fundamentals, ward application, and decision-making role, with atomic review candidates and optional Socratic conversion.
 ---
 
 # Brain Dump

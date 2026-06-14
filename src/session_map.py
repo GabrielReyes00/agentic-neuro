@@ -89,7 +89,7 @@ def create_from_projection(
     for entry in knowledge_map:
         entry.setdefault("binding_source", "startup_projection")
         entry.setdefault("session_probed", False)
-        entry.setdefault("artifact_native", bool(doc_path and profile == "doc"))
+        entry.setdefault("artifact_native", False)
         entry.setdefault("stuck_probe_count", 0)
         entry.setdefault("last_miss_cognitive_op", "")
     return {
@@ -207,11 +207,25 @@ def resolve_inventory_id(
     return None, "unbound", score
 
 
-def _exposure_from_counts(attempts: int, successes: int, avg_stability: float) -> str:
+def _exposure_from_counts(
+    attempts: int,
+    successes: int,
+    avg_stability: float,
+    last_score: int = 0,
+    is_gap: bool = False,
+    recent_success_rate: float | None = None,
+) -> str:
+    # Mirror study_memory._mastery_exposure exactly: an open gap must hold the
+    # concept at superficial even when the running stats look good (this fall-through
+    # previously omitted is_gap, so a gapped concept could read deep), and the
+    # success threshold prefers the recency-weighted rate when supplied.
     success_rate = successes / attempts if attempts else 0.0
     if attempts == 0:
         return "unexposed"
-    if attempts == 1 or avg_stability < 2.0 or success_rate < 0.6:
+    if last_score == 2 and not is_gap and attempts > 1:
+        return "exposed_deep"
+    rate = success_rate if recent_success_rate is None else recent_success_rate
+    if attempts == 1 or avg_stability < 2.0 or rate < 0.6 or is_gap:
         return "exposed_superficial"
     return "exposed_deep"
 
@@ -303,7 +317,8 @@ def patch_after_log(
         avg_stability = max(0.5, avg_stability - 0.5)
 
     new_state = _knowledge_state_for_score(correct, prior_state if prior_state != "untested" else None)
-    new_exposure = _exposure_from_counts(attempts, successes, avg_stability)
+    is_gap = new_state in OPEN_GAP_STATES
+    new_exposure = _exposure_from_counts(attempts, successes, avg_stability, last_score=correct, is_gap=is_gap)
     delta = _session_delta(
         prior_exposure=prior_exposure,
         new_exposure=new_exposure,
@@ -391,31 +406,65 @@ def apply_artifact_priority(
     if profile != "doc" or not doc_path or not isinstance(plan, dict):
         return plan
     plan = dict(plan)
-    artifact_native: list[str] = []
-    map_context: list[str] = []
+    artifact_items: list[tuple[tuple[int, int, int, str], str]] = []
+    context_items: list[tuple[tuple[int, int, int, str], str]] = []
+    precise_artifact_map = any(
+        isinstance(entry, dict) and entry.get("artifact_map_available")
+        for entry in knowledge_map
+    )
+    role_rank = {"primary": 0, "objective": 1, "objective_only": 1, "supporting": 2, "mentioned": 3}
+
+    def priority(entry: dict[str, Any]) -> tuple[int, int, int, str]:
+        state = str(entry.get("knowledge_state") or "untested")
+        exposure = str(entry.get("exposure_status") or "unexposed")
+        roles = entry.get("artifact_roles")
+        if isinstance(roles, list) and roles:
+            artifact_role_rank = min(role_rank.get(str(role), 4) for role in roles)
+        else:
+            artifact_role_rank = role_rank.get(str(entry.get("artifact_presence") or ""), 4)
+        return (
+            0 if entry.get("active_misconception") or state in OPEN_GAP_STATES else 1,
+            {"unexposed": 0, "exposed_superficial": 1, "exposed_deep": 2}.get(exposure, 3),
+            artifact_role_rank,
+            str(entry.get("concept", "")),
+        )
+
     for entry in knowledge_map:
         if not isinstance(entry, dict):
             continue
         name = str(entry.get("concept", ""))
         if not name:
             continue
-        if entry.get("artifact_native") or entry.get("role") == "entry":
-            artifact_native.append(name)
+        if precise_artifact_map:
+            if entry.get("artifact_native"):
+                artifact_items.append((priority(entry), name))
+            elif entry.get("exposure_status") == "unexposed":
+                context_items.append((priority(entry), name))
+            else:
+                context_items.append((priority(entry), name))
+        elif entry.get("artifact_native") or entry.get("role") == "entry":
+            artifact_items.append((priority(entry), name))
         elif entry.get("exposure_status") == "unexposed":
-            map_context.append(name)
+            context_items.append((priority(entry), name))
         else:
-            artifact_native.append(name)
+            artifact_items.append((priority(entry), name))
+    artifact_native = [name for _, name in sorted(artifact_items)]
+    map_context = [name for _, name in sorted(context_items)]
     targets = plan.get("target_concepts")
     if isinstance(targets, list):
-        artifact_set = {n.lower() for n in artifact_native}
-        ordered = [t for t in targets if str(t).lower() in artifact_set]
+        artifact_order = {n.lower(): idx for idx, n in enumerate(artifact_native)}
+        artifact_set = set(artifact_order)
+        ordered = sorted(
+            [t for t in targets if str(t).lower() in artifact_order],
+            key=lambda target: artifact_order.get(str(target).lower(), 999),
+        )
         ordered.extend(t for t in targets if str(t).lower() not in artifact_set)
         plan["target_concepts"] = ordered
     directives = list(plan.get("pedagogical_directives") or [])
     artifact_rule = (
-        "Artifact Priority: teach from the requested document first. "
-        "Use map-only unexposed concepts only at phase boundaries, for prerequisite gaps, "
-        "misconception repair, or transfer after artifact material is substantially covered."
+        "Artifact Priority: teach artifact_native_targets from the requested document first. "
+        "Use map_context_targets only for prerequisites, misconception repair, phase-boundary choices, "
+        "or transfer bridges; broaden with horizon_expansion only after artifact-native gaps stabilize."
     )
     if artifact_rule not in directives:
         directives.insert(0, artifact_rule)

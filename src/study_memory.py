@@ -56,9 +56,6 @@ DATA_DIR = BASE_DIR / "data"
 # NEURO_STUDY_MEMORY_DB lets a session run against a copy of the live memory DB
 # (e.g. the migration working copy) without touching data/study_memory.db.
 DB_PATH = Path(os.environ.get("NEURO_STUDY_MEMORY_DB", DATA_DIR / "study_memory.db"))
-LOW_STAKES_REFERENCE_SKILLS = frozenset({"quick-answer"})
-LOW_STAKES_TEACHING_INTENTS = frozenset({"quick_answer_reference"})
-
 # Skills that produce a vault artifact rather than testing the learner. Their
 # log-answer call is a discoverability anchor only: it records that the file
 # exists and when, but must NOT create durable claim_state (the learner has not
@@ -68,14 +65,12 @@ LOW_STAKES_TEACHING_INTENTS = frozenset({"quick_answer_reference"})
 ARTIFACT_ANCHOR_SKILLS = frozenset({"generate-report", "intraoperative-guide", "brain-dump"})
 
 # Skills whose ended sessions must NOT advance the rolling curation counter.
-# quick-answer is low-stakes reference; study-material/grand-rounds are
-# generative skills (drill/rehearsal are incidental, not the purpose);
-# artifact-anchor skills never represent a review session at all. Study-material
-# and grand-rounds drill answers remain eligible curation *evidence* — only the
-# trigger counter is suppressed.
+# study-material/grand-rounds are generative skills (drill/rehearsal are
+# incidental, not the purpose); artifact-anchor skills never represent a review
+# session at all. Study-material and grand-rounds drill answers remain eligible
+# curation *evidence* — only the trigger counter is suppressed.
 CURATION_EXCLUDED_SKILLS = (
-    LOW_STAKES_REFERENCE_SKILLS
-    | ARTIFACT_ANCHOR_SKILLS
+    ARTIFACT_ANCHOR_SKILLS
     | frozenset({"study-material", "grand-rounds"})
 )
 
@@ -159,6 +154,41 @@ CREATE TABLE IF NOT EXISTS concepts (
     FOREIGN KEY(topic_id) REFERENCES topics(id)
 );
 CREATE INDEX IF NOT EXISTS idx_memory_concepts_topic ON concepts(topic_id);
+
+CREATE TABLE IF NOT EXISTS artifact_maps (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    doc_path TEXT NOT NULL UNIQUE,
+    topic_id INTEGER,
+    artifact_title TEXT NOT NULL DEFAULT '',
+    content_hash TEXT NOT NULL DEFAULT '',
+    schema_version TEXT NOT NULL DEFAULT 'artifact_map_v1',
+    map_status TEXT NOT NULL DEFAULT 'complete',
+    created_by TEXT NOT NULL DEFAULT 'agent',
+    notes TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT '',
+    FOREIGN KEY(topic_id) REFERENCES topics(id)
+);
+CREATE INDEX IF NOT EXISTS idx_artifact_maps_topic ON artifact_maps(topic_id);
+
+CREATE TABLE IF NOT EXISTS artifact_map_concepts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    artifact_map_id INTEGER NOT NULL,
+    artifact_concept TEXT NOT NULL,
+    inventory_concept_id TEXT NOT NULL DEFAULT '',
+    mapping_status TEXT NOT NULL DEFAULT 'unresolved',
+    confidence TEXT NOT NULL DEFAULT 'low',
+    role TEXT NOT NULL DEFAULT 'mentioned',
+    evidence_json TEXT NOT NULL DEFAULT '[]',
+    source_sections_json TEXT NOT NULL DEFAULT '[]',
+    source_anchors_json TEXT NOT NULL DEFAULT '[]',
+    unresolved_reason TEXT NOT NULL DEFAULT '',
+    notes TEXT NOT NULL DEFAULT '',
+    ordinal INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY(artifact_map_id) REFERENCES artifact_maps(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_artifact_map_concepts_map ON artifact_map_concepts(artifact_map_id);
+CREATE INDEX IF NOT EXISTS idx_artifact_map_concepts_inventory ON artifact_map_concepts(inventory_concept_id);
 
 CREATE TABLE IF NOT EXISTS concept_aliases (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -513,7 +543,8 @@ CREATE INDEX IF NOT EXISTS idx_policy_events_topic ON policy_events(topic_id);
 -- can read instead of re-deriving it differently. Fan-out-safe (each aggregate is
 -- an independent correlated subquery, no join multiplication) and fast now that
 -- claim_results/claim_state carry concept_id indexes.
-CREATE VIEW IF NOT EXISTS v_concept_mastery AS
+DROP VIEW IF EXISTS v_concept_mastery;
+CREATE VIEW v_concept_mastery AS
 SELECT
     c.id AS concept_id,
     c.topic_id,
@@ -533,7 +564,17 @@ SELECT
     (SELECT MIN(NULLIF(cs.next_due_ts, '')) FROM claim_state cs
        WHERE cs.concept_id = c.id AND cs.origin = 'assessed') AS next_due_ts,
     (SELECT ROUND(AVG(cs.stability), 3) FROM claim_state cs
-       WHERE cs.concept_id = c.id AND cs.origin = 'assessed') AS avg_stability
+       WHERE cs.concept_id = c.id AND cs.origin = 'assessed') AS avg_stability,
+    (SELECT cr.score FROM claim_results cr
+       WHERE cr.concept_id = c.id AND cr.origin = 'assessed'
+       ORDER BY cr.created_at DESC, cr.id DESC LIMIT 1) AS last_score,
+    -- Recency-weighted (decaying-memory) success rate: the success ratio over the
+    -- most recent 3 assessed attempts, so a concept the learner has clearly turned
+    -- around is no longer dragged by stale early failures (the "perma-novice" bug).
+    (SELECT ROUND(CAST(SUM(CASE WHEN w.score >= 2 THEN 1 ELSE 0 END) AS REAL) / COUNT(*), 3)
+       FROM (SELECT cr.score FROM claim_results cr
+              WHERE cr.concept_id = c.id AND cr.origin = 'assessed'
+              ORDER BY cr.created_at DESC, cr.id DESC LIMIT 3) w) AS recent_success_rate
 FROM concepts c;
 
 """
@@ -551,7 +592,9 @@ class TopicResolution:
 
 # Bump whenever SCHEMA_SQL or _migrate_schema changes so existing DBs re-run the
 # (idempotent) schema/migration exactly once, then skip it on every later open.
-SCHEMA_VERSION = 3
+# v5: v_concept_mastery gains recent_success_rate and is now DROP+CREATE (not
+# IF NOT EXISTS) so existing DBs converge on the recency-aware definition.
+SCHEMA_VERSION = 5
 
 
 def _apply_connection_pragmas(conn: sqlite3.Connection) -> None:
@@ -601,10 +644,27 @@ def maintain_db(conn: sqlite3.Connection, *, vacuum: bool = False) -> dict[str, 
     return result
 
 
-def _mastery_exposure(attempts: int, success_rate: float, avg_stability: float, open_gaps: int) -> str:
+def _mastery_exposure(
+    attempts: int,
+    success_rate: float,
+    avg_stability: float,
+    open_gaps: int,
+    last_score: int = 0,
+    recent_success_rate: float | None = None,
+) -> str:
+    """Canonical exposure rule. Shared shape across every engine (see session_map,
+    acgme_readiness, concept_inventory): a durable most-recent pass with no open gap
+    bypasses historical-average penalties, a single attempt never promotes, an open
+    gap always holds the concept at superficial, and the success threshold reads the
+    recency-weighted rate when available so a turned-around concept is not perma-novice.
+    """
     if attempts == 0:
         return "unexposed"
-    if attempts == 1 or avg_stability < 2.0 or success_rate < 0.6 or open_gaps > 0:
+    has_gap = open_gaps > 0
+    if last_score == 2 and not has_gap and attempts > 1:
+        return "exposed_deep"
+    rate = success_rate if recent_success_rate is None else recent_success_rate
+    if attempts == 1 or avg_stability < 2.0 or rate < 0.6 or has_gap:
         return "exposed_superficial"
     return "exposed_deep"
 
@@ -625,10 +685,12 @@ def knowledge_map_overview(
     rows = conn.execute(
         f"""SELECT m.inventory_concept_id, m.display_name, m.attempts, m.successes,
                    m.open_gaps, m.last_seen_ts, m.next_due_ts, m.avg_stability,
-                   m.safety_critical, COALESCE(t.domain, 'general') AS domain
+                   m.safety_critical, COALESCE(t.domain, 'general') AS domain,
+                   COALESCE(m.last_score, 0) AS last_score,
+                   m.recent_success_rate
               FROM v_concept_mastery m JOIN topics t ON t.id = m.topic_id
               {where}
-             ORDER BY domain, m.display_name""",
+              ORDER BY domain, m.display_name""",
         params,
     ).fetchall()
 
@@ -640,7 +702,10 @@ def knowledge_map_overview(
         rate = round(int(r["successes"] or 0) / attempts, 3) if attempts else 0.0
         avg_stab = float(r["avg_stability"] or 1.0)
         gaps = int(r["open_gaps"] or 0)
-        exposure = _mastery_exposure(attempts, rate, avg_stab, gaps)
+        last_score = int(r["last_score"] or 0)
+        recent_rate = r["recent_success_rate"]
+        recent_rate = float(recent_rate) if recent_rate is not None else None
+        exposure = _mastery_exposure(attempts, rate, avg_stab, gaps, last_score, recent_rate)
         bucket = domains.setdefault(r["domain"], {
             "domain": r["domain"], "concepts": 0, "deep": 0, "superficial": 0,
             "unexposed": 0, "open_gaps": 0,
@@ -817,6 +882,16 @@ def _controlled_value(value: str) -> str:
     return _normalize(value).replace(" ", "_").replace("-", "_")
 
 
+class StrictTelemetryError(ValueError):
+    """Raised when --strict-telemetry input is incomplete. Carries an actionable
+    `remedy` so the CLI can alert the agent to retry with the missing field rather
+    than crashing with an opaque traceback and silently writing nothing."""
+
+    def __init__(self, message: str, *, remedy: str = "") -> None:
+        super().__init__(message)
+        self.remedy = remedy
+
+
 def _validate_strict_telemetry(
     *,
     concept: str,
@@ -836,16 +911,18 @@ def _validate_strict_telemetry(
     # to boilerplate ("Apply <concept> ...") and the stored claim_state carries no
     # testable content. Required for every assessed exchange, not just misses.
     if not (tested_claim.strip() or corrected_rule.strip() or correction.strip()):
-        raise ValueError(
+        raise StrictTelemetryError(
             "strict telemetry requires tested_claim (or corrected_rule/correction) "
-            "so the stored claim is a real testable statement, not boilerplate"
+            "so the stored claim is a real testable statement, not boilerplate",
+            remedy="add --tested-claim \"<the rule under test>\"",
         )
     concept_words = concept.strip().split()
     if len(concept.strip()) > MAX_CONCEPT_LABEL_CHARS or len(concept_words) > MAX_CONCEPT_LABEL_WORDS:
-        raise ValueError(
+        raise StrictTelemetryError(
             "strict telemetry requires a succinct concept label "
             f"(<= {MAX_CONCEPT_LABEL_WORDS} words and <= {MAX_CONCEPT_LABEL_CHARS} characters); "
-            "store the full clinical rule in tested_claim"
+            "store the full clinical rule in tested_claim",
+            remedy="shorten --concept and move the detail into --tested-claim",
         )
     controlled = {
         "answer_mode": (_controlled_value(answer_mode), VALID_ANSWER_MODES),
@@ -854,15 +931,28 @@ def _validate_strict_telemetry(
     }
     for field, (value, allowed) in controlled.items():
         if value not in allowed:
-            raise ValueError(f"strict telemetry requires {field} in {sorted(allowed)}, got {value or '[empty]'!r}")
+            raise StrictTelemetryError(
+                f"strict telemetry requires {field} in {sorted(allowed)}, got {value or '[empty]'!r}",
+                remedy=f"add --{field.replace('_', '-')} with one of {sorted(allowed)}",
+            )
     if score < 2:
         gap = _controlled_value(error_type)
         if gap not in VALID_GAP_TYPES:
-            raise ValueError(f"strict telemetry requires error_type in {sorted(VALID_GAP_TYPES)} for score < 2")
+            raise StrictTelemetryError(
+                f"strict telemetry requires error_type in {sorted(VALID_GAP_TYPES)} for score < 2 "
+                f"(this answer scored {score}, a {'partial' if score == 1 else 'miss'})",
+                remedy=f"add --error-type with one of {sorted(VALID_GAP_TYPES)}",
+            )
         if not (missing_edge.strip() or misconception.strip()):
-            raise ValueError("strict telemetry requires missing_edge or misconception for score < 2")
+            raise StrictTelemetryError(
+                "strict telemetry requires missing_edge or misconception for score < 2",
+                remedy="add --missing-edge \"<what was missing>\" or --misconception \"<the wrong belief>\"",
+            )
         if not (corrected_rule.strip() or correction.strip()):
-            raise ValueError("strict telemetry requires corrected_rule or correction for score < 2")
+            raise StrictTelemetryError(
+                "strict telemetry requires corrected_rule or correction for score < 2",
+                remedy="add --corrected-rule \"<the right rule>\" or --correction \"<the fix>\"",
+            )
 
 
 def _doc_alias(doc_path: str) -> str:
@@ -1239,6 +1329,601 @@ def _ensure_topic(conn: sqlite3.Connection, resolution: TopicResolution, doc_pat
     return topic_id
 
 
+ARTIFACT_MAP_SCHEMA_VERSION = "artifact_map_v1"
+ARTIFACT_MAP_CONCEPT_CAP = 30
+ARTIFACT_REMAINING_CAP = 12
+MAP_CONTEXT_ONLY_CAP = 12
+HORIZON_EXPANSION_CAP = 8
+ARTIFACT_PRIMARY_ROLES = frozenset({"primary", "objective", "objective_only", "supporting"})
+
+
+def _json_array(value: object) -> list[object]:
+    if value is None or value == "":
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
+    return [value]
+
+
+def _normalize_artifact_role(value: object) -> str:
+    role = _controlled_value(str(value or "mentioned"))
+    aliases = {
+        "mastery_objective": "objective",
+        "objective_only": "objective_only",
+        "core": "primary",
+        "main": "primary",
+    }
+    role = aliases.get(role, role)
+    return role if role in {"primary", "supporting", "mentioned", "objective", "objective_only"} else "mentioned"
+
+
+def _normalize_artifact_confidence(value: object) -> str:
+    confidence = _controlled_value(str(value or "low"))
+    return confidence if confidence in {"high", "medium", "low"} else "low"
+
+
+def _normalize_mapping_status(inventory_concept_id: str, value: object) -> str:
+    status = _controlled_value(str(value or ""))
+    if status in {"explicit", "provisional", "unresolved"}:
+        return status
+    return "explicit" if inventory_concept_id else "unresolved"
+
+
+def _artifact_map_row_for_doc(conn: sqlite3.Connection, doc_path: str) -> tuple[sqlite3.Row | None, str]:
+    if not doc_path:
+        return None, "none"
+    exact = conn.execute("SELECT * FROM artifact_maps WHERE doc_path = ?", (doc_path,)).fetchone()
+    if exact:
+        return exact, "exact"
+    family = _doc_family_alias(doc_path)
+    if not family:
+        return None, "none"
+    rows = conn.execute("SELECT * FROM artifact_maps ORDER BY updated_at DESC, id DESC").fetchall()
+    for row in rows:
+        if _doc_family_alias(str(row["doc_path"])) == family:
+            return row, "doc_family"
+    return None, "none"
+
+
+def _artifact_map_payload_from_row(
+    conn: sqlite3.Connection,
+    row: sqlite3.Row,
+    *,
+    current_hash: str = "",
+    match_type: str = "exact",
+) -> dict[str, object]:
+    concepts = [
+        {
+            "artifact_concept": item["artifact_concept"],
+            "inventory_concept_id": item["inventory_concept_id"] or "",
+            "mapping_status": item["mapping_status"],
+            "confidence": item["confidence"],
+            "role": item["role"],
+            "evidence": json.loads(item["evidence_json"] or "[]"),
+            "source_sections": json.loads(item["source_sections_json"] or "[]"),
+            "source_anchors": json.loads(item["source_anchors_json"] or "[]"),
+            "unresolved_reason": item["unresolved_reason"] or "",
+            "notes": item["notes"] or "",
+        }
+        for item in conn.execute(
+            """SELECT * FROM artifact_map_concepts
+               WHERE artifact_map_id = ?
+               ORDER BY ordinal, id""",
+            (int(row["id"]),),
+        ).fetchall()
+    ]
+    stored_hash = str(row["content_hash"] or "")
+    if current_hash and stored_hash and current_hash != stored_hash:
+        cache_status = "stale"
+    elif match_type == "doc_family":
+        cache_status = "family_match_unverified"
+    elif stored_hash:
+        cache_status = "available_hash_unchecked" if not current_hash else "available_hash_matched"
+    else:
+        cache_status = "available_hash_missing"
+    return {
+        "status": "available",
+        "cache_status": cache_status,
+        "match_type": match_type,
+        "doc_path": row["doc_path"],
+        "artifact_title": row["artifact_title"],
+        "content_hash": stored_hash,
+        "schema_version": row["schema_version"],
+        "map_status": row["map_status"],
+        "updated_at": row["updated_at"],
+        "concepts": concepts,
+        "counts": {
+            "concepts": len(concepts),
+            "mapped": sum(1 for c in concepts if c["inventory_concept_id"]),
+            "unresolved": sum(1 for c in concepts if not c["inventory_concept_id"]),
+        },
+    }
+
+
+def artifact_map_get(
+    conn: sqlite3.Connection,
+    *,
+    doc_path: str,
+    current_hash: str = "",
+) -> dict[str, object]:
+    row, match_type = _artifact_map_row_for_doc(conn, doc_path)
+    if row is None:
+        return {
+            "status": "missing",
+            "doc_path": doc_path,
+            "cache_status": "missing",
+            "concepts": [],
+            "counts": {"concepts": 0, "mapped": 0, "unresolved": 0},
+            "next_action": (
+                "After reading the full artifact, map artifact concepts to scoped inventory ids "
+                "and save them with artifact-map-upsert."
+            ),
+        }
+    return _artifact_map_payload_from_row(conn, row, current_hash=current_hash, match_type=match_type)
+
+
+def artifact_map_upsert(
+    conn: sqlite3.Connection,
+    *,
+    doc_path: str,
+    topic: str,
+    payload: dict[str, object],
+    content_hash: str = "",
+    created_by: str = "agent",
+) -> dict[str, object]:
+    if not doc_path:
+        raise ValueError("artifact map requires --doc")
+    concepts = payload.get("concepts")
+    if not isinstance(concepts, list) or not concepts:
+        raise ValueError("artifact map payload must contain a non-empty `concepts` list")
+    resolution = resolve_topic(conn, topic or str(payload.get("topic", "")), doc_path)
+    topic_id = _ensure_topic(conn, resolution, doc_path)
+    now = datetime.now(timezone.utc).isoformat()
+    artifact_title = str(payload.get("artifact_title") or Path(doc_path).stem).strip()
+    schema_version = str(payload.get("schema_version") or ARTIFACT_MAP_SCHEMA_VERSION)
+    map_status = _controlled_value(str(payload.get("map_status") or "complete"))
+    if map_status not in {"complete", "partial", "needs_review"}:
+        map_status = "complete"
+    final_hash = content_hash or str(payload.get("content_hash") or "")
+    conn.execute(
+        """INSERT INTO artifact_maps
+           (doc_path, topic_id, artifact_title, content_hash, schema_version, map_status,
+            created_by, notes, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(doc_path) DO UPDATE SET
+             topic_id = excluded.topic_id,
+             artifact_title = excluded.artifact_title,
+             content_hash = excluded.content_hash,
+             schema_version = excluded.schema_version,
+             map_status = excluded.map_status,
+             created_by = excluded.created_by,
+             notes = excluded.notes,
+             updated_at = excluded.updated_at""",
+        (
+            doc_path,
+            topic_id,
+            artifact_title,
+            final_hash,
+            schema_version,
+            map_status,
+            created_by or "agent",
+            str(payload.get("notes") or ""),
+            now,
+            now,
+        ),
+    )
+    row = conn.execute("SELECT id FROM artifact_maps WHERE doc_path = ?", (doc_path,)).fetchone()
+    assert row is not None
+    map_id = int(row["id"])
+    conn.execute("DELETE FROM artifact_map_concepts WHERE artifact_map_id = ?", (map_id,))
+    for idx, raw in enumerate(concepts):
+        if not isinstance(raw, dict):
+            raise ValueError(f"concepts[{idx}] must be an object")
+        artifact_concept = str(raw.get("artifact_concept") or raw.get("concept") or "").strip()
+        if not artifact_concept:
+            raise ValueError(f"concepts[{idx}] missing artifact_concept")
+        inventory_id = str(raw.get("inventory_concept_id") or "").strip()
+        role = _normalize_artifact_role(raw.get("role"))
+        confidence = _normalize_artifact_confidence(raw.get("confidence"))
+        status = _normalize_mapping_status(inventory_id, raw.get("mapping_status"))
+        conn.execute(
+            """INSERT INTO artifact_map_concepts
+               (artifact_map_id, artifact_concept, inventory_concept_id, mapping_status,
+                confidence, role, evidence_json, source_sections_json, source_anchors_json,
+                unresolved_reason, notes, ordinal)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                map_id,
+                artifact_concept,
+                inventory_id,
+                status,
+                confidence,
+                role,
+                json.dumps(_json_array(raw.get("evidence")), sort_keys=True),
+                json.dumps(_json_array(raw.get("source_sections")), sort_keys=True),
+                json.dumps(_json_array(raw.get("source_anchors")), sort_keys=True),
+                str(raw.get("unresolved_reason") or ""),
+                str(raw.get("notes") or ""),
+                idx,
+            ),
+        )
+    conn.commit()
+    saved = artifact_map_get(conn, doc_path=doc_path, current_hash=final_hash)
+    saved["ok"] = True
+    saved["resolved_topic"] = resolution.slug
+    return saved
+
+
+def _artifact_entries_by_inventory(artifact_map: dict[str, object]) -> dict[str, list[dict[str, object]]]:
+    grouped: dict[str, list[dict[str, object]]] = {}
+    for item in artifact_map.get("concepts", []) if isinstance(artifact_map, dict) else []:
+        if not isinstance(item, dict):
+            continue
+        inv_id = str(item.get("inventory_concept_id") or "")
+        if not inv_id:
+            continue
+        grouped.setdefault(inv_id, []).append(item)
+    return grouped
+
+
+def _rank_artifact_role(role: str) -> int:
+    return {"primary": 0, "objective": 1, "objective_only": 1, "supporting": 2, "mentioned": 3}.get(role, 4)
+
+
+def _artifact_alignment_for_brief(
+    *,
+    artifact_map: dict[str, object],
+    knowledge_map: list[dict[str, object]],
+    edges: list[dict[str, object]],
+) -> dict[str, object]:
+    if artifact_map.get("status") != "available":
+        return {
+            "status": artifact_map.get("status", "missing"),
+            "cache_status": artifact_map.get("cache_status", "missing"),
+            "doc_path": artifact_map.get("doc_path", ""),
+            "source_model": "three_map_v1",
+            "maps": {
+                "map_context": "scoped_inventory_graph",
+                "artifact_map": "missing_or_unbuilt",
+                "learner_map": "sqlite_claim_state_overlay",
+            },
+            "next_action": artifact_map.get("next_action", "Build and save artifact map before relying on artifact coverage."),
+        }
+
+    by_inventory = _artifact_entries_by_inventory(artifact_map)
+    inv_index = {str(entry.get("concept_id")): entry for entry in knowledge_map if isinstance(entry, dict)}
+    artifact_ids = set(by_inventory)
+    artifact_concepts: list[dict[str, object]] = []
+    remaining: list[dict[str, object]] = []
+    mastered_ids: set[str] = set()
+    for inv_id, entries in by_inventory.items():
+        entry = inv_index.get(inv_id, {})
+        roles = sorted({_normalize_artifact_role(item.get("role")) for item in entries}, key=_rank_artifact_role)
+        sections: list[str] = []
+        artifact_names: list[str] = []
+        for item in entries:
+            artifact_names.append(str(item.get("artifact_concept") or ""))
+            sections.extend(str(s) for s in _json_array(item.get("source_sections")) if str(s))
+        exposure = str(entry.get("exposure_status") or "unmapped")
+        state = str(entry.get("knowledge_state") or "unmapped")
+        active_gap = state in {"missed", "partially_repaired", "regressed"} or bool(entry.get("active_misconception"))
+        item = {
+            "inventory_concept_id": inv_id,
+            "concept": entry.get("concept") or artifact_names[0],
+            "artifact_concepts": artifact_names[:3],
+            "artifact_roles": roles,
+            "source_sections": sorted(set(sections))[:4],
+            "exposure_status": exposure,
+            "knowledge_state": state,
+            "active_gap": active_gap,
+        }
+        artifact_concepts.append(item)
+        if exposure in {"unexposed", "exposed_superficial", "unmapped"} or active_gap:
+            remaining.append(item)
+        elif exposure == "exposed_deep" and not active_gap:
+            mastered_ids.add(inv_id)
+
+    unresolved = [
+        {
+            "artifact_concept": item.get("artifact_concept"),
+            "role": item.get("role"),
+            "confidence": item.get("confidence"),
+            "source_sections": item.get("source_sections", []),
+            "unresolved_reason": item.get("unresolved_reason", ""),
+        }
+        for item in artifact_map.get("concepts", [])
+        if isinstance(item, dict) and not item.get("inventory_concept_id")
+    ]
+
+    def map_context_key(entry: dict[str, object]) -> tuple:
+        return (
+            0 if entry.get("active_misconception") else 1,
+            0 if str(entry.get("knowledge_state")) in {"missed", "partially_repaired", "regressed"} else 1,
+            0 if entry.get("safety_critical") else 1,
+            0 if str(entry.get("role", "")) == "entry" else 1,
+            str(entry.get("concept", "")),
+        )
+
+    map_context_only = [
+        {
+            "inventory_concept_id": entry.get("concept_id"),
+            "concept": entry.get("concept"),
+            "scope_role": entry.get("role"),
+            "exposure_status": entry.get("exposure_status"),
+            "knowledge_state": entry.get("knowledge_state"),
+            "teaching_use": "prerequisite_repair_or_transfer_bridge",
+        }
+        for entry in sorted(knowledge_map, key=map_context_key)
+        if isinstance(entry, dict)
+        and str(entry.get("concept_id")) not in artifact_ids
+        and (
+            str(entry.get("exposure_status")) in {"unexposed", "exposed_superficial"}
+            or str(entry.get("knowledge_state")) in {"missed", "partially_repaired", "regressed"}
+            or bool(entry.get("active_misconception"))
+        )
+    ][:MAP_CONTEXT_ONLY_CAP]
+
+    horizon: list[dict[str, object]] = []
+    seen_horizon: set[str] = set()
+    for edge in edges:
+        if not isinstance(edge, dict):
+            continue
+        src = str(edge.get("src") or "")
+        dst = str(edge.get("dst") or "")
+        neighbor = ""
+        if src in mastered_ids and dst not in artifact_ids:
+            neighbor = dst
+        elif dst in mastered_ids and src not in artifact_ids:
+            neighbor = src
+        if not neighbor or neighbor in seen_horizon:
+            continue
+        n_entry = inv_index.get(neighbor)
+        if not n_entry:
+            continue
+        if str(n_entry.get("exposure_status")) == "exposed_deep" and str(n_entry.get("knowledge_state")) == "passed":
+            continue
+        seen_horizon.add(neighbor)
+        horizon.append({
+            "inventory_concept_id": neighbor,
+            "concept": n_entry.get("concept"),
+            "relationship": edge.get("edge_type"),
+            "teaching_use": "horizon_expansion_after_artifact_core",
+        })
+        if len(horizon) >= HORIZON_EXPANSION_CAP:
+            break
+
+    artifact_concepts.sort(key=lambda item: (
+        min(_rank_artifact_role(str(role)) for role in item.get("artifact_roles", ["mentioned"])),
+        str(item.get("concept", "")),
+    ))
+    remaining.sort(key=lambda item: (
+        0 if item.get("active_gap") else 1,
+        0 if item.get("exposure_status") == "unexposed" else 1,
+        min(_rank_artifact_role(str(role)) for role in item.get("artifact_roles", ["mentioned"])),
+        str(item.get("concept", "")),
+    ))
+    return {
+        "status": "available",
+        "cache_status": artifact_map.get("cache_status"),
+        "match_type": artifact_map.get("match_type"),
+        "doc_path": artifact_map.get("doc_path", ""),
+        "source_model": "three_map_v1",
+        "maps": {
+            "map_context": "scoped_inventory_graph",
+            "artifact_map": "persisted_sql_artifact_map",
+            "learner_map": "sqlite_claim_state_overlay",
+        },
+        "counts": {
+            "artifact_concepts": len(artifact_map.get("concepts", [])),
+            "mapped_inventory_ids": len(artifact_ids),
+            "unresolved_artifact_concepts": len(unresolved),
+            "artifact_remaining": len(remaining),
+            "map_context_only_candidates": len(map_context_only),
+            "horizon_expansion_candidates": len(horizon),
+        },
+        "artifact_concepts": artifact_concepts[:ARTIFACT_MAP_CONCEPT_CAP],
+        "artifact_remaining_high_yield": remaining[:ARTIFACT_REMAINING_CAP],
+        "map_context_only": map_context_only,
+        "horizon_expansion": horizon,
+        "unresolved_artifact_concepts": unresolved[:8],
+        "teaching_policy": (
+            "Start with artifact_remaining_high_yield; use map_context_only for prerequisites, "
+            "repairs, and transfer bridges; after artifact core stabilizes, use horizon_expansion "
+            "to broaden the review without drifting off-scope."
+        ),
+    }
+
+
+def _apply_artifact_map_to_knowledge_map(
+    knowledge_map: list[dict[str, object]],
+    artifact_map: dict[str, object],
+) -> None:
+    if artifact_map.get("status") != "available":
+        return
+    by_inventory = _artifact_entries_by_inventory(artifact_map)
+    if not by_inventory:
+        return
+    for entry in knowledge_map:
+        if not isinstance(entry, dict):
+            continue
+        inv_id = str(entry.get("concept_id") or "")
+        entries = by_inventory.get(inv_id, [])
+        entry["artifact_map_available"] = True
+        if not entries:
+            entry["artifact_native"] = False
+            entry["artifact_presence"] = "absent"
+            continue
+        roles = sorted({_normalize_artifact_role(item.get("role")) for item in entries}, key=_rank_artifact_role)
+        primary_role = roles[0] if roles else "mentioned"
+        entry["artifact_presence"] = primary_role
+        entry["artifact_roles"] = roles
+        entry["artifact_native"] = primary_role in ARTIFACT_PRIMARY_ROLES
+
+
+def _inventory_concept_lookup(concept_ids: set[str]) -> dict[str, dict[str, object]]:
+    if not concept_ids:
+        return {}
+    try:
+        from concept_inventory import _open_inventory  # noqa: PLC0415
+    except ImportError:
+        return {}
+    inv = _open_inventory()
+    try:
+        placeholders = ",".join("?" for _ in concept_ids)
+        rows = inv.execute(
+            f"""SELECT id, name, topic_id, domain, tier, type
+                FROM concepts
+                WHERE id IN ({placeholders})""",
+            sorted(concept_ids),
+        ).fetchall()
+        return {
+            str(row["id"]): {
+                "concept": row["name"],
+                "topic_id": row["topic_id"],
+                "domain": row["domain"],
+                "tier": row["tier"],
+                "type": row["type"],
+            }
+            for row in rows
+        }
+    except Exception:
+        return {}
+    finally:
+        inv.close()
+
+
+def _learner_overlay_for_inventory_id(
+    conn: sqlite3.Connection,
+    inventory_concept_id: str,
+) -> dict[str, object]:
+    rows = conn.execute(
+        """SELECT c.id, c.display_name,
+                  COUNT(cr.id) AS attempts,
+                  SUM(CASE WHEN cr.score >= 2.0 THEN 1 ELSE 0 END) AS successes,
+                  (SELECT score FROM claim_results cr2 
+                   WHERE cr2.concept_id = c.id AND cr2.origin = 'assessed'
+                   ORDER BY cr2.created_at DESC, cr2.id DESC LIMIT 1) AS last_score
+           FROM concepts c
+           LEFT JOIN claim_results cr
+             ON cr.concept_id = c.id AND cr.origin = 'assessed'
+           WHERE c.inventory_concept_id = ?
+           GROUP BY c.id, c.display_name
+           ORDER BY c.id""",
+        (inventory_concept_id,),
+    ).fetchall()
+    learner_ids = [int(row["id"]) for row in rows]
+    states: list[sqlite3.Row] = []
+    if learner_ids:
+        placeholders = ",".join("?" for _ in learner_ids)
+        states = conn.execute(
+            f"""SELECT concept_id, state, priority, stability, gap_type
+                FROM claim_state
+                WHERE concept_id IN ({placeholders}) AND origin = 'assessed'
+                ORDER BY id""",
+            learner_ids,
+        ).fetchall()
+    attempts = sum(int(row["attempts"] or 0) for row in rows)
+    successes = sum(int(row["successes"] or 0) for row in rows)
+    last_score = max((int(row["last_score"]) for row in rows if row["last_score"] is not None), default=0)
+    success_rate = round(successes / attempts, 3) if attempts else 0.0
+    stabilities = [float(row["stability"]) for row in states if row["stability"] is not None]
+    avg_stability = sum(stabilities) / len(stabilities) if stabilities else 1.0
+    open_gap_states = {"missed", "partially_repaired", "regressed"}
+    open_gaps = sum(1 for row in states if str(row["state"]) in open_gap_states)
+    state_severity = {
+        "missed": 0,
+        "partially_repaired": 1,
+        "regressed": 2,
+        "repaired_same_session": 3,
+        "passed": 4,
+        "durable": 4,
+    }
+    worst_state = ""
+    worst_val = 99
+    for row in states:
+        state = str(row["state"])
+        val = state_severity.get(state, 99)
+        if val < worst_val:
+            worst_val = val
+            worst_state = "passed" if state == "durable" else state
+    misconception_gap_types = {"conceptual_confusion", "cross_contamination"}
+    return {
+        "exposure_status": _mastery_exposure(attempts, success_rate, avg_stability, open_gaps, last_score),
+        "knowledge_state": worst_state or "untested",
+        "attempts_count": attempts,
+        "successes_count": successes,
+        "sqlite_success_rate": success_rate,
+        "avg_stability": avg_stability,
+        "safety_critical": any(str(row["priority"]) in {"urgent", "high"} for row in states),
+        "active_misconception": any(
+            str(row["state"]) in open_gap_states and str(row["gap_type"] or "") in misconception_gap_types
+            for row in states
+        ),
+        "matched_learner_concepts": [
+            {
+                "learner_concept_id": int(row["id"]),
+                "name": row["display_name"],
+                "match_score": 1.0,
+                "binding_source": "explicit",
+            }
+            for row in rows
+        ],
+    }
+
+
+def _add_artifact_only_nodes_to_knowledge_map(
+    conn: sqlite3.Connection,
+    knowledge_map: list[dict[str, object]],
+    artifact_map: dict[str, object],
+) -> None:
+    if artifact_map.get("status") != "available":
+        return
+    by_inventory = _artifact_entries_by_inventory(artifact_map)
+    existing = {
+        str(entry.get("concept_id") or "")
+        for entry in knowledge_map
+        if isinstance(entry, dict)
+    }
+    missing = {concept_id for concept_id in by_inventory if concept_id and concept_id not in existing}
+    if not missing:
+        return
+    inventory = _inventory_concept_lookup(missing)
+    for concept_id in sorted(missing):
+        entries = by_inventory.get(concept_id, [])
+        first_artifact_label = next(
+            (
+                str(entry.get("artifact_concept") or "").strip()
+                for entry in entries
+                if str(entry.get("artifact_concept") or "").strip()
+            ),
+            concept_id,
+        )
+        inv = inventory.get(concept_id, {})
+        node: dict[str, object] = {
+            "concept_id": concept_id,
+            "concept": inv.get("concept") or first_artifact_label,
+            "topic_id": inv.get("topic_id") or "",
+            "domain": inv.get("domain") or "",
+            "tier": inv.get("tier") or "artifact",
+            "type": inv.get("type") or "artifact_concept",
+            "role": "artifact",
+            "scope_origin": "artifact_map",
+            "artifact_only": True,
+            "exposure_status": "unexposed",
+            "knowledge_state": "untested",
+            "attempts_count": 0,
+            "successes_count": 0,
+            "sqlite_success_rate": 0.0,
+            "safety_critical": False,
+            "active_misconception": False,
+            "matched_learner_concepts": [],
+        }
+        node.update(_learner_overlay_for_inventory_id(conn, concept_id))
+        knowledge_map.append(node)
+
+
 def identity_audit(conn: sqlite3.Connection) -> dict[str, object]:
     """Return reviewable topic and claim-state identity collision candidates."""
     topics = conn.execute(
@@ -1413,6 +2098,547 @@ def merge_topics(
         raise
     result["applied"] = True
     return result
+
+
+def _inventory_concept_exists(inventory_concept_id: str) -> bool | None:
+    """Whether `inventory_concept_id` is a real canonical concept.
+
+    Returns True/False, or None when the inventory DB can't be opened (validation is
+    best-effort and must never hard-block a memory operation just because the inventory
+    is unavailable, e.g. in an isolated unit test)."""
+    inv = None
+    try:
+        from concept_inventory import _open_inventory  # noqa: PLC0415
+
+        inv = _open_inventory()
+        row = inv.execute("SELECT 1 FROM concepts WHERE id = ?", (inventory_concept_id,)).fetchone()
+        return row is not None
+    except Exception:
+        return None
+    finally:
+        if inv is not None:
+            try:
+                inv.close()
+            except Exception:
+                pass
+
+
+def rename_concept(
+    conn: sqlite3.Connection, *, concept_id: int, display_name: str, apply: bool = False
+) -> dict[str, object]:
+    """Rename a learner concept's display label without touching its bindings/history.
+
+    Use when a concept's identity is correct but its label drifted from the canonical
+    name (e.g. a spinal MAP-goals bucket left labeled "CPP calculation and targets")."""
+    row = conn.execute("SELECT id, display_name FROM concepts WHERE id = ?", (concept_id,)).fetchone()
+    if not row:
+        raise ValueError(f"Concept with ID {concept_id} not found.")
+    payload = {
+        "ok": True,
+        "dry_run": not apply,
+        "concept_id": concept_id,
+        "old_display_name": str(row["display_name"]),
+        "new_display_name": display_name,
+    }
+    if apply:
+        try:
+            conn.execute("UPDATE concepts SET display_name = ? WHERE id = ?", (display_name, concept_id))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+    return payload
+
+
+def realign_concept(
+    conn: sqlite3.Connection,
+    *,
+    concept_id: int,
+    inventory_concept_id: str,
+    apply: bool = False,
+    restamp_claims: bool = True,
+    allow_unknown: bool = False,
+) -> dict[str, object]:
+    """Re-point a learner concept's canonical identity to `inventory_concept_id`.
+
+    Use this only for a genuinely MISLABELED concept (its display name names one node
+    but it is bound to another). It is the wrong tool for fixing a single mis-filed
+    claim inside an otherwise-correct concept, or for splitting a compound concept,
+    because it re-points the whole identity. `restamp_claims=True` (default) also stamps
+    every claim's inventory id to match — keep that for a wholesale identity fix, but set
+    it False to move only the concept binding and let each claim keep its own
+    (claim-level) binding, which the projection now honors. A non-existent target id is
+    rejected unless `allow_unknown=True` (validation is skipped when the inventory DB
+    cannot be opened)."""
+    row = conn.execute(
+        "SELECT id, topic_id, canonical_slug, display_name, inventory_concept_id FROM concepts WHERE id = ?",
+        (concept_id,),
+    ).fetchone()
+    if not row:
+        raise ValueError(f"Concept with ID {concept_id} not found.")
+
+    old_inv_id = row["inventory_concept_id"] or ""
+    display_name = row["display_name"]
+
+    validated: bool | None = None
+    if not allow_unknown:
+        validated = _inventory_concept_exists(inventory_concept_id)
+        if validated is False:
+            return {
+                "ok": False,
+                "dry_run": not apply,
+                "concept_id": concept_id,
+                "display_name": display_name,
+                "error": "unknown_inventory_concept_id",
+                "old_inventory_concept_id": old_inv_id,
+                "new_inventory_concept_id": inventory_concept_id,
+                "hint": "id not found in concept_inventory; pass allow_unknown=True to override",
+            }
+
+    claim_results_count = conn.execute(
+        "SELECT COUNT(*) FROM claim_results WHERE concept_id = ?",
+        (concept_id,),
+    ).fetchone()[0]
+    memory_summaries_count = conn.execute(
+        "SELECT COUNT(*) FROM memory_summaries WHERE concept_id = ?",
+        (concept_id,),
+    ).fetchone()[0]
+
+    payload = {
+        "ok": True,
+        "dry_run": not apply,
+        "concept_id": concept_id,
+        "display_name": display_name,
+        "old_inventory_concept_id": old_inv_id,
+        "new_inventory_concept_id": inventory_concept_id,
+        "inventory_validated": validated,
+        "restamp_claims": restamp_claims,
+        "affected_rows": {
+            # exchanges carry no inventory id, so they are never modified by realign and
+            # are not reported here (the previous payload counted them misleadingly).
+            "claim_results": claim_results_count if restamp_claims else 0,
+            "memory_summaries": memory_summaries_count,
+        },
+    }
+
+    if apply:
+        try:
+            conn.execute(
+                "UPDATE concepts SET inventory_concept_id = ? WHERE id = ?",
+                (inventory_concept_id, concept_id),
+            )
+            if restamp_claims:
+                conn.execute(
+                    "UPDATE claim_results SET inventory_concept_id = ? WHERE concept_id = ?",
+                    (inventory_concept_id, concept_id),
+                )
+            conn.execute(
+                "UPDATE memory_summaries SET inventory_concept_id = ? WHERE concept_id = ?",
+                (inventory_concept_id, concept_id),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+    return payload
+
+
+_NASCIS_DERIVED_SLUG = "nascis-mpss-derived-from-compound"
+_NASCIS_DERIVED_TEXT = (
+    "NASCIS-II high-dose methylprednisolone (30 mg/kg bolus then 5.4 mg/kg/h) is at most "
+    "a level-III option within 8 hours of traumatic SCI, not a default order, given "
+    "sepsis/pneumonia/GI-bleed risk."
+)
+_AD_VTE_DERIVED_SLUG = "vte-chemoprophylaxis-timing-derived-from-autonomic-dysreflexia"
+_AD_VTE_DERIVED_TEXT = (
+    "Acute SCI VTE chemoprophylaxis requires LMWH within 24-72 hours of injury once "
+    "clinically stable, continued for about 3 months; SCDs alone are insufficient."
+)
+_AD_VTE_REPAIR_REASON = (
+    "Autonomic dysreflexia answer was deblended: the active missing edge was VTE "
+    "chemoprophylaxis timing, now tracked under ncc.hematology.vte-prophylaxis-timing."
+)
+
+
+def migrate_recall_realignment(
+    conn: sqlite3.Connection, *, apply: bool = False, now: str | None = None
+) -> dict[str, object]:
+    """One-time legacy cleanup of the spine-emergencies recall scatter (see the audit).
+
+    The scatter happened because, at logging time, the canonical SCPP/MAP and NASCIS
+    nodes were not in the session scope, so perfusion answers landed under a cranial-CPP
+    label and an AO-Spine-classification label, and NASCIS history was absorbed into
+    compound STASCIS claims. This migration:
+      1. renames the spinal-MAP bucket mislabeled "CPP calculation and targets";
+      2. moves the MAP claim mis-filed under "AO Spine classification" to the MAP concept
+         and restores that concept's identity to spi.trauma.ao-spine-classification;
+      3. moves the STASCIS claim mis-filed under "Spinal cord tracts" to the STASCIS
+         concept and restores its identity to ana.spine.spinal-cord-tracts;
+      4. frees the NASCIS history buried in compound MAP/STASCIS claims into a dedicated
+         Methylprednisolone (NASCIS) concept bound to spi.sci.steroids-nascis, scored
+         conservatively (capped at 1) and flagged for a clean re-probe.
+
+    Concepts are matched by their regression signature (name + current binding), so a
+    second run finds nothing (idempotent). Dry-run by default; pass apply=True to commit.
+    """
+    now = now or datetime.now(timezone.utc).isoformat()
+    actions: list[dict[str, object]] = []
+
+    def _find(name_like: str, binding: str) -> sqlite3.Row | None:
+        return conn.execute(
+            "SELECT id, topic_id, display_name FROM concepts "
+            "WHERE display_name LIKE ? AND COALESCE(inventory_concept_id,'') = ? ORDER BY id LIMIT 1",
+            (name_like, binding),
+        ).fetchone()
+
+    map_c = _find("CPP calculation%", "spi.sci.map-goals")
+    ao_c = _find("AO Spine classification", "spi.sci.map-goals")
+    tracts_c = _find("Spinal cord tracts", "spi.sci.timing-decompression-stascis")
+    stascis_c = _find("Timing of decompression%", "spi.sci.timing-decompression-stascis")
+
+    def _move_claims(src_id: int, tgt_id: int) -> int:
+        n = conn.execute("SELECT COUNT(*) FROM claim_results WHERE concept_id = ?", (src_id,)).fetchone()[0]
+        if apply:
+            for st in conn.execute("SELECT id, claim_slug FROM claim_state WHERE concept_id = ?", (src_id,)).fetchall():
+                dup = conn.execute(
+                    "SELECT 1 FROM claim_state WHERE concept_id = ? AND claim_slug = ?",
+                    (tgt_id, st["claim_slug"]),
+                ).fetchone()
+                if dup:
+                    conn.execute("DELETE FROM claim_state WHERE id = ?", (st["id"],))
+                else:
+                    conn.execute("UPDATE claim_state SET concept_id = ? WHERE id = ?", (tgt_id, st["id"]))
+            conn.execute("UPDATE claim_results SET concept_id = ? WHERE concept_id = ?", (tgt_id, src_id))
+        return int(n)
+
+    try:
+        # 1. Rename the spinal-MAP bucket.
+        if map_c and not str(map_c["display_name"]).startswith("MAP augmentation"):
+            actions.append({"action": "rename_concept", "concept_id": int(map_c["id"]),
+                            "from": str(map_c["display_name"]), "to": "MAP augmentation after SCI"})
+            if apply:
+                conn.execute("UPDATE concepts SET display_name = ? WHERE id = ?",
+                             ("MAP augmentation after SCI", int(map_c["id"])))
+
+        # 2. AO Spine: move its (MAP) claim to the MAP concept, restore its identity.
+        if ao_c and map_c:
+            moved = _move_claims(int(ao_c["id"]), int(map_c["id"]))
+            actions.append({"action": "move_claims", "from_concept_id": int(ao_c["id"]),
+                            "to_concept_id": int(map_c["id"]), "claim_results": moved})
+            actions.append({"action": "rebind_concept", "concept_id": int(ao_c["id"]),
+                            "from": "spi.sci.map-goals", "to": "spi.trauma.ao-spine-classification"})
+            if apply:
+                conn.execute("UPDATE concepts SET inventory_concept_id = ? WHERE id = ?",
+                             ("spi.trauma.ao-spine-classification", int(ao_c["id"])))
+
+        # 3. Spinal cord tracts: move its (STASCIS) claim to the STASCIS concept, restore identity.
+        if tracts_c and stascis_c:
+            moved = _move_claims(int(tracts_c["id"]), int(stascis_c["id"]))
+            actions.append({"action": "move_claims", "from_concept_id": int(tracts_c["id"]),
+                            "to_concept_id": int(stascis_c["id"]), "claim_results": moved})
+            actions.append({"action": "rebind_concept", "concept_id": int(tracts_c["id"]),
+                            "from": "spi.sci.timing-decompression-stascis", "to": "ana.spine.spinal-cord-tracts"})
+            if apply:
+                conn.execute("UPDATE concepts SET inventory_concept_id = ? WHERE id = ?",
+                             ("ana.spine.spinal-cord-tracts", int(tracts_c["id"])))
+
+        # 4. Free the buried NASCIS history into a dedicated steroids-nascis concept.
+        host = map_c or stascis_c
+        nascis_attempts = 0
+        already_derived = 0
+        if host:
+            topic_id = int(host["topic_id"])
+            # Idempotency: if NASCIS sub-claims were already derived for this topic, do
+            # not derive again (a second run must be a no-op).
+            already_derived = conn.execute(
+                "SELECT COUNT(*) FROM claim_results WHERE topic_id = ? AND claim_slug = ?",
+                (topic_id, _NASCIS_DERIVED_SLUG),
+            ).fetchone()[0]
+            nascis_concept = conn.execute(
+                "SELECT id FROM concepts WHERE topic_id = ? AND inventory_concept_id = 'spi.sci.steroids-nascis' LIMIT 1",
+                (topic_id,),
+            ).fetchone()
+            # Compound source claims that mention NASCIS / methylprednisolone. Scan all
+            # four matched concepts (deduped) so the count is identical whether or not the
+            # step-2/3 moves have run yet — the claim rows persist, only their concept_id
+            # changes — keeping dry-run and apply consistent.
+            host_ids = sorted({int(c["id"]) for c in (map_c, stascis_c, ao_c, tracts_c) if c})
+            placeholders = ",".join("?" for _ in host_ids)
+            sources = conn.execute(
+                f"""SELECT id, topic_id, exchange_id, score, created_at
+                      FROM claim_results
+                     WHERE concept_id IN ({placeholders}) AND origin = 'assessed'
+                       AND (LOWER(claim_slug) LIKE '%nascis%' OR LOWER(claim_text) LIKE '%nascis%'
+                            OR LOWER(claim_slug) LIKE '%methylpred%' OR LOWER(claim_text) LIKE '%methylpred%')""",
+                host_ids,
+            ).fetchall()
+            nascis_attempts = 0 if already_derived else len(sources)
+            if nascis_attempts:
+                actions.append({"action": "create_concept", "name": "Methylprednisolone in SCI (NASCIS)",
+                                "inventory_concept_id": "spi.sci.steroids-nascis",
+                                "exists": nascis_concept is not None})
+                actions.append({"action": "derive_nascis_subclaims", "from_concept_ids": host_ids,
+                                "derived_attempts": nascis_attempts, "score_cap": 1})
+                if apply:
+                    if nascis_concept is None:
+                        nascis_cid = conn.execute(
+                            """INSERT INTO concepts (topic_id, canonical_slug, display_name,
+                                                     inventory_concept_id, created_at)
+                               VALUES (?, 'methylprednisolone-nascis-sci', 'Methylprednisolone in SCI (NASCIS)',
+                                       'spi.sci.steroids-nascis', ?)""",
+                            (topic_id, now),
+                        ).lastrowid
+                    else:
+                        nascis_cid = int(nascis_concept["id"])
+                    for src in sources:
+                        conn.execute(
+                            """INSERT INTO claim_results
+                               (exchange_id, topic_id, concept_id, claim_slug, claim_text, score,
+                                learning_operation, agent_signal_json, created_at, origin, inventory_concept_id)
+                               VALUES (?, ?, ?, ?, ?, ?, 'derived_subclaim', ?, ?, 'assessed', 'spi.sci.steroids-nascis')""",
+                            (
+                                int(src["exchange_id"]), int(src["topic_id"]), nascis_cid,
+                                _NASCIS_DERIVED_SLUG, _NASCIS_DERIVED_TEXT, min(int(src["score"]), 1),
+                                _json_dumps({"derived_from_claim_result": int(src["id"]), "needs_regrade": True}),
+                                str(src["created_at"]),
+                            ),
+                        )
+                    # one open-but-partial state so the node reads exposed_superficial and
+                    # is queued for a clean re-probe rather than asserting false mastery.
+                    conn.execute(
+                        """INSERT OR IGNORE INTO claim_state
+                           (topic_id, concept_id, claim_slug, claim_text, state, priority, gap_type,
+                            last_seen_ts, reason, stability, origin)
+                           VALUES (?, ?, ?, ?, 'partially_repaired', 'high', '',
+                                   ?, 'Derived from compound MAP/STASCIS claims; needs a clean NASCIS-specific probe.', 1.0, 'assessed')""",
+                        (topic_id, nascis_cid, _NASCIS_DERIVED_SLUG, _NASCIS_DERIVED_TEXT, now),
+                    )
+        if apply:
+            conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+
+    return {
+        "ok": True,
+        "dry_run": not apply,
+        "matched": {
+            "map_concept_id": int(map_c["id"]) if map_c else None,
+            "ao_concept_id": int(ao_c["id"]) if ao_c else None,
+            "tracts_concept_id": int(tracts_c["id"]) if tracts_c else None,
+            "stascis_concept_id": int(stascis_c["id"]) if stascis_c else None,
+        },
+        "nascis_attempts_freed": nascis_attempts,
+        "actions": actions,
+    }
+
+
+def migrate_ad_vte_separation(
+    conn: sqlite3.Connection, *, apply: bool = False, now: str | None = None
+) -> dict[str, object]:
+    """Deblend the legacy AD/VTE mixed claim into the correct active VTE target.
+
+    One spine-emergencies exchange correctly handled autonomic dysreflexia but carried
+    an unrelated VTE-prophylaxis missing edge under the AD concept. This migration keeps
+    the source claim_result intact for audit/history, clears the AD claim_state from the
+    active misconception surface, and derives a single VTE-timing claim/state bound to
+    ncc.hematology.vte-prophylaxis-timing. Dry-run by default; pass apply=True to commit.
+    """
+    now = now or datetime.now(timezone.utc).isoformat()
+    target_inv = "ncc.hematology.vte-prophylaxis-timing"
+    source_rows = conn.execute(
+        """SELECT cr.id AS claim_result_id, cr.exchange_id, cr.topic_id, cr.concept_id,
+                  cr.score, cr.learner_claim, cr.missing_edge, cr.corrected_rule,
+                  cr.clinical_consequence, cr.retest_prompt_shape, cr.created_at,
+                  c.display_name AS concept_name, cs.id AS claim_state_id,
+                  cs.state AS claim_state, cs.priority AS claim_priority
+             FROM claim_results cr
+             JOIN concepts c ON c.id = cr.concept_id
+             JOIN claim_state cs
+               ON cs.topic_id = cr.topic_id
+              AND cs.concept_id = cr.concept_id
+              AND cs.claim_slug = cr.claim_slug
+            WHERE cr.origin = 'assessed'
+              AND c.inventory_concept_id = 'spi.sci.autonomic-dysreflexia'
+              AND (
+                    LOWER(cr.missing_edge) LIKE '%vte prophylaxis%'
+                 OR LOWER(cr.corrected_rule) LIKE '%vte prophylaxis%'
+                 OR LOWER(cr.claim_text) LIKE '%vte-prophylaxis%'
+                 OR LOWER(cr.claim_text) LIKE '%lmwh%'
+              )
+              AND (
+                    LOWER(cr.missing_edge) LIKE '%lmwh%'
+                 OR LOWER(cr.corrected_rule) LIKE '%lmwh%'
+                 OR LOWER(cr.claim_text) LIKE '%lmwh%'
+              )
+            ORDER BY cr.id"""
+    ).fetchall()
+
+    actions: list[dict[str, object]] = []
+    derived_claims = 0
+    deblended_states = 0
+    vte_concept_ids: dict[int, int | None] = {}
+
+    try:
+        for src in source_rows:
+            topic_id = int(src["topic_id"])
+            already_derived = conn.execute(
+                """SELECT COUNT(*) FROM claim_results
+                   WHERE topic_id = ? AND claim_slug = ? AND inventory_concept_id = ?""",
+                (topic_id, _AD_VTE_DERIVED_SLUG, target_inv),
+            ).fetchone()[0]
+
+            vte_concept = conn.execute(
+                "SELECT id FROM concepts WHERE topic_id = ? AND inventory_concept_id = ? ORDER BY id LIMIT 1",
+                (topic_id, target_inv),
+            ).fetchone()
+            vte_cid = int(vte_concept["id"]) if vte_concept else None
+            vte_concept_ids[topic_id] = vte_cid
+
+            if not already_derived:
+                actions.append({
+                    "action": "create_concept",
+                    "topic_id": topic_id,
+                    "name": "VTE chemoprophylaxis timing",
+                    "inventory_concept_id": target_inv,
+                    "exists": vte_cid is not None,
+                })
+                actions.append({
+                    "action": "derive_vte_subclaim",
+                    "from_claim_result_id": int(src["claim_result_id"]),
+                    "claim_slug": _AD_VTE_DERIVED_SLUG,
+                })
+                derived_claims += 1
+
+            if str(src["claim_state"]) in {"missed", "partially_repaired", "regressed"}:
+                actions.append({
+                    "action": "deblend_ad_claim_state",
+                    "claim_state_id": int(src["claim_state_id"]),
+                    "from_state": str(src["claim_state"]),
+                    "to_state": "durable",
+                })
+                deblended_states += 1
+
+            if apply and not already_derived:
+                if vte_cid is None:
+                    slug = "vte-chemoprophylaxis-timing"
+                    existing_slug = conn.execute(
+                        "SELECT id, COALESCE(inventory_concept_id, '') AS inventory_concept_id "
+                        "FROM concepts WHERE topic_id = ? AND canonical_slug = ?",
+                        (topic_id, slug),
+                    ).fetchone()
+                    if existing_slug:
+                        vte_cid = int(existing_slug["id"])
+                        if not str(existing_slug["inventory_concept_id"]):
+                            conn.execute(
+                                "UPDATE concepts SET inventory_concept_id = ? WHERE id = ?",
+                                (target_inv, vte_cid),
+                            )
+                    else:
+                        vte_cid = int(conn.execute(
+                            """INSERT INTO concepts
+                               (topic_id, canonical_slug, display_name, inventory_concept_id, created_at)
+                               VALUES (?, ?, 'VTE chemoprophylaxis timing', ?, ?)""",
+                            (topic_id, slug, target_inv, now),
+                        ).lastrowid)
+                    vte_concept_ids[topic_id] = vte_cid
+
+                result_id = int(conn.execute(
+                    """INSERT INTO claim_results
+                       (exchange_id, topic_id, concept_id, claim_slug, claim_text, score, gap_type,
+                        learner_claim, missing_edge, corrected_rule, clinical_consequence,
+                        retest_prompt_shape, learning_operation, agent_signal_json, created_at,
+                        origin, inventory_concept_id)
+                       VALUES (?, ?, ?, ?, ?, ?, 'numerical_recall', ?, ?, ?, ?, ?,
+                               'derived_subclaim', ?, ?, 'assessed', ?)""",
+                    (
+                        int(src["exchange_id"]), topic_id, vte_cid, _AD_VTE_DERIVED_SLUG,
+                        _AD_VTE_DERIVED_TEXT, min(int(src["score"]), 1),
+                        str(src["learner_claim"] or ""),
+                        str(src["missing_edge"] or _AD_VTE_DERIVED_TEXT),
+                        str(src["corrected_rule"] or _AD_VTE_DERIVED_TEXT),
+                        str(src["clinical_consequence"] or "VTE timing changes ICU prophylaxis orders."),
+                        "Use a new acute SCI ICU vignette testing LMWH timing/duration without autonomic dysreflexia.",
+                        _json_dumps({
+                            "derived_from_claim_result": int(src["claim_result_id"]),
+                            "separated_from_inventory_concept_id": "spi.sci.autonomic-dysreflexia",
+                            "needs_reprobe": True,
+                        }),
+                        str(src["created_at"] or now),
+                        target_inv,
+                    ),
+                ).lastrowid)
+                conn.execute(
+                    """INSERT INTO claim_state
+                       (topic_id, concept_id, claim_slug, claim_text, state, priority, gap_type,
+                        last_result_id, source_result_id, last_seen_ts, reason, origin)
+                       VALUES (?, ?, ?, ?, 'partially_repaired', 'high', 'numerical_recall',
+                               ?, ?, ?, ?, 'assessed')
+                       ON CONFLICT(topic_id, concept_id, claim_slug) DO UPDATE SET
+                         state = excluded.state,
+                         priority = excluded.priority,
+                         gap_type = excluded.gap_type,
+                         last_result_id = excluded.last_result_id,
+                         source_result_id = COALESCE(claim_state.source_result_id, excluded.source_result_id),
+                         last_seen_ts = excluded.last_seen_ts,
+                         reason = excluded.reason""",
+                    (topic_id, vte_cid, _AD_VTE_DERIVED_SLUG, _AD_VTE_DERIVED_TEXT,
+                     result_id, result_id, now, str(src["missing_edge"] or _AD_VTE_DERIVED_TEXT)),
+                )
+                vte_state_id = int(conn.execute(
+                    "SELECT id FROM claim_state WHERE topic_id = ? AND concept_id = ? AND claim_slug = ?",
+                    (topic_id, vte_cid, _AD_VTE_DERIVED_SLUG),
+                ).fetchone()["id"])
+                conn.execute(
+                    "INSERT INTO state_events (claim_state_id, event_type, result_id, ts, detail) VALUES (?, 'partial', ?, ?, ?)",
+                    (vte_state_id, result_id, now, str(src["missing_edge"] or _AD_VTE_DERIVED_TEXT)),
+                )
+                _upsert_retrieval_card(
+                    conn,
+                    topic_id=topic_id,
+                    claim_state_id=vte_state_id,
+                    card_type="must_retest",
+                    priority="high",
+                    summary=f"partially_repaired: {str(src['missing_edge'] or _AD_VTE_DERIVED_TEXT)}",
+                    next_action="Use a new acute SCI ICU vignette testing LMWH timing/duration without autonomic dysreflexia.",
+                    evidence_result_id=result_id,
+                    updated_ts=now,
+                    detail={"claim": _AD_VTE_DERIVED_TEXT, "derived_from_claim_result": int(src["claim_result_id"])},
+                )
+
+            if apply and str(src["claim_state"]) in {"missed", "partially_repaired", "regressed"}:
+                state_id = int(src["claim_state_id"])
+                conn.execute(
+                    """UPDATE claim_state
+                       SET state = 'durable', priority = 'low', gap_type = '',
+                           next_due_ts = '', reason = ?
+                       WHERE id = ?""",
+                    (_AD_VTE_REPAIR_REASON, state_id),
+                )
+                conn.execute("UPDATE retrieval_cards SET status = 'inactive' WHERE claim_state_id = ?", (state_id,))
+                conn.execute(
+                    "INSERT INTO state_events (claim_state_id, event_type, result_id, ts, detail) VALUES (?, 'deblended', ?, ?, ?)",
+                    (state_id, int(src["claim_result_id"]), now, _AD_VTE_REPAIR_REASON),
+                )
+
+        if apply:
+            conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+
+    return {
+        "ok": True,
+        "dry_run": not apply,
+        "source_claim_result_ids": [int(row["claim_result_id"]) for row in source_rows],
+        "source_claim_state_ids": [int(row["claim_state_id"]) for row in source_rows],
+        "target_inventory_concept_id": target_inv,
+        "vte_concept_ids": {str(k): v for k, v in sorted(vte_concept_ids.items())},
+        "derived_claims": derived_claims,
+        "deblended_claim_states": deblended_states,
+        "actions": actions,
+    }
 
 
 def record_shadow_rule_check(
@@ -1985,8 +3211,6 @@ def _log_claim_result(
     )
     result_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
     teaching_intent = _normalize(agent_signal.get("teaching_intent", "")).replace(" ", "_")
-    if teaching_intent in LOW_STAKES_TEACHING_INTENTS:
-        return result_id
     state, event = _claim_state_for_score(score, existing["state"] if existing else None, teaching_intent)
     # Priority decides what the next session sees first. The agent, having just
     # judged the clinical stakes of this exact miss in context, sets it directly.
@@ -2548,11 +3772,10 @@ def end_session(conn: sqlite3.Connection, *, session_id: str, summary: str, next
         (session_id,),
     ).fetchone()
     session_skill = session_row["skill"] if session_row else ""
-    is_low_stakes_reference = session_skill in LOW_STAKES_REFERENCE_SKILLS
     is_artifact_anchor = session_skill in ARTIFACT_ANCHOR_SKILLS
     excluded_from_count = session_skill in CURATION_EXCLUDED_SKILLS
     # Artifact anchors remain discoverable without competing with learner handoffs.
-    if session_row and session_row["primary_topic_id"] and not is_low_stakes_reference:
+    if session_row and session_row["primary_topic_id"]:
         card_type = "artifact_anchor" if is_artifact_anchor else "session_handoff"
         _upsert_session_card(conn, int(session_row["primary_topic_id"]), session_id, summary, next_strategy, now, card_type=card_type)
     newly_counted = False if excluded_from_count else mark_session_counted(conn, session_id, now)
@@ -2880,10 +4103,10 @@ def _calibration_profile_for_summary(
     topic_id: int | None,
     limit: int,
 ) -> dict[str, object]:
-    where = "WHERE COALESCE(ex.skill, '') != 'quick-answer'"
+    where = ""
     params: list[object] = []
     if topic_id is not None:
-        where += " AND cr.topic_id = ?"
+        where = "WHERE cr.topic_id = ?"
         params.append(topic_id)
     rows = conn.execute(
         f"""SELECT cr.id, cr.score, cr.claim_text, cr.created_at,
@@ -2941,7 +4164,7 @@ def _operation_profile_for_summary(
     topic_id: int | None,
     limit: int,
 ) -> list[dict[str, object]]:
-    where = "WHERE COALESCE(cr.learning_operation, '') != '' AND COALESCE(ex.skill, '') != 'quick-answer'"
+    where = "WHERE COALESCE(cr.learning_operation, '') != ''"
     params: list[object] = []
     if topic_id is not None:
         where += " AND cr.topic_id = ?"
@@ -2993,8 +4216,6 @@ def _catalog_coverage_for_summary(
         """SELECT t.canonical_slug, t.display_name, t.domain, COUNT(cr.id) AS attempts
              FROM topics t
              JOIN claim_results cr ON cr.topic_id = t.id
-             JOIN exchanges ex ON ex.id = cr.exchange_id
-             WHERE COALESCE(ex.skill, '') != 'quick-answer'
              GROUP BY t.id"""
     ).fetchall()
     covered = {
@@ -3064,41 +4285,7 @@ def _shadow_queue_for_summary(
     limit: int,
     include_brain_dump_candidates: bool = False,
 ) -> list[dict[str, object]]:
-    topic_filter = ""
-    params: list[object] = []
-    if topic_id is not None:
-        topic_filter = "AND cr.topic_id = ?"
-        params.append(topic_id)
-    quick_rows = conn.execute(
-        f"""SELECT cr.id, cr.claim_text, cr.created_at, t.canonical_slug AS topic,
-                   c.display_name AS concept
-              FROM claim_results cr
-              JOIN exchanges ex ON ex.id = cr.exchange_id
-              JOIN topics t ON t.id = cr.topic_id
-              JOIN concepts c ON c.id = cr.concept_id
-              WHERE ex.skill = 'quick-answer'
-                AND NOT EXISTS (
-                    SELECT 1 FROM claim_state cs
-                    WHERE cs.topic_id = cr.topic_id AND cs.concept_id = cr.concept_id
-                )
-                {topic_filter}
-              ORDER BY cr.created_at DESC
-              LIMIT ?""",
-        [*params, max(0, limit)],
-    ).fetchall()
-    items = [
-        {
-            "type": "quick_answer_interest",
-            "topic": row["topic"],
-            "concept": row["concept"],
-            "claim": row["claim_text"],
-            "source_id": int(row["id"]),
-            "updated_ts": row["created_at"],
-            "weight": "low",
-            "next_action": "Ask one lightweight probe later; do not treat as mastery or a miss.",
-        }
-        for row in quick_rows
-    ]
+    items: list[dict[str, object]] = []
     artifact_skills = tuple(sorted(ARTIFACT_ANCHOR_SKILLS))
     placeholders = ",".join("?" * len(artifact_skills))
     artifact_filter = ""
@@ -3160,10 +4347,10 @@ def _teaching_move_profile_for_summary(
     topic_id: int | None,
     limit: int,
 ) -> list[dict[str, object]]:
-    where = "WHERE COALESCE(ex.skill, '') != 'quick-answer'"
+    where = ""
     params: list[object] = []
     if topic_id is not None:
-        where += " AND cr.topic_id = ?"
+        where = "WHERE cr.topic_id = ?"
         params.append(topic_id)
     rows = conn.execute(
         f"""SELECT ex.source_json, cr.score
@@ -3207,10 +4394,10 @@ def _telemetry_profile_for_summary(
     *,
     topic_id: int | None,
 ) -> dict[str, object]:
-    where = "WHERE COALESCE(ex.skill, '') != 'quick-answer'"
+    where = ""
     params: list[object] = []
     if topic_id is not None:
-        where += " AND cr.topic_id = ?"
+        where = "WHERE cr.topic_id = ?"
         params.append(topic_id)
     rows = conn.execute(
         f"""SELECT cr.score, cr.gap_type, ex.source_json
@@ -3564,7 +4751,6 @@ def _verbatim_misconceptions(
            WHERE cr.concept_id = ? AND cr.score < 2
              AND COALESCE(cr.origin, 'assessed') = 'assessed'
              AND COALESCE(ex.origin, 'assessed') = 'assessed'
-             AND COALESCE(ex.skill, '') != 'quick-answer'
              AND (COALESCE(ex.raw_answer, '') != '' OR COALESCE(cr.missing_edge, '') != '')
            ORDER BY cr.id DESC LIMIT ?""",
         (concept_id, max(0, limit)),
@@ -3666,13 +4852,16 @@ def _build_schema_map(conn: sqlite3.Connection, topic_slug: str) -> list[dict[st
     # Formal lens only: service-origin captures are sealed out of the formal
     # schema map and never drive the deterministic teaching policy.
     attempts_rows = conn.execute(
-        """SELECT concept_id, COUNT(*) as cnt, SUM(CASE WHEN score >= 2.0 THEN 1 ELSE 0 END) as success_cnt
-           FROM claim_results
+        """SELECT concept_id, COUNT(*) as cnt, SUM(CASE WHEN score >= 2.0 THEN 1 ELSE 0 END) as success_cnt,
+                  (SELECT score FROM claim_results cr2 
+                   WHERE cr2.concept_id = cr.concept_id AND cr2.origin = 'assessed' AND cr2.topic_id = cr.topic_id
+                   ORDER BY cr2.created_at DESC, cr2.id DESC LIMIT 1) AS last_score
+           FROM claim_results cr
            WHERE topic_id = ? AND origin = 'assessed'
            GROUP BY concept_id""",
         (topic_id,),
     ).fetchall()
-    attempts_map = {r[0]: (r[1], r[2]) for r in attempts_rows}
+    attempts_map = {r[0]: (r[1], r[2], r[3]) for r in attempts_rows}
     state_rows = conn.execute(
         """SELECT concept_id, state, priority, stability, gap_type
            FROM claim_state
@@ -3702,7 +4891,7 @@ def _build_schema_map(conn: sqlite3.Connection, topic_slug: str) -> list[dict[st
         prereqs = relations.get("prerequisites", [])
         competitors = relations.get("semantic_competitors", [])
         active_gaps = _active_prereq_gaps(conn, cid)
-        att_cnt, succ_cnt = attempts_map.get(cid, (0, 0))
+        att_cnt, succ_cnt, last_score = attempts_map.get(cid, (0, 0, 0))
         sqlite_rate = round(succ_cnt / att_cnt, 3) if att_cnt > 0 else 0.0
         claims = concept_claims.get(cid, [])
         worst_state = None
@@ -3714,7 +4903,12 @@ def _build_schema_map(conn: sqlite3.Connection, topic_slug: str) -> list[dict[st
             stabilities = [cl["stability"] for cl in claims if cl["stability"] is not None]
             avg_stability = sum(stabilities) / len(stabilities) if stabilities else 1.0
             for cl in claims:
-                st = cl["state"]
+                # The claim layer marks a confirmed/retained correct claim "durable";
+                # the knowledge-map state vocab (state_priority) calls that same thing
+                # "passed". Normalize so a durable-only node projects "passed", not the
+                # default "untested" — otherwise a correctly-answered concept reads as
+                # never tested on rebuild (the live-session patch already emits "passed").
+                st = "passed" if cl["state"] == "durable" else cl["state"]
                 if cl["priority"] in ("urgent", "high"):
                     safety_critical = True
                 if st in OPEN_GAP_STATES and str(cl.get("gap_type") or "") in MISCONCEPTION_GAP_TYPES:
@@ -3722,9 +4916,12 @@ def _build_schema_map(conn: sqlite3.Connection, topic_slug: str) -> list[dict[st
                 if st in state_priority and state_priority[st] < worst_val:
                     worst_val = state_priority[st]
                     worst_state = st
+        is_gap = worst_state in OPEN_GAP_STATES if worst_state else False
         if att_cnt == 0:
             exposure_status = "unexposed"
-        elif att_cnt == 1 or avg_stability < 2.0 or sqlite_rate < 0.6:
+        elif last_score == 2 and not is_gap and att_cnt > 1:
+            exposure_status = "exposed_deep"
+        elif att_cnt == 1 or avg_stability < 2.0 or sqlite_rate < 0.6 or is_gap:
             exposure_status = "exposed_superficial"
         else:
             exposure_status = "exposed_deep"
@@ -4056,6 +5253,157 @@ def _recompute_inventory_teaching_plan(
     return plan or teaching_plan
 
 
+def _binding_id_tokens(inventory_concept_id: str) -> set[str]:
+    """Word tokens of a canonical id, e.g. spi.sci.timing-decompression-stascis ->
+    {timing, decompression, stascis, spi, sci}. Used to tell whether a node's
+    signature term is ALREADY represented in a claim's current binding."""
+    return {w for w in re.split(r"[.\-_/\s]+", inventory_concept_id.lower()) if len(w) > 1}
+
+
+def _suggest_concept_realignments(
+    conn: sqlite3.Connection, knowledge_map: list[dict[str, object]], *, limit: int = 8
+) -> list[dict[str, object]]:
+    """Surface assessed history that is misbound away from an unexposed canonical node.
+
+    The earlier version matched unexposed *node names* against learner *concept names*
+    only, so the signature failure — NASCIS history buried inside the CLAIM TEXT of a
+    STASCIS-named concept — was invisible (a concept named "Timing of decompression"
+    contains no NASCIS tokens). This version tokenizes each unexposed node's name and
+    searches the assessed `claim_results` TEXT/SLUG (acronyms like MAP/SCI/AO/NASCIS
+    preserved by `_tokens`, which keeps len>1 tokens), counts real assessed attempts,
+    and applies a relative-fit guard: a claim is only proposed for re-filing when the
+    node's matched token is NOT already present in the claim's current binding id. That
+    guard prevents the ping-pong where node A pulls a claim from B and, once B is
+    unexposed, B pulls it back — a claim already bound to the node that owns its
+    signature term is left where it is.
+    """
+    unexposed = [
+        c for c in knowledge_map
+        if isinstance(c, dict)
+        and (c.get("exposure_status") == "unexposed" or c.get("attempts_count", 0) == 0)
+        and c.get("concept_id")
+    ]
+    if not unexposed:
+        return []
+
+    # One pass over assessed claims with their concept name and effective binding.
+    claim_rows = conn.execute(
+        """SELECT cr.concept_id, c.display_name AS concept_name,
+                  COALESCE(NULLIF(cr.inventory_concept_id, ''), COALESCE(c.inventory_concept_id, '')) AS current_binding,
+                  cr.claim_slug, cr.claim_text
+             FROM claim_results cr JOIN concepts c ON c.id = cr.concept_id
+            WHERE cr.origin = 'assessed'"""
+    ).fetchall()
+    claims = [
+        {
+            "concept_id": int(r["concept_id"]),
+            "concept_name": str(r["concept_name"] or ""),
+            "current_binding": str(r["current_binding"] or ""),
+            "words": _tokens(str(r["claim_text"] or "")) | _tokens(str(r["claim_slug"] or "")),
+            "binding_words": _binding_id_tokens(str(r["current_binding"] or "")),
+        }
+        for r in claim_rows
+    ]
+
+    proposals: list[dict[str, object]] = []
+    for node in unexposed:
+        inv_id = str(node["concept_id"])
+        sig_tokens = _tokens(str(node.get("concept") or ""))
+        if not sig_tokens:
+            continue
+        # group matching claims by (source concept, its current binding)
+        group_counts: dict[tuple[int, str, str], int] = {}
+        group_terms: dict[tuple[int, str, str], set[str]] = {}
+        for cl in claims:
+            if cl["current_binding"] == inv_id:
+                continue  # already bound to this node
+            matched = {t for t in sig_tokens if t in cl["words"] and t not in cl["binding_words"]}
+            if not matched:
+                continue
+            key = (cl["concept_id"], cl["current_binding"], cl["concept_name"])
+            group_counts[key] = group_counts.get(key, 0) + 1
+            group_terms.setdefault(key, set()).update(matched)
+        for key, count in group_counts.items():
+            cid, binding, cname = key
+            terms = sorted(group_terms[key])
+            proposals.append({
+                "unexposed_inventory_concept_id": inv_id,
+                "unexposed_concept_name": str(node.get("concept") or ""),
+                "matching_learner_concept_id": cid,
+                "matching_learner_concept_name": cname,
+                "current_binding": binding,
+                "attempts": count,
+                "matched_terms": terms,
+                "reason": (
+                    f"{count} assessed claim(s) under '{cname}' "
+                    f"(bound to {binding or 'unbound'}) reference {terms}, "
+                    f"but no assessed history is bound to '{inv_id}'."
+                ),
+            })
+
+    # Strongest evidence first; cap so the brief stays compact.
+    proposals.sort(key=lambda p: (-int(p["attempts"]), str(p["unexposed_inventory_concept_id"]), int(p["matching_learner_concept_id"])))
+    return proposals[:limit]
+
+
+def _coverage_gaps_for_brief(
+    conn: sqlite3.Connection, *, doc_path: str, knowledge_map: list[dict[str, object]]
+) -> list[dict[str, object]]:
+    """Core (primary/objective) artifact concepts with no assessed learner history.
+
+    The failure this guards against is the inverse of the SCPP/MAP scatter: a concept
+    the document clearly teaches and the artifact map links as `primary` should NEVER
+    silently read as covered when the learner has zero assessed attempts on it. We
+    cross-reference the artifact map against the (now claim-level) knowledge-map
+    exposure so a primary node that is unexposed — or absent from the projected map
+    entirely — is surfaced as a prioritized coverage gap rather than a blind spot the
+    learner has to notice by eye.
+    """
+    if not doc_path:
+        return []
+    rows = conn.execute(
+        """SELECT amc.artifact_concept, amc.inventory_concept_id, amc.role
+             FROM artifact_map_concepts amc
+             JOIN artifact_maps am ON am.id = amc.artifact_map_id
+            WHERE am.doc_path = ?
+              AND amc.role IN ('primary', 'objective')
+              AND amc.mapping_status = 'explicit'
+              AND COALESCE(amc.inventory_concept_id, '') != ''
+            ORDER BY amc.ordinal, amc.id""",
+        (doc_path,),
+    ).fetchall()
+    if not rows:
+        return []
+    exposure_by_node: dict[str, tuple[str, int]] = {
+        str(n.get("concept_id")): (
+            str(n.get("exposure_status") or ""),
+            int(n.get("attempts_count") or 0),
+        )
+        for n in knowledge_map
+        if isinstance(n, dict) and n.get("concept_id")
+    }
+    gaps: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for r in rows:
+        inv_id = str(r["inventory_concept_id"])
+        if inv_id in seen:
+            continue
+        seen.add(inv_id)
+        status, attempts = exposure_by_node.get(inv_id, ("unmapped", 0))
+        if attempts == 0:
+            gaps.append({
+                "inventory_concept_id": inv_id,
+                "concept_name": str(r["artifact_concept"]),
+                "role": str(r["role"]),
+                "exposure_status": status or "unexposed",
+                "reason": (
+                    f"'{r['artifact_concept']}' is a {r['role']} concept of this document "
+                    "but carries no assessed learner history."
+                ),
+            })
+    return gaps
+
+
 def _integrate_inventory_knowledge_map(
     conn: sqlite3.Connection,
     brief: dict[str, object],
@@ -4080,6 +5428,9 @@ def _integrate_inventory_knowledge_map(
     if not knowledge_map:
         brief["knowledge_map_status"] = "empty_no_inventory_scope"
         return
+    artifact_map = artifact_map_get(conn, doc_path=doc_path) if profile == "doc" and doc_path else {"status": "not_applicable"}
+    _add_artifact_only_nodes_to_knowledge_map(conn, knowledge_map, artifact_map)
+    _apply_artifact_map_to_knowledge_map(knowledge_map, artifact_map)
     teaching_plan = dict(projection.get("sequential_teaching_plan") or {})
     teaching_plan = apply_artifact_priority(
         teaching_plan,
@@ -4117,6 +5468,12 @@ def _integrate_inventory_knowledge_map(
         teaching_plan=teaching_plan,
         topic=topic,
     )
+    teaching_plan = apply_artifact_priority(
+        teaching_plan,
+        knowledge_map,
+        profile=profile,
+        doc_path=doc_path,
+    )
     orient_meta = orient_skip_metadata(knowledge_map)
     if orient_meta.get("skipped"):
         brief["orient_skip"] = orient_meta
@@ -4124,6 +5481,21 @@ def _integrate_inventory_knowledge_map(
     brief["knowledge_map_status"] = "ok"
     brief["sequential_teaching_plan"] = teaching_plan
     brief["knowledge_map_provenance"] = "inventory"
+    
+    proposals = _suggest_concept_realignments(conn, knowledge_map)
+    if proposals:
+        brief["alignment_proposals"] = proposals
+
+    coverage_gaps = _coverage_gaps_for_brief(conn, doc_path=doc_path, knowledge_map=knowledge_map)
+    if coverage_gaps:
+        brief["coverage_gaps"] = coverage_gaps
+
+    if profile == "doc" and doc_path:
+        brief["artifact_alignment"] = _artifact_alignment_for_brief(
+            artifact_map=artifact_map,
+            knowledge_map=knowledge_map,
+            edges=list(projection.get("edges") or []),
+        )
     brief["inventory_unmatched_learner_concepts"] = projection.get("unmatched_learner_concepts", [])
     brief["inventory_counts"] = projection.get("counts", {})
     if profile == "doc" and doc_path:
@@ -4144,6 +5516,7 @@ def _integrate_inventory_knowledge_map(
             doc_path=doc_path,
             learner_topics=[topic] if topic else [],
         )
+        session_data["knowledge_map"] = knowledge_map
         session_data["last_plan"] = teaching_plan
         write_session_map(session_id, session_data)
 
@@ -4516,6 +5889,15 @@ def _refine_brief_with_anki(brief: dict[str, object], anki_profile: dict[str, ob
         due_claims=due_claims,
         shadow_rule_signals=shadow_rule_signals,
     )
+    artifact_alignment = brief.get("artifact_alignment")
+    if isinstance(artifact_alignment, dict) and artifact_alignment.get("status") == "available":
+        from session_map import apply_artifact_priority  # noqa: PLC0415
+        plan = apply_artifact_priority(
+            plan,
+            schema_map,
+            profile="doc",
+            doc_path=str(artifact_alignment.get("doc_path") or "artifact_map"),
+        )
     if isinstance(prior_plan, dict) and prior_plan.get("interrupts"):
         plan["interrupts"] = prior_plan["interrupts"]
         prior_inputs = prior_plan.get("decision_inputs")
@@ -4566,6 +5948,7 @@ def _compact_schema_map(
 
     def sort_key(c: dict[str, object]) -> tuple:
         return (
+            0 if c.get("artifact_native") else 1,
             0 if c.get("active_misconception") else 1,
             0 if c.get("safety_critical") else 1,
             _STATE_COMPACT_SEVERITY.get(str(c.get("knowledge_state")), 5),
@@ -4716,6 +6099,8 @@ def _compact_doc_review_payload(
         doc_brief["document_priority"] = brief["document_priority"]
     if brief.get("teaching_priority"):
         doc_brief["teaching_priority"] = brief["teaching_priority"]
+    if isinstance(brief.get("artifact_alignment"), dict):
+        doc_brief["artifact_alignment"] = brief["artifact_alignment"]
     plan = brief.get("sequential_teaching_plan", {})
     if (
         isinstance(plan, dict)
@@ -5443,12 +6828,21 @@ def startup_recall(
                     brief["anki_overlay"] = anki_profile
                     km = brief.get("knowledge_map")
                     if isinstance(km, list) and km and recall_topic:
-                        brief["sequential_teaching_plan"] = _recompute_inventory_teaching_plan(
+                        recomputed_plan = _recompute_inventory_teaching_plan(
                             conn,
                             knowledge_map=km,  # type: ignore[arg-type]
                             teaching_plan=dict(brief.get("sequential_teaching_plan") or {}),
                             topic=recall_topic,
                         )
+                        if effective_profile == "doc" and doc_path:
+                            from session_map import apply_artifact_priority  # noqa: PLC0415
+                            recomputed_plan = apply_artifact_priority(
+                                recomputed_plan,
+                                km,  # type: ignore[arg-type]
+                                profile=effective_profile,
+                                doc_path=doc_path,
+                            )
+                        brief["sequential_teaching_plan"] = recomputed_plan
                         orient_meta = brief.get("orient_skip")
                         if not orient_meta:
                             from mastery_intelligence import orient_skip_metadata  # noqa: PLC0415
@@ -5668,6 +7062,21 @@ def main() -> None:
     p_node.add_argument("--topic", default="")
     p_node.add_argument("--session", default="")
 
+    p_artifact_get = sub.add_parser("artifact-map-get")
+    p_artifact_get.add_argument("--doc", required=True)
+    p_artifact_get.add_argument("--content-hash", default="")
+    p_artifact_get.add_argument("--pretty", action="store_true")
+
+    p_artifact_upsert = sub.add_parser("artifact-map-upsert")
+    p_artifact_upsert.add_argument("--doc", required=True)
+    p_artifact_upsert.add_argument("--topic", default="")
+    p_artifact_upsert.add_argument("--content-hash", default="")
+    p_artifact_upsert.add_argument("--created-by", default="agent")
+    p_artifact_upsert.add_argument("--pretty", action="store_true")
+    p_artifact_src = p_artifact_upsert.add_mutually_exclusive_group(required=True)
+    p_artifact_src.add_argument("--input", dest="input_path", default=None)
+    p_artifact_src.add_argument("--stdin", action="store_true")
+
     sub.add_parser("status")
     sub.add_parser("identity-audit")
     sub.add_parser("telemetry-audit")
@@ -5682,6 +7091,26 @@ def main() -> None:
     p_merge_topics.add_argument("--from-topic", required=True)
     p_merge_topics.add_argument("--into-topic", required=True)
     p_merge_topics.add_argument("--apply", action="store_true")
+
+    p_realign_concept = sub.add_parser("realign-concept")
+    p_realign_concept.add_argument("--concept-id", type=int, required=True)
+    p_realign_concept.add_argument("--inventory-concept-id", required=True)
+    p_realign_concept.add_argument("--apply", action="store_true")
+    p_realign_concept.add_argument("--allow-unknown", action="store_true",
+                                   help="apply even if the inventory id is not in the canonical inventory")
+    p_realign_concept.add_argument("--no-restamp-claims", action="store_true",
+                                   help="move only the concept binding; leave each claim's own inventory id intact")
+
+    p_rename_concept = sub.add_parser("rename-concept")
+    p_rename_concept.add_argument("--concept-id", type=int, required=True)
+    p_rename_concept.add_argument("--display-name", required=True)
+    p_rename_concept.add_argument("--apply", action="store_true")
+
+    p_recall_migrate = sub.add_parser("migrate-recall-realignment")
+    p_recall_migrate.add_argument("--apply", action="store_true")
+
+    p_ad_vte_migrate = sub.add_parser("migrate-ad-vte-separation")
+    p_ad_vte_migrate.add_argument("--apply", action="store_true")
 
     p_shadow_check = sub.add_parser("record-shadow-check")
     p_shadow_check.add_argument("--rule-id", type=int, required=True)
@@ -5803,6 +7232,9 @@ def main() -> None:
                     "target_concepts",
                     "pedagogical_directives",
                     "socratic_choice_directives",
+                    "teaching_priority",
+                    "artifact_native_targets",
+                    "map_context_targets",
                     "decision_inputs",
                     "orient_menu",
                     "orient_skip",
@@ -5900,6 +7332,32 @@ def main() -> None:
                 topic=args.topic,
                 session_id=args.session,
             )))
+        elif args.command == "artifact-map-get":
+            result = artifact_map_get(conn, doc_path=args.doc, current_hash=args.content_hash)
+            print(_json_dumps(result, pretty=args.pretty))
+        elif args.command == "artifact-map-upsert":
+            raw = sys.stdin.read() if args.stdin else Path(args.input_path).read_text()
+            try:
+                payload = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                print(_json_dumps({"ok": False, "error": f"invalid artifact map JSON: {exc}"}), file=sys.stderr)
+                sys.exit(2)
+            if not isinstance(payload, dict):
+                print(_json_dumps({"ok": False, "error": "artifact map JSON must be an object"}), file=sys.stderr)
+                sys.exit(2)
+            try:
+                result = artifact_map_upsert(
+                    conn,
+                    doc_path=args.doc,
+                    topic=args.topic,
+                    payload=payload,
+                    content_hash=args.content_hash,
+                    created_by=args.created_by,
+                )
+            except ValueError as exc:
+                print(_json_dumps({"ok": False, "error": str(exc)}), file=sys.stderr)
+                sys.exit(2)
+            print(_json_dumps(result, pretty=args.pretty))
         elif args.command == "status":
             print(status(conn))
         elif args.command == "maintain":
@@ -5919,6 +7377,30 @@ def main() -> None:
                     apply=args.apply,
                 )
             ))
+        elif args.command == "realign-concept":
+            print(_json_dumps(
+                realign_concept(
+                    conn,
+                    concept_id=args.concept_id,
+                    inventory_concept_id=args.inventory_concept_id,
+                    apply=args.apply,
+                    restamp_claims=not args.no_restamp_claims,
+                    allow_unknown=args.allow_unknown,
+                )
+            ))
+        elif args.command == "rename-concept":
+            print(_json_dumps(
+                rename_concept(
+                    conn,
+                    concept_id=args.concept_id,
+                    display_name=args.display_name,
+                    apply=args.apply,
+                )
+            ))
+        elif args.command == "migrate-recall-realignment":
+            print(_json_dumps(migrate_recall_realignment(conn, apply=args.apply)))
+        elif args.command == "migrate-ad-vte-separation":
+            print(_json_dumps(migrate_ad_vte_separation(conn, apply=args.apply)))
         elif args.command == "record-shadow-check":
             print(_json_dumps(
                 record_shadow_rule_check(
@@ -6022,6 +7504,16 @@ def main() -> None:
                 print(_json_dumps({"ok": False, "error": str(exc)}), file=sys.stderr)
                 sys.exit(2)
             print(_json_dumps(result))
+    except StrictTelemetryError as exc:
+        # Loud, actionable refusal instead of an opaque traceback + silent no-write:
+        # the agent reads this, adds the named field, and re-runs the same log-answer.
+        remedy = f"\nRemedy: {exc.remedy}" if exc.remedy else ""
+        print(
+            f"ALERT strict-telemetry rejected: {exc}{remedy}\n"
+            "Nothing was written. Re-run the same log-answer with the field above added.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
     finally:
         conn.close()
 

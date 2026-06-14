@@ -300,7 +300,7 @@ class RecallContractReferenceTests(unittest.TestCase):
             "doc-review",
             "weak-spot-review",
             "concept-repair",
-            "quick-answer",
+            "consult",
             "service-local",
             "operative-rehearsal",
             "trial-evidence",
@@ -352,6 +352,9 @@ class RecallContractReferenceTests(unittest.TestCase):
                          "never pick the macro phase yourself", "interrupts"):
             with self.subTest(doctrine_fragment=fragment):
                 self.assertIn(fragment, doctrine)
+        for fragment in ("substantial_deepenable_core", "artifact_native_targets", "map_context_targets"):
+            with self.subTest(policy_fragment=fragment):
+                self.assertIn(fragment, startup + turn + doctrine)
         # The graph-leads/model-completes principle (brief 4b) must be instructed.
         self.assertIn("skeleton, not a ceiling", doctrine.lower())
         self.assertIn("model_proposed", doctrine)
@@ -362,6 +365,36 @@ class RecallContractReferenceTests(unittest.TestCase):
             with self.subTest(retrieval_policy_fragment=fragment):
                 self.assertIn(fragment, retrieval)
 
+    def test_doc_artifact_alignment_contract_is_named_and_operational(self) -> None:
+        root = (ROOT / "AGENTS.md").read_text()
+        startup = (ROOT / ".agents/shared/commands/study-review-startup.md").read_text()
+        memory_ops = (ROOT / ".agents/shared/commands/memory-operations.md").read_text()
+        retrieval = (ROOT / ".agents/shared/commands/memory-retrieval.md").read_text()
+        doctrine = (ROOT / ".agents/shared/commands/adaptive-teaching-doctrine.md").read_text()
+        turn = (ROOT / ".agents/shared/commands/study-review-turn.md").read_text()
+        adapters = "\n".join(
+            (ROOT / p).read_text()
+            for p in (
+                ".agents/codex/skills/study-review/SKILL.md",
+                ".claude/commands/study-review.md",
+                ".gemini/commands/study-review.md",
+                "plugins/agentic-neuro/commands/study-review.md",
+            )
+        )
+        for fragment in (
+            "artifact_alignment",
+            "three-map",
+            "map_context",
+            "artifact_map",
+            "learner_map",
+            "artifact_remaining_high_yield",
+            "map_context_only",
+            "horizon_expansion",
+            "artifact-map-upsert",
+        ):
+            with self.subTest(artifact_fragment=fragment):
+                self.assertIn(fragment, root + startup + memory_ops + retrieval + doctrine + turn + adapters)
+
     def test_core_workflows_reference_vault_intelligence(self) -> None:
         paths = (
             "AGENTS.md",
@@ -370,7 +403,6 @@ class RecallContractReferenceTests(unittest.TestCase):
             ".agents/shared/commands/learning-session-contract.md",
             ".agents/shared/commands/memory-retrieval.md",
             ".agents/shared/commands/consult.md",
-            ".agents/shared/commands/quick-answer.md",
             ".agents/shared/commands/study-material.md",
             ".agents/shared/commands/generate-report.md",
             ".agents/shared/commands/intraoperative-guide.md",
@@ -378,7 +410,6 @@ class RecallContractReferenceTests(unittest.TestCase):
             ".agents/shared/commands/brain-dump.md",
             "plugins/agentic-neuro/commands/consult.md",
             "plugins/agentic-neuro/commands/intraoperative-guide.md",
-            "plugins/agentic-neuro/commands/quick-answer.md",
             "plugins/agentic-neuro/commands/study-material.md",
         )
         for relative_path in paths:
@@ -387,7 +418,6 @@ class RecallContractReferenceTests(unittest.TestCase):
                 self.assertIn("vault-intelligence.md", text)
         for relative_path in (
             ".agents/shared/commands/consult.md",
-            ".agents/shared/commands/quick-answer.md",
             ".agents/shared/commands/study-material.md",
             ".agents/shared/commands/generate-report.md",
             ".agents/shared/commands/intraoperative-guide.md",
@@ -398,7 +428,6 @@ class RecallContractReferenceTests(unittest.TestCase):
                 self.assertIn("vault_retriever.py", (ROOT / relative_path).read_text())
         for relative_path in (
             ".agents/shared/commands/consult.md",
-            ".agents/shared/commands/quick-answer.md",
             ".agents/shared/commands/study-material.md",
             ".agents/shared/commands/generate-report.md",
             ".agents/shared/commands/intraoperative-guide.md",

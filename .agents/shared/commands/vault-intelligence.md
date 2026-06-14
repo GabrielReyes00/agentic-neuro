@@ -87,7 +87,7 @@ Use these task names with `--task`:
 - `doc-review`: Retrieve mastery objectives, discriminators, mental models, execution checks, quick references, synthesis, and related links around a requested document. The requested document remains primary.
 - `weak-spot-review`: Retrieve discriminators, mental models, execution checks, evidence cards, bedside rules, and clinical-use fields for learner-memory targets.
 - `concept-repair`: Retrieve the durable mental model, discriminators, execution check, and clinical use for a missed or unstable concept.
-- `quick-answer`: Retrieve quick reference, bedside rule, evidence card, clinical use, and references when local context may improve a brief answer.
+- `consult`: Retrieve quick reference, bedside rule, evidence card, clinical use, and references for a bedside procedure or protocolized task.
 - `service-local`: Retrieve local clarifications, priority takeaways, clinical synthesis, operational mental models, and mastery objectives from service-aware notes. Keep these separate from formal knowledge.
 - `operative-rehearsal`: Retrieve surgical coordinates, discriminators, execution checks, operational mental models, and clinical-use fields.
 - `imaging`: Retrieve imaging reads, discriminators, clinical-use fields, and quick references.

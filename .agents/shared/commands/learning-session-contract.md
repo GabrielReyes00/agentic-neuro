@@ -25,7 +25,7 @@ Read only the modules that apply to the current phase. Do not preload later-phas
 
 1. **Pre-Question Minimal Path**:
    - Read the command adapter contract and requested doc.
-   - Run `study_memory.py startup-recall` and read using `.agents/shared/commands/study-review-startup.md`.
+   - Run `study_memory.py startup-recall` and read using `.agents/shared/commands/study-review-startup.md`; for doc review, verify/build `planning_brief.artifact_alignment` before teaching.
    - Ask one clinical question and stop. Use `handoff.next_action` silently; do not quote `handoff.summary` or narrate startup.
 2. **Teaching Loop**:
    - Load `study-review-turn.md` and `adaptive-teaching-doctrine.md`.
@@ -40,7 +40,6 @@ Read only the modules that apply to the current phase. Do not preload later-phas
 
 - `study-review` startup uses `.agents/shared/commands/study-review-startup.md` and `startup-recall`.
 - `consult`, `study-material`, and research/report workflows may retrieve vault context before synthesis when requested.
-- `quick-answer` does not use this contract; it uses its own contract at `.agents/shared/commands/quick-answer.md`.
 - `brain-dump` captures de-identified teaching. It does not become learner state until Socratic review/testing is logged.
 
 ## Conflict Resolution

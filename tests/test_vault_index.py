@@ -160,7 +160,7 @@ class VaultIndexTests(unittest.TestCase):
             self.assertFalse(any(hit["folder"] == "Brain Dumps" for hit in formal["hits"]))
 
     def test_task_plan_names_field_policy(self) -> None:
-        plan = vault_index.task_plan("quick-answer")
+        plan = vault_index.task_plan("consult")
 
         self.assertTrue(plan["ok"])
         self.assertIn("quick_reference", plan["preferred_section_types"])

@@ -261,12 +261,50 @@ class MapLearnerTests(_InventoryFixture):
         self.assertNotEqual(by_id["vasc.sah.dci"]["exposure_status"], "unexposed")
         # Hunt-Hess (correct) was matched and is no longer unexposed.
         self.assertNotEqual(by_id["vasc.sah.hunt-hess"]["exposure_status"], "unexposed")
+        # A correct (durable) claim must project knowledge_state "passed", not the
+        # "untested" default — a mastered concept has to be distinguishable from an
+        # untouched one on rebuild (regression guard for the durable->passed mapping).
+        self.assertEqual(by_id["vasc.sah.hunt-hess"]["knowledge_state"], "passed")
         # Untouched concepts remain unexposed.
         self.assertEqual(by_id["vasc.sah.vasospasm"]["exposure_status"], "unexposed")
         # Most of the map is unexposed -> ORIENT, but the misconception drives a remediate interrupt.
         plan = res["sequential_teaching_plan"]
         self.assertEqual(plan["current_phase"], "phase_1_clear_fog")
         self.assertIn("Delayed cerebral ischemia", plan["interrupts"]["remediate"])
+
+    def test_explicit_off_scope_binding_stays_unmatched(self) -> None:
+        mem_path = Path(self.tmp.name) / "study_memory.db"
+        mem = study_memory._get_db(mem_path)
+        try:
+            study_memory.log_answer(
+                mem,
+                session_id="s-offscope",
+                topic="subarachnoid hemorrhage",
+                concept="CPP calculation",
+                question="Q",
+                answer="A",
+                correct=1,
+                tested_claim="CPP equals MAP minus ICP.",
+                inventory_concept_id="fnd.icp.monro-kellie",
+            )
+        finally:
+            mem.close()
+
+        conn = self._open()
+        res = concept_inventory.map_learner(
+            inventory_conn=conn, memory_db=mem_path,
+            learner_topics=["subarachnoid hemorrhage"],
+            topic_id="vasc.sah", budget=20,
+        )
+        conn.close()
+
+        by_id = {e["concept_id"]: e for e in res["knowledge_map"]}
+        self.assertEqual(by_id["fnd.icp.cpp"]["attempts_count"], 0)
+        self.assertEqual(by_id["fnd.icp.cpp"]["matched_learner_concepts"], [])
+        unmatched = res["unmatched_learner_concepts"]
+        self.assertEqual(len(unmatched), 1)
+        self.assertEqual(unmatched[0]["inventory_concept_id"], "fnd.icp.monro-kellie")
+        self.assertEqual(unmatched[0]["binding_source"], "explicit_out_of_scope")
 
     def test_map_learner_handles_absent_memory_db(self) -> None:
         conn = self._open()

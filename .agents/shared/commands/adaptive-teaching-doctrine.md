@@ -80,6 +80,9 @@ Use retrieved fields as design material, not scripts.
 - **Wrong answer**: correct the smallest necessary unit. Give one reason it matters, then ask a near-transfer question before moving on.
 - **Partial answer**: preserve friction. Ask for the missing discriminator, threshold, exception, mechanism, or next step.
 - **Correct but shallow**: increase demand. Ask for the management consequence, exception, complication, operative/anatomic implication, or reversal finding.
+- **Correct on critical boundaries (Deepen Metacognition)**: Occasionally (~20% of the time on safety-critical thresholds or judgment limits), follow up a correct answer with a brief metacognitive boundary probe. Avoid simple linear "Why?" questions. Instead, use:
+  *   *Modifier Sensitivity:* Ask how management would change if a clinical variable shifted (e.g., *"Correct! How would your management change if the patient's SBP was 15 mmHg lower, or if they were on aspirin?"*).
+  *   *Horizon Expansion (Speed of Learning):* In doc review, prefer `planning_brief.artifact_alignment.horizon_expansion` after artifact-native gaps are stable. Otherwise inspect `planning_brief.knowledge_map` and nearby graph relationships to identify a connected unexposed concept. Ask a transfer question that connects the mastered concept to the adjacent concept, pulling unseen but relevant content into scope without abandoning the requested artifact/topic.
 - **Repaired prior miss**: do not mark mastery immediately. Retest once with changed framing.
 - **Repeated error**: narrow the session and build a short contrastive drill around the false rule.
 
@@ -93,6 +96,15 @@ Prefer questions that force commitment:
 - Why does that intervention work?
 - What complication are you trying not to miss?
 
+**Active Learning Probe Design (Inspire Active Learning):**
+Probes and verification questions must test active decision-making, clinical reasoning, or execution under friction rather than flat factual recall. The goal is to force synthesis and application. Effective probe approaches include:
+- **Confounders:** A patient who appears to meet standard criteria, but has a subtle clinical modifier (e.g. hypotension, bleeding risk, atypical imaging) that shifts management.
+- **Procedural Failure-Modes:** A bedside task that goes wrong mid-procedure (e.g. EVD flat waveform, shunt tap blood flashback), requiring corrective troubleshooting.
+- **Triage & Prioritization:** Deciding which patient to treat or operate on first under resource constraint, explaining the exact gating factor.
+- **Dose & Physiological Calculations:** Real-time calculation of targets (e.g., sodium correction limits, CPP goals based on MAP/ICP) and predicting the consequence of overshooting.
+- **Anatomical/Corridor Selection:** Choosing the safest surgical corridor or approach (e.g., transsphenoidal vs. transcranial) based on patient-specific imaging features.
+- **Disposition & Discharge Reasoning:** Determining the safe level of post-procedure care (ICU vs. floor) and identifying the single parameter that dictates it.
+
 A good teaching move leaves the learner with one sharper mental edge than before.
 
 ## Pedagogical Policy: Modes And Interrupts
@@ -103,7 +115,7 @@ Sequencing is a deterministic state machine, not a free choice. `study_memory.py
 
 **Three macro phases (mutually exclusive, deterministic):**
 - **ORIENT** (`phase_1_clear_fog`): an entry concept is `unexposed` *and* the learner does not yet hold a schema for the topic. Keep introductions superficial — clinical presentation, initial imaging, high-level options. Build one concrete end-to-end exemplar (a single patient carried presentation → exam → imaging → differential → approach → complications) plus a thin labeled map of the surrounding landscape. Do not drill deep mechanisms or force transfer yet. At boundaries present a "lay of the land" menu of unexposed/superficial concepts and let Gabriel choose his entry point. ORIENT is schema-building, never an unanchored list of every subtopic.
-  - **Predominant-exposure skip (`orient_skip`):** when the learner already holds a schema — every entry node exposed, *or* exposed entries predominate (≥ 60% and ≥ 3) — ORIENT is bypassed deterministically and the session is DEEPEN, even though a couple of entry nodes remain unexposed. The policy folds those few unexposed entries into the DEEPEN targets so a central concept is introduced, not orphaned. Read `planning_brief.orient_skip.reason` (`all_entry_nodes_have_prior_exposure` | `predominant_prior_exposure`); never force ORIENT on a topic the learner has clearly engaged.
+  - **Schema skip (`orient_skip`):** when the learner already holds a schema — every entry node exposed, exposed entries predominate (≥ 60% and ≥ 3), or there is a `substantial_deepenable_core` (≥ 4 exposed-superficial/open entry nodes) — ORIENT is bypassed deterministically and the session is DEEPEN, even though some entry nodes may remain unexposed. The policy folds those few unexposed entries into DEEPEN targets so a central concept is introduced, not orphaned. Read `planning_brief.orient_skip.reason`; never force ORIENT on a topic the learner has clearly engaged.
 - **DEEPEN** (`phase_2_recalibrate_gaps`): no unexposed concepts remain (or ORIENT was skipped) but gaps or superficial concepts exist. Depth-first Socratic drilling on the selected node and its immediate neighbors — mechanism, discriminator, threshold, consequence — with periodic zoom-outs that re-situate the detail in the whole. Prioritize prerequisite gaps before downstream dependents. Proactively offer which gap to deepen next.
 - **CONNECT** (`phase_3_force_connections`): all concepts are deep and stable. Force integration across two or more already-seen nodes (relate a vascular fact to an approach decision, sequence a multi-step management trade-off). Run boards-style defense and transfer under changed acuity/setting.
 
@@ -115,7 +127,7 @@ CONNECT prompts must reference two or more concepts Gabriel has actually seen (p
 
 **Empty plan rule (deterministic, not a judgment call):** if `sequential_teaching_plan` is `{}` or `knowledge_map_status` is `empty_no_inventory_scope` — the session is ORIENT by definition. Run the ORIENT directives over the document/topic structure; the policy engine takes over from the first `log-answer` onward.
 
-**Artifact Priority (doc-anchored):** when `teaching_priority` is `artifact_primary`, teach from the requested document first. Use map-only unexposed concepts only at phase boundaries, for prerequisite gaps, misconception repair, or transfer bridges — not as spontaneous off-artifact digressions.
+**Artifact Priority (doc-anchored):** when `teaching_priority` is `artifact_primary`, teach from the requested document first. `artifact_native_targets` come from the persisted artifact map; `map_context_targets` are inventory neighbors or learner gaps outside the artifact. Start with `artifact_remaining_high_yield`, use map-only concepts only for prerequisites, misconception repair, phase-boundary choices, or transfer bridges, and reserve `horizon_expansion` for moments when artifact-native understanding is stable enough to broaden the learner's scope.
 
 ## Signal Precedence
 
@@ -143,7 +155,7 @@ Use memory telemetry to avoid stale repetition while preserving agent judgment.
 - **Cognitive operation shifting**: use `operation_profile` to choose the shape of the next question. If discrimination is weak, use contrastive probes. If sequencing is weak, use first-next-only-after prompts. If quantification is weak, force numbers and consequences. If transfer is weak, change pathology, setting, or acuity.
 - **Scaffold-as-premise**: durable or scaffolded concepts are usually premises for harder questions, not primary drill targets. Test them directly when they are due, regressed, safety-critical, requested by the user, or visibly unstable in the current answer.
 - **Bounded prerequisite checks**: check prerequisites only when an upstream gap appears to block the current concept. Do not recursively audit every prerequisite at startup. If a foundation is weak, repair the foundation briefly and return to the main concept.
-- **Shadow-rule temptation**: when `shadow_rules` or historical misconceptions show a false rule, create a vignette where the false rule is tempting but unsafe. Require the learner to identify the modifier that breaks it.
+- **Misconception-driven trap generation (Adapt to the Learner / Shadow-rule temptation)**: When `shadow_rules` or `historical_misconceptions` indicate a past wrong rule, weave it into the clinical scenario to test the *exact nuance of when or why that parameter would or would not be correct*. Do not simply present it as a blatant incorrect option that the user can immediately discount. The question must force the learner to read the clinical parameters carefully to decide if the rule applies, rather than relying on lazy pattern recognition (avoiding "the old wrong choice" reflex).
 - **Teaching move pivot**: if `repair_velocity` or `teaching_move_profile` suggests a prior move failed, change the move. Switch from premortem to contrast, from contrast to mechanism, from mechanism to execution, or from execution to transfer.
 
 ## Session Pacing

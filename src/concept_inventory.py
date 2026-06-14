@@ -761,43 +761,94 @@ def map_learner(
     if mem is not None:
         topic_ids = sorted(resolved_topics.values())
         for tid in topic_ids:
-            rows = mem.execute(
-                """SELECT c.id, c.display_name, c.canonical_slug,
-                          COALESCE(c.inventory_concept_id, '') AS inventory_concept_id,
-                          COALESCE(a.cnt, 0) AS attempts,
-                          COALESCE(a.success_cnt, 0) AS successes
-                   FROM concepts c
-                   LEFT JOIN (
-                       SELECT concept_id, COUNT(*) AS cnt,
-                              SUM(CASE WHEN score >= 2.0 THEN 1 ELSE 0 END) AS success_cnt
-                       FROM claim_results WHERE topic_id = ? AND origin = 'assessed'
-                       GROUP BY concept_id
-                   ) a ON a.concept_id = c.id
-                   WHERE c.topic_id = ? ORDER BY c.id""",
-                (tid, tid),
-            ).fetchall()
-            state_rows = mem.execute(
-                """SELECT concept_id, state, priority, stability, gap_type FROM claim_state
-                   WHERE topic_id = ? AND origin = 'assessed' ORDER BY id""",
-                (tid,),
-            ).fetchall()
-            states: dict[int, list[sqlite3.Row]] = {}
-            for sr in state_rows:
-                states.setdefault(int(sr["concept_id"]), []).append(sr)
-            for r in rows:
-                learner_concepts.append({
-                    "learner_concept_id": int(r["id"]),
+            concept_meta = {
+                int(r["id"]): {
                     "name": r["display_name"],
                     "slug": r["canonical_slug"],
-                    "inventory_concept_id": str(r["inventory_concept_id"] or ""),
-                    "attempts": int(r["attempts"]),
-                    "successes": int(r["successes"]),
-                    "states": [
-                        {"state": s["state"], "priority": s["priority"],
-                         "stability": s["stability"], "gap_type": s["gap_type"]}
-                        for s in states.get(int(r["id"]), [])
-                    ],
-                    "tokens": _tokens(r["display_name"]),
+                    "binding": str(r["inventory_concept_id"] or ""),
+                }
+                for r in mem.execute(
+                    """SELECT id, display_name, canonical_slug,
+                              COALESCE(inventory_concept_id, '') AS inventory_concept_id
+                         FROM concepts WHERE topic_id = ? ORDER BY id""",
+                    (tid,),
+                )
+            }
+            # CLAIM-LEVEL PROJECTION. Aggregate each concept's assessed attempts by the
+            # claim's OWN inventory binding (falling back to the concept binding when a
+            # claim carries none), so a single concept whose claims were tested against
+            # several canonical nodes distributes its mastery to each — instead of the
+            # old per-concept rollup that collapsed every claim onto one node and lost,
+            # e.g., NASCIS history buried inside a STASCIS-bound concept.
+            claim_rows = mem.execute(
+                """SELECT concept_id, COALESCE(inventory_concept_id, '') AS claim_inv,
+                          claim_slug, score, created_at, id
+                     FROM claim_results
+                    WHERE topic_id = ? AND origin = 'assessed'
+                    ORDER BY created_at DESC, id DESC""",
+                (tid,),
+            ).fetchall()
+            units: dict[tuple[int, str], list[tuple[str, int, int]]] = {}
+            slug_inv: dict[tuple[int, str], str] = {}
+            for cr in claim_rows:
+                cid = int(cr["concept_id"])
+                meta = concept_meta.get(cid)
+                if meta is None:
+                    continue
+                eff_inv = str(cr["claim_inv"]) or meta["binding"]
+                units.setdefault((cid, eff_inv), []).append(
+                    (str(cr["created_at"]), int(cr["id"]), int(cr["score"]))
+                )
+                slug_inv[(cid, str(cr["claim_slug"]))] = eff_inv
+            unit_states: dict[tuple[int, str], list[dict]] = {}
+            for sr in mem.execute(
+                """SELECT concept_id, claim_slug, state, priority, stability, gap_type
+                     FROM claim_state WHERE topic_id = ? AND origin = 'assessed' ORDER BY id""",
+                (tid,),
+            ):
+                cid = int(sr["concept_id"])
+                meta = concept_meta.get(cid)
+                if meta is None:
+                    continue
+                # Route the gap to the same node its claim's attempts went to, so an
+                # open gap holds the right node at superficial (states join results on
+                # claim_slug; fall back to the concept binding for orphan states).
+                eff_inv = slug_inv.get((cid, str(sr["claim_slug"])), meta["binding"])
+                unit_states.setdefault((cid, eff_inv), []).append({
+                    "state": sr["state"], "priority": sr["priority"],
+                    "stability": sr["stability"], "gap_type": sr["gap_type"],
+                })
+            concepts_with_claims = {cid for (cid, _e) in units}
+            for (cid, eff_inv), scored in units.items():
+                meta = concept_meta[cid]
+                learner_concepts.append({
+                    "learner_concept_id": cid,
+                    "name": meta["name"],
+                    "slug": meta["slug"],
+                    "inventory_concept_id": eff_inv,
+                    "scored": scored,  # [(created_at, id, score)] most-recent-first
+                    "attempts": len(scored),
+                    "successes": sum(1 for _t, _i, s in scored if s >= 2),
+                    "last_score": scored[0][2] if scored else 0,
+                    "states": unit_states.get((cid, eff_inv), []),
+                    "tokens": _tokens(meta["name"]),
+                })
+            # Concepts with no assessed claims still project (unexposed) at their binding
+            # so a scoped-but-untested node is visible rather than silently dropped.
+            for cid, meta in concept_meta.items():
+                if cid in concepts_with_claims:
+                    continue
+                learner_concepts.append({
+                    "learner_concept_id": cid,
+                    "name": meta["name"],
+                    "slug": meta["slug"],
+                    "inventory_concept_id": meta["binding"],
+                    "scored": [],
+                    "attempts": 0,
+                    "successes": 0,
+                    "last_score": 0,
+                    "states": unit_states.get((cid, meta["binding"]), []),
+                    "tokens": _tokens(meta["name"]),
                 })
             try:
                 due_claims.extend(_due_claims_for_summary(mem, topic_id=tid, limit=8))
@@ -835,6 +886,9 @@ def map_learner(
         if explicit and explicit in scope_node_ids:
             assignments.setdefault(explicit, []).append({**lc, "match_score": 1.0, "binding_source": "explicit"})
             continue
+        if explicit:
+            unmatched.append({**lc, "binding_source": "explicit_out_of_scope"})
+            continue
         best: tuple[float, str] | None = None
         for node in scope["nodes"]:
             score = _lexical_score(lc["tokens"], node_tokens[node["id"]])
@@ -850,25 +904,50 @@ def map_learner(
     knowledge_map: list[dict] = []
     for node in scope["nodes"]:
         mapped = assignments.get(node["id"], [])
-        attempts = sum(m["attempts"] for m in mapped)
-        successes = sum(m["successes"] for m in mapped)
+        # Merge the claim-level scored attempts of every unit mapped to this node and
+        # order by recency, so last_score and the recency-weighted rate reflect the
+        # node's actual most-recent attempts (not the per-unit max, which over-promoted).
+        merged = sorted(
+            (s for m in mapped for s in m.get("scored", [])),
+            key=lambda x: (x[0], x[1]),
+            reverse=True,
+        )
+        attempts = len(merged)
+        successes = sum(1 for _t, _i, sc in merged if sc >= 2)
+        last_score = merged[0][2] if merged else 0
+        recent = merged[:3]
+        recent_rate = round(sum(1 for _t, _i, sc in recent if sc >= 2) / len(recent), 3) if recent else 0.0
         all_states = [s for m in mapped for s in m["states"]]
         stabilities = [s["stability"] for s in all_states if s["stability"] is not None]
         avg_stability = sum(stabilities) / len(stabilities) if stabilities else 1.0
         success_rate = round(successes / attempts, 3) if attempts else 0.0
-        if attempts == 0:
-            exposure = "unexposed"
-        elif attempts == 1 or avg_stability < 2.0 or success_rate < 0.6:
-            exposure = "exposed_superficial"
-        else:
-            exposure = "exposed_deep"
-        state_severity = {"missed": 0, "partially_repaired": 1, "regressed": 2, "repaired_same_session": 3}
+
+        # The claim layer marks a confirmed/retained correct claim "durable"; this
+        # map's state vocab calls that "passed". Without the mapping a durable-only
+        # node falls through to "untested" — indistinguishable from never-tested, and
+        # contradicting the live-session patch path, which already emits "passed".
+        state_severity = {"missed": 0, "partially_repaired": 1, "regressed": 2, "repaired_same_session": 3, "passed": 4}
         worst_state = None
         worst_val = 99
         for s in all_states:
-            if s["state"] in state_severity and state_severity[s["state"]] < worst_val:
-                worst_val = state_severity[s["state"]]
-                worst_state = s["state"]
+            st = "passed" if s["state"] == "durable" else s["state"]
+            if st in state_severity and state_severity[st] < worst_val:
+                worst_val = state_severity[st]
+                worst_state = st
+                
+        is_gap = worst_state in open_gap_states if worst_state else False
+        # Canonical exposure rule (mirrors study_memory._mastery_exposure): an open gap
+        # holds at superficial, a single attempt never promotes, and the threshold reads
+        # the recency-weighted rate so a turned-around node escapes its stale failures.
+        if attempts == 0:
+            exposure = "unexposed"
+        elif last_score == 2 and not is_gap and attempts > 1:
+            exposure = "exposed_deep"
+        elif attempts == 1 or avg_stability < 2.0 or recent_rate < 0.6 or is_gap:
+            exposure = "exposed_superficial"
+        else:
+            exposure = "exposed_deep"
+            
         knowledge_map.append({
             "concept_id": node["id"],
             "concept": node["name"],
@@ -913,7 +992,12 @@ def map_learner(
         "edges": scope["edges"],
         "sequential_teaching_plan": plan,
         "unmatched_learner_concepts": [
-            {"learner_concept_id": lc["learner_concept_id"], "name": lc["name"]}
+            {
+                "learner_concept_id": lc["learner_concept_id"],
+                "name": lc["name"],
+                "inventory_concept_id": lc.get("inventory_concept_id") or "",
+                "binding_source": lc.get("binding_source", "lexical_unmatched"),
+            }
             for lc in unmatched
         ],
         "counts": {

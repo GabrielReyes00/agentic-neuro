@@ -89,7 +89,7 @@ def _note_topic_concept(note: dict) -> tuple[str, str, str]:
             topic = _slug_display(tag.split("/", 1)[1])
         elif lower.startswith("concept/"):
             concept = _slug_display(tag.split("/", 1)[1])
-        elif lower in {"study-review", "quick-answer", "consult", "intraoperative-guide"}:
+        elif lower in {"study-review", "consult", "intraoperative-guide"}:
             source_workflow = lower
 
     return topic or "live_anki", concept, source_workflow
