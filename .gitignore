@@ -37,6 +37,7 @@ data/pgy_config.json
 temp_report.md
 .claude/scheduled_tasks.lock
 .antigravitycli/
+.local/
 
 # === Python ===
 __pycache__/
