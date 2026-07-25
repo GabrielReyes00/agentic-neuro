@@ -99,6 +99,36 @@ class SessionMapTests(unittest.TestCase):
         self.assertEqual(delta, "newly_exposed")
         self.assertEqual(patched["knowledge_map"][0]["binding_tier"], "provisional")
 
+    def test_explicit_out_of_scope_id_does_not_lexical_bind(self) -> None:
+        data = {
+            "knowledge_map": [
+                {
+                    "concept_id": "ncc.hematology.vte-prophylaxis-timing",
+                    "concept": "VTE chemoprophylaxis timing",
+                    "exposure_status": "unexposed",
+                    "knowledge_state": "untested",
+                    "attempts_count": 0,
+                    "successes_count": 0,
+                    "sqlite_success_rate": 0.0,
+                    "role": "entry",
+                }
+            ],
+            "session_stats": {},
+        }
+        patched, delta = session_map.patch_after_log(
+            data,
+            inventory_concept_id="spi.sci.autonomic-dysreflexia",
+            concept_text="VTE chemoprophylaxis timing",
+            correct=2,
+            exchange_id=3,
+            learner_concept_id=30,
+        )
+        self.assertEqual(delta, "unbound")
+        self.assertEqual(patched["knowledge_map"][0]["knowledge_state"], "untested")
+        unmatched = patched["unmatched_learner_concepts"][0]
+        self.assertEqual(unmatched["binding_source"], "explicit_out_of_scope")
+        self.assertEqual(unmatched["inventory_concept_id"], "spi.sci.autonomic-dysreflexia")
+
     def test_fresh_misconception_flags_node_for_remediate(self) -> None:
         node = {
             "concept_id": "vas.threshold",

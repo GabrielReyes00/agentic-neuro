@@ -197,10 +197,17 @@ def resolve_inventory_id(
     concept_text: str,
     data: dict[str, Any],
 ) -> tuple[str | None, str, float]:
-    """Resolve inventory concept id: explicit id, else lexical provisional match."""
+    """Resolve inventory concept id: explicit in-scope id, else lexical provisional match.
+
+    An explicit id outside the current scoped map must stay unmatched. Falling
+    back to lexical matching would let a verified off-scope identity patch the
+    wrong in-scope node, violating the identity-first contract.
+    """
     nodes = _node_index(data)
-    if inventory_concept_id and inventory_concept_id in nodes:
-        return inventory_concept_id, "bound", 1.0
+    if inventory_concept_id:
+        if inventory_concept_id in nodes:
+            return inventory_concept_id, "bound", 1.0
+        return None, "explicit_out_of_scope", 1.0
     matched, score = lexical_match_inventory_id(concept_text, data)
     if matched:
         return matched, "provisional", score
@@ -282,13 +289,17 @@ def patch_after_log(
     stats = data.setdefault("session_stats", _empty_session_stats())
     if not inv_id:
         unmatched = data.setdefault("unmatched_learner_concepts", [])
-        unmatched.append({
+        unmatched_payload: dict[str, Any] = {
             "concept": concept_text,
             "learner_concept_id": learner_concept_id,
             "exchange_id": exchange_id,
-            "binding_tier": "unbound",
+            "binding_tier": binding_tier,
+            "binding_source": binding_tier,
             "match_score": round(match_score, 3),
-        })
+        }
+        if inventory_concept_id:
+            unmatched_payload["inventory_concept_id"] = inventory_concept_id
+        unmatched.append(unmatched_payload)
         stats["probed"] = stats.get("probed", 0) + 1
         return data, "unbound"
 

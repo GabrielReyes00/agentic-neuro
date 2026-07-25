@@ -2827,39 +2827,39 @@ class CurationLayerTests(unittest.TestCase):
             # Seed topic and concepts
             t_res = study_memory.TopicResolution("test-map-topic", "Test Map Topic", "general", (), 1.0)
             topic_id = study_memory._ensure_topic(conn, t_res)
-            
+
             c1_id = conn.execute(
                 "INSERT INTO concepts (topic_id, canonical_slug, display_name) VALUES (?, 'concept-one', 'Concept One')",
                 (topic_id,)
             ).lastrowid
-            
+
             c2_id = conn.execute(
                 "INSERT INTO concepts (topic_id, canonical_slug, display_name) VALUES (?, 'concept-two', 'Concept Two')",
                 (topic_id,)
             ).lastrowid
-            
+
             # Let's call retrieval_summary
             res_str = study_memory.retrieval_summary(conn, topic="test-map-topic", include_model=True)
             res = json.loads(res_str)
             brief = res["planning_brief"]
-            
+
             # Assert schema map exists
             self.assertIn("knowledge_map", brief)
             self.assertIn("sequential_teaching_plan", brief)
-            
+
             schema_map = brief["knowledge_map"]
             self.assertEqual(len(schema_map), 2)
-            
+
             # Since no attempts are seeded, exposure should be unexposed
             self.assertEqual(schema_map[0]["exposure_status"], "unexposed")
             self.assertEqual(schema_map[0]["knowledge_state"], "untested")
             self.assertEqual(schema_map[0]["attempts_count"], 0)
-            
+
             plan = brief["sequential_teaching_plan"]
             self.assertEqual(plan["current_phase"], "phase_1_clear_fog")
             self.assertIn("Concept One", plan["target_concepts"])
             self.assertIn("Concept Two", plan["target_concepts"])
-            
+
             # Now seed some attempts
             # Seed 3 correct answers for Concept One -> should become exposed_deep
             for idx in range(3):
@@ -2873,7 +2873,7 @@ class CurationLayerTests(unittest.TestCase):
                     correct=2,
                     tested_claim="Claim One",
                 )
-            
+
             # Seed 1 correct answer for Concept Two -> should remain exposed_superficial
             study_memory.log_answer(
                 conn,
@@ -2885,29 +2885,29 @@ class CurationLayerTests(unittest.TestCase):
                 correct=2,
                 tested_claim="Claim Two",
             )
-            
+
             # Re-run summary
             res_str = study_memory.retrieval_summary(conn, topic="test-map-topic", include_model=True)
             res = json.loads(res_str)
             brief = res["planning_brief"]
             schema_map = brief["knowledge_map"]
-            
+
             # Find Concept One in the new map
             c1_entry = next(c for c in schema_map if c["concept"] == "Concept One")
             c2_entry = next(c for c in schema_map if c["concept"] == "Concept Two")
-            
+
             self.assertEqual(c1_entry["exposure_status"], "exposed_deep")
             self.assertEqual(c1_entry["attempts_count"], 3)
             self.assertEqual(c1_entry["sqlite_success_rate"], 1.0)
-            
+
             self.assertEqual(c2_entry["exposure_status"], "exposed_superficial")
             self.assertEqual(c2_entry["attempts_count"], 1)
-            
+
             plan = brief["sequential_teaching_plan"]
             # Since Concept Two is superficial, we should be in recalibrate_gaps
             self.assertEqual(plan["current_phase"], "phase_2_recalibrate_gaps")
             self.assertIn("Concept Two", plan["target_concepts"])
-            
+
             # Test refinement with Anki
             brief_refined = {
                 "knowledge_map": schema_map,
@@ -2927,13 +2927,13 @@ class CurationLayerTests(unittest.TestCase):
                 ]
             }
             study_memory._refine_brief_with_anki(brief_refined, fake_anki_profile)
-            
+
             refined_map = brief_refined["knowledge_map"]
             c2_refined = next(c for c in refined_map if c["concept"] == "Concept Two")
             self.assertEqual(c2_refined["exposure_status"], "exposed_deep")
             self.assertEqual(c2_refined["anki_reviews_count"], 5)
             self.assertEqual(c2_refined["anki_success_rate"], 1.0)
-            
+
             # Both are now deep, phase should transition to phase_3_force_connections
             refined_plan = brief_refined["sequential_teaching_plan"]
             self.assertEqual(refined_plan["current_phase"], "phase_3_force_connections")
@@ -3825,17 +3825,39 @@ class RecallRealignmentIntelligenceTests(unittest.TestCase):
             self.assertEqual(res["deblended_claim_states"], 1)
 
             ad_after = conn.execute(
-                "SELECT state, priority, gap_type, reason FROM claim_state WHERE id = ?",
+                "SELECT state, priority, gap_type, next_due_ts, reason FROM claim_state WHERE id = ?",
                 (ad_state["id"],),
             ).fetchone()
-            self.assertEqual(ad_after["state"], "durable")
+            self.assertEqual(ad_after["state"], "repaired_same_session")
             self.assertEqual(ad_after["priority"], "low")
             self.assertEqual(ad_after["gap_type"], "")
+            self.assertTrue(ad_after["next_due_ts"])
+            # de-blended AD state must no longer count as an open gap or a misconception
+            self.assertNotIn(ad_after["state"], study_memory.OPEN_GAP_STATES)
             self.assertIn("deblended", ad_after["reason"])
-            self.assertEqual(conn.execute(
-                "SELECT status FROM retrieval_cards WHERE claim_state_id = ?",
+            ad_cards = conn.execute(
+                "SELECT card_type, status, next_action FROM retrieval_cards WHERE claim_state_id = ?",
                 (ad_state["id"],),
-            ).fetchone()["status"], "inactive")
+            ).fetchall()
+            self.assertTrue(any(
+                card["card_type"] == "recent_repair" and card["status"] == "active"
+                for card in ad_cards
+            ))
+            self.assertTrue(any(
+                "autonomic dysreflexia" in card["next_action"].lower()
+                for card in ad_cards
+                if card["card_type"] == "recent_repair"
+            ))
+            summary = json.loads(study_memory.retrieval_summary(
+                conn,
+                topic="spine-emergencies",
+                limit=8,
+                include_model=True,
+            ))
+            self.assertTrue(any(
+                item["claim_state_id"] == ad_state["id"]
+                for item in summary["planning_brief"]["recent_repairs"]
+            ))
 
             vte = conn.execute(
                 "SELECT id, display_name FROM concepts WHERE inventory_concept_id = 'ncc.hematology.vte-prophylaxis-timing'"

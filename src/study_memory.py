@@ -1802,7 +1802,7 @@ def _learner_overlay_for_inventory_id(
         """SELECT c.id, c.display_name,
                   COUNT(cr.id) AS attempts,
                   SUM(CASE WHEN cr.score >= 2.0 THEN 1 ELSE 0 END) AS successes,
-                  (SELECT score FROM claim_results cr2 
+                  (SELECT score FROM claim_results cr2
                    WHERE cr2.concept_id = c.id AND cr2.origin = 'assessed'
                    ORDER BY cr2.created_at DESC, cr2.id DESC LIMIT 1) AS last_score
            FROM concepts c
@@ -2452,7 +2452,8 @@ def migrate_ad_vte_separation(
                   cr.score, cr.learner_claim, cr.missing_edge, cr.corrected_rule,
                   cr.clinical_consequence, cr.retest_prompt_shape, cr.created_at,
                   c.display_name AS concept_name, cs.id AS claim_state_id,
-                  cs.state AS claim_state, cs.priority AS claim_priority
+                  cs.state AS claim_state, cs.priority AS claim_priority,
+                  cs.difficulty AS difficulty, cs.stability AS stability
              FROM claim_results cr
              JOIN concepts c ON c.id = cr.concept_id
              JOIN claim_state cs
@@ -2516,7 +2517,10 @@ def migrate_ad_vte_separation(
                     "action": "deblend_ad_claim_state",
                     "claim_state_id": int(src["claim_state_id"]),
                     "from_state": str(src["claim_state"]),
-                    "to_state": "durable",
+                    # Not 'durable' — one attempt does not earn mastery. repaired_same_session
+                    # clears the (VTE-caused) gap + misconception off the AD surface while still
+                    # leaving AD eligible for a confirming probe.
+                    "to_state": "repaired_same_session",
                 })
                 deblended_states += 1
 
@@ -2609,14 +2613,39 @@ def migrate_ad_vte_separation(
 
             if apply and str(src["claim_state"]) in {"missed", "partially_repaired", "regressed"}:
                 state_id = int(src["claim_state_id"])
+                difficulty, stability, next_due_ts = _update_memory_schedule(
+                    score=2,
+                    state="repaired_same_session",
+                    priority="low",
+                    existing=src,
+                    now=now,
+                )
                 conn.execute(
                     """UPDATE claim_state
-                       SET state = 'durable', priority = 'low', gap_type = '',
-                           next_due_ts = '', reason = ?
+                       SET state = 'repaired_same_session', priority = 'low', gap_type = '',
+                           next_due_ts = ?, difficulty = ?, stability = ?, reason = ?
                        WHERE id = ?""",
-                    (_AD_VTE_REPAIR_REASON, state_id),
+                    (next_due_ts, difficulty, stability, _AD_VTE_REPAIR_REASON, state_id),
                 )
-                conn.execute("UPDATE retrieval_cards SET status = 'inactive' WHERE claim_state_id = ?", (state_id,))
+                _deactivate_other_cards(conn, state_id, "recent_repair")
+                _upsert_retrieval_card(
+                    conn,
+                    topic_id=topic_id,
+                    claim_state_id=state_id,
+                    card_type="recent_repair",
+                    priority="low",
+                    summary=f"deblended repair: {_AD_VTE_REPAIR_REASON}",
+                    next_action=(
+                        "Run a delayed autonomic dysreflexia management confirmation probe "
+                        "without VTE chemoprophylaxis timing before treating AD as durable."
+                    ),
+                    evidence_result_id=int(src["claim_result_id"]),
+                    updated_ts=now,
+                    detail={
+                        "reason": _AD_VTE_REPAIR_REASON,
+                        "separated_to_inventory_concept_id": target_inv,
+                    },
+                )
                 conn.execute(
                     "INSERT INTO state_events (claim_state_id, event_type, result_id, ts, detail) VALUES (?, 'deblended', ?, ?, ?)",
                     (state_id, int(src["claim_result_id"]), now, _AD_VTE_REPAIR_REASON),
@@ -4853,7 +4882,7 @@ def _build_schema_map(conn: sqlite3.Connection, topic_slug: str) -> list[dict[st
     # schema map and never drive the deterministic teaching policy.
     attempts_rows = conn.execute(
         """SELECT concept_id, COUNT(*) as cnt, SUM(CASE WHEN score >= 2.0 THEN 1 ELSE 0 END) as success_cnt,
-                  (SELECT score FROM claim_results cr2 
+                  (SELECT score FROM claim_results cr2
                    WHERE cr2.concept_id = cr.concept_id AND cr2.origin = 'assessed' AND cr2.topic_id = cr.topic_id
                    ORDER BY cr2.created_at DESC, cr2.id DESC LIMIT 1) AS last_score
            FROM claim_results cr
@@ -5481,7 +5510,7 @@ def _integrate_inventory_knowledge_map(
     brief["knowledge_map_status"] = "ok"
     brief["sequential_teaching_plan"] = teaching_plan
     brief["knowledge_map_provenance"] = "inventory"
-    
+
     proposals = _suggest_concept_realignments(conn, knowledge_map)
     if proposals:
         brief["alignment_proposals"] = proposals
@@ -5823,12 +5852,12 @@ def _refine_brief_with_anki(brief: dict[str, object], anki_profile: dict[str, ob
     schema_map = brief.get("knowledge_map")
     if not isinstance(schema_map, list) or not schema_map:
         return
-    
+
     # Get all concept rollup entries from full_concept_rollup if it exists, else concept_rollup
     rollup = anki_profile.get("full_concept_rollup") or anki_profile.get("concept_rollup", [])
     if not isinstance(rollup, list):
         return
-        
+
     # Build lookups by inventory id (preferred) and normalized concept slug.
     anki_by_inventory: dict[str, tuple[int, float]] = {}
     anki_by_slug: dict[str, tuple[int, float]] = {}
@@ -5859,7 +5888,7 @@ def _refine_brief_with_anki(brief: dict[str, object], anki_profile: dict[str, ob
             revs, rate = stats
             entry["anki_reviews_count"] = revs
             entry["anki_success_rate"] = rate
-            
+
             # Refine exposure status using Anki stats
             exp_status = entry.get("exposure_status", "unexposed")
             if exp_status == "unexposed" and revs > 0:
@@ -5869,7 +5898,7 @@ def _refine_brief_with_anki(brief: dict[str, object], anki_profile: dict[str, ob
                     entry["exposure_status"] = "exposed_deep"
             elif exp_status == "exposed_superficial" and revs > 2 and rate >= 0.6:
                 entry["exposure_status"] = "exposed_deep"
-                
+
     # Recompute the deterministic policy over the Anki-refined knowledge map.
     # Anki is advisory only: it adjusts exposure status above, never claim
     # state. Interrupt inputs (due claims, shadow rules) are unchanged by Anki,
