@@ -1,6 +1,6 @@
 ---
 name: grand-rounds
-description: Build a neurosurgery grand rounds, case presentation, or journal club slide deck with RAG-informed outline, PPTX output, vault note, and optional rehearsal.
+description: Build a validated neurosurgery PowerPoint from case material or a Journal Club dossier with source-traced visuals, speaker notes, vault note, and optional rehearsal.
 ---
 
 # Grand Rounds

@@ -1,0 +1,20 @@
+description = "Analyze a neurosurgery article PDF into an intern-accessible, source-traceable journal-club mastery dossier with optional faculty-defense review"
+
+prompt = """
+ACTIVE COMMAND: /journal-club — deep neurosurgery article analysis and mastery preparation without slide creation.
+
+You MUST read and follow `.agents/shared/commands/journal-club.md` end-to-end. Read its focused analysis and artifact modules only when their phases begin. The shared workflow owns source-package inspection, intern-level teaching, result reconstruction, methodological triage, vault installation, guard validation, and optional mastery.
+
+Gemini guardrails:
+- Inspect the entire PDF visually and textually; abstract-only work is preliminary.
+- Keep appraisal design-aware but subordinate to neurosurgical meaning.
+- Do not infer learner mastery or create Anki cards during passive dossier generation.
+- Install only through `src/journal_club_guard.py`.
+- Do not create a slide deck.
+
+User's input: {{args}}
+
+---
+
+@{.gemini/commands/journal-club.md}
+"""

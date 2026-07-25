@@ -93,6 +93,10 @@ Use these task names with `--task`:
 - `imaging`: Retrieve imaging reads, discriminators, clinical-use fields, and quick references.
 - `trial-evidence`: Retrieve evidence cards, quick references, discriminators, and references.
 - `report-generation`: Retrieve quick references, synthesis, evidence cards, related links, and references to avoid duplicating prior vault work.
+- `journal-club`: Retrieve quick references, clinical foundations, mental models,
+  evidence cards, discriminators, clinical use, execution checks, references, and
+  related links that help explain or contextualize an assigned article. The
+  assigned article remains primary.
 
 ## Teaching Use
 

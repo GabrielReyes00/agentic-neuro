@@ -124,6 +124,29 @@ class IndexBuilderTests(unittest.TestCase):
             index = ib.write_index(folder, vault_root=vault).read_text(encoding="utf-8")
             self.assertEqual(index.strip(), "")
 
+    def test_journal_club_is_a_known_nonrecursive_index_folder(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            folder = vault / "Journal Club"
+            sources = folder / "Sources"
+            sources.mkdir(parents=True)
+            _note(
+                folder,
+                "Hybrid Epilepsy Surgery",
+                domain="functional",
+                summary="Combined resection and RNS evidence.",
+            )
+            (sources / "Ignored.md").write_text("not a dossier", encoding="utf-8")
+
+            index = ib.write_index(
+                folder,
+                vault_root=vault,
+                recursive=ib.INDEX_FOLDERS["Journal Club"],
+            ).read_text(encoding="utf-8")
+
+            self.assertIn("[[Journal Club/Hybrid Epilepsy Surgery|Hybrid Epilepsy Surgery]]", index)
+            self.assertNotIn("Ignored", index)
+
 
 if __name__ == "__main__":
     unittest.main()

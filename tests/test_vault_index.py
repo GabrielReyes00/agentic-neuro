@@ -166,6 +166,36 @@ class VaultIndexTests(unittest.TestCase):
         self.assertIn("quick_reference", plan["preferred_section_types"])
         self.assertIn("evidence_card", plan["preferred_section_types"])
 
+    def test_journal_club_task_and_folder_are_indexed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            vault = root / "vault"
+            folder = vault / "Journal Club"
+            folder.mkdir(parents=True)
+            (folder / "Hybrid Epilepsy Surgery.md").write_text(
+                "## Start Here\n\nHybrid strategy.\n\n"
+                "## Results That Matter\n\nSeven selected patients.\n\n"
+                "## Limitations That Actually Matter\n\nNo comparator.\n\n"
+                "---\ndomain: functional\nsummary: \"Hybrid evidence.\"\n"
+                "tags: [skill/journal-club, type/article, domain/functional]\n---\n",
+                encoding="utf-8",
+            )
+            db = root / "vault_index.db"
+
+            result = vault_index.sync_vault(vault_root=vault, db_path=db)
+            plan = vault_index.task_plan("journal-club")
+            search = vault_index.search_sections(
+                "hybrid epilepsy comparator",
+                db_path=db,
+                task="journal-club",
+                limit=5,
+            )
+
+            self.assertTrue(result["ok"], result)
+            self.assertTrue(plan["ok"], plan)
+            self.assertIn("evidence_card", plan["preferred_section_types"])
+            self.assertTrue(any(hit["folder"] == "Journal Club" for hit in search["hits"]))
+
     def _build_linked_vault(self, root: Path) -> Path:
         vault = root / "vault"
         reports = vault / "Reports"

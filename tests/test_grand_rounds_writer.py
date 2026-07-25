@@ -169,6 +169,8 @@ class CreatePresentationTests(unittest.TestCase):
     def test_quality_gate_accepts_complete_manifest_inputs(self):
         with tempfile.TemporaryDirectory() as tmp:
             vault = Path(tmp)
+            deck = vault / "Complete Chiari Deck.pptx"
+            deck.write_bytes(b"test deck")
             path = grw.create_presentation(
                 vault_root=vault,
                 mode="case",
@@ -181,6 +183,7 @@ class CreatePresentationTests(unittest.TestCase):
                 presentation_risks=[],
                 anticipated_questions=["Why operate now?"],
                 attending_angle="operative anatomy and management controversy",
+                deck_path=deck,
                 sessions_dir=vault / "Sessions",
                 require_quality_gate=True,
             )
@@ -188,6 +191,52 @@ class CreatePresentationTests(unittest.TestCase):
             manifest = json.loads(Path(meta["manifest_path"]).read_text(encoding="utf-8"))
             self.assertEqual(manifest["attending_angle"], "operative anatomy and management controversy")
             self.assertEqual(manifest["quality_gate_failures"], [])
+
+    def test_article_metadata_tracks_journal_source_and_deck_qa(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            deck = vault / "Hybrid Epilepsy Surgery.pptx"
+            deck.write_bytes(b"test deck")
+            body = (
+                "**Mode**: Article\n\n"
+                "## Presentation Arc\n\nArc.\n\n"
+                "## Coverage Ledger\n\nCovered.\n\n"
+                "## Slide Outline and Speaker Notes\n\nNotes.\n\n"
+                "## Study Design and Methods\n\nCase series.\n\n"
+                "## Methods Critique\n\nNo comparator.\n\n"
+                "## Clinical Impact\n\nSelection.\n\n"
+                "## Citation List\n\n- Reyes 2026.\n\n"
+                "## Asset Manifest\n\n- Figure 3.\n\n"
+                "## Anticipated Questions\n\n- Why combine?\n\n"
+                "## Presentation Risks\n\n- Attribution.\n\n"
+                "## What Not To Say\n\n- Do not claim superiority."
+            )
+            path = grw.create_presentation(
+                vault_root=vault,
+                mode="article",
+                title="Hybrid Epilepsy Surgery",
+                topic="Resection and RNS",
+                body=body,
+                deck_path=deck,
+                citations=["Reyes 2026"],
+                slide_titles=["Problem", "Results"],
+                image_manifest=["Figure 3"],
+                presentation_risks=["Attribution"],
+                anticipated_questions=["Why combine?"],
+                source_journal_club="Journal Club/Hybrid Epilepsy Surgery.md",
+                source_pdf="Journal Club/Sources/Hybrid Epilepsy Surgery.pdf",
+                duration_minutes=15,
+                package_manifest="/tmp/deck_plan.json",
+                deck_qa_status="pass",
+                sessions_dir=vault / "Sessions",
+                require_quality_gate=True,
+            )
+            meta = _bottom_yaml(path.read_text(encoding="utf-8"))
+            self.assertEqual(meta["source_journal_club"], "Journal Club/Hybrid Epilepsy Surgery.md")
+            self.assertEqual(meta["source_pdf"], "Journal Club/Sources/Hybrid Epilepsy Surgery.pdf")
+            self.assertEqual(meta["duration_minutes"], 15)
+            self.assertEqual(meta["slide_count"], 2)
+            self.assertEqual(meta["deck_qa_status"], "pass")
 
 
 class RehearsalTests(unittest.TestCase):

@@ -30,6 +30,9 @@ Key shared contracts:
 - `.agents/shared/commands/service-log.md` — service-debrief alias that routes through `/brain-dump` while preserving service-memory primitives.
 - `.agents/shared/commands/generate-report.md` — citation-dense report generation with structured research plan, source cards, coverage ledger, synthesis map, provenance tiering, Mastery Objectives, and validator gate.
 - `.agents/shared/commands/intraoperative-guide.md` — deep-research operative rehearsal guides with procedure decomposition, serial RAG, operative knowledge maps, verified Obsidian wikilinks, restrained readable formatting, adversarial expert review, gap repair, structural validation, procedure-specific Anki decks, and Mastery Objectives.
+- `.agents/shared/commands/grand-rounds.md` — thin presentation router for deidentified case decks and Journal Club dossier-to-PowerPoint pipelines, with source-traced visuals, embedded speaker notes, rendered-slide QA, deterministic package validation, vault persistence, and optional rehearsal.
+- `.agents/shared/commands/journal-club.md` — source-faithful neurosurgery article analysis, intern-level clinical foundation, result reconstruction, consequence-framed critique, validated `Journal Club/` dossier, and optional mastery/faculty-defense review; no slide creation.
+- `.agents/shared/commands/refactor-manual-note.md` — in-place refactor of a raw manual study note (grand rounds, lectures, clinical discussions) into an active-recall Obsidian note: subject-first hierarchy, selective visual curation, Mermaid/wikilink render guardrails, discrimination tables, and bottom YAML.
 
 ## User Profile
 
@@ -125,10 +128,12 @@ Explicit or obvious workflow trigger:
 - Bounded clinical question you need answered to act now — a performable task ("how do I place/flush/troubleshoot X", a line, EVD management, wound exploration), an indication/decision call ("when do chest tubes go in", "which instability warrants surgery vs a judgment call"), or a bedside-management approach -> `consult` (brief-first answer in the shape the question needs — procedure walk-through or decision/indication logic — plus verification questions and a pocket-card vault note; not encyclopedic, not an operative rehearsal). Route to `brain-dump` instead when the goal is building durable proficiency in a topic over time rather than resolving one question now.
 - `/service-log`, "today on [service] at [site], I managed/learned...", daily service-rotation debrief, or "log my day on service" -> service-debrief route through `brain-dump`
 - `/brain-dump`, "capture what I learned on shift", "senior corrected me on service", "ward teaching lesson", or ward topics/weaknesses to read up on, become proficient in, or understand for clinical decision-making -> `brain-dump` (de-identify first; brief clinical teacher producing depth-calibrated teaching artifacts — fundamentals, ward application, decision-making role; atomic review candidates, optional Socratic conversion; capture is not mastery)
-- Grand rounds, case presentation, or journal club deck -> `grand-rounds`
+- `/journal-club`, journal-club preparation, deep article breakdown, "help me understand/defend this paper", or an assigned article PDF without a slide request -> `journal-club` (validated intern-accessible article mastery dossier; artifact creation is not mastery)
+- Grand rounds, case presentation, or journal club deck -> `grand-rounds`; article mode consumes a validated `Journal Club/` dossier and archived PDF when available, then produces a source-traced editable PPTX with rendered-slide QA.
+- `/refactor-manual-note`, "refactor/clean up/polish/format my manual notes", "format these grand-rounds/lecture notes" -> `refactor-manual-note` (rewrites a raw manual note in place into an active-recall Obsidian note: subject-first hierarchy, selective visual curation, render guardrails; no new file, no fabricated content)
 
 Anki: card creation is inline in every learning skill via `anki_queue.py enqueue/check/flush` and follows `.agents/shared/commands/anki-session-workflow.md` plus `.agents/shared/commands/anki-card-quality.md`. There is no separate Anki runtime skill.
-No cards are created during initial `brain-dump` capture. Cards from evaluated Brain Dump Socratic review route to `Neurosurgery::Brain Dumps` with `brain-dump` provenance tags unless they are site-local service conventions, which use service-learning routing.
+No cards are created during initial `brain-dump` capture or passive `journal-club` dossier generation. Cards from evaluated Brain Dump Socratic review route to `Neurosurgery::Brain Dumps` with `brain-dump` provenance tags unless they are site-local service conventions, which use service-learning routing. Journal Club cards arise only from an opted-in evaluated mastery session.
 
 Current-deck cleanup, card rewriting, taxonomy reorganization, and vector cache rebuilds use the separate `.agents/shared/commands/anki-deck-maintenance.md` workflow. Do not let the vector cache suppress cards as ground truth; rebuild it from live Anki after approved deck edits.
 
@@ -154,7 +159,7 @@ If validation fails, revise the generated note and rerun the guard. Do not start
 ## Session-End Protocol
 
 Learning commands are complete only after required workflow steps finish:
-1. Vault artifact write/update when applicable (`Study Material/`, `Consults/`, `Brain Dumps/`, `Reports/`, `Operative Guides/`, `Presentations/`). `study-review` writes no vault artifact in either invocation mode.
+1. Vault artifact write/update when applicable (`Study Material/`, `Consults/`, `Brain Dumps/`, `Reports/`, `Operative Guides/`, `Journal Club/`, `Presentations/`). `study-review` writes no vault artifact in either invocation mode.
 2. Concept extraction when applicable.
 3. `study_memory.py end-session` with a specific, actionable `--next-strategy`.
 4. `anki_queue.py review` + `check` + `flush` for the session's queued cards.
@@ -163,11 +168,11 @@ If the user exits abruptly, finalize with available data and do not claim full c
 
 ## Artifact Mastery Objectives
 
-Generated `Reports/`, `Consults/`, `Brain Dumps/`, and `Operative Guides/` artifacts include a `## Mastery Objectives` section per their shared command contracts. `study-review --doc` must read the full document first and use Mastery Objectives only as a coverage checksum, never as a substitute for the source body.
+Generated `Reports/`, `Consults/`, `Brain Dumps/`, `Operative Guides/`, and `Journal Club/` artifacts include a `## Mastery Objectives` section per their shared command contracts. `study-review --doc` must read the full document first and use Mastery Objectives only as a coverage checksum, never as a substitute for the source body.
 
 ## Vault Targets
 
-Use `.agents/shared/commands/review-artifacts.md` for the canonical destination table. In brief: `study-review` writes no vault artifact; `Reports/`, `Operative Guides/`, `Study Material/`, `Consults/`, `Brain Dumps/`, and `Presentations/Cases|Articles/` are written only by their matching workflows and then indexed.
+Use `.agents/shared/commands/review-artifacts.md` for the canonical destination table. In brief: `study-review` writes no vault artifact; `Reports/`, `Operative Guides/`, `Study Material/`, `Consults/`, `Brain Dumps/`, `Journal Club/`, and `Presentations/Cases|Articles/` are written only by their matching workflows and then indexed.
 
 ## Service-Rotation Commands
 
@@ -178,7 +183,7 @@ Service learning lives in `data/study_memory.db` and is sealed out of formal doc
 ### Naming Conventions
 
 - **All vault files**: Title Case, spaces, no underscores, no date suffixes, no skill prefixes.
-- **Reports / Study Material / Consults / Brain Dumps / Operative Guides / Presentations**: Title-cased topic only; no dates in filenames.
+- **Reports / Study Material / Consults / Brain Dumps / Operative Guides / Journal Club / Presentations**: Title-cased topic or short article title only; no dates in filenames.
 - **study-review sessions**: no vault file — record lives in `study_memory.db`.
 
 ### Cross-Reference Discovery
@@ -186,7 +191,7 @@ Service learning lives in `data/study_memory.db` and is sealed out of formal doc
 Before writing any skill output, scan the vault for related content:
 ```bash
 VAULT="/Users/gabrielreyes/Documents/Obsidian/agentic-neuro"
-find "$VAULT/Reports" "$VAULT/Operative Guides" "$VAULT/Study Material" "$VAULT/Concepts" "$VAULT/Consults" "$VAULT/Brain Dumps" -type f -name "*.md" -print 2>/dev/null
+find "$VAULT/Reports" "$VAULT/Operative Guides" "$VAULT/Study Material" "$VAULT/Concepts" "$VAULT/Consults" "$VAULT/Brain Dumps" "$VAULT/Journal Club" -type f -name "*.md" -print 2>/dev/null
 ```
 
 Match filenames + `key_terms:` frontmatter against topic. Generate wikilinks: `[[folder/note_name|Display Title]]`.
@@ -197,4 +202,4 @@ Every folder `INDEX.md` is a domain-grouped navigation surface rendered by `src/
 
 Grouping is driven by each note's **bottom YAML**: a `domain:` field (canonical slug, may be a list or `/`-separated) or `domain/<slug>` entries in `tags:`, plus a one-line `summary:` and optional `display:` (overrides the filename as the index title; `aliases:` are search terms, never display titles). Every vault note must close its bottom YAML with a final `---` — an unterminated block parses as no metadata and the file drops to `Uncategorized`.
 
-Script-written indexes (Study Material, Brain Dumps, Presentations) regenerate automatically through their guards. Agent-written indexes (Reports, Operative Guides, Concepts, Consults, Reference) are regenerated with `python3 src/index_builder.py <Folder>` (or `--all`) after the artifact's frontmatter is set.
+Script-written indexes (Study Material, Brain Dumps, Journal Club, Presentations) regenerate automatically through their guards. Agent-written indexes (Reports, Operative Guides, Concepts, Consults, Reference) are regenerated with `python3 src/index_builder.py <Folder>` (or `--all`) after the artifact's frontmatter is set.

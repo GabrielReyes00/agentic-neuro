@@ -1,0 +1,4 @@
+interface:
+  display_name: "Journal Club"
+  short_description: "Master neurosurgery articles for journal club"
+  default_prompt: "Use $journal-club to analyze this neurosurgery article PDF and prepare me to defend it at journal club."

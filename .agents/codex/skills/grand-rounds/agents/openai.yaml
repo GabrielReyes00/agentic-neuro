@@ -1,0 +1,4 @@
+interface:
+  display_name: "Grand Rounds"
+  short_description: "Build validated neurosurgery PowerPoint presentations"
+  default_prompt: "Use $grand-rounds to create a professional editable neurosurgery PowerPoint from my case material or validated Journal Club dossier, including source-traced visuals, speaker notes, package validation, and optional rehearsal."

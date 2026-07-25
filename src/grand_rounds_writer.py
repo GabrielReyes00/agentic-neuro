@@ -165,7 +165,6 @@ def _validate_quality_gate(
         "presentation arc",
         "slide outline and speaker notes",
         "citation list",
-        "image manifest",
         "anticipated questions",
         "presentation risks",
         "what not to say",
@@ -175,9 +174,12 @@ def _validate_quality_gate(
         for section in sorted(required)
         if not _has_section(sections, section)
     ]
+    if not (_has_section(sections, "image manifest") or _has_section(sections, "asset manifest")):
+        failures.append("missing section: image or asset manifest")
 
     if mode.strip().lower() == "article":
         article_required = [
+            "coverage ledger",
             "study design",
             "methods critique",
             "clinical impact",
@@ -254,6 +256,11 @@ def _write_manifest(
     presentation_risks: list[str],
     anticipated_questions: list[str],
     quality_gate_failures: list[str],
+    source_journal_club: str = "",
+    source_pdf: str = "",
+    duration_minutes: int = 0,
+    package_manifest: str = "",
+    deck_qa_status: str = "",
     sessions_dir: Path = DEFAULT_SESSIONS_DIR,
 ) -> Path:
     sessions_dir.mkdir(parents=True, exist_ok=True)
@@ -270,6 +277,11 @@ def _write_manifest(
         "presentation_risks": presentation_risks,
         "anticipated_questions": anticipated_questions,
         "quality_gate_failures": quality_gate_failures,
+        "source_journal_club": source_journal_club,
+        "source_pdf": source_pdf,
+        "duration_minutes": duration_minutes,
+        "package_manifest": package_manifest,
+        "deck_qa_status": deck_qa_status,
         "updated": _utc_iso(),
     }
     path = _manifest_path(title, sessions_dir)
@@ -288,6 +300,12 @@ def _default_metadata(
     image_count: int,
     attending_angle: str,
     manifest_path: Path | None,
+    source_journal_club: str = "",
+    source_pdf: str = "",
+    duration_minutes: int = 0,
+    slide_count: int = 0,
+    package_manifest: str = "",
+    deck_qa_status: str = "",
 ) -> dict[str, Any]:
     mode_lower = mode.strip().lower()
     normalized_mode = "article" if mode_lower in {"journal", "journal-club"} else mode_lower
@@ -304,6 +322,12 @@ def _default_metadata(
         "updated": _utc_iso(),
         "citation_count": len(citations),
         "image_placeholder_count": image_count,
+        "source_journal_club": source_journal_club,
+        "source_pdf": source_pdf,
+        "duration_minutes": duration_minutes,
+        "slide_count": slide_count,
+        "package_manifest": package_manifest,
+        "deck_qa_status": deck_qa_status,
         "tags": [
             "skill/grand-rounds",
             f"domain/{(domain or 'general').lower().replace(' ', '-')}",
@@ -333,6 +357,11 @@ def create_presentation(
     require_quality_gate: bool = False,
     sessions_dir: Path = DEFAULT_SESSIONS_DIR,
     overwrite: bool = False,
+    source_journal_club: str = "",
+    source_pdf: str = "",
+    duration_minutes: int = 0,
+    package_manifest: str = "",
+    deck_qa_status: str = "",
 ) -> Path:
     """Create a presentation markdown note and upsert the global index."""
     _reject_h1(body)
@@ -366,6 +395,17 @@ def create_presentation(
         anticipated_questions=anticipated_question_list,
         slide_titles=slide_title_list,
     )
+    if require_quality_gate and not final_deck_path.is_file():
+        quality_gate_failures.append(f"deck file does not exist: {final_deck_path}")
+    if require_quality_gate and mode.strip().lower() == "article":
+        if not source_journal_club:
+            quality_gate_failures.append("article presentation is missing source Journal Club path")
+        if not source_pdf:
+            quality_gate_failures.append("article presentation is missing source PDF path")
+        if deck_qa_status != "pass":
+            quality_gate_failures.append("article presentation deck QA status must be pass")
+        if not package_manifest:
+            quality_gate_failures.append("article presentation is missing package manifest path")
     if require_quality_gate and quality_gate_failures:
         raise ValueError("Quality gate failed: " + "; ".join(quality_gate_failures))
 
@@ -382,6 +422,11 @@ def create_presentation(
         presentation_risks=risk_list,
         anticipated_questions=anticipated_question_list,
         quality_gate_failures=quality_gate_failures,
+        source_journal_club=source_journal_club,
+        source_pdf=source_pdf,
+        duration_minutes=duration_minutes,
+        package_manifest=package_manifest,
+        deck_qa_status=deck_qa_status,
         sessions_dir=sessions_dir,
     )
     meta = _default_metadata(
@@ -394,6 +439,12 @@ def create_presentation(
         image_count=image_count,
         attending_angle=attending_angle,
         manifest_path=manifest_path,
+        source_journal_club=source_journal_club,
+        source_pdf=source_pdf,
+        duration_minutes=duration_minutes,
+        slide_count=len(slide_title_list),
+        package_manifest=package_manifest,
+        deck_qa_status=deck_qa_status,
     )
     if summary:
         meta["summary"] = summary
@@ -513,6 +564,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--summary", default="")
     parser.add_argument("--deck-path", default=None)
     parser.add_argument("--attending-angle", default="")
+    parser.add_argument("--source-journal-club", default="")
+    parser.add_argument("--source-pdf", default="")
+    parser.add_argument("--duration-minutes", type=int, default=0)
+    parser.add_argument("--package-manifest", default="")
+    parser.add_argument("--deck-qa-status", default="")
     parser.add_argument("--citations", default="", help="Semicolon-separated citation labels.")
     parser.add_argument("--image-count", type=int, default=0)
     parser.add_argument("--slide-titles", default="", help="Semicolon-separated slide titles.")
@@ -573,6 +629,11 @@ def main(argv: list[str] | None = None) -> int:
             require_quality_gate=args.require_quality_gate,
             sessions_dir=sessions_dir,
             overwrite=args.overwrite,
+            source_journal_club=args.source_journal_club,
+            source_pdf=args.source_pdf,
+            duration_minutes=args.duration_minutes,
+            package_manifest=args.package_manifest,
+            deck_qa_status=args.deck_qa_status,
         )
         emit({"ok": True, "action": "create", "path": str(path)})
     elif args.action == "append-rehearsal":

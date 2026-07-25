@@ -25,8 +25,13 @@ These are read-only outputs. Agents never hand-edit them.
 | `generate-report` | `Reports/<Title>.md` | Encyclopedic reference |
 | `intraoperative-guide` | `Operative Guides/<Title>.md` | Operative rehearsal guide |
 | `grand-rounds` | `Presentations/Cases\|Articles/<Title>.md` | Presentation note |
+| `journal-club` | `Journal Club/<Short Article Title>.md` | Article mastery dossier |
 
-`brain-dump` is an artifact-anchor workflow: its note is durable, while learner-state evidence arises only from a later tested review. `study-review` writes no vault artifact in either invocation mode; the memory layer is the durable record. No H1 in any vault file because filename is the title. YAML metadata belongs at bottom.
+`brain-dump` and `journal-club` artifact generation do not establish learner
+mastery; learner-state evidence arises only from later tested review. `study-review`
+writes no vault artifact in either invocation mode; the memory layer is the durable
+record. No H1 in any vault file because filename is the title. YAML metadata belongs
+at bottom.
 
 ## Cleanup
 

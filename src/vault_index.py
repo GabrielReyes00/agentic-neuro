@@ -43,6 +43,7 @@ INDEX_FOLDERS = (
     "Brain Dumps",
     "Concepts",
     "Consults",
+    "Journal Club",
     "Reference",
     "Presentations",
 )
@@ -79,6 +80,20 @@ SECTION_ALIASES: dict[str, str] = {
     "atomic fact ledger": "atomic_fact_ledger",
     "concept summary": "concept_summary",
     "questions": "questions",
+    "start here": "quick_reference",
+    "clinical foundation": "clinical_synthesis",
+    "essential concepts for this paper": "durable_mental_model",
+    "why this study exists": "evidence_card",
+    "study architecture": "evidence_card",
+    "results that matter": "evidence_card",
+    "figures and tables explained": "evidence_card",
+    "interpretation": "critical_discriminators",
+    "limitations that actually matter": "critical_discriminators",
+    "neurosurgical relevance": "clinical_use",
+    "historical and current context": "evidence_card",
+    "presentation core": "execution_check",
+    "faculty defense": "execution_check",
+    "source trace": "references",
 }
 
 TASK_SECTION_POLICY: dict[str, tuple[str, ...]] = {
@@ -144,6 +159,17 @@ TASK_SECTION_POLICY: dict[str, tuple[str, ...]] = {
         "evidence_card",
         "related",
         "references",
+    ),
+    "journal-club": (
+        "quick_reference",
+        "clinical_synthesis",
+        "durable_mental_model",
+        "evidence_card",
+        "critical_discriminators",
+        "clinical_use",
+        "execution_check",
+        "references",
+        "related",
     ),
 }
 
@@ -305,6 +331,7 @@ def _note_type(folder: str, tags: tuple[str, ...]) -> str:
         "Brain Dumps": "brain_dump",
         "Concepts": "concept",
         "Consults": "consult",
+        "Journal Club": "journal_club",
         "Reference": "reference",
         "Presentations": "presentation",
     }
@@ -823,7 +850,7 @@ CONTRAST_TOKENS = frozenset({"versus", "vs", "differential", "mimic", "mimics", 
 # Folder roles drive light edge typing. Concepts are atomic part-of nodes;
 # Reports/Operative Guides/Study Material are composite artifacts a concept is
 # part-of; Brain Dumps/Consults are associated experiential context.
-PART_OF_FOLDERS = frozenset({"Reports", "Operative Guides", "Study Material"})
+PART_OF_FOLDERS = frozenset({"Reports", "Operative Guides", "Study Material", "Journal Club"})
 
 
 def _resolve_anchor_note(conn: sqlite3.Connection, note: str) -> sqlite3.Row | None:

@@ -1,6 +1,6 @@
 ---
-description: Build a neurosurgery grand rounds, case presentation, or journal club deck with vault note and optional rehearsal.
-argument-hint: [case-or-article-presentation-request]
+description: Build a validated neurosurgery PowerPoint from case material or a Journal Club dossier, with source-traced visuals, speaker notes, vault note, and optional rehearsal.
+argument-hint: --mode <case|article> [--journal-club <vault-note>] [--pdf <path>] [--duration <minutes>]
 ---
 
 # Grand Rounds
@@ -9,4 +9,6 @@ The user invoked `/grand-rounds` with: $ARGUMENTS
 
 Read and follow `.agents/shared/commands/grand-rounds.md`.
 
-Use the presentation tooling available in the current Codex runtime and write the deck to `/Users/gabrielreyes/Desktop/<Title>.pptx`.
+Use the current Presentations skill, create the editable deck at
+`/Users/gabrielreyes/Desktop/<Title>.pptx`, and run the shared package guard before
+writing the vault note.

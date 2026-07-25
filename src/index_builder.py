@@ -29,6 +29,7 @@ INDEX_FOLDERS: dict[str, bool] = {
     "Brain Dumps": False,
     "Concepts": False,
     "Consults": False,
+    "Journal Club": False,
     "Reference": False,
     "Presentations": True,
 }
