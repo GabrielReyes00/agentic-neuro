@@ -70,7 +70,7 @@ cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
 python3 src/lance_retriever.py compare "<focused clinical query>" --stdout [--no-frontier]
 ```
 
-Read the retrieved passages. **Judge relevance before use**: passages should address the clinical task, not just adjacent anatomy or diseases. Use relevant passages to enrich your response with specific citations, thresholds, and technical refinements. 
+Read the retrieved passages. **Judge relevance before use**: passages should address the clinical task, not just adjacent anatomy or diseases. Use relevant passages to enrich your response with specific citations, thresholds, and technical refinements.
 
 **Synthesis & Citation Freedom:**
 You are never restricted to RAG-only material. You have full freedom to synthesize your own highly trusted clinical knowledge base with the RAG-retrieved insights. Use RAG as additional, curatable knowledge. If you use RAG content, you must cite it inline. If you do not use it or if a claim stems purely from clinical training, state it confidently as clinical knowledge (without fabricating citations).

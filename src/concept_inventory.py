@@ -934,7 +934,7 @@ def map_learner(
             if st in state_severity and state_severity[st] < worst_val:
                 worst_val = state_severity[st]
                 worst_state = st
-                
+
         is_gap = worst_state in open_gap_states if worst_state else False
         # Canonical exposure rule (mirrors study_memory._mastery_exposure): an open gap
         # holds at superficial, a single attempt never promotes, and the threshold reads
@@ -947,7 +947,7 @@ def map_learner(
             exposure = "exposed_superficial"
         else:
             exposure = "exposed_deep"
-            
+
         knowledge_map.append({
             "concept_id": node["id"],
             "concept": node["name"],

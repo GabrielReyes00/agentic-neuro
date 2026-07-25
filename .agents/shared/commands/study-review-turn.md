@@ -92,7 +92,7 @@ Never log a tracked claim for a synthesis/self-assessment prompt.
 
 ## Anki Enqueue
 
-IMMEDIATE ACTION REQUIRED: Immediately after every `log-answer` call, you MUST evaluate if the exchange is card-eligible. 
+IMMEDIATE ACTION REQUIRED: Immediately after every `log-answer` call, you MUST evaluate if the exchange is card-eligible.
 
 You MUST generate and enqueue 1–3 atomic cards (via `anki_queue.py enqueue`) in the same turn for any exchange where:
 - The score is incorrect (`0`) or partial (`1`).

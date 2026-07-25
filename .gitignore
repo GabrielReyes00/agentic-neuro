@@ -17,6 +17,9 @@ data/study_memory.legacy.db-wal
 data/study_memory.legacy.db-shm
 data/vault_index.db
 data/chromadb_store_anki_memory/
+data/anki_vector_cache.db
+data/anki_vector_cache.db-wal
+data/anki_vector_cache.db-shm
 data/study_memory_backup_*.db
 data/*.memory_cleanup_backup_*.db
 data/*.pre_stability_backup*
@@ -26,6 +29,7 @@ data/*.bak.db-wal
 
 # === Ephemeral Session Files (regenerated per session) ===
 data/Sessions/
+tmp/
 
 # === Runtime State & Caches ===
 data/artifacts/
