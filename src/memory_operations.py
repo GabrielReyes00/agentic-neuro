@@ -13,6 +13,7 @@ receives was opened via ``study_memory._get_db`` (so SCHEMA_SQL ran and the
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from datetime import datetime, timezone
 from typing import Any, Iterable
@@ -221,7 +222,10 @@ def _recent_claim_results(
         params.append(topic_id)
     rows = conn.execute(
         f"""SELECT cr.id, cr.topic_id, cr.concept_id, cr.claim_text, cr.score, cr.gap_type,
-                   cr.missing_edge, cr.corrected_rule, cr.created_at,
+                   cr.learner_claim, cr.demonstrated_edge, cr.misconception_text,
+                   cr.missing_edge, cr.corrected_rule, cr.clinical_consequence,
+                   cr.retest_prompt_shape, cr.teaching_intervention, cr.created_at,
+                   COALESCE(NULLIF(cr.inventory_concept_id, ''), c.inventory_concept_id, '') AS inventory_concept_id,
                    ex.session_id, ex.skill, t.canonical_slug AS topic, c.display_name AS concept
               FROM claim_results cr
               JOIN exchanges ex ON ex.id = cr.exchange_id
@@ -240,16 +244,26 @@ def _recent_claim_results(
             "skill": r["skill"] or "",
             "topic": r["topic"],
             "concept_id": int(r["concept_id"]),
+            "inventory_concept_id": str(r["inventory_concept_id"] or ""),
             "concept": r["concept"],
             "claim": _truncate(r["claim_text"], COMPACT_CLAIM_TEXT_LIMIT),
             "score": int(r["score"]),
             "gap_type": r["gap_type"] or "",
+            "learner_claim": _truncate(r["learner_claim"], COMPACT_CLAIM_TEXT_LIMIT),
+            "demonstrated_edge": _truncate(r["demonstrated_edge"], COMPACT_CLAIM_TEXT_LIMIT),
+            "misconception": _truncate(r["misconception_text"], COMPACT_CLAIM_TEXT_LIMIT),
             "missing_edge": _truncate(r["missing_edge"], COMPACT_CLAIM_TEXT_LIMIT),
         }
         if mode == "detailed":
             record["corrected_rule"] = _truncate(r["corrected_rule"], COMPACT_CLAIM_TEXT_LIMIT)
+            record["clinical_consequence"] = _truncate(r["clinical_consequence"], COMPACT_CLAIM_TEXT_LIMIT)
+            record["retest_prompt_shape"] = _truncate(r["retest_prompt_shape"], COMPACT_CLAIM_TEXT_LIMIT)
+            record["teaching_intervention"] = _truncate(r["teaching_intervention"], COMPACT_CLAIM_TEXT_LIMIT)
             record["created_at"] = r["created_at"]
-        out.append(record)
+        out.append({
+            key: value for key, value in record.items()
+            if value not in (None, "", [], {})
+        })
     return out
 
 
@@ -376,17 +390,22 @@ def _candidate_relationship_hints(
     topic_id: int | None,
     claim_result_ids: Iterable[int],
 ) -> list[dict[str, Any]]:
-    """Deterministic hints for ``confused_with`` candidates.
+    """High-precision, non-assertive hints for personalized graph curation.
 
-    Surfaces pairs of distinct concepts that were both scored < 2 within the
-    same recent session. Does not assert the edge — the agent decides.
+    One co-miss is coincidence, not a relationship. Surface a pair only when
+    explicit misconception/correction text names the other concept, or when the
+    pair recurs across at least two sessions. Canonical-identity duplicates are
+    excluded because they need realignment rather than a ``confused_with`` edge.
     """
     cr_ids = list(claim_result_ids)
     if not cr_ids:
         return []
     placeholders = ",".join("?" * len(cr_ids))
     rows = conn.execute(
-        f"""SELECT ex.session_id, cr.id AS claim_result_id, cr.concept_id, c.display_name AS concept
+        f"""SELECT ex.session_id, cr.id AS claim_result_id, cr.concept_id,
+                   c.display_name AS concept, cr.gap_type, cr.misconception_text,
+                   cr.missing_edge, cr.corrected_rule,
+                   COALESCE(NULLIF(cr.inventory_concept_id, ''), c.inventory_concept_id, '') AS inventory_concept_id
               FROM claim_results cr
               JOIN exchanges ex ON ex.id = cr.exchange_id
               JOIN concepts c ON c.id = cr.concept_id
@@ -396,8 +415,18 @@ def _candidate_relationship_hints(
     by_session: dict[str, list[sqlite3.Row]] = {}
     for r in rows:
         by_session.setdefault(r["session_id"], []).append(r)
-    seen: set[tuple[int, int]] = set()
-    hints: list[dict[str, Any]] = []
+    pair_support: dict[tuple[int, int], dict[str, Any]] = {}
+    generic_tokens = {
+        "and", "the", "with", "from", "management", "clinical", "rule",
+        "target", "threshold", "treatment", "patient", "concept",
+    }
+
+    def tokens(text: str) -> set[str]:
+        return {
+            word for word in re.findall(r"[a-z0-9]+", text.lower())
+            if len(word) > 2 and word not in generic_tokens
+        }
+
     for session_id, entries in by_session.items():
         for i in range(len(entries)):
             for j in range(i + 1, len(entries)):
@@ -405,20 +434,61 @@ def _candidate_relationship_hints(
                 ca, cb = int(a["concept_id"]), int(b["concept_id"])
                 if ca == cb:
                     continue
-                pair = (min(ca, cb), max(ca, cb))
-                if pair in seen:
+                inv_a = str(a["inventory_concept_id"] or "")
+                inv_b = str(b["inventory_concept_id"] or "")
+                if inv_a and inv_a == inv_b:
                     continue
-                seen.add(pair)
-                hints.append({
-                    "source_concept_id": pair[0],
-                    "target_concept_id": pair[1],
-                    "hint_type": "co_missed_in_session",
-                    "session_id": session_id,
-                    "supporting_claim_result_ids": sorted({int(a["claim_result_id"]), int(b["claim_result_id"])}),
+                pair = (min(ca, cb), max(ca, cb))
+                bucket = pair_support.setdefault(pair, {
+                    "sessions": set(),
+                    "claim_result_ids": set(),
+                    "explicit_terms": set(),
+                    "explicit": False,
+                    "concepts": {
+                        ca: str(a["concept"]),
+                        cb: str(b["concept"]),
+                    },
                 })
-                if len(hints) >= RELATIONSHIP_HINT_CAP:
-                    return hints
-    return hints
+                bucket["sessions"].add(str(session_id))
+                bucket["claim_result_ids"].update({
+                    int(a["claim_result_id"]), int(b["claim_result_id"])
+                })
+                for source, other in ((a, b), (b, a)):
+                    if str(source["gap_type"] or "") not in {"conceptual_confusion", "cross_contamination"}:
+                        continue
+                    evidence_text = " ".join(str(source[field] or "") for field in (
+                        "misconception_text", "missing_edge", "corrected_rule"
+                    ))
+                    shared = tokens(evidence_text) & tokens(str(other["concept"] or ""))
+                    if shared:
+                        bucket["explicit"] = True
+                        bucket["explicit_terms"].update(shared)
+
+    hints: list[dict[str, Any]] = []
+    for pair, support in pair_support.items():
+        sessions = sorted(support["sessions"])
+        explicit = bool(support["explicit"])
+        if not explicit and len(sessions) < 2:
+            continue
+        hints.append({
+            "source_concept_id": pair[0],
+            "target_concept_id": pair[1],
+            "source_concept": support["concepts"].get(pair[0], ""),
+            "target_concept": support["concepts"].get(pair[1], ""),
+            "hint_type": "explicit_cross_reference" if explicit else "repeated_co_miss",
+            "confidence": "high" if explicit and len(sessions) >= 2 else "medium",
+            "supporting_session_ids": sessions,
+            "supporting_claim_result_ids": sorted(support["claim_result_ids"]),
+            "matched_concept_terms": sorted(support["explicit_terms"]),
+            "agent_validation_required": True,
+        })
+    hints.sort(key=lambda item: (
+        0 if item["hint_type"] == "explicit_cross_reference" else 1,
+        -len(item["supporting_session_ids"]),
+        item["source_concept_id"],
+        item["target_concept_id"],
+    ))
+    return hints[:RELATIONSHIP_HINT_CAP]
 
 
 def build_curation_candidates(

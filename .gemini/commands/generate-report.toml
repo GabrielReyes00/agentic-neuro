@@ -1,17 +1,11 @@
-description = "Encyclopedic neurosurgical reference report — textbook-chapter ambition, agent-driven research and self-audit"
+description = "Create a source-traced, citation-dense neurosurgical reference report."
 
 prompt = """
-ACTIVE COMMAND: /generate-report — Produce an encyclopedic, citation-dense reference report on a neurosurgical topic.
+ACTIVE COMMAND: /generate-report
+User input: {{args}}
 
-You MUST read and follow `.agents/shared/commands/generate-report.md` end-to-end. Do not improvise. It is principle-driven, not phase-driven — exercise judgment on scope, source weighting, and structure within the contract, which owns the provenance tiers, quality floors, coverage ledger, YAML metadata rules, and finish protocol.
+Read `.agents/shared/workflow-registry.json`, then read and follow the canonical
+contract below. Do not infer behavioral policy from this adapter.
 
-Gemini guardrails (do not let these slip):
-- Provenance tiering is mandatory and enforced. Never fabricate or launder a citation. Label non-RAG model knowledge inline as "model knowledge — verify" and flag high-stakes specifics (doses, targets, limits, outcomes) with ⚠ — never pair them with a fabricated PMID/DOI/page.
-- Self-audit every quantitative/dose/target claim against the shared Quality Floors before writing. If any floor fails, research more and rewrite — do not write a deficient file.
-
-User's topic: {{args}}
-
----
-
-@{.gemini/commands/generate-report.md}
+@{.agents/shared/commands/generate-report.md}
 """

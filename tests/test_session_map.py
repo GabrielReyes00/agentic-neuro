@@ -189,6 +189,84 @@ class SessionMapTests(unittest.TestCase):
         self.assertEqual(entry["successes_count"], 1)
         self.assertEqual(entry["sqlite_success_rate"], round(1 / 3, 3))
 
+    def test_successful_mechanism_probe_upgrades_mastery_depth(self) -> None:
+        data = {
+            "knowledge_map": [{
+                "concept_id": "spi.ldh",
+                "concept": "Lumbar disc herniation",
+                "exposure_status": "exposed_deep",
+                "knowledge_state": "passed",
+                "attempts_count": 2,
+                "successes_count": 2,
+                "sqlite_success_rate": 1.0,
+                "avg_stability": 3.0,
+                "successful_operations": ["recall"],
+                "mastery_depth": "factual",
+                "role": "entry",
+            }],
+            "session_stats": {},
+        }
+        patched, _ = session_map.patch_after_log(
+            data,
+            inventory_concept_id="spi.ldh",
+            concept_text="Lumbar disc herniation",
+            correct=2,
+            exchange_id=3,
+            cognitive_op="mechanism",
+        )
+        entry = patched["knowledge_map"][0]
+        self.assertEqual(entry["successful_operations"], ["mechanism", "recall"])
+        self.assertEqual(entry["mastery_depth"], "causal")
+
+    def test_live_transfer_mastery_requires_cross_session_replication(self) -> None:
+        data = {
+            "session_id": "transfer-session-one",
+            "knowledge_map": [{
+                "concept_id": "tra.cpp",
+                "concept": "CPP target application",
+                "exposure_status": "exposed_deep",
+                "knowledge_state": "passed",
+                "attempts_count": 2,
+                "successes_count": 2,
+                "sqlite_success_rate": 1.0,
+                "avg_stability": 3.0,
+                "successful_operations": [],
+                "successful_operation_evidence": {},
+                "role": "entry",
+            }],
+            "session_stats": {},
+        }
+        data, _ = session_map.patch_after_log(
+            data,
+            inventory_concept_id="tra.cpp",
+            concept_text="CPP target application",
+            correct=2,
+            exchange_id=3,
+            cognitive_op="transfer",
+        )
+        self.assertEqual(data["knowledge_map"][0]["mastery_depth"], "relational")
+
+        data, _ = session_map.patch_after_log(
+            data,
+            inventory_concept_id="tra.cpp",
+            concept_text="CPP target application",
+            correct=2,
+            exchange_id=4,
+            cognitive_op="transfer",
+        )
+        self.assertEqual(data["knowledge_map"][0]["mastery_depth"], "relational")
+
+        data["session_id"] = "transfer-session-two"
+        data, _ = session_map.patch_after_log(
+            data,
+            inventory_concept_id="tra.cpp",
+            concept_text="CPP target application",
+            correct=2,
+            exchange_id=5,
+            cognitive_op="transfer",
+        )
+        self.assertEqual(data["knowledge_map"][0]["mastery_depth"], "transfer_ready")
+
     def test_prune_stale_session_maps(self) -> None:
         import os
         import time

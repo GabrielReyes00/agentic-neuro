@@ -1,6 +1,7 @@
 """Shared, domain-grouped INDEX.md renderer for the Obsidian vault.
 
-This is a tool, not an LLM surface: it only reads files, extracts bottom-YAML
+This is a tool, not an LLM surface: it only reads files, extracts native
+Obsidian frontmatter
 metadata, and renders deterministic markdown. No reasoning happens here.
 
 Every folder index is rendered the same way: files are grouped under H2 domain
@@ -17,7 +18,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
-import yaml
+try:
+    from vault_schema import parse_frontmatter
+except ModuleNotFoundError:  # pragma: no cover - package import in tests
+    from .vault_schema import parse_frontmatter
 
 DEFAULT_VAULT_ROOT = Path("/Users/gabrielreyes/Documents/Obsidian/agentic-neuro")
 
@@ -26,12 +30,13 @@ INDEX_FOLDERS: dict[str, bool] = {
     "Reports": False,
     "Study Material": False,
     "Operative Guides": False,
-    "Brain Dumps": False,
+    "Shift Debriefs": False,
     "Concepts": False,
     "Consults": False,
     "Journal Club": False,
     "Reference": False,
     "Presentations": True,
+    "Residency": True,
 }
 
 # Canonical display order. The first matching domain in this list becomes a
@@ -103,30 +108,6 @@ def _domains_from_meta(meta: dict[str, Any]) -> list[str]:
     return found
 
 
-def _parse_bottom_yaml(text: str) -> dict[str, Any]:
-    """Parse the final fenced YAML block at the bottom of a vault note.
-
-    Located by lines (last `---` line = close, nearest preceding `---` = open)
-    so a thematic-break `---` or a stray separator earlier in the body does not
-    swallow the real metadata block.
-    """
-    lines = text.splitlines()
-    while lines and not lines[-1].strip():
-        lines.pop()
-    if not lines or lines[-1].strip() != "---":
-        return {}
-    close = len(lines) - 1
-    open_idx = next((i for i in range(close - 1, -1, -1) if lines[i].strip() == "---"), None)
-    if open_idx is None:
-        return {}
-    inner = "\n".join(lines[open_idx + 1 : close])
-    try:
-        parsed = yaml.safe_load(inner)
-    except yaml.YAMLError:
-        return {}
-    return parsed if isinstance(parsed, dict) else {}
-
-
 def _display_from_meta(meta: dict[str, Any], stem: str) -> str:
     # The filename is the canonical title in Obsidian; only an explicit
     # `display:` overrides it. `aliases` are search terms, not display titles.
@@ -137,9 +118,9 @@ def _display_from_meta(meta: dict[str, Any], stem: str) -> str:
 
 
 def extract_meta(path: Path, vault_root: Path) -> dict[str, Any]:
-    """Extract grouping metadata from one vault note's bottom YAML."""
+    """Extract grouping metadata from one vault note's native frontmatter."""
     text = path.read_text(encoding="utf-8")
-    meta = _parse_bottom_yaml(text)
+    meta = parse_frontmatter(text)
     domains = _domains_from_meta(meta)
     summary = meta.get("summary")
     summary = summary.strip() if isinstance(summary, str) else ""
@@ -166,9 +147,18 @@ def _inline_extras(meta: dict[str, Any]) -> list[str]:
     mode = meta.get("mode")
     if isinstance(mode, str) and mode.strip():
         extras.append(mode.strip())
-    deck = meta.get("deck_path")
+    deck = meta.get("deck_file") or meta.get("deck_path")
     if isinstance(deck, str) and deck.strip():
-        extras.append(f"[{Path(deck).name}](<{deck.strip()}>)")
+        target = deck.strip()
+        if target.startswith("[[") and target.endswith("]]"):
+            target = target[2:-2].split("|", 1)[0]
+        if Path(target).is_absolute():
+            extras.append(f"[{Path(target).name}](<{target}>)")
+        else:
+            extras.append(f"[[{target}|PowerPoint]]")
+    status = meta.get("status")
+    if isinstance(status, str) and status.strip() not in {"", "current", "active"}:
+        extras.append(f"status: {status.strip()}")
     return extras
 
 

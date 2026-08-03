@@ -1,13 +1,11 @@
-description = "Service-rotation debrief route through brain-dump service-memory capture"
+description = "Alias a service-rotation debrief to the Shift Debrief workflow."
 
 prompt = """
-ACTIVE COMMAND: /service-log - Service-rotation debrief route through brain-dump service-memory capture.
+ACTIVE COMMAND: /service-log
+User input: {{args}}
 
-Read `.agents/shared/commands/service-log.md`; it routes service debriefs through the brain-dump service-memory workflow.
+Read `.agents/shared/workflow-registry.json`, then read and follow the canonical
+contract below. Do not infer behavioral policy from this adapter.
 
-User's input: {{args}}
-
----
-
-@{.gemini/commands/service-log.md}
+@{.agents/shared/commands/service-log.md}
 """

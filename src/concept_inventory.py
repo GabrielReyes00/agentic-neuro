@@ -477,6 +477,9 @@ def scope_subgraph(
     """Deterministic bounded subgraph: entry nodes + 1-hop prereq/discriminator/related closure."""
     concepts = _concept_index(conn, domain=domain)
     by_id = {c["id"]: c for c in concepts}
+    multi_scope_query = bool(
+        re.search(r"\b(?:across|compare|comparison|versus|vs)\b", str(query).lower())
+    )
 
     entries: list[tuple[float, str]] = []
     anchored_topics: list[str] = []
@@ -533,7 +536,7 @@ def scope_subgraph(
         # in-domain concepts. Neighbor (1-hop edge) expansion may still legitimately
         # cross domains and is intentionally left untouched.
         anchored_domains = {c["domain"] for c in concepts if c["topic_id"] in anchored_set}
-        if scored:
+        if scored and not multi_scope_query:
             scored_domains = {by_id[cid]["domain"] for _, cid in scored}
             # anchored_domains comes from the anchored topics, not the matched
             # concepts, so intersect first — never filter to a domain that has no
@@ -626,6 +629,7 @@ def scope_subgraph(
             "topic_id": topic_id,
             "domain": domain,
             "anchored_topics": anchored_topics,
+            "multi_scope_query": multi_scope_query,
             "budget": budget,
         },
         "nodes": nodes,
@@ -712,6 +716,7 @@ def map_learner(
 ) -> dict:
     """Project learner memory onto a scoped inventory subgraph (memory DB opened read-only)."""
     sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from cognitive_ops import mastery_depth_from_evidence, trusted_operation_from_signal  # noqa: PLC0415
     from study_memory import (  # noqa: PLC0415 - shared deterministic policy semantics
         TARGET_CONCEPTS_COMPACT_CAP,
         _compute_teaching_policy,
@@ -758,9 +763,38 @@ def map_learner(
             mem.close()
         return scope
 
+    scope_node_ids = {str(node["id"]) for node in scope["nodes"]}
+
     if mem is not None:
-        topic_ids = sorted(resolved_topics.values())
+        selected_topic_ids = set(resolved_topics.values())
+        # Canonical identity crosses document/topic envelopes. Once the inventory
+        # scope is known, include every assessed claim explicitly bound to one of
+        # those nodes, even when it was learned under another report, service, or
+        # prior topic label. Unbound lexical evidence remains selected-topic only.
+        cross_topic_ids: set[int] = set()
+        if scope_node_ids:
+            placeholders = ",".join("?" for _ in scope_node_ids)
+            cross_topic_ids = {
+                int(row["topic_id"])
+                for row in mem.execute(
+                    f"""SELECT DISTINCT cr.topic_id
+                          FROM claim_results cr
+                          JOIN concepts c ON c.id = cr.concept_id
+                         WHERE cr.origin = 'assessed'
+                           AND COALESCE(NULLIF(cr.inventory_concept_id, ''),
+                                        NULLIF(c.inventory_concept_id, ''))
+                               IN ({placeholders})""",
+                    sorted(scope_node_ids),
+                )
+            }
+        topic_ids = sorted(selected_topic_ids | cross_topic_ids)
         for tid in topic_ids:
+            selected_topic = tid in selected_topic_ids
+            topic_row = mem.execute(
+                "SELECT canonical_slug, display_name FROM topics WHERE id = ?",
+                (tid,),
+            ).fetchone()
+            topic_slug = str(topic_row["canonical_slug"] or "") if topic_row else ""
             concept_meta = {
                 int(r["id"]): {
                     "name": r["display_name"],
@@ -781,14 +815,19 @@ def map_learner(
             # old per-concept rollup that collapsed every claim onto one node and lost,
             # e.g., NASCIS history buried inside a STASCIS-bound concept.
             claim_rows = mem.execute(
-                """SELECT concept_id, COALESCE(inventory_concept_id, '') AS claim_inv,
-                          claim_slug, score, created_at, id
-                     FROM claim_results
-                    WHERE topic_id = ? AND origin = 'assessed'
-                    ORDER BY created_at DESC, id DESC""",
+                """SELECT cr.concept_id, COALESCE(cr.inventory_concept_id, '') AS claim_inv,
+                          cr.claim_slug, cr.score, cr.learning_operation,
+                          cr.agent_signal_json, cr.created_at, cr.id, ex.session_id
+                     FROM claim_results cr
+                     JOIN exchanges ex ON ex.id = cr.exchange_id
+                    WHERE cr.topic_id = ? AND cr.origin = 'assessed'
+                    ORDER BY cr.created_at DESC, cr.id DESC""",
                 (tid,),
             ).fetchall()
             units: dict[tuple[int, str], list[tuple[str, int, int]]] = {}
+            unit_operation_evidence: dict[
+                tuple[int, str], dict[str, dict[str, object]]
+            ] = {}
             slug_inv: dict[tuple[int, str], str] = {}
             for cr in claim_rows:
                 cid = int(cr["concept_id"])
@@ -796,9 +835,25 @@ def map_learner(
                 if meta is None:
                     continue
                 eff_inv = str(cr["claim_inv"]) or meta["binding"]
+                if not selected_topic and eff_inv not in scope_node_ids:
+                    continue
                 units.setdefault((cid, eff_inv), []).append(
                     (str(cr["created_at"]), int(cr["id"]), int(cr["score"]))
                 )
+                if int(cr["score"]) >= 2:
+                    operation = trusted_operation_from_signal(
+                        operation=str(cr["learning_operation"] or ""),
+                        agent_signal_json=str(cr["agent_signal_json"] or ""),
+                    )
+                    if operation:
+                        op_evidence = unit_operation_evidence.setdefault((cid, eff_inv), {}).setdefault(
+                            operation,
+                            {"count": 0, "session_ids": set()},
+                        )
+                        op_evidence["count"] = int(op_evidence["count"]) + 1
+                        session_ids = op_evidence["session_ids"]
+                        if isinstance(session_ids, set) and cr["session_id"]:
+                            session_ids.add(str(cr["session_id"]))
                 slug_inv[(cid, str(cr["claim_slug"]))] = eff_inv
             unit_states: dict[tuple[int, str], list[dict]] = {}
             for sr in mem.execute(
@@ -814,6 +869,8 @@ def map_learner(
                 # open gap holds the right node at superficial (states join results on
                 # claim_slug; fall back to the concept binding for orphan states).
                 eff_inv = slug_inv.get((cid, str(sr["claim_slug"])), meta["binding"])
+                if not selected_topic and eff_inv not in scope_node_ids:
+                    continue
                 unit_states.setdefault((cid, eff_inv), []).append({
                     "state": sr["state"], "priority": sr["priority"],
                     "stability": sr["stability"], "gap_type": sr["gap_type"],
@@ -821,15 +878,26 @@ def map_learner(
             concepts_with_claims = {cid for (cid, _e) in units}
             for (cid, eff_inv), scored in units.items():
                 meta = concept_meta[cid]
+                operation_evidence = {
+                    operation: {
+                        "count": int(values["count"]),
+                        "session_ids": sorted(values["session_ids"]),
+                        "session_count": len(values["session_ids"]),
+                    }
+                    for operation, values in unit_operation_evidence.get((cid, eff_inv), {}).items()
+                }
                 learner_concepts.append({
                     "learner_concept_id": cid,
                     "name": meta["name"],
                     "slug": meta["slug"],
+                    "memory_topic": topic_slug,
                     "inventory_concept_id": eff_inv,
                     "scored": scored,  # [(created_at, id, score)] most-recent-first
                     "attempts": len(scored),
                     "successes": sum(1 for _t, _i, s in scored if s >= 2),
                     "last_score": scored[0][2] if scored else 0,
+                    "successful_operations": sorted(operation_evidence),
+                    "successful_operation_evidence": operation_evidence,
                     "states": unit_states.get((cid, eff_inv), []),
                     "tokens": _tokens(meta["name"]),
                 })
@@ -838,20 +906,29 @@ def map_learner(
             for cid, meta in concept_meta.items():
                 if cid in concepts_with_claims:
                     continue
+                if not selected_topic:
+                    continue
                 learner_concepts.append({
                     "learner_concept_id": cid,
                     "name": meta["name"],
                     "slug": meta["slug"],
+                    "memory_topic": topic_slug,
                     "inventory_concept_id": meta["binding"],
                     "scored": [],
                     "attempts": 0,
                     "successes": 0,
                     "last_score": 0,
+                    "successful_operations": [],
+                    "successful_operation_evidence": {},
                     "states": unit_states.get((cid, meta["binding"]), []),
                     "tokens": _tokens(meta["name"]),
                 })
             try:
-                due_claims.extend(_due_claims_for_summary(mem, topic_id=tid, limit=8))
+                topic_due = _due_claims_for_summary(mem, topic_id=tid, limit=8)
+                due_claims.extend(
+                    item for item in topic_due
+                    if selected_topic or str(item.get("inventory_concept_id") or "") in scope_node_ids
+                )
             except Exception as exc:  # noqa: BLE001 - optional signal, but observe the loss
                 print(f"WARN map_learner_due_claims_failed topic_id={tid}: {exc}", file=sys.stderr)
         matched_ids = [lc["learner_concept_id"] for lc in learner_concepts]
@@ -875,7 +952,6 @@ def map_learner(
             toks = toks | _tokens(alias)
         node_tokens[node["id"]] = toks
 
-    scope_node_ids = {node["id"] for node in scope["nodes"]}
     assignments: dict[str, list[dict]] = {}
     unmatched: list[dict] = []
     for lc in learner_concepts:
@@ -917,6 +993,25 @@ def map_learner(
         last_score = merged[0][2] if merged else 0
         recent = merged[:3]
         recent_rate = round(sum(1 for _t, _i, sc in recent if sc >= 2) / len(recent), 3) if recent else 0.0
+        successful_operations = sorted({
+            operation
+            for learner_concept in mapped
+            for operation in learner_concept.get("successful_operations", [])
+        })
+        operation_evidence: dict[str, dict[str, object]] = {}
+        for learner_concept in mapped:
+            for operation, values in (
+                learner_concept.get("successful_operation_evidence") or {}
+            ).items():
+                if not isinstance(values, dict):
+                    continue
+                bucket = operation_evidence.setdefault(
+                    str(operation), {"count": 0, "session_ids": set()}
+                )
+                bucket["count"] = int(bucket["count"]) + int(values.get("count", 0) or 0)
+                sessions = bucket["session_ids"]
+                if isinstance(sessions, set):
+                    sessions.update(str(item) for item in values.get("session_ids", []) if str(item))
         all_states = [s for m in mapped for s in m["states"]]
         stabilities = [s["stability"] for s in all_states if s["stability"] is not None]
         avg_stability = sum(stabilities) / len(stabilities) if stabilities else 1.0
@@ -948,6 +1043,14 @@ def map_learner(
         else:
             exposure = "exposed_deep"
 
+        serialized_operation_evidence = {
+            operation: {
+                "count": int(values["count"]),
+                "session_count": len(values["session_ids"]),
+                "session_ids": sorted(values["session_ids"]),
+            }
+            for operation, values in operation_evidence.items()
+        }
         knowledge_map.append({
             "concept_id": node["id"],
             "concept": node["name"],
@@ -960,6 +1063,12 @@ def map_learner(
             "attempts_count": attempts,
             "successes_count": successes,
             "sqlite_success_rate": success_rate,
+            "successful_operations": successful_operations,
+            "successful_operation_evidence": serialized_operation_evidence,
+            "mastery_depth": mastery_depth_from_evidence(
+                serialized_operation_evidence,
+                active_gap=is_gap,
+            ),
             "safety_critical": any(s["priority"] in ("urgent", "high") for s in all_states),
             "active_misconception": any(
                 s["state"] in open_gap_states and str(s["gap_type"] or "") in misconception_gap_types
@@ -967,9 +1076,11 @@ def map_learner(
             ),
             "matched_learner_concepts": [
                 {"learner_concept_id": m["learner_concept_id"], "name": m["name"],
+                 "memory_topic": m.get("memory_topic", ""),
                  "match_score": m["match_score"], "binding_source": m.get("binding_source", "lexical")}
                 for m in mapped
             ],
+            "memory_context_count": len({str(m.get("memory_topic") or "") for m in mapped}),
         })
 
     plan = _compute_teaching_policy(knowledge_map, due_claims=due_claims, shadow_rule_signals=shadow_signals)

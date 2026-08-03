@@ -1,140 +1,104 @@
-# Intraoperative Guide Finalization Module
+# Intraoperative Guide Finalization
 
-Use this module only after expert completeness review returns `APPROVED`.
+Install only after either (a) expert review returns `APPROVED`, or (b) repair is
+exhausted and Gabriel explicitly authorizes a visibly incomplete artifact. The
+validator is structural and audit-oriented; it never replaces semantic review.
 
-## Purpose
+## Verdict Chain
 
-Install the approved guide, run deterministic validation, and complete shared learning-system bookkeeping without altering the expert-approved substance except to fix validation failures.
+Under `data/Sessions/<Title>/verdicts/`, require:
 
-## Verdict Chain Gate (machine-readable enforcement)
+- `decomposition.json` with `coverage_matrix_complete: true`;
+- `research.json` with `coverage_gate_met: true` (legacy
+  `minimum_floor_met` remains readable) or named justified shortfalls; if
+  `current_evidence_required: true`, a complete guide also requires
+  `current_evidence_source_present: true`;
+- `coverage_ledger.json` in the parent session directory, with each applicable
+  block covered, justified internal-only, or transparently unresolved;
+- latest `map-review-cycle-<N>.json` with `MAP_APPROVED`;
+- latest `expert-review-cycle-<N>.json` and one matching
+  `gap-repair-cycle-<N>.json` for every revision cycle.
 
-Before any write, confirm the verdict chain is complete and consistent. The finalize module **must not** advance unless every required verdict JSON exists, is well-formed, and carries an approving verdict where applicable.
+Normal installation requires the latest expert verdict `APPROVED` and no
+blocking ledger gap.
 
-Required files under `data/Sessions/<Title>/verdicts/`:
+Incomplete installation requires latest verdict `REVISION REQUIRED`,
+frontmatter `status: incomplete`, a visible `## Unresolved Or Weak Areas`, and:
 
-1. `decomposition.json` — `coverage_matrix_complete: true`.
-2. `research.json` — `minimum_floor_met: true` (or every shortfall has a recorded internal-knowledge justification). For intermediate and complex procedures, `frontier_outcomes_query_present: true` is also required; if false, the workflow must return to the research checkpoint and run at least one outcomes query without `--no-frontier` before finalization can proceed. This is a gate, not a flag.
-3. `coverage_ledger.json` — present at `data/Sessions/<Title>/coverage_ledger.json`, every required block has `status: covered` or a recorded `internal_only` justification, and no block has `review_status: gap` in the latest ledger.
-4. `map-review-cycle-<N>.json` — most recent cycle has `verdict: "MAP_APPROVED"`.
-5. `expert-review-cycle-<N>.json` — most recent cycle has `verdict: "APPROVED"`.
-6. `gap-repair-cycle-<N>.json` — present for every cycle where expert review returned `REVISION REQUIRED`. The final gap-repair cycle must not have `user_escalation_required: true` unless the user has explicitly authorized shipping with labeled gaps.
+`data/Sessions/<Title>/verdicts/incomplete-authorization.json`
 
-Run a verdict-chain check before writing:
-
-```bash
-cd /Users/gabrielreyes/agentic-neuro && \
-ls "data/Sessions/<Title>/verdicts/" 2>/dev/null
+```json
+{
+  "authorized": true,
+  "authorized_by": "user",
+  "authorization_context": "Why a limited artifact is useful now",
+  "unresolved_gap_ids": ["CM-07"]
+}
 ```
 
-If any required verdict file is missing, the workflow is incomplete. Do **not** write the real vault, memory, concepts, or Anki artifacts. Surface the missing verdict to the user and return to the appropriate checkpoint.
+Every latest expert blocking gap must be represented by Coverage Matrix block ID
+(or rubric block when no matrix ID exists). Never create this authorization from
+silence, inferred urgency, or the agent's preference. An incomplete guide is not
+complete or expert-approved.
 
-## Bottom YAML Parsing (robust)
+## Preflight And Target
 
-When locating and parsing the bottom YAML block, scan upward from the **last**
-`---` line to the preceding `---` (right-split), rather than splitting on the
-first `---` encountered. Guides may legitimately contain `---`-like sequences or
-callout rules in the body; a right-split scan is immune to those and prevents
-YAML mangling on long guides. Confirm the recovered block contains
-`internal_knowledge_used` and the one-line `provenance:` summary before writing.
+Parse only the YAML block opening on line 1. Require native frontmatter with
+canonical domain, complexity, one-line summary/provenance, and
+`internal_knowledge_used`; no
+H1; verified wikilinks; Mastery Objectives; Related In This Vault; and
+Pre-Scrub Mental Rehearsal for intermediate/complex procedures.
 
-## Preconditions
+Write real guides only to:
 
-- The verdict chain above is complete.
-- Every wikilink in the guide was verified against the real vault scan.
-- The guide has no H1 and no top YAML.
-- Bottom YAML metadata is present, including `internal_knowledge_used` and a one-line `provenance:` summary.
-- `## Mastery Objectives` and `## Related in This Vault` are present before bottom YAML.
-- `## Pre-Scrub Mental Rehearsal` is present near the end of the guide for intermediate and complex procedures.
+`/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Operative Guides/<Title>.md`
 
-## Write Target
+Dry runs use `data/Sessions/<Title> Dry Run.md` and make no vault, concept,
+learner-memory, or Anki write.
 
-Write the guide to:
+## Validation And Installation
 
-```text
-/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Operative Guides/<Title>.md
-```
-
-If this is a dry run, do not write to the real vault. Use `data/Sessions/<Title> Dry Run.md` and clearly report that no real vault, memory, or Anki writes occurred.
-
-Before writing, confirm the destination is exactly under `/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Operative Guides/`. Do not write real guides into repo-local shadow paths.
-
-## Deterministic Validation
-
-Run:
+Normal:
 
 ```bash
-cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
 python3 src/operative_guide_validator.py "/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Operative Guides/<Title>.md"
 ```
 
-For dry runs, validate the dry-run path instead.
+Explicitly authorized incomplete:
 
-If validation fails, revise only the issue needed to satisfy the guard, then rerun validation. Do not use the validator as a substitute for expert review.
-
-The validator also rejects unverified wikilinks when the Obsidian vault is available. If it reports broken wikilinks, remove the link syntax or replace the target with an exact verified note title.
-
-## Index, Concepts, Memory, and Anki
-
-For real runs:
-
-1. Ensure the guide's bottom YAML carries `domain:` (canonical slug) and a one-line `summary:`, then regenerate the domain-grouped index: `python3 src/index_builder.py "Operative Guides"`.
-2. Extract 2-5 concept cards per `.agents/shared/commands/concept-extraction.md` when the guide contains reusable anatomy, corridor, bailout, complication, or decision concepts worth future wikilinking.
-3. Log the guide to memory using the shared learning-session contract.
-4. Queue Anki cards only when durable spaced-repetition facts are present.
-
-Operative-guide Anki cards are a deck-routing exception. Every card generated from this guide must use:
-
-```text
-Neurosurgery::Procedures::<Title>
+```bash
+python3 src/operative_guide_validator.py --allow-incomplete "/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Operative Guides/<Title>.md"
 ```
 
-Do not scatter operative-guide cards into ordinary domain decks.
+Repair only the named structural issue and rerun; do not change expert-reviewed
+substance to game a guard. Extract every wikilink and confirm an exact vault note
+target; otherwise use plain text. Related In This Vault includes only verified,
+explained relationships.
 
-Dry-run finalization stops after dry-run validation and rehearsal artifacts. Vault indexing, concept-card extraction, memory logging, and Anki writes are reserved for real runs.
+After a real pass:
 
-## Wikilink Verification
+1. Regenerate `Operative Guides/INDEX.md` through `src/index_builder.py`.
+2. Run 0–5 novel concept promotions under `concept-extraction.md`; zero is valid
+   and reviewed merges require explicit overwrite flags.
+3. Refresh the vault library and require zero integrity failures.
+4. Do not log artifact generation as learner mastery or create passive Anki.
+   Later evaluated rehearsal may use `Neurosurgery::Procedures::<Title>`.
 
-Before final validation, verify all wikilinks:
+## Audit And Cleanup
 
-- Extract every `[[...]]` target from the guide.
-- Confirm the target title exactly matches a `.md` filename from the vault scan, without the `.md` suffix.
-- Remove or rewrite any unverified wikilink as plain text.
-- Ensure `## Related in This Vault` lists only verified targets and explains why each is relevant.
+Retain the verdict directory by default as the reproducibility record. Remove
+only workflow-owned scratch files listed in the session manifest, only after a
+successful real install; never glob or delete the whole Sessions tree. Preserve
+dry-run/debug artifacts when needed for inspection.
 
-## Scratch Cleanup
+For calibration runs, write `token_ledger.json` with estimated tokens for raw
+retrieval, source cards, coverage ledger, map, verdicts, active downstream
+context, and final guide. This is telemetry, not a quality gate.
 
-For real runs, delete or discard temporary workflow ledgers, decomposition notes, research briefs, operative knowledge maps, expert review memos, and gap-repair memos before skill execution concludes unless Gabriel explicitly asks to preserve them. These files are workflow scaffolding, not vault artifacts.
+## Completion Report
 
-**Retain the `data/Sessions/<Title>/verdicts/` directory by default**, even on real runs, until Gabriel confirms cleanup. The verdict chain is the reproducibility audit trail. If Gabriel asks to delete it, do so explicitly; otherwise leave it in place for inspection.
-
-For dry runs or explicit debugging, preserve the dry-run guide and workflow ledger in `data/Sessions/` so output quality and agent behavior can be inspected.
-
-## Token Ledger
-
-For dry runs and workflow-calibration runs, write a compact token ledger:
-
-```text
-data/Sessions/<Title>/token_ledger.json
-```
-
-At minimum record estimated tokens (`chars/4`) for raw RAG audit files, source cards, coverage ledger, knowledge map, reviewer verdicts, final guide, downstream active context excluding raw RAG, and all artifacts including raw audit. This ledger is not a quality gate, but it makes optimization regressions visible.
-
-## User-Facing Summary
-
-Report:
-
-- Final file path or dry-run path.
-- Source mix and per-domain retrieval count.
-- Source-card path and whether raw retrieval dumps were only retained for audit.
-- Coverage-ledger path and whether structured IDs/pointers were used instead of prose handoffs.
-- Whether context budgets were followed or intentionally exceeded, with the reason.
-- Procedure complexity.
-- Verdict chain summary: decomposition complete, research floor met (or justified shortfalls), map-review cycles and final verdict, expert-review cycles and final verdict, gap-repair cycles.
-- Whether targeted RAG or PubMed gap repair was needed, and which escalation rules (if any) fired.
-- Validator result.
-- Wikilinks added or reason none were added.
-- Whether vault/memory/Anki writes were performed.
-- Coverage Matrix blocks satisfied / total.
-- Any intentionally omitted or compact-only blocks and the recorded justification.
-- Path to the verdict chain directory.
-- Token-ledger summary for dry runs or calibration runs.
+Report the real/dry-run path; complexity and Coverage Matrix result; source mix
+and limitations; reviewer roles/cycles/final verdict; repaired and unresolved
+gaps; validator and vault-integrity results; wikilinks/concepts added; whether
+any memory/Anki writes occurred; retained verdict path; and token telemetry when
+collected. Label incomplete artifacts prominently.

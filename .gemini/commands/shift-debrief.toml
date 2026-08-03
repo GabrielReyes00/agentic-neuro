@@ -1,0 +1,11 @@
+description = "Turn de-identified service lessons into concise, durable clinical teaching."
+
+prompt = """
+ACTIVE COMMAND: /shift-debrief
+User input: {{args}}
+
+Read `.agents/shared/workflow-registry.json`, then read and follow the canonical
+contract below. Do not infer behavioral policy from this adapter.
+
+@{.agents/shared/commands/shift-debrief.md}
+"""

@@ -1,8 +1,9 @@
 ---
 name: service-log
-description: Service-rotation debrief route through brain-dump service-memory capture.
+description: Alias a service-rotation debrief to the Shift Debrief workflow.
 ---
 
 # Service Log
 
-Read `.agents/shared/commands/service-log.md`; it routes service debriefs through `.agents/shared/commands/brain-dump.md` with service-memory handling.
+Read `.agents/shared/workflow-registry.json`, then read and follow
+`.agents/shared/commands/service-log.md`. This adapter adds no workflow policy.

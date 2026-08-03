@@ -79,8 +79,8 @@ def _note_topic_concept(note: dict) -> tuple[str, str, str]:
         topic = deck_parts[1]
     if len(deck_parts) >= 3:
         concept = deck_parts[-1]
-    if any(tag.lower() == "brain-dump" for tag in tags) or any("Brain Dumps" in deck for deck in decks):
-        source_workflow = "brain-dump"
+    if any(tag.lower() == "shift-debrief" for tag in tags) or any("Shift Debriefs" in deck for deck in decks):
+        source_workflow = "shift-debrief"
     for tag in tags:
         lower = tag.lower()
         if lower.startswith("topic/"):

@@ -12,7 +12,7 @@
     "neurosurgery",
     "learning",
     "study-review",
-    "brain-dump",
+    "shift-debrief",
     "anki",
     "obsidian",
     "rag"
@@ -29,13 +29,11 @@
       "Write"
     ],
     "websiteURL": "https://github.com/GabrielReyes00/agentic-neuro",
-    "privacyPolicyURL": "https://github.com/GabrielReyes00/agentic-neuro",
-    "termsOfServiceURL": "https://github.com/GabrielReyes00/agentic-neuro",
     "defaultPrompt": [
       "Start a study review from my weak spots",
       "Generate a neurosurgery report",
       "Run a focused consult",
-      "Capture a de-identified brain dump"
+      "Capture de-identified teaching from my shift"
     ],
     "screenshots": [],
     "brandColor": "#1f6feb"

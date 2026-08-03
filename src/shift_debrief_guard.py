@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate and install de-identified Brain Dumps vault artifacts."""
+"""Validate and install de-identified Shift Debriefs vault artifacts."""
 
 from __future__ import annotations
 
@@ -10,9 +10,13 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+try:
+    from vault_schema import parse_frontmatter
+except ModuleNotFoundError:  # pragma: no cover - package import in tests
+    from .vault_schema import parse_frontmatter
 
 DEFAULT_VAULT_ROOT = Path("/Users/gabrielreyes/Documents/Obsidian/agentic-neuro")
-BRAIN_DUMP_DIRNAME = "Brain Dumps"
+SHIFT_DEBRIEF_DIRNAME = "Shift Debriefs"
 REQUIRED_HEADINGS = (
     "Clinical Focus",
     "Priority Takeaways",
@@ -29,6 +33,11 @@ CORE_TEACHING_HEADINGS = (
     "Clinical & Anatomical Synthesis",
 )
 REQUIRED_METADATA_KEYS = {
+    "artifact_type",
+    "status",
+    "domain",
+    "summary",
+    "aliases",
     "tags",
     "generated",
     "skill",
@@ -111,17 +120,12 @@ def _safe_title(title: str) -> str:
 
 
 def _target_path(vault_root: Path, title: str) -> Path:
-    return vault_root / BRAIN_DUMP_DIRNAME / f"{_safe_title(title)}.md"
-
-
-def _bottom_yaml(text: str) -> str | None:
-    match = re.search(r"(?:^|\n)---\n(?P<yaml>[\s\S]*?)\n---\s*$", text)
-    return match.group("yaml") if match else None
+    return vault_root / SHIFT_DEBRIEF_DIRNAME / f"{_safe_title(title)}.md"
 
 
 def _section_body(text: str, heading: str) -> str | None:
     match = re.search(
-        rf"^## {re.escape(heading)}\s*$([\s\S]*?)(?=^## |\n---\n|\Z)",
+        rf"^## {re.escape(heading)}\s*$([\s\S]*?)(?=^## |\Z)",
         text,
         flags=re.M,
     )
@@ -130,25 +134,33 @@ def _section_body(text: str, heading: str) -> str | None:
 
 def validate_text(text: str, *, path: Path) -> ValidationResult:
     errors: list[str] = []
-    stripped = text.lstrip()
-    if stripped.startswith("# "):
+    meta = parse_frontmatter(text)
+    body = text
+    if text.startswith("---\n"):
+        closing = text.find("\n---", 4)
+        if closing >= 0:
+            body = text[closing + 4 :].lstrip("\n")
+    if body.lstrip().startswith("# "):
         errors.append("vault note must not start with an H1 heading")
-    if stripped.startswith("---\n"):
-        errors.append("vault metadata must not be at the top; use bottom YAML only")
 
     for heading in REQUIRED_HEADINGS:
-        if not re.search(rf"^## {re.escape(heading)}\s*$", text, flags=re.M):
+        if not re.search(rf"^## {re.escape(heading)}\s*$", body, flags=re.M):
             errors.append(f"missing required heading: ## {heading}")
 
-    yaml_text = _bottom_yaml(text)
-    if yaml_text is None:
-        errors.append("missing bottom YAML metadata block")
+    if not meta:
+        errors.append("missing or invalid native YAML frontmatter")
     else:
-        keys = set(re.findall(r"^([a-z_]+):", yaml_text, flags=re.M))
-        for key in sorted(REQUIRED_METADATA_KEYS - keys):
-            errors.append(f"bottom YAML missing key: {key}")
-        if not re.search(r"^skill:\s*brain-dump\s*$", yaml_text, flags=re.M):
-            errors.append("bottom YAML skill must be brain-dump")
+        for key in sorted(REQUIRED_METADATA_KEYS - set(meta)):
+            errors.append(f"frontmatter missing key: {key}")
+        if meta.get("skill") != "shift-debrief":
+            errors.append("frontmatter skill must be shift-debrief")
+        if meta.get("artifact_type") != "shift-debrief":
+            errors.append("frontmatter artifact_type must be shift-debrief")
+        if meta.get("status") not in {"current", "incomplete"}:
+            errors.append("frontmatter status must be current or incomplete")
+        for key in ("domain", "summary", "generated", "provenance"):
+            if key in meta and not str(meta.get(key) or "").strip():
+                errors.append(f"frontmatter {key} must not be empty")
 
     clinical_focus = _section_body(text, "Clinical Focus")
     if clinical_focus:
@@ -192,8 +204,7 @@ def validate_text(text: str, *, path: Path) -> ValidationResult:
             )
     if teaching_body and not INLINE_CITATION_RE.search(teaching_body):
         declares_internal = bool(
-            yaml_text
-            and re.search(r"^internal_knowledge_used:\s*true\s*$", yaml_text, flags=re.M)
+            meta.get("internal_knowledge_used") is True
         )
         if not declares_internal:
             errors.append(
@@ -252,8 +263,8 @@ def validate_text(text: str, *, path: Path) -> ValidationResult:
     )
     if mastery_match:
         objective_count = len(re.findall(r"^\s*[-*]\s+\S+", mastery_match.group(1), flags=re.M))
-        if objective_count < 2:
-            errors.append("Mastery Objectives must include at least 2 bullet objectives")
+        if objective_count == 0:
+            errors.append("Mastery Objectives must include testable bullet objectives")
 
     return ValidationResult(str(path), errors)
 
@@ -269,7 +280,7 @@ def _update_index(vault_root: Path) -> None:
         import index_builder
     except ModuleNotFoundError:  # imported as part of the `src` package
         from . import index_builder
-    index_builder.write_index(vault_root / BRAIN_DUMP_DIRNAME, vault_root=vault_root)
+    index_builder.write_index(vault_root / SHIFT_DEBRIEF_DIRNAME, vault_root=vault_root)
 
 
 def _refresh_vault_intelligence(vault_root: Path) -> None:
@@ -297,7 +308,7 @@ def install_draft(draft: Path, title: str, *, vault_root: Path = DEFAULT_VAULT_R
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Validate and install Brain Dumps vault notes")
+    parser = argparse.ArgumentParser(description="Validate and install Shift Debriefs vault notes")
     parser.add_argument("--vault-root", default=str(DEFAULT_VAULT_ROOT))
     sub = parser.add_subparsers(dest="command", required=True)
 

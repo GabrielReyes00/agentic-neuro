@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import re
 
 VALID_COGNITIVE_OPS = frozenset({
+    "recall",
     "discrimination",
     "quantification",
     "sequencing",
@@ -13,6 +15,7 @@ VALID_COGNITIVE_OPS = frozenset({
 })
 
 COGNITIVE_OP_RETEST_HINTS: dict[str, str] = {
+    "recall": "Retest the same atomic fact in a clinically meaningful frame, then ask what it changes.",
     "discrimination": "Retest with a changed vignette that swaps the confusable finding or forces a single decisive discriminator.",
     "quantification": "Retest with a new number, threshold, dose, or time window that changes the management branch.",
     "sequencing": "Retest with higher acuity and ask for the first move, next move, and escalation trigger in order.",
@@ -39,13 +42,113 @@ def classify_cognitive_op(*, concept: str = "", question: str = "", explicit: st
     hay = _normalize(f"{concept} {question}")
     if any(x in hay for x in ("what map", "dose", "target", "threshold", "how fast", "mg", "mmhg", "mcg", "grade", "cutoff")):
         return "quantification"
+    if any(x in hay for x in (
+        "how would", "what changes if", "if instead", "changed frame", "changed setting",
+        "different setting", "new scenario", "apply this", "generalize", "transfer",
+    )):
+        return "transfer"
     if any(x in hay for x in ("for each", "distinguish", " vs ", "same sbp", "different", "contrast", "mimic", "confus")):
         return "discrimination"
     if any(x in hay for x in ("first", "sequence", "next 5 minutes", "order", "before", "after which")):
         return "sequencing"
-    if any(x in hay for x in ("why", "equation", "physiologic", "mechanism", "because", "pathophys")):
+    if any(x in hay for x in (
+        "why", "how does", "what explains", "equation", "physiologic", "mechanism",
+        "because", "causes", "leads to", "produces", "pathophys", "biomechan",
+    )):
         return "mechanism"
-    return "transfer"
+    # Flat or ambiguous prompts are recall until the question itself demonstrates
+    # a higher-order operation. Defaulting to transfer overstates mastery.
+    return "recall"
+
+
+def trusted_operation_from_signal(*, operation: str, agent_signal_json: str = "") -> str:
+    """Return a trustworthy operation from rows written by operation-aware logging.
+
+    Historical rows predate operation-source metadata and are deliberately treated
+    as unknown: the former classifier defaulted ambiguous prompts to ``transfer``,
+    so accepting those rows would falsely promote factual recall to transfer.
+    """
+    op = _normalize(operation).replace(" ", "_").replace("-", "_")
+    if op not in VALID_COGNITIVE_OPS:
+        return ""
+    try:
+        signal = json.loads(agent_signal_json or "{}")
+    except (json.JSONDecodeError, TypeError):
+        return ""
+    if not isinstance(signal, dict):
+        return ""
+    source = str(signal.get("cognitive_op_source") or "")
+    logged_op = _normalize(str(signal.get("cognitive_op") or "")).replace(" ", "_").replace("-", "_")
+    if source not in {"explicit", "inferred"} or logged_op != op:
+        return ""
+    return op
+
+
+def mastery_depth_from_operations(operations: object) -> str:
+    """Summarize the strongest demonstrated cognitive operation for one map node."""
+    if isinstance(operations, str):
+        values = [operations]
+    elif isinstance(operations, (list, tuple, set, frozenset)):
+        values = list(operations)
+    else:
+        values = []
+    ops = {
+        _normalize(str(value)).replace(" ", "_").replace("-", "_")
+        for value in values
+    } & VALID_COGNITIVE_OPS
+    if "transfer" in ops:
+        return "transfer_ready"
+    if "mechanism" in ops:
+        return "causal"
+    if ops & {"discrimination", "sequencing"}:
+        return "relational"
+    if ops:
+        return "factual"
+    return "unknown"
+
+
+def mastery_depth_from_evidence(
+    evidence: object,
+    *,
+    active_gap: bool = False,
+) -> str:
+    """Conservative mastery depth from counted, cross-session evidence.
+
+    A single successful transfer vignette is valuable evidence, but it is not
+    enough to label a learner transfer-ready. That label requires two successful
+    transfer probes in at least two sessions. Lower levels still reflect the
+    strongest demonstrated operation, while an active gap prevents the terminal
+    transfer-ready state.
+    """
+    if not isinstance(evidence, dict):
+        return "unknown"
+
+    normalized: dict[str, tuple[int, int]] = {}
+    for raw_op, raw_payload in evidence.items():
+        op = _normalize(str(raw_op)).replace(" ", "_").replace("-", "_")
+        if op not in VALID_COGNITIVE_OPS:
+            continue
+        if isinstance(raw_payload, dict):
+            count = int(raw_payload.get("count", 0) or 0)
+            session_count = int(raw_payload.get("session_count", 0) or 0)
+            if not session_count and isinstance(raw_payload.get("session_ids"), (list, tuple, set)):
+                session_count = len({str(item) for item in raw_payload["session_ids"] if str(item)})
+        else:
+            count = int(raw_payload or 0)
+            session_count = 0
+        if count > 0:
+            normalized[op] = (count, session_count)
+
+    transfer_count, transfer_sessions = normalized.get("transfer", (0, 0))
+    if transfer_count >= 2 and transfer_sessions >= 2 and not active_gap:
+        return "transfer_ready"
+    if "mechanism" in normalized:
+        return "causal"
+    if transfer_count or normalized.keys() & {"discrimination", "sequencing"}:
+        return "relational"
+    if normalized:
+        return "factual"
+    return "unknown"
 
 
 def retest_hint_for_op(cognitive_op: str) -> str:

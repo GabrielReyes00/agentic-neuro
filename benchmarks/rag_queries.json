@@ -1,0 +1,98 @@
+[
+  {
+    "id": "trauma_acute_sdh",
+    "query": "Acute traumatic subdural hematoma operative indications, timing, and perioperative management",
+    "entity_terms": ["subdural", "sdh"],
+    "anchor_groups": [
+      ["10 mm", "10-mm", "10mm"],
+      ["5 mm", "5-mm", "5mm"],
+      ["glasgow coma scale", "gcs"],
+      ["craniotomy", "craniectomy"],
+      ["intracranial pressure", "icp"]
+    ]
+  },
+  {
+    "id": "vascular_sah_dci",
+    "query": "Aneurysmal subarachnoid hemorrhage prevention, diagnosis, and treatment of delayed cerebral ischemia and vasospasm",
+    "entity_terms": ["subarachnoid", "aneurysm", "vasospasm", "delayed cerebral ischemia"],
+    "anchor_groups": [
+      ["nimodipine"],
+      ["transcranial doppler", "tcd"],
+      ["delayed cerebral ischemia", "dci"],
+      ["induced hypertension", "blood pressure augmentation", "hypertensive"],
+      ["angioplasty", "intraarterial", "intra-arterial"]
+    ]
+  },
+  {
+    "id": "hydrocephalus_nph",
+    "query": "Normal pressure hydrocephalus diagnostic evaluation, CSF drainage testing, and shunt selection",
+    "entity_terms": ["normal pressure hydrocephalus", "nph", "hydrocephalus"],
+    "anchor_groups": [
+      ["gait"],
+      ["urinary", "incontinence"],
+      ["cognitive", "dementia"],
+      ["tap test", "lumbar drainage", "external lumbar"],
+      ["ventriculoperitoneal", "vp shunt", "shunt"]
+    ]
+  },
+  {
+    "id": "skull_base_vestibular_schwannoma",
+    "query": "Vestibular schwannoma approach selection, hearing preservation, facial nerve outcomes, and complications",
+    "entity_terms": ["vestibular schwannoma", "acoustic neuroma", "schwannoma"],
+    "anchor_groups": [
+      ["retrosigmoid"],
+      ["translabyrinthine"],
+      ["middle fossa"],
+      ["facial nerve"],
+      ["hearing preservation", "serviceable hearing"]
+    ]
+  },
+  {
+    "id": "spine_cervical_myelopathy",
+    "query": "Degenerative cervical myelopathy anterior versus posterior surgical approach selection, alignment, levels, and complications",
+    "entity_terms": ["cervical", "myelopathy", "spondylotic"],
+    "anchor_groups": [
+      ["kyphosis", "lordosis", "alignment"],
+      ["anterior cervical", "acdf", "corpectomy"],
+      ["laminoplasty"],
+      ["laminectomy", "posterior fusion"],
+      ["c5 palsy", "dysphagia", "pseudarthrosis"]
+    ]
+  },
+  {
+    "id": "tumor_posterior_fossa_pediatric",
+    "query": "Pediatric posterior fossa tumor differential diagnosis, imaging discriminators, surgical priorities, and adjuvant treatment",
+    "entity_terms": ["posterior fossa", "pediatric", "child"],
+    "anchor_groups": [
+      ["medulloblastoma"],
+      ["ependymoma"],
+      ["pilocytic astrocytoma", "juvenile pilocytic"],
+      ["fourth ventricle", "4th ventricle"],
+      ["hydrocephalus", "csf"]
+    ]
+  },
+  {
+    "id": "functional_dbs",
+    "query": "Subthalamic nucleus versus globus pallidus internus deep brain stimulation selection for Parkinson disease and adverse effects",
+    "entity_terms": ["deep brain stimulation", "dbs", "subthalamic", "globus pallidus"],
+    "anchor_groups": [
+      ["subthalamic", "stn"],
+      ["globus pallidus", "gpi"],
+      ["levodopa", "medication"],
+      ["dyskinesia"],
+      ["cognitive", "mood", "speech"]
+    ]
+  },
+  {
+    "id": "epilepsy_temporal_lobe",
+    "query": "Drug-resistant temporal lobe epilepsy presurgical evaluation, localization, operative options, and cognitive outcomes",
+    "entity_terms": ["temporal lobe", "epilepsy", "seizure"],
+    "anchor_groups": [
+      ["video eeg", "video-eeg", "eeg"],
+      ["mesial temporal sclerosis", "hippocampal sclerosis"],
+      ["anterior temporal lobectomy", "temporal lobectomy"],
+      ["selective amygdalohippocampectomy", "amygdalohippocampectomy"],
+      ["memory", "language", "neuropsychological"]
+    ]
+  }
+]

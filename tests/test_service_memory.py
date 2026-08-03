@@ -272,16 +272,16 @@ class ServiceRotationTests(unittest.TestCase):
         finally:
             conn.close()
 
-    def test_brain_dump_service_candidate_reviews_as_site_local_convention(self) -> None:
+    def test_shift_debrief_service_candidate_reviews_as_site_local_convention(self) -> None:
         conn = self._conn()
         try:
             rid = study_memory.start_rotation(conn, service="tumor", site="MD Anderson", pgy=1)["rotation_id"]
-            candidate_id = study_memory.add_brain_dump_candidate(
+            candidate_id = study_memory.add_shift_debrief_candidate(
                 conn,
-                session_id="brain-dump-service",
+                session_id="shift-debrief-service",
                 topic="tumor edema service practice",
                 concept="local steroid taper order set",
-                doc_path="Brain Dumps/Tumor Edema Service Teaching.md",
+                doc_path="Shift Debriefs/Tumor Edema Service Teaching.md",
                 prompt="Which steroid taper order-set detail needs local confirmation?",
                 claim_text="MDA uses a local postoperative dexamethasone taper order set for tumor edema.",
                 provenance_tier="Service teaching - locally confirm",
@@ -291,20 +291,20 @@ class ServiceRotationTests(unittest.TestCase):
             )
             study_memory.log_answer(
                 conn,
-                session_id="brain-dump-service-review",
+                session_id="shift-debrief-service-review",
                 topic="tumor edema service practice",
                 concept="local steroid taper order set",
                 question="What is the status of the MDA tumor edema taper?",
                 answer="It is a local order set to confirm, not a universal rule.",
                 correct=2,
                 skill="study-review",
-                doc_path="Brain Dumps/Tumor Edema Service Teaching.md",
+                doc_path="Shift Debriefs/Tumor Edema Service Teaching.md",
                 tested_claim="MDA uses a local postoperative dexamethasone taper order set for tumor edema.",
                 corrected_rule="Treat the taper as a site-local convention to confirm with the service.",
                 origin="service",
                 rotation_id=rid,
                 convention=True,
-                brain_dump_candidate_id=candidate_id,
+                shift_debrief_candidate_id=candidate_id,
             )
 
             state = conn.execute("SELECT origin, gap_type, rotation_id FROM claim_state").fetchone()

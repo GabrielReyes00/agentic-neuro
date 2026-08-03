@@ -1,8 +1,9 @@
 ---
 name: journal-club
-description: Analyze a neurosurgery article PDF into an intern-accessible, source-traceable journal-club mastery dossier with optional faculty-defense review.
+description: Analyze an article into a validated, source-faithful journal-club dossier without slides.
 ---
 
 # Journal Club
 
-Read and follow `.agents/shared/commands/journal-club.md`.
+Read `.agents/shared/workflow-registry.json`, then read and follow
+`.agents/shared/commands/journal-club.md`. The shared contract is the behavioral authority.

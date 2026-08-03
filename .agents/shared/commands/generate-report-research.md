@@ -2,6 +2,8 @@
 
 Use this module after `report_research_plan.json` is complete.
 
+Follow `.agents/shared/commands/rag-routing.md` for every textbook query.
+
 ## Purpose
 
 Produce structured source cards and a coverage ledger for report synthesis. Do not pass raw RAG dumps forward as the normal handoff, but do not treat source cards as a substitute for source inspection when precision matters.
@@ -49,21 +51,46 @@ Never cite a card merely because it contains a convenient sentence. The cited so
 
 ## Textbook RAG Cards
 
-Use the existing `lance_retriever.py compare --card-json` path:
+Split planned textbook queries by the research plan's `textbook_mini` versus
+`textbook_full` targets. Write each non-empty ordered list to:
+
+```text
+data/Sessions/<Title>/textbook_mini_queries.json
+data/Sessions/<Title>/textbook_full_queries.json
+```
+
+Run every compact table/scale/classification lookup in one fast source-card
+batch:
 
 ```bash
 cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
-python3 src/lance_retriever.py compare "<focused concept query>" \
+python3 src/lance_retriever.py mini-batch \
+  --query-file "data/Sessions/<Title>/textbook_mini_queries.json" \
+  --strategy auto \
   --card-json \
-  --card-output "data/Sessions/<Title>/source_cards_q<N>.jsonl" \
-  --coverage-block "<domain_id>" \
-  --card-prefix "Q<N>-CARD" \
-  [--no-frontier]
+  --output "data/Sessions/<Title>/source_cards_textbook_mini.jsonl"
 ```
 
-Use `--no-frontier` for established anatomy, classic management, and textbook-stable topics. Omit it when current literature matters.
+Honor any Mini-RAG escalation by moving that query to the full list. For two or
+more full queries, run one in-process batch:
 
-Merge per-query card files into `source_cards.jsonl`. Preserve source-card IDs.
+```bash
+cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
+python3 src/lance_retriever.py batch \
+  --query-file "data/Sessions/<Title>/textbook_full_queries.json" \
+  --card-json \
+  --output "data/Sessions/<Title>/source_cards_textbook_full.jsonl"
+```
+
+For one full query, a targeted gap, or raw-passage audit, use scalar `compare`
+with `--card-json --card-output ... --no-frontier`, or with
+`--stdout --no-frontier`. Full batch is local-textbook only; retrieve current
+evidence through the literature plan.
+
+Join stable Mini-RAG `Mxx` and full-RAG `Txx` topic IDs back to plan domains,
+then merge both textbook files and non-RAG cards into `source_cards.jsonl`.
+Preserve card IDs and raw references without repeating query metadata on every
+card.
 
 ## Non-RAG Source Cards
 
@@ -85,7 +112,9 @@ Reports often depend on PubMed, guidelines, trials, and device specifications. R
 }
 ```
 
-Allowed `source_type` values: `textbook_rag`, `pubmed`, `guideline`, `trial_registry`, `device_spec`, `web_primary`, `model_knowledge_verify`.
+Allowed `source_type` values: `textbook_rag_mini`, `textbook_rag_full`,
+`pubmed`, `guideline`, `trial_registry`, `device_spec`, `web_primary`,
+`model_knowledge_verify`.
 
 Do not fabricate PMIDs, DOIs, source titles, or page numbers. If a useful internal-knowledge point is not source-located, create a `model_knowledge_verify` card with high-stakes specifics marked for verification.
 

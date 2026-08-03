@@ -1,10 +1,11 @@
 ---
-description: Refactor a raw, manual study note into a polished, active-recall-friendly Obsidian note using selective visual curation and discrimination matrices.
-argument-hint: [note-path-or-content]
+description: Refactor a manual Obsidian note in place while preserving its facts and attachments.
+argument-hint: [note-path]
 ---
 
 # Refactor Manual Note
 
 The user invoked `/refactor-manual-note` with: $ARGUMENTS
 
-Read and follow `.agents/shared/commands/refactor-manual-note.md` end-to-end. Do not improvise; it owns the structure, selective visual curation rules, rendering guardrails (using colons instead of list-triggering prefixes in Mermaid), shortest-path wikilink rules, and bottom YAML metadata.
+Read `.agents/shared/workflow-registry.json`, then read and follow
+`.agents/shared/commands/refactor-manual-note.md`. The shared contract is the behavioral authority.

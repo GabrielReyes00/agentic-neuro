@@ -14,8 +14,9 @@ separates four layers, each with one job and one rule:
               -> controlled vocabularies; calibration-grade signal.
   NUMERICAL   attempts, successes, stability, difficulty, retrievability
               -> pure numbers; never reconstructed from a rounded value.
-  SUBJECTIVE  tested_claim, learner_claim, misconception, corrected_rule,
-              clinical_consequence, retest_prompt_shape
+  SUBJECTIVE  tested_claim, learner_claim, demonstrated_edge, misconception,
+              corrected_rule, clinical_consequence, retest_prompt_shape,
+              teaching_intervention
               -> retrieval-only; the agent READS them to design the next probe.
                  Never matched, counted, or used as identity.
 
@@ -35,8 +36,9 @@ CATEGORICAL_FIELDS = (
 )
 NUMERICAL_FIELDS = ("attempts", "successes", "stability", "difficulty", "retrievability")
 SUBJECTIVE_FIELDS = (
-    "tested_claim", "learner_claim", "misconception", "corrected_rule",
-    "correction", "clinical_consequence", "retest_prompt_shape", "missing_edge",
+    "tested_claim", "learner_claim", "demonstrated_edge", "misconception",
+    "corrected_rule", "correction", "clinical_consequence",
+    "retest_prompt_shape", "missing_edge", "teaching_intervention",
 )
 
 # A concept label should name ONE inventory concept. These markers mean the label

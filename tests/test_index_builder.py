@@ -21,7 +21,7 @@ def _note(folder: Path, name: str, *, body: str = "Body.", **yaml_fields) -> Pat
             lines.append(f"{key}: {value}")
     lines.append("---")
     path = folder / f"{name}.md"
-    path.write_text(body + "\n\n" + "\n".join(lines) + "\n", encoding="utf-8")
+    path.write_text("\n".join(lines) + "\n\n" + body + "\n", encoding="utf-8")
     return path
 
 

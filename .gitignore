@@ -3,6 +3,8 @@
 
 # === LanceDB Databases (user data) ===
 neurosurgery_v4.lance/
+data/mini_rag.lance/
+data/mini_rag_fts.db
 
 # === Databases & Backups (user data, never wipe) ===
 data/concept_inventory.db

@@ -32,10 +32,10 @@ The `log-answer` command prints `OK exchange_id=N`; use that N as `--exchange-id
 - QA backs must be self-contained.
 - Deck: `Neurosurgery::<Domain>::<Topic Title>`.
 - Exception: `/intraoperative-guide` uses `Neurosurgery::Procedures::<Operative Guide Title>`.
-- Exception: portable cards from evaluated Brain Dump Socratic turns, or during `/study-review` anchored to a `Brain Dumps/` artifact, use `Neurosurgery::Brain Dumps` with tag `brain-dump` to keep lived-experience-origin teaching distinct from textbook/source-heavy decks. Site-local service conventions use the service-learning routing defined in `brain-dump.md`/`service-log.md`.
-- Do not create Anki cards during initial Brain Dump capture; pending candidates become card-eligible only after evaluated learner answers.
+- Exception: portable cards from evaluated Shift Debrief Socratic turns, or during `/study-review` anchored to a `Shift Debriefs/` artifact, use `Neurosurgery::Shift Debriefs` with tag `shift-debrief` to keep lived-experience-origin teaching distinct from textbook/source-heavy decks. Site-local service conventions use the service-learning routing defined in `shift-debrief.md`/`service-log.md`.
+- Do not create Anki cards during initial Shift Debrief capture; pending candidates become card-eligible only after evaluated learner answers.
 - Tags: `<skill>,<error_type>` comma-separated, omitting error type if correct.
-- Pass accurate `--topic` and `--concept` values at enqueue time. During flush, `anki_queue.py` adds stable metadata tags for future feedback retrieval: `topic/<slug>`, `concept/<slug>`, and `claim/<claim_id>`. Do not manually add, rewrite, or remove these stable tags. Preserve provenance tags such as `brain-dump`, service/site tags, and workflow tags because they let startup recall keep formal, portable, and service-local Anki signals separate.
+- Pass accurate `--topic` and `--concept` values at enqueue time. During flush, `anki_queue.py` adds stable metadata tags for future feedback retrieval: `topic/<slug>`, `concept/<slug>`, and `claim/<claim_id>`. Do not manually add, rewrite, or remove these stable tags. Preserve provenance tags such as `shift-debrief`, service/site tags, and workflow tags because they let startup recall keep formal, portable, and service-local Anki signals separate.
 
 ## Enqueue
 
@@ -67,11 +67,14 @@ python3 src/anki_queue.py enqueue \
 
 Run this after `end-session --json`.
 
-1. **Pre-Validation Extraction Audit**:
-   Before reviewing or checking the queue, the agent must perform a systematic, turn-by-turn audit of every single Q&A exchange from the session (reviewing the agent's question/teaching and the learner's response together as a pair):
-   - For each turn, verify: *"Did we draft cards that encapsulate all critical nominal and quantitative facts in this exchange (e.g., anatomical structures, surgical procedures, drug names, dosage numbers, threshold windows, and named classifications)?"*
-   - If an important clinical threshold, anatomical structure, or key diagnostic/management discriminator was discussed but has NO enqueued card, the agent MUST immediately run `anki_queue.py enqueue` to draft the missing card for that specific exchange.
-   - Once every turn has been audited and verified to have been "Anki extracted", continue to the steps below.
+1. **Pre-Validation Eligibility Audit**:
+   Review each assessed exchange as a question/answer pair and apply the
+   Per-Answer Card Decision above. Confirm that every miss, unstable threshold,
+   dangerous exception, management-changing discriminator, or durable transfer
+   target that met eligibility has an exchange-linked card. Routine correct
+   answers, incidental names, and facts already protected by an equivalent card
+   remain intentionally card-free. The purpose is to prevent missed high-value
+   traces, not to “Anki extract” the whole transcript.
 
 2. Review queued cards:
 

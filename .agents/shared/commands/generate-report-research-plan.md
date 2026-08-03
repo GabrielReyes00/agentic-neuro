@@ -8,6 +8,9 @@ Build the coverage plan before retrieval so the report is written from intention
 
 This module also owns query rewriting. Before any RAG, PubMed, guideline, or web search, transform the user's request into focused search strings. Do not pass a vague user topic or a long mixed keyword bag directly into retrieval.
 
+Load `.agents/shared/commands/rag-routing.md` before assigning textbook query
+tiers.
+
 Write the canonical plan to:
 
 ```text
@@ -16,7 +19,9 @@ data/Sessions/<Title>/report_research_plan.json
 
 ## Query Best Practices
 
-Retrieval quality depends on query shape. `lance_retriever.py compare` uses the full quoted query for dense semantic search, FTS lexical search, reranking, entity filtering, and axis distillation. Long keyword bags can process, but they often dilute the signal by mixing separate entities or questions.
+Retrieval quality depends on query shape. Full RAG uses the complete quoted
+query for hybrid search, reranking, entity filtering, and distillation; long
+keyword bags dilute signal by mixing entities or questions.
 
 ### Core Rule
 
@@ -63,7 +68,10 @@ Split the user's request when it contains:
 
 ### Source Targeting
 
-- Use textbook RAG for anatomy, classic disease mechanisms, standard management, operative anatomy, and durable teaching.
+- Use `textbook_mini` for a named scale, score, classification, staging system,
+  defining table, or compact reference.
+- Use `textbook_full` for anatomy, classic disease mechanisms, standard
+  management, operative anatomy, and durable synthesis.
 - Use PubMed/frontier searches for current guidelines, trials, outcomes, controversies, devices, and evolving timing/indication questions.
 - Use web only for primary non-literature sources such as society statements, device specifications, FDA pages, or trial registries.
 
@@ -120,7 +128,7 @@ Start from these domains, then customize:
       "retrieval_queries": [
         {
           "query": "<focused textbook or literature query>",
-          "source_targets": ["textbook_rag", "pubmed"],
+          "source_targets": ["textbook_full", "pubmed"],
           "frontier": true
         }
       ]

@@ -223,6 +223,19 @@ class ScopeTests(_InventoryFixture):
         conn.close()
         self.assertEqual([n["id"] for n in a["nodes"]], [n["id"] for n in b["nodes"]])
 
+    def test_explicit_comparison_preserves_multiple_domains(self) -> None:
+        conn = self._open()
+        scope = concept_inventory.scope_subgraph(
+            conn,
+            query="compare Monro-Kellie versus Hunt-Hess grading",
+            budget=20,
+        )
+        conn.close()
+        entries = {node["id"] for node in scope["nodes"] if node["role"] == "entry"}
+        self.assertTrue(scope["scope"]["multi_scope_query"])
+        self.assertIn("fnd.icp.monro-kellie", entries)
+        self.assertIn("vasc.sah.hunt-hess", entries)
+
 
 class MapLearnerTests(_InventoryFixture):
     def _seed_memory(self) -> Path:
@@ -330,6 +343,120 @@ class MapLearnerTests(_InventoryFixture):
         conn.close()
         # WAL checkpoint aside, the main db file content must be unchanged by a read-only open.
         self.assertEqual(mem_path.read_bytes(), before)
+
+    def test_canonical_node_aggregates_history_across_topic_envelopes(self) -> None:
+        mem_path = Path(self.tmp.name) / "study_memory.db"
+        mem = study_memory._get_db(mem_path)
+        try:
+            study_memory.log_answer(
+                mem,
+                session_id="context-one",
+                topic="benchmark context one",
+                concept="hunt hess grading",
+                question="What type of scale is Hunt-Hess?",
+                answer="An imaging scale.",
+                correct=0,
+                tested_claim="Hunt-Hess is a clinical grading scale.",
+                error_type="conceptual_confusion",
+                misconception="Hunt-Hess measures CT blood burden.",
+                inventory_concept_id="vasc.sah.hunt-hess",
+            )
+            study_memory.log_answer(
+                mem,
+                session_id="context-two",
+                topic="benchmark context two",
+                concept="hunt hess grading",
+                question="What determines Hunt-Hess grade?",
+                answer="The clinical examination.",
+                correct=2,
+                tested_claim="Hunt-Hess is based on the clinical examination.",
+                inventory_concept_id="vasc.sah.hunt-hess",
+            )
+        finally:
+            mem.close()
+
+        conn = self._open()
+        result = concept_inventory.map_learner(
+            inventory_conn=conn,
+            memory_db=mem_path,
+            learner_topics=["benchmark context two"],
+            topic_id="vasc.sah",
+            budget=20,
+        )
+        conn.close()
+        node = next(
+            item for item in result["knowledge_map"]
+            if item["concept_id"] == "vasc.sah.hunt-hess"
+        )
+        self.assertEqual(node["attempts_count"], 2)
+        self.assertEqual(node["memory_context_count"], 2)
+        self.assertTrue(node["active_misconception"])
+
+    def test_transfer_ready_requires_two_successes_across_two_sessions(self) -> None:
+        mem_path = Path(self.tmp.name) / "study_memory.db"
+        mem = study_memory._get_db(mem_path)
+        common = {
+            "topic": "subarachnoid hemorrhage",
+            "concept": "hunt hess grading",
+            "correct": 2,
+            "inventory_concept_id": "vasc.sah.hunt-hess",
+            "learning_operation": "transfer",
+            "teaching_intent": "transfer_check",
+            "answer_mode": "unaided",
+            "confidence_observed": "high",
+            "teaching_move": "changed_frame_retest",
+        }
+        try:
+            study_memory.log_answer(
+                mem,
+                session_id="transfer-one",
+                question="Changed frame one?",
+                answer="Clinical grade.",
+                tested_claim="Apply Hunt-Hess in a sedated transfer patient.",
+                **common,
+            )
+            inv = self._open()
+            first = concept_inventory.map_learner(
+                inventory_conn=inv,
+                memory_db=mem_path,
+                learner_topics=["subarachnoid hemorrhage"],
+                topic_id="vasc.sah",
+                budget=20,
+            )
+            inv.close()
+            first_node = next(
+                item for item in first["knowledge_map"]
+                if item["concept_id"] == "vasc.sah.hunt-hess"
+            )
+            self.assertEqual(first_node["mastery_depth"], "relational")
+
+            state_id = int(mem.execute("SELECT id FROM claim_state").fetchone()[0])
+            study_memory.log_answer(
+                mem,
+                session_id="transfer-two",
+                question="Changed frame two?",
+                answer="Clinical grade.",
+                tested_claim="Apply Hunt-Hess after an exam change.",
+                match_claim_state_id=state_id,
+                **common,
+            )
+        finally:
+            mem.close()
+
+        inv = self._open()
+        second = concept_inventory.map_learner(
+            inventory_conn=inv,
+            memory_db=mem_path,
+            learner_topics=["subarachnoid hemorrhage"],
+            topic_id="vasc.sah",
+            budget=20,
+        )
+        inv.close()
+        second_node = next(
+            item for item in second["knowledge_map"]
+            if item["concept_id"] == "vasc.sah.hunt-hess"
+        )
+        self.assertEqual(second_node["mastery_depth"], "transfer_ready")
 
 
 if __name__ == "__main__":

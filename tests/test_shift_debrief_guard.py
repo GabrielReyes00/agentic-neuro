@@ -4,11 +4,24 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from src import brain_dump_guard as guard
+from src import shift_debrief_guard as guard
 
 
 def _valid_note(extra: str = "") -> str:
-    return f"""## Clinical Focus
+    return f"""---
+artifact_type: shift-debrief
+status: current
+domain: neurocritical-care
+summary: "EVD transport lessons separating portable pressure-column principles from local protocol."
+aliases: [EVD transport]
+tags: [skill/shift-debrief, domain/neurocritical-care, type/reference, source/user]
+generated: 2026-05-25
+skill: shift-debrief
+provenance: "reported service teaching with source-grounded mechanism"
+internal_knowledge_used: false
+---
+
+## Clinical Focus
 
 - **EVD Transport:** Practical implications of drain state and pressure-gradient risk during movement.
 - **Local Protocol:** Which transport order details require point-of-care confirmation.
@@ -46,31 +59,23 @@ A transport handoff should preserve the intended CSF pressure column: know wheth
 ## References
 
 - Guideline/formal guidance: [Verification source](https://doi.org/10.1000/example)
-
----
-tags: [skill/brain-dump, domain/neurocritical-care, type/reference, source/user]
-generated: 2026-05-25
-skill: brain-dump
-provenance: "reported service teaching with source-grounded mechanism"
-internal_knowledge_used: false
----
 """
 
 
 class BrainDumpGuardTests(unittest.TestCase):
-    def test_valid_note_installs_into_brain_dumps_and_updates_index(self) -> None:
+    def test_valid_note_installs_into_shift_debriefs_and_updates_index(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             draft = root / "draft.md"
             draft.write_text(_valid_note(), encoding="utf-8")
 
             result = guard.install_draft(draft, "EVD Transport Management", vault_root=root / "vault")
-            target = root / "vault" / "Brain Dumps" / "EVD Transport Management.md"
-            index = root / "vault" / "Brain Dumps" / "INDEX.md"
+            target = root / "vault" / "Shift Debriefs" / "EVD Transport Management.md"
+            index = root / "vault" / "Shift Debriefs" / "INDEX.md"
 
             self.assertTrue(result.ok)
             self.assertTrue(target.exists())
-            self.assertIn("[[Brain Dumps/EVD Transport Management|", index.read_text(encoding="utf-8"))
+            self.assertIn("[[Shift Debriefs/EVD Transport Management|", index.read_text(encoding="utf-8"))
 
     def test_existing_note_can_be_reinstalled_with_preserved_body_and_new_encounter(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -80,14 +85,14 @@ class BrainDumpGuardTests(unittest.TestCase):
             draft.write_text(_valid_note(), encoding="utf-8")
             guard.install_draft(draft, "EVD Transport Management", vault_root=vault)
 
-            revised = _valid_note("\n## Brain Dump - 2026-05-26\n\n- Recheck leveling after transfer using the local transport pathway.")
+            revised = _valid_note("\n## Shift Debrief - 2026-05-26\n\n- Recheck leveling after transfer using the local transport pathway.")
             draft.write_text(revised, encoding="utf-8")
             result = guard.install_draft(draft, "EVD Transport Management", vault_root=vault)
-            installed = (vault / "Brain Dumps" / "EVD Transport Management.md").read_text(encoding="utf-8")
+            installed = (vault / "Shift Debriefs" / "EVD Transport Management.md").read_text(encoding="utf-8")
 
             self.assertTrue(result.ok)
             self.assertIn("## Clinical Focus", installed)
-            self.assertIn("## Brain Dump - 2026-05-26", installed)
+            self.assertIn("## Shift Debrief - 2026-05-26", installed)
 
     def test_rejects_common_direct_identifiers(self) -> None:
         variants = {
@@ -109,6 +114,12 @@ class BrainDumpGuardTests(unittest.TestCase):
         result = guard.validate_text(note, path=Path("draft.md"))
         self.assertFalse(result.ok)
         self.assertIn("missing required heading: ## Operational Mental Models", result.errors)
+
+    def test_rejects_missing_native_artifact_metadata(self) -> None:
+        note = _valid_note().replace("artifact_type: shift-debrief\n", "")
+        result = guard.validate_text(note, path=Path("draft.md"))
+        self.assertFalse(result.ok)
+        self.assertIn("frontmatter missing key: artifact_type", result.errors)
 
     def test_rejects_references_without_external_hyperlink(self) -> None:
         note = _valid_note().replace(

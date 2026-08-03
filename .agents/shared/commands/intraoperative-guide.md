@@ -1,197 +1,185 @@
 # Intraoperative Guide
 
-Produce a complete, source-grounded operative rehearsal manual for a neurosurgical procedure. The output should let a neurosurgery resident mentally perform the operation from indication and setup through closure, immediate postoperative surveillance, complication recognition, and failure recovery.
+Create a durable, source-grounded operative rehearsal guide that lets a
+neurosurgery resident plan, mentally execute, defend, and recover from a
+procedure from indication through postoperative surveillance. This is a
+reference-generation workflow, not a brief bedside consult.
 
-This command is closer to `/generate-report` than to `/consult`: the artifact is a durable standalone operative reference, not a brief teaching exchange. The agent is the intelligence layer. Scripts retrieve sources, validate structure, and record memory; they do not write or reason for the agent.
+## Standalone Preoperative Readiness Standard
 
-Follow `.agents/shared/commands/learning-session-contract.md` for the module map. Use `memory-operations.md`, `memory-retrieval.md`, `vault-intelligence.md`, `review-artifacts.md`, `anki-session-workflow.md`, and `anki-card-quality.md` for shared memory, supplemental vault context, artifact, concept, and Anki behavior unless this contract is more specific.
+Do not claim an unverifiable percentage of “mastery.” A guide is ready only when
+a resident using it can:
 
-The deterministic validator is necessary but never sufficient. A guide may pass validation and still fail this workflow if expert completeness review does not approve it as a standalone operative reference.
+- explain pathology, natural history, indication, timing, and alternatives;
+- interpret the imaging and patient modifiers that change the plan;
+- prepare the room, positioning, equipment, anesthesia, and monitoring;
+- narrate each operative phase with landmarks, rationale, danger anatomy, and
+  endpoint criteria;
+- anticipate bleeding, signal change, lost planes, failed exposure, hardware or
+  device problems, and executable bail-outs;
+- connect postoperative findings to the operative step that may have caused
+  them; and
+- defend approach selection, evidence limits, complications, and conversion or
+  abort thresholds under attending questioning.
 
-## Depth Target: 85% Resident Mastery
+The Coverage Matrix built during decomposition is the procedure-specific
+readiness checklist. Every applicable block must be satisfied or explicitly
+marked not applicable with a reason. Length and query count are not substitutes
+for conduct-changing coverage.
 
-Every guide must contain enough material that a neurosurgery resident studying *only* this document achieves roughly **85% of the deep understanding** needed to perform and defend the procedure. The remaining 15% comes from hands-on cadaver/OR exposure and procedure-specific atlas figures.
+## Modular Authority
 
-This target is operationalized by the **Coverage Matrix** built during decomposition. Every Coverage Matrix block must be addressable in the final draft. Compact treatment is acceptable when a block is genuinely simple for the procedure; silent omission is a workflow failure.
+Load only the module needed at each checkpoint:
 
----
+- `intraoperative-guide-decomposition.md`: Coverage Matrix and research plan
+- `intraoperative-guide-crosslinks.md`: verified vault relationships
+- `.agents/shared/commands/rag-routing.md`: smallest sufficient textbook
+  retrieval tier
+- `intraoperative-guide-research.md`: source cards and coverage ledger
+- `intraoperative-guide-knowledge-map.md`: structured operative mental model
+- `intraoperative-guide-map-review.md`: independent map review
+- `intraoperative-guide-synthesis.md`: readable guide drafting
+- `intraoperative-guide-review.md`: independent semantic/provenance review
+- `intraoperative-guide-gap-repair.md`: bounded repair and escalation
+- `intraoperative-guide-finalize.md`: verdict, validation, and installation
+- `intraoperative-guide-attending-bank.md`: optional applicability-filtered
+  attending-question bank
 
-## Modular Workflow Authority
+Shared learner memory, artifact, vault, concept, and Anki behavior remains owned
+by `memory-operations.md`, `vault-intelligence.md`, `review-artifacts.md`,
+`concept-extraction.md`, and the Anki contracts. Do not restate those schemas in
+runtime wrappers.
 
-This file is the public command contract and orchestrator. Detailed checkpoint instructions live in focused modules. Read the relevant module freshly when reaching each checkpoint so the workflow does not drift in long contexts:
+## Independent Review
 
-- `.agents/shared/commands/intraoperative-guide-decomposition.md` — procedure-specific topic decomposition, **Coverage Matrix**, retrieval plan, pre/intra/post-OR phase skeleton, attending-defense questions.
-- `.agents/shared/commands/intraoperative-guide-crosslinks.md` — real Obsidian vault target, verified wikilink discovery, related-note placement.
-- `.agents/shared/commands/intraoperative-guide-research.md` — serial RAG, per-domain retrieval matrix, source-pack extraction.
-- `.agents/shared/commands/intraoperative-guide-knowledge-map.md` — operative mental model, first-principle map blocks, step-rationale chains, anatomy-risk with neurophysiologic consequence, anesthesia, neuromonitoring, hemostasis, endpoint criteria, outcomes, patient modifiers, OR team choreography.
-- `.agents/shared/commands/intraoperative-guide-map-review.md` — **dedicated map-completeness reviewer subagent**, separate from the writer; required gate before synthesis.
-- `.agents/shared/commands/intraoperative-guide-synthesis.md` — draft and revision writing standards aligned to the Coverage Matrix.
-- `.agents/shared/commands/intraoperative-guide-review.md` — **dedicated expert completeness reviewer subagent**, separate from the writer; required gate before finalization.
-- `.agents/shared/commands/intraoperative-guide-gap-repair.md` — targeted repair with cycle budget and escalation ladder.
-- `.agents/shared/commands/intraoperative-guide-finalize.md` — verdict-chain enforcement, vault/dry-run write, validation, index, concepts, memory, and Anki.
-- `.agents/shared/commands/intraoperative-guide-attending-bank.md` — curated procedure-family pimping question bank used by the expert reviewer as an independent cross-check floor.
+Intermediate and complex guides require two reviews independent from the writer:
 
-Do not inline or duplicate those module instructions into wrappers. Codex, Claude, and Gemini should all enter through this file and then load modules at the checkpoints.
+1. map completeness before prose synthesis;
+2. expert completeness and provenance before installation.
 
-## Mandatory Subagent Separation
+Prefer a separate reviewer subagent when the runtime supports one. Otherwise use
+a fresh-context independent reviewer pass that receives only the named handoff
+artifacts and records `reviewer_role: independent_fresh_context`. Never silently
+substitute an ordinary same-context self-edit. Simple procedures may use a
+single rubric-driven self-review when the verdict records the justification.
 
-Two checkpoints **require** a subagent different from the writer for intermediate and complex procedures:
+Independent review is intended to find real conduct-changing defects. Reviewers
+must not manufacture a minimum number of gaps or questions.
 
-- **Map-completeness review** (`intraoperative-guide-map-review.md`).
-- **Expert completeness review** (`intraoperative-guide-review.md`).
+## Complexity And Research Scale
 
-If no subagent is available, the workflow halts and the limitation is surfaced to the user. Silent fall-back to self-review is a workflow failure for intermediate/complex procedures. Simple bedside procedures may use self-review against the same rubric, but the verdict JSON must record the justification.
+Classify the procedure as simple, intermediate, or complex to set context and
+repair budgets, not arbitrary evidence quotas:
 
-## Verdict Chain (machine-readable audit trail)
+- **Simple:** up to two review cycles; focused evidence for sequence,
+  anatomy-risk, and complications.
+- **Intermediate:** up to three review cycles; add setup/anesthesia/monitoring,
+  outcomes, and patient-modifier evidence where decision-relevant.
+- **Complex:** up to five review cycles; broaden anatomy, alternatives, rescue,
+  outcomes, and current evidence across every unresolved Coverage Matrix block.
 
-Each checkpoint produces a verdict JSON under:
+Plan one retrieval question per unresolved decision or coverage target. Use one
+Mini-RAG batch for independent compact lookups and one full-RAG batch for two or
+more independent synthesis questions. Current literature is mandatory when
+outcomes, devices, guidelines, timing, or comparative strategy can change
+conduct—not merely because a procedure was labeled intermediate or complex.
 
-```text
-data/Sessions/<Title>/verdicts/
-```
+Canonical research handoff:
 
-Required files by the end of the workflow:
-
-- `decomposition.json`
+- `source_cards.jsonl`
+- `coverage_ledger.json`
 - `research.json`
-- `map-review-cycle-<N>.json` (most recent must be `MAP_APPROVED`)
-- `expert-review-cycle-<N>.json` (most recent must be `APPROVED`)
-- `gap-repair-cycle-<N>.json` for every cycle where expert review returned `REVISION REQUIRED`
 
-The finalize module reads this chain and refuses to write to the real vault unless the chain is complete and approving. Agent honesty is not the audit mechanism — the verdict files are. Retain the verdict directory after real runs by default; Gabriel may delete it explicitly when no longer needed.
+A Markdown research brief is optional and limited to source mix, limitations,
+and unresolved questions. Pass structured cards and stable IDs forward, not raw
+retrieval dumps.
 
-## Context Budget and Compression
+## Setup
 
-This workflow must not treat "deep research" as permission to keep every raw retrieval passage in the model context. Raw retrieval dumps may be retained on disk for audit, but downstream checkpoints should receive compressed artifacts unless a specific unresolved gap requires the raw text.
+1. Resolve a Title Case procedure title and create
+   `data/Sessions/<Title>/verdicts/`.
+2. If an existing guide is present, read it completely. Regeneration updates it
+   in place while preserving nonduplicative user-authored material.
+3. Run topic-scoped learner recall only when it will help identify known
+   weaknesses; the future guide path is not a document-startup target.
+4. Query prior vault context when useful:
 
-Default context budgets for a single-procedure run:
+   ```bash
+   python3 src/vault_retriever.py recall "<procedure and anatomy>" --task operative-rehearsal --limit 8
+   ```
 
-- **Research brief:** target 1,200-2,000 words. Include only conduct-changing extracts and compact source cards. Do not paste full RAG output into later prompts.
-- **Structured source layer:** `source_cards.jsonl` and `coverage_ledger.json` are canonical. A markdown research brief is optional and should be a generated debug view, not the ordinary handoff.
-- **Operative knowledge map:** prefer `knowledge_map.json` with stable block IDs and source-card pointers. Target 1,200-2,200 words equivalent for intermediate procedures and 2,200-3,800 for complex procedures. Expand only blocks that change conduct, rescue, interpretation, or attending defense.
-- **Reviewer handoffs:** give reviewers the current draft or structured map plus `coverage_ledger.json`, relevant source-card rows, and the latest compact verdict summary. Do not give every raw RAG file, every source card, or every prior verdict JSON unless the reviewer asks for a narrow item.
-- **Verdict handoff:** later stages consume a verdict summary (verdict, blocking gaps, repair paths, fresh questions, rationale) rather than full bank-question arrays. The full JSON remains on disk for audit.
-- **Attending-bank references:** verdict JSON stores stable bank question IDs, not full question text. The bank file is canonical.
-- **Gap repair:** run additional RAG/PubMed only for named blocking gaps or mandatory escalation rules. Do not run broad "make it better" retrieval after the initial research floor is met.
+   Vault context supports crosslinks and personalized emphasis. It does not
+   replace operative reasoning or formal evidence.
 
-If a procedure would exceed these budgets, prefer a compact but complete guide plus an `Unresolved or Weak Areas` entry that triggers targeted repair. Completeness is still required, but raw context volume is not a quality metric.
+## Checkpoints
 
----
+1. **Decompose:** build the Coverage Matrix and `decomposition.json`.
+2. **Research:** produce source cards, coverage ledger, and `research.json`.
+3. **Map:** build `knowledge_map.json` with step-rationale and anatomy-risk
+   relationships.
+4. **Review map:** write the latest `map-review-cycle-<N>.json`; synthesis waits
+   for `MAP_APPROVED`.
+5. **Synthesize:** write the guide from the approved map and source layer.
+6. **Review guide:** write `expert-review-cycle-<N>.json`; installation waits for
+   `APPROVED` unless the user explicitly authorizes an incomplete artifact.
+7. **Repair:** revise only named gaps, updating the map first when the missing
+   structure is upstream of prose.
+8. **Finalize:** verify the verdict chain, validate, install, index, and report.
 
-## Role and Success Criterion
+Retain compact verdict JSON under `data/Sessions/<Title>/verdicts/` as the audit
+trail. Reviewer handoffs contain only verdict, gaps, repair paths, applicable
+question IDs, coverage, and rationale.
 
-You are a senior neurosurgical fellow teaching operative mental rehearsal. Prioritize what changes conduct in the OR: action sequence, exposure logic, landmarks, anatomy-risk relationships, instrument choices, decision points, critical maneuvers, common novice errors, bail-outs, closure consequences, and postoperative signatures of intraoperative failure.
+## Quality Invariants
 
-Success means the resident can:
+- Every operative phase carries: goal → maneuver → why this technique → danger
+  structure or failure mode → consequence if wrong → endpoint or next phase.
+- Anatomy includes spatial location, function/supply, vulnerability, injury
+  signature, avoidance, and rescue when relevant.
+- Bail-outs are executable actions, not “be careful” or “call for help.”
+- Hemostasis identifies predictable sources, control points, agents, and crisis
+  sequence.
+- Anesthesia and monitoring state modality/target, communication point, and
+  response to deviation—or explain why they are not used.
+- Postoperative surveillance links findings and imaging to operative causality.
+- Evidence claims preserve population, intervention, effect, limitation, and
+  freshness boundaries.
+- No arbitrary counts of steps, instruments, citations, gaps, or questions.
+- No decorative padding. Compact coverage is correct when a block is genuinely
+  simple.
 
-- Explain the disease, its biomechanics or pathophysiology, and how natural history forces surgery.
-- Interpret the relevant imaging and adjunct studies to decide on surgery.
-- Defend approach selection against alternatives with outcomes evidence.
-- Set up the room, patient, imaging, monitoring, equipment, and exposure plan.
-- Coordinate the anesthetic, physiologic, and neuromonitoring strategy.
-- Walk through the operation step by step with landmarks, danger zones, and **why each step occurs**.
-- Name the critical technical moments and the consequence of getting each wrong.
-- Execute a hemostasis strategy through every phase.
-- Recover from common intraoperative problems using specific bail-outs.
-- Confirm endpoint/completion criteria intraoperatively before closure.
-- Recognize early postoperative complications and connect them to the operative step that caused them.
-- Adapt the plan to patient-specific modifiers (host factors, anatomic variants, prior surgery).
-- Defend the guide against attending-level questions about approach selection, anatomy, complications, alternatives, outcomes, and failure recovery.
+## Artifact And Provenance
 
----
+The final guide has native top frontmatter, no H1, verified wikilinks, a
+`## Pre-Scrub Mental Rehearsal` section when appropriate, `## Mastery
+Objectives`, and `## Related In This Vault`.
 
-## Complexity Routing
+Use the sanctioned RAG callout only when textbook retrieval was used. Every
+source-grounded or verified claim cites its actual support. Unsourced model
+knowledge is labeled `model knowledge — verify`; high-stakes specifics carry
+`⚠ verify`. Never launder model knowledge through a nearby citation.
 
-Classify procedure complexity to scale query floors, cycles, and subagent requirements.
-* **Simple**: Floor 3 queries. Max 2 expert cycles. Self-review permitted with justification.
-* **Intermediate**: Floor 6 queries (≥1 frontier). Max 3 expert cycles. Map & expert subagents required.
-* **Complex**: Floor 10 queries (≥2 frontier). Max 5 expert cycles with escalation. Map & expert subagents required.
+## Incomplete-Artifact Policy
 
----
+The normal workflow does not install a guide with blocking gaps. If repair
+budgets are exhausted, surface the unresolved gaps and evidence attempted. The
+user may explicitly authorize installation for practical use; such a guide must
+have `status: incomplete`, a visible `## Unresolved Or Weak Areas` section, and
+must not be reported as complete or expert-approved. Otherwise defer or abort.
 
-## Pre-Generation Setup
+## Memory, Concepts, And Anki
 
-1. **Step 0: Resolve Procedure**: Derive a Title Case slug. Overwrite existing guides. Create session directory: `data/Sessions/<Title>/verdicts`.
-2. **Step 1: Discover Memory (silent)**: Run `study_memory.py startup-recall` (profile `doc`) to check prior weaknesses.
-3. **Step 2: Scan Vault (silent)**: Scan the vault to locate real target files for cross-citations.
-4. **Step 3: Vault Intelligence (silent)**: Query field-aware vault context for prior operative anatomy, discriminators, mental models, and related concepts:
+Guide generation is not assessed mastery. Do not create learner claim state or
+passive Anki cards from the artifact. Run concept extraction only for genuinely
+novel reusable concepts; zero is valid.
 
-```bash
-python3 src/vault_retriever.py recall "<procedure and anatomy>" --task operative-rehearsal --limit 8
-```
+If Gabriel later accepts operative rehearsal, log evaluated answers and create
+cards only from eligible assessed exchanges. Those cards use
+`Neurosurgery::Procedures::<Operative Guide Title>`.
 
-Use retrieved sections as personalized context and crosslink discovery. They do not replace the Coverage Matrix, native operative reasoning, or formal source retrieval.
+## Completion Report
 
----
-
-## End-to-End Workflow
-
-Follow the modular workflow checkpoints defined in the child modules:
-
-1. **Checkpoint 0: Ledger**: Maintain `data/Sessions/<Title> Workflow Ledger.md` (for dry runs/debug) or in session scratch space. Verdict JSONs are stored under `data/Sessions/<Title>/verdicts/`.
-2. **Checkpoint 1: Decomposition** — Read `.agents/shared/commands/intraoperative-guide-decomposition.md`. Build the Coverage Matrix and write `decomposition.json`.
-3. **Checkpoint 2: Research** — Read `.agents/shared/commands/intraoperative-guide-research.md`. Run textbook RAG and PubMed queries to write `research.json` and generate `source_cards.jsonl` and `coverage_ledger.json`.
-4. **Checkpoint 3: Operative Knowledge Map** — Read `.agents/shared/commands/intraoperative-guide-knowledge-map.md`. Construct the JSON-based operative mental model.
-5. **Checkpoint 4: Map-Completeness Review** — Read `.agents/shared/commands/intraoperative-guide-map-review.md`. Separate reviewer subagent stress-tests the map; writes `map-review-cycle-<N>.json`.
-6. **Checkpoint 5: First Synthesis** — Read `.agents/shared/commands/intraoperative-guide-synthesis.md`. Draft the guide from the approved map, utilizing correct provenance tiering.
-7. **Checkpoint 6: Expert Completeness Review** — Read `.agents/shared/commands/intraoperative-guide-review.md`. Dedicated expert reviewer subagent evaluates the draft against the rubric; writes `expert-review-cycle-<N>.json`.
-8. **Checkpoint 7: Gap Repair Loop** — Read `.agents/shared/commands/intraoperative-guide-gap-repair.md`. Apply the escalation ladder if expert review returns `REVISION REQUIRED`; writes `gap-repair-cycle-<N>.json`.
-9. **Checkpoint 8: Finalization** — Read `.agents/shared/commands/intraoperative-guide-finalize.md`. Verify verdict chain, run `operative_guide_validator.py`, rebuild index, extract concepts, log memory, and enqueue procedure-specific Anki cards (`Neurosurgery::Procedures::<Title>`).
-
----
-
-## Non-Negotiable Quality Principles
-
-- No arbitrary numerical quotas for operative steps, danger zones, instruments, anatomy expansions, or citations.
-- Completeness is judged by Coverage Matrix block satisfaction and conduct-changing knowledge, not length.
-- The 85% resident-mastery depth target governs every block; silent omission is a workflow failure.
-- The guide is written from an approved operative knowledge map, not directly from search results.
-- Map-completeness review and expert completeness review must be performed by subagents different from the writer for intermediate/complex procedures.
-- Each operative step must carry an explicit step-rationale chain (mechanical/anatomic goal → why this technique → consequence if skipped → downstream step).
-- Anatomy must expand into operative consequences with neurophysiologic role: vascular supply, nerve function, fascial plane, venous drainage, bony limit, corridor boundary, postoperative deficit, or bail-out option.
-- Pitfalls must be mechanism-linked. "Avoid retraction" is inadequate unless the guide states what is being retracted, why it is vulnerable, what injury looks like, and what to do instead.
-- Bail-outs must be executable. "Get help" may be correct but is incomplete unless paired with what to do while help arrives.
-- Postoperative management must connect complications to the operative step that caused them.
-- Source retrieval supplements expert synthesis. Do not parrot retrieved passages or structure the guide around retrieval order.
-- Do not pad short procedures with irrelevant detail. Compact treatment is fine when the block is genuinely simple.
-
----
-
-## Artifact Rules
-
-- No H1 title; the filename is the title in Obsidian.
-- No YAML at the top. YAML metadata belongs at the bottom.
-- If RAG was used, place the sanctioned callout immediately above the first H2:
- 
-```markdown
-> [!info] RAG Supplemented
-> Textbook retrieval was used to ground operative sequence, anatomy, equipment, pitfalls, and bail-outs.
-```
- 
-- Cite sources inline where they add specificity, especially textbook chapter/page references and any journal evidence that changes indications or outcomes.
-- Provenance tiering is mandatory (see `intraoperative-guide-synthesis.md`): every clinical claim is **RAG-grounded** (cited), **model knowledge — verified** (confirming source located, cited), or **model knowledge — verify** (labelled inline, high-stakes specifics flagged with `⚠`). Never attach a textbook/PMID citation to model-knowledge content. The expert reviewer enforces this with a provenance-integrity check.
-- Use wikilinks only to files verified in the vault scan.
-- Use restrained Obsidian-native formatting for readability: callouts, compact tables, and short phase labels are encouraged when they make a long guide easier to rehearse. Do not add decorative formatting that distracts from operative content.
-- Prefer callouts for high-signal material:
-  - `> [!info] RAG Supplemented` only for source status, exactly as specified above.
-  - `> [!tip] Operative Mental Model` for the opening mental model when helpful.
-  - `> [!warning] Critical Safety Point` for airway, vascular, neural, or wrong-level hazards.
-  - `> [!danger] Bail-Out` for executable rescue plans.
-  - `> [!note] Attending Question` for oral-defense prompts when a separate section would interrupt flow.
-- Use tables only for compact comparison or causality maps, such as approach selection, complication signatures, or phase-by-phase failure modes. Do not turn the whole guide into tables.
-- Mermaid flowcharts are encouraged for decision branches and causality flows when they aid rehearsal; they are not a substitute for prose and are not yet mandated.
-- Include a `## Pre-Scrub Mental Rehearsal` section near the end of the guide for intermediate and complex procedures.
-- Write like an operative reference, not a generic explanation.
-- Avoid false precision. If a step varies by attending preference or institution, say what varies and what principle remains fixed.
-- The final guide contains operative reference content only. Keep citation registries, review memos, gap-repair notes, verdict JSON contents, status markers, and scaffolding commentary in workflow artifacts or the final user summary.
-
----
-
-## User-Facing Finish
-
-Reread `.agents/shared/commands/intraoperative-guide-finalize.md` to report:
-* File/dry-run path and procedure complexity.
-* Source mix, retrieval counts, and context budget tracking.
-* Subagent usage and verdict chain summaries (cycles, verdicts, gap-repairs).
-* Validator results, Coverage Matrix blocks satisfied, wikilinks, and Anki card counts/deck.
-* Confirmation that dry runs did not write real vault, memory, or Anki files.
+Report the guide or dry-run path, complexity, source mix, retrieval limitations,
+Coverage Matrix result, reviewer roles/verdicts, repaired or unresolved gaps,
+validator result, and any real vault/memory/Anki writes. Dry runs never write to
+the real vault, learner memory, concepts, or Anki.

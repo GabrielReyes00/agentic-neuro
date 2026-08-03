@@ -18,7 +18,7 @@ Inputs:
 
 Write the report from `report_knowledge_map.json`, consulting source-card rows only for exact citation details, numbers, limitations, or wording-sensitive claims. Do not draft directly from raw RAG output.
 
-The final report must still satisfy the main `generate-report.md` Quality Contract: encyclopedic density, citations at point of claim, provenance tiering, key numbers, differentiators, failure modes, evidence quality labels, effect sizes, Mastery Objectives, and verified wikilinks.
+The final report must still satisfy the main `generate-report.md` Quality Contract: topic-shaped depth, citations on sourced and source-sensitive claims, provenance tiering, a useful anchor table, differentiators, failure modes, evidence quality labels, effect sizes where applicable, Mastery Objectives, and verified wikilinks.
 
 Structured artifacts are guardrails, not a compression mandate. If the map is too thin to support a clinically dense reference, return to synthesis or research instead of writing a sparse report.
 
@@ -26,7 +26,7 @@ Structured artifacts are guardrails, not a compression mandate. If the map is to
 
 Research artifacts are internal production scaffolding, not report content. Do not mention `source_cards.jsonl`, query rewriting, coverage ledgers, gap repair, raw-source audit, validators, RAG mechanics, or repo workflow details inside the final clinical report. The report may include a brief sanctioned `> [!info] RAG Supplemented` callout when RAG was used, but the body must read as a clinical reference chapter, not a provenance memo.
 
-Bottom YAML is also part of the final report artifact. Do not put `provenance`, `internal_knowledge_used`, source-card counts, query counts, validator status, or workflow summaries in YAML. Keep workflow provenance in session artifacts and in the user-facing completion summary, not in the clinical note.
+Native Obsidian frontmatter is also part of the final report artifact. Do not put `provenance`, `internal_knowledge_used`, source-card counts, query counts, validator status, or workflow summaries in YAML. Keep workflow provenance in session artifacts and in the user-facing completion summary, not in the clinical note.
 
 Use validation work to improve the clinical content silently:
 
@@ -66,11 +66,13 @@ The validator is a structural and ledger gate, not a substitute for agent self-a
 
 ## Finish Steps
 
-1. Write `Reports/<Title Case Title>.md`. Ensure its bottom YAML carries `domain:` (one or more canonical slugs: vascular, skull-base, tumor, spine, trauma, neurocritical-care, functional, pediatric, peripheral-nerve, anatomy, general) and a one-line `summary:`; add `display:` if a shorter index title is wanted.
+1. Write `Reports/<Title Case Title>.md`. Ensure its native frontmatter carries `domain:` (one or more canonical slugs: vascular, skull-base, tumor, spine, trauma, neurocritical-care, functional, pediatric, peripheral-nerve, anatomy, general) and a one-line `summary:`; add `display:` if a shorter index title is wanted.
 2. Run `report_validator.py` with `--coverage-ledger`.
 3. Regenerate the domain-grouped index: `python3 src/index_builder.py Reports`.
-4. Extract 2-5 concept cards when appropriate per `.agents/shared/commands/concept-extraction.md`.
-5. Log the report anchor to memory with `skill="generate-report"`.
+4. Extract 0–5 genuinely novel concept cards when appropriate per
+   `.agents/shared/commands/concept-extraction.md`; zero is valid.
+5. Log the report as a low-priority artifact anchor with
+   `skill="generate-report"`; generation is not assessed learner state.
 6. Surface to the user: TL;DR, file path, source mix, Quality Contract result, coverage-ledger result, validator result, and wikilinks added.
 
 Keep `data/Sessions/<Title>/coverage_ledger.json`, `source_cards.jsonl`, and `report_knowledge_map.json` during generation. Clean up only transient raw retrieval dumps unless the user asks to preserve the session artifacts.

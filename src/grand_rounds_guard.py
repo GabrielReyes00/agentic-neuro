@@ -17,6 +17,11 @@ from zipfile import BadZipFile, ZipFile
 
 import yaml
 
+try:
+    from vault_schema import parse_frontmatter
+except ModuleNotFoundError:  # imported as part of the `src` package
+    from .vault_schema import parse_frontmatter
+
 
 ARTICLE_REQUIRED_COVERAGE = (
     "Start Here",
@@ -74,6 +79,10 @@ SLIDE_REQUIRED_KEYS = {
 
 PLAN_SCHEMA = "grand_rounds_deck_plan_v2"
 VISUAL_QA_SCHEMA = "grand_rounds_visual_qa_v2"
+STYLE_CONFIG_PATH = (
+    Path(__file__).resolve().parents[1]
+    / ".agents/shared/presentation-styles.json"
+)
 STYLE_ROUTES = {
     "editorial_academic": "editorial_academic",
     "custom_directed": "custom_directed",
@@ -137,6 +146,38 @@ VISUAL_QA_EMPTY_LIST_KEYS = (
 )
 
 
+def _presentation_styles() -> dict[str, Any]:
+    try:
+        data = json.loads(STYLE_CONFIG_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"invalid presentation style registry: {exc}") from exc
+    styles = data.get("styles")
+    if not isinstance(styles, dict):
+        raise RuntimeError("presentation style registry has no styles object")
+    return styles
+
+
+def visual_qa_template(*, slide_count: int = 0) -> dict[str, Any]:
+    """Return the canonical QA ledger shape without duplicating it in prose."""
+    template: dict[str, Any] = {
+        "schema": VISUAL_QA_SCHEMA,
+        "status": "pending",
+        "inspected_slide_count": slide_count,
+        "full_size_slide_count": slide_count,
+        "contact_sheet_inspected": False,
+        "repair_cycle_count": 0,
+        "design_brief_match": False,
+        "meaningful_visual_main_slide_count": 0,
+        "layout_family_counts": {},
+        "min_title_font_size_pt": 0,
+        "min_body_font_size_pt": 0,
+        "citation_font_size_pt": 0,
+        "notes": [],
+    }
+    template.update({key: [] for key in VISUAL_QA_EMPTY_LIST_KEYS})
+    return template
+
+
 @dataclass
 class GuardResult:
     deck: str
@@ -177,26 +218,6 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
-
-
-def _bottom_yaml(text: str) -> dict[str, Any]:
-    lines = text.splitlines()
-    while lines and not lines[-1].strip():
-        lines.pop()
-    if not lines or lines[-1].strip() != "---":
-        return {}
-    close = len(lines) - 1
-    open_idx = next(
-        (i for i in range(close - 1, -1, -1) if lines[i].strip() == "---"),
-        None,
-    )
-    if open_idx is None:
-        return {}
-    try:
-        parsed = yaml.safe_load("\n".join(lines[open_idx + 1 : close]))
-    except yaml.YAMLError:
-        return {}
-    return parsed if isinstance(parsed, dict) else {}
 
 
 def _pptx_metrics(deck: Path, errors: list[str]) -> dict[str, Any]:
@@ -315,49 +336,24 @@ def validate_package(
         errors.append("design_brief forbidden_moves must be a non-empty list")
     surface_style = str(design_brief.get("surface_style") or "").strip()
     if surface_style == "baylor_minimal_academic":
+        style = _presentation_styles()[surface_style]
         constraints = design_brief.get("human_style_constraints")
         if not isinstance(constraints, dict):
             errors.append(
                 "baylor_minimal_academic requires human_style_constraints"
             )
         else:
-            required_constraints = {
-                "white_backgrounds_only": True,
-                "primary_accent_count_max": 1,
-                "signal_color_count_max": 1,
-                "filled_content_containers_max_per_slide": 0,
-                "rounded_content_containers": "none",
-                "chart_palette": "navy plus neutral gray",
-                "color_use": "data and essential warnings only",
-                "interpretive_band_policy": "only when it adds a nonredundant clinical or validity consequence",
-                "chart_legend_policy": "native compact legend with labels matched to the estimand",
-                "summary_duplication": "none",
-            }
+            required_constraints = style["constraints"]
             for key, expected in required_constraints.items():
                 if constraints.get(key) != expected:
                     errors.append(
                         f"baylor_minimal_academic constraint {key} must be {expected!r}"
                     )
-            furniture = constraints.get("recurring_page_furniture")
-            if not isinstance(furniture, list) or furniture != [
-                "short navy title rule",
-                "neutral footer rule",
-            ]:
-                errors.append(
-                    "baylor_minimal_academic recurring_page_furniture must contain only the title and footer rules"
-                )
         if design_brief.get("background_strategy") != "white_only":
             errors.append(
                 "baylor_minimal_academic background_strategy must be white_only"
             )
-        expected_palette = {
-            "canvas": "#FFFFFF",
-            "ink": "#111827",
-            "primary": "#1F4E79",
-            "secondary": "#4B5563",
-            "rule": "#E5E7EB",
-            "signal": "#B71C3A",
-        }
+        expected_palette = style["palette"]
         if isinstance(palette, dict):
             for key, expected in expected_palette.items():
                 if palette.get(key) != expected:
@@ -765,7 +761,7 @@ def validate_package(
     if style_profile == "template_faithful":
         title_floor = 1
     elif surface_style == "baylor_minimal_academic":
-        title_floor = 28
+        title_floor = _presentation_styles()[surface_style]["font_floors_pt"]["title"]
     else:
         title_floor = 35
     if not isinstance(title_size, (int, float)) or title_size < title_floor:
@@ -774,7 +770,7 @@ def validate_package(
     if style_profile == "template_faithful":
         body_floor = 1
     elif surface_style == "baylor_minimal_academic":
-        body_floor = 13.5
+        body_floor = _presentation_styles()[surface_style]["font_floors_pt"]["body"]
     else:
         body_floor = 18
     if not isinstance(body_size, (int, float)) or body_size < body_floor:
@@ -783,7 +779,7 @@ def validate_package(
     if style_profile == "template_faithful":
         citation_floor = 1
     elif surface_style == "baylor_minimal_academic":
-        citation_floor = 7.5
+        citation_floor = _presentation_styles()[surface_style]["font_floors_pt"]["citation"]
     else:
         citation_floor = 9
     if not isinstance(citation_size, (int, float)) or citation_size < citation_floor:
@@ -807,7 +803,7 @@ def validate_package(
         if journal_path is None or not journal_path.is_file():
             errors.append("article deck requires an existing source Journal Club dossier")
         else:
-            meta = _bottom_yaml(journal_path.read_text(encoding="utf-8"))
+            meta = parse_frontmatter(journal_path.read_text(encoding="utf-8"))
             if meta.get("skill") != "journal-club":
                 errors.append("source dossier is not a journal-club artifact")
             if meta.get("source_package_status") != "complete":
@@ -844,7 +840,13 @@ def main(argv: list[str] | None = None) -> int:
     validate.add_argument("--visual-qa", required=True)
     validate.add_argument("--source-journal-club")
     validate.add_argument("--json", action="store_true")
+    template = sub.add_parser("visual-qa-template")
+    template.add_argument("--slide-count", type=int, default=0)
     args = parser.parse_args(argv)
+
+    if args.command == "visual-qa-template":
+        print(json.dumps(visual_qa_template(slide_count=args.slide_count), indent=2))
+        return 0
 
     result = validate_package(
         deck=Path(args.deck),

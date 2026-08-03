@@ -1,19 +1,11 @@
-description = "Build a validated neurosurgery PowerPoint from case material or a Journal Club dossier with source-traced visuals, speaker notes, vault note, and optional rehearsal"
+description = "Build and validate an editable neurosurgery case or article presentation package."
 
 prompt = """
-ACTIVE COMMAND: /grand-rounds — neurosurgery presentation deck builder for grand rounds, case conference, case presentation, or journal club.
+ACTIVE COMMAND: /grand-rounds
+User input: {{args}}
 
-You MUST read and follow `.agents/shared/commands/grand-rounds.md`; load the routed case/article module and shared deck module it names. Use editable PPTX tooling and run `src/grand_rounds_guard.py` before vault persistence.
+Read `.agents/shared/workflow-registry.json`, then read and follow the canonical
+contract below. Do not infer behavioral policy from this adapter.
 
-Gemini guardrails (do not let these slip):
-- Existing Journal Club titles are already confirmed; do not add a title gate.
-- Scrub PHI from case material before any deck, vault, or manifest output.
-- Extract supplied article figures and tables with source attribution; never fabricate clinical images or data.
-- Render and inspect every slide before completion.
-
-User's input: {{args}}
-
----
-
-@{.gemini/commands/grand-rounds.md}
+@{.agents/shared/commands/grand-rounds.md}
 """

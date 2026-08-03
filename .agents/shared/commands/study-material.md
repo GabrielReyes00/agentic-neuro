@@ -1,67 +1,74 @@
-# Study Material Generator and Drill
+# Study Material
 
-Use for explicit file-based study requests from PDF, PPTX, or vault markdown. Do not use this for general questions or intern simulation.
+Transform a supplied PDF, PPTX, or vault Markdown file into validated active
+recall material, then optionally drill it. General questions and resident
+simulations do not use this workflow. Artifact generation is exposure, not
+learner mastery.
 
-Follow `.agents/shared/commands/learning-session-contract.md` for the module map. Use `memory-operations.md`, `memory-retrieval.md`, `vault-intelligence.md`, `adaptive-teaching-doctrine.md`, `anki-session-workflow.md`, and `anki-card-quality.md` as the focused sources of truth.
+Use `learning-session-contract.md` for phase routing. The focused authorities
+are `memory-operations.md`, `memory-retrieval.md`, `vault-intelligence.md`,
+`adaptive-teaching-doctrine.md`, `anki-session-workflow.md`, and
+`anki-card-quality.md`.
 
-## Phase 1: Generate Material
+## Generate
 
-1. Infer a clean Title Case topic from the filename.
-2. Run `study_memory.py startup-recall --profile doc --topic "<topic>" --doc "Study Material/<Title>.md"` to load compact learner context.
-3. If the source metadata or instructions already request RAG enrichment, proceed with local RAG. Otherwise ask whether to enrich with local RAG.
-4. Enumerate all chunks before extraction:
-   - PPTX: slides, titles, body, notes, image descriptions.
-   - PDF: pages, headers, body, captions, tables.
-   - Vault markdown: `##` headings as chunks.
-5. Classify each chunk as substantive, intro/outro, duplicate title, or non-teaching administrative content. Exclude only clearly non-substantive chunks and state the exclusion count.
-6. Process each substantive chunk in order. Assign `TU-XX` teaching units. Do not batch, merge, or skip substantive chunks.
-7. Extract atomic facts before writing questions:
-   - Assign `AF-###` IDs.
-   - Keep each fact atomic: one relationship, pathway step, discriminator, mechanism, clinical sign, exception, or management consequence.
-   - Extract 2-6 atomic facts per substantive chunk, more for dense pathway/clinical slides.
-   - Preserve source references for every fact.
-8. Build questions from the atomic fact ledger, not directly from slide titles. A slide may produce many questions. One slide -> one topic -> one question is a failure.
-9. Verify `Chunks processed: N / N`, atomic fact count, fact coverage, and question density before writing the final file.
+1. Infer a concise Title Case topic. Use topic-scoped `startup-recall` only when
+   learner context will materially improve question design; the target file does
+   not yet exist, so never invent a doc-profile path.
+2. Inspect the complete source, including PPTX notes and meaningful images or PDF
+   tables/figures. Enumerate all chunks before extraction:
+   - PPTX: slides, notes, and image descriptions;
+   - PDF: pages, captions, and tables;
+   - Markdown: `##` sections.
+3. Classify each chunk as substantive or excluded administrative/duplicate
+   content. Record every chunk and exclusion in `## Source Chunk Inventory`.
+4. Map substantive chunks to coherent `TU-XX` teaching units. Adjacent chunks
+   may share a unit, but no substantive source content may disappear.
+5. Before writing questions, extract every nontrivial testable relationship,
+   step, discriminator, mechanism, sign, exception, or consequence into an
+   `AF-###` atomic fact with its source and TU.
+6. Build questions from the ledger. Every TU and every ledger fact must be
+   assessed. A question may cover up to four tightly related facts; split broader
+   prompts. Question count therefore follows source density, not a fixed floor or
+   per-slide quota.
 
-### Generation Quality Gate
-
-This command is not complete when the model has merely drafted prose. It is complete only when a deterministic guard verifies the real vault file.
-
-Hard rules:
-
-- The final file must live at `/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Study Material/<Topic Title>.md`.
-- Never treat `Documents/Obsidian/...` inside the repo as the vault. That is a workspace shadow path and is a failure.
-- If a write tool cannot write outside the workspace, draft to `data/Sessions/study_material_<slug>.md`, then install it with `src/study_material_guard.py`.
-- Do not start the interactive drill until `src/study_material_guard.py validate` passes.
-- If the guard fails, revise the note and rerun the guard. Tell Gabriel only the concise failure category, not raw command output.
-
-Minimum generated-note contract:
-
-- `Total Questions` metadata and `Chunks Processed: N / N` metadata.
-- `## Source Chunk Inventory`, `## Atomic Fact Ledger`, `## Concept Summary`, and `## Questions`.
-- At least 25 questions unless Gabriel explicitly requests a shorter deck.
-- At least 2 atomic facts per processed substantive chunk.
-- At least 2 questions per processed substantive chunk.
-- At least 70% of atomic facts referenced by at least one question.
-- Every chunk/teaching unit has multiple mapped atomic facts unless the source chunk is genuinely trivial.
-- Every question header includes `[complexity]`, source reference, `TU-XX`, and one or more `AF-###` references.
-- Every question has an answer in `<details>`.
-- Complexity mix includes at least three categories and must include mechanism, discrimination, integration, or clinical questions.
-
-Install/validate flow:
+Use `.agents/shared/commands/rag-routing.md` only when the source is thin,
+ambiguous, or requires source-sensitive verification. RAG is supplemental and
+must retain textbook/page provenance. For optional related personal context:
 
 ```bash
-python3 src/study_material_guard.py install --draft "data/Sessions/study_material_<slug>.md" --title "<Topic Title>" --min-questions 25 --min-questions-per-chunk 2 --min-facts-per-chunk 2 --min-fact-coverage 0.70 --json
-python3 src/study_material_guard.py validate "/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Study Material/<Topic Title>.md" --min-questions 25 --min-questions-per-chunk 2 --min-facts-per-chunk 2 --min-fact-coverage 0.70 --json
+python3 src/vault_retriever.py recall "<topic or source concept>" --task study-material-generation --limit 5
 ```
 
-Parse guard JSON silently. Surface only pass/fail, path, question/fact/chunk counts, and actionable errors.
+The supplied file remains primary. Skip both enrichments when they add no value.
 
-### Atomic Extraction Protocol
+## Artifact Contract
 
-The extraction ledger is the controlling artifact. Build it before `## Questions`.
+Write only to:
 
-Required sections:
+`/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Study Material/<Topic Title>.md`
+
+Never accept a repo-local `Documents/Obsidian/...` shadow. If direct vault writes
+are unavailable, draft to `data/Sessions/study_material_<slug>.md` and install
+through the guard.
+
+Use top-of-file native frontmatter and no H1:
+
+```yaml
+---
+artifact_type: study-material
+status: current
+domain: anatomy
+summary: One-line content-specific summary.
+aliases: []
+generated: YYYY-MM-DD
+tags: [type/study-material, domain/anatomy]
+source_files: []
+---
+```
+
+After frontmatter, include source, generated date, `Total Questions`, complexity
+mix, and `Chunks Processed: N / N`, followed by:
 
 ```markdown
 ## Source Chunk Inventory
@@ -71,159 +78,79 @@ Required sections:
 
 ## Atomic Fact Ledger
 - AF-001 | TU-03 | Slide 7 | <one atomic fact>
-- AF-002 | TU-03 | Slide 7 | <one atomic fact>
+
+## Concept Summary
+
+## Questions
+### Q1 [mechanism] (Slide 7) — TU-03 — AF-001, AF-002
+**Question?**
+
+<details><summary>Answer</summary>
+Answer with the needed mechanism, discriminator, or consequence.
+</details>
 ```
 
-Question headers must map back to the facts they test:
+Every question header carries complexity, source, TU, and AF references; every
+question has a `<details>` answer. Use recall for isolated facts, spatial prompts
+for relationships, discrimination for confusers, mechanism for causal chains,
+integration/clinical prompts for combined decisions, and visual prompts for
+images. Do not make a multi-question bank recall-only. Multiple choice is mainly
+for discrimination, and its answer must explain each distractor.
 
-```markdown
-### Q12 [mechanism] (Slide 7) — TU-03 — AF-001, AF-002
-```
-
-Coverage rule:
-
-- Recall questions may test one atomic fact.
-- Spatial, mechanism, discrimination, integration, clinical, and visual questions may test 2-4 linked atomic facts.
-- Do not create a single broad question to "cover" an entire slide. If a slide contains pathway, lesion localization, syndrome, exception, and management implications, those become separate questions or linked multi-fact questions.
-- The guard rejects shallow compression, but the agent must still inspect every source chunk and preserve the atomic ledger.
-
-## Classification
-
-| Pattern | Complexity | Question Style |
-|---|---|---|
-| Definition, name, single fact | `recall` | Short answer or cloze |
-| Spatial course or relationship | `spatial` | Relationship prompt |
-| Confusable concepts | `discrimination` | MC with close distractors |
-| Causal chain | `mechanism` | Two-step reasoning |
-| Combined anatomy, physiology, clinical use | `integration` | Vignette |
-| Diagram or imaging centered | `visual` | Image-reference prompt |
-
-MC is mainly for discrimination. Default to retrieval prompts.
-
-## Optional RAG Enrichment
-
-Use only for thin mechanism or integration units:
+Install and validate:
 
 ```bash
-cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && \
-python3 src/lance_retriever.py compare "<teaching unit title>" --stdout --no-frontier
+python3 src/study_material_guard.py install --draft "data/Sessions/study_material_<slug>.md" --title "<Topic Title>" --json
+python3 src/study_material_guard.py validate "/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Study Material/<Topic Title>.md" --json
 ```
 
-RAG content is supplemental. Keep source-file content primary and cite textbook title, edition, and page when RAG is used.
+Repair failures and rerun. Do not begin a drill until the real-vault file passes.
+Surface only the path, chunk/fact/question counts, and actionable failures. After
+validation, extract 0–5 genuinely novel concepts under `concept-extraction.md`;
+zero is valid and existing concepts require reviewed merge semantics.
 
-## Output File
+## Drill
 
-Write directly to:
-
-`/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Study Material/<Topic Title>.md`
-
-Rules:
-
-1. No H1.
-2. Start with source metadata, generation date, total questions, and complexity mix.
-3. Include `Chunks Processed: N / N`, where both numbers match after extraction.
-4. Include `## Source Chunk Inventory`, `## Atomic Fact Ledger`, `## Concept Summary`, and `## Questions`.
-5. Every question has complexity, source reference, TU ID, AF ID(s), and answer inside `<details>`.
-6. Every MC answer explains why each distractor is wrong.
-7. Do not summarize away concepts to reduce length.
-8. Do not collapse a dense slide into one concept or one question.
-
-After the guard passes, extract 2-5 concept cards per `.agents/shared/commands/concept-extraction.md` when the generated material contains reusable clinical concepts worth future wikilinking.
-
-Notify with counts only after the guard and any concept-card writes pass, then offer: start drilling, review offline, or both.
-
-## Phase 2: Interactive Drill
-
-Before drilling:
+Read the complete installed note, set one `SESSION_TS`, and run:
 
 ```bash
-python3 src/study_memory.py startup-recall --profile doc --topic "<topic>" --doc "Study Material/<Title>.md"
+python3 src/study_memory.py startup-recall --profile doc --topic "<topic>" --doc "Study Material/<Title>.md" --session "$SESSION_TS"
 ```
 
-The selected document is the curriculum. New documents start at TU-01. Returning documents prioritize previously missed concepts from this same document, then continue forward. Use the compact doc-review startup brief to identify scaffold, must-retest, recent-repair, and handoff concepts for this document. Prior misses from other sessions may appear only under the Requested-Document Priority rule: directly related, close confuser, safety-critical, or one brief due bridge.
-
-When prior vault context can improve question design or repair without displacing the selected Study Material file, run:
+The selected file is the curriculum. New review begins with its first uncovered
+TU; returning review addresses same-document misses and repairs before moving
+forward. Other memories may enter only as a direct prerequisite, confuser,
+safety issue, or one brief due bridge. At point of need, related vault context
+may help repair an answer but never replace the source ledger or question bank:
 
 ```bash
-python3 src/vault_retriever.py recall "<study material topic or missed concept>" --task doc-review --limit 5
+python3 src/vault_retriever.py recall "<topic or missed concept>" --task doc-review --limit 5
 ```
 
-Use retrieved discriminators, mental models, execution checks, or related concept cards as optional teaching aids. Do not let vault retrieval replace the generated question bank, source chunk inventory, atomic fact ledger, or the learner-state priorities returned by `startup-recall`.
+Ask Gabriel to choose, with a recommendation based on the source:
 
-## Study Mode Gate
+- **Rapid Review:** preserve source-question throughput. After a correct answer,
+  confirm briefly and advance; after a partial answer, repair the missing edge;
+  after an incorrect, unsafe, or confidently wrong answer, teach concisely and
+  retest. Escalate depth only for a meaningful miss or explicit request.
+- **Deep Understanding:** use Socratic branching, progressive reveal,
+  mechanism-to-management links, changed-frame transfer, and oral-board defense
+  when appropriate.
 
-Study Material files can have different educational purposes. Do not assume every vault document needs the same deep Socratic treatment.
+In both modes, ask one question and stop without exposing the answer or source
+context. After commitment, grade, reveal only the next useful layer, and follow
+`adaptive-teaching-doctrine.md`. Checkpoint at natural TU or cognitive-load
+boundaries rather than a fixed question count.
 
-Before drilling a vault markdown file, determine the document's study mode. Ask Gabriel to choose:
-- **Rapid Review / Jeopardy**: fast source-question calibration.
-- **Deep Understanding**: current deep Socratic mechanism-building mode.
-
-If the file is clearly generated from review slides, premade topic questions, lab review, or test-prep material, default suggestion is Rapid Review. If it is a generated report, long synthesis, new primary-source distillation, or material Gabriel explicitly wants to master deeply, default suggestion is Deep Understanding.
-
-### Rapid Review / Jeopardy Mode
-
-Use this for review-material files intended for quick turnaround.
-
-Operating rules:
-
-- Treat the document as a question deck, not as a live body of knowledge requiring expansion at every item.
-- Ask the source question as written or lightly cleaned. Do not convert it into a longer vignette unless the source question already is one.
-- One question at a time. Preserve throughput.
-- After a correct answer: one-line confirmation plus at most one high-yield discriminator, then advance.
-- After a partial answer: brief correction, one targeted repair probe only if needed, then continue or mark for later.
-- After an incorrect, unsafe, or overconfident-wrong answer: pause for a concise explanation and immediate retest.
-- Do not run oral-board-style deepening after every correct answer.
-- Do not start with unrelated prior-miss backlog. Prior memory can influence grading and escalation, but it must not derail the selected document.
-- Checkpoint every ~10-15 questions or natural section boundary.
-
-Escalate out of Rapid Review only when earned:
-
-- wrong answer
-- partial answer missing the key discriminator
-- high-confidence wrong answer
-- safety-critical misconception
-- repeated miss in memory
-- Gabriel asks to go deeper
-- schema-level mismatch, not just a missing isolated fact
-
-When escalating, name the reason briefly and keep the repair bounded. Choose the specific repair move needed for the miss type. Memory logging captures the outcome via `memory-operations.md` `log-answer` fields: `--correct`, `--error-type`, `--misconception`, and `--correction`. These fields are the durable record of what happened and why.
-
-### Deep Understanding Mode
-
-Use this for generated reports, new synthesis, unfamiliar mechanisms, oral-board preparation, or when Gabriel explicitly wants mastery.
-
-This preserves the current behavior:
-
-- Socratic branching.
-- Progressive reveal after commitment.
-- Mechanism-to-management links.
-- Clinical transfer and oral-board defense when appropriate.
-- Deeper follow-up after shallow correct answers.
-
-Log answers via the shared memory logging contract. The `--correct`, `--error-type`, and `--misconception` fields capture the outcome; the `--correction` field captures what you taught.
-
-Drill one question at a time:
-
-Follow `adaptive-teaching-doctrine.md`. In interactive drill mode, show only the question stem and the immediate task. Do not print the answer, `<details>` content, explanation, named finding, or source context until after Gabriel answers or explicitly asks to reveal it.
-
-After Gabriel answers, choose the post-answer behavior from the selected study mode. In Deep Understanding mode, follow `adaptive-teaching-doctrine.md`: reveal progressively, correct with minimum effective explanation, pull deeper with follow-ups. In Rapid Review mode, reveal only enough to grade the answer and maintain momentum unless an escalation trigger fires. Do not dump all nearby essential material from the Study Material note after a shallow correct answer. Save the broader map for a natural boundary, a miss requiring teaching, an explicit reveal request, or a Deep Understanding session.
-
-| Outcome | Response |
-|---|---|
-| Correct | Brief confirmation plus one enrichment |
-| Partial | Acknowledge correct part, probe missing part |
-| Incorrect | Socratic redirect before revealing |
-| Second miss | Full answer and correction |
-| Skip or IDK | Respect it, explain, circle back later |
-
-Ordering: recall, spatial/discrimination, mechanism/integration, visual interspersed. If 2+ misses occur in one TU, add 1-2 alternate-angle probes.
-
-Every assessed drill answer follows the shared memory logging contract with `--skill "study-material"`. Use the same `SESSION_TS` for the whole drill. For partial or incorrect answers, include full error metadata (`--error-type`, `--misconception`, `--correction`).
-
-Checkpoint around every 12 questions with strengths, needs work, and options to continue, focus weak areas, or pause.
-
-At section boundaries, use the compression card if it fits the source: one-breath schema, danger rule, discriminator, or rescue move. In Rapid Review mode, keep this to one prompt; in Deep Understanding mode, use it to decide whether to advance or transfer.
+Every assessed answer follows `memory-operations.md` with
+`--skill study-material`; include specific error metadata for partial or
+incorrect answers. Create Anki cards only when the evaluated exchange meets
+`anki-session-workflow.md` eligibility—not from passive generation or routine
+correct recall.
 
 ## Finish
 
-Run `study_memory.py end-session` with a specific `--next-strategy` for the next drill on this document. Follow post-session integrity verification from `memory-operations.md`. Then follow queue validation and flush from `anki-session-workflow.md`; generate cards for incorrect, partial, and high-yield exchanges using `.agents/shared/commands/anki-card-quality.md`. Clean up `data/Sessions/` temps.
+Run `end-session` with a document-specific `--next-strategy`, perform the shared
+integrity check, and review/check/flush the Anki queue. Remove only named
+workflow-owned temporary drafts; preserve provenance ledgers and never clean
+`data/Sessions/` broadly.

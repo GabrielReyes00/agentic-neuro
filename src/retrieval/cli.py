@@ -4,12 +4,50 @@ from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
 
 from . import pipeline
+from . import batch as batch_pipeline
+from . import mini as mini_pipeline
 
 
 def _json_dumps(payload: object) -> str:
     return json.dumps(payload, separators=(",", ":"))
+
+
+def _load_batch_queries(values: list[str], query_file: str) -> list[str]:
+    queries = [value.strip() for value in values if value.strip()]
+    if not query_file:
+        return queries
+    path = Path(query_file)
+    raw = path.read_text(encoding="utf-8").strip()
+    if not raw:
+        return queries
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        payload = None
+    if isinstance(payload, list):
+        queries.extend(
+            str(item.get("query") if isinstance(item, dict) else item).strip()
+            for item in payload
+        )
+    elif isinstance(payload, dict) and isinstance(payload.get("queries"), list):
+        queries.extend(str(item).strip() for item in payload["queries"])
+    else:
+        for line in raw.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                row = json.loads(stripped)
+            except json.JSONDecodeError:
+                queries.append(stripped)
+                continue
+            queries.append(
+                str(row.get("query") if isinstance(row, dict) else row).strip()
+            )
+    return [query for query in queries if query]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -79,6 +117,133 @@ def main(argv: list[str] | None = None) -> int:
         choices=list(pipeline.RERANKER_MODELS.keys()),
     )
     p_search.add_argument("--n-results", type=int, default=pipeline.DEFAULT_N_RESULTS)
+
+    p_batch = subparsers.add_parser(
+        "batch",
+        help="Retrieve several topics with shared batched model inference",
+    )
+    p_batch.add_argument(
+        "--query",
+        action="append",
+        default=[],
+        help="Topic query; repeat for multiple topics",
+    )
+    p_batch.add_argument(
+        "--query-file",
+        default="",
+        help="JSON list/object, JSONL, or one-query-per-line input",
+    )
+    p_batch.add_argument("--json", action="store_true", help="Emit one JSON batch packet")
+    p_batch.add_argument(
+        "--card-json",
+        action="store_true",
+        help="Emit compact multi-topic JSONL source cards",
+    )
+    p_batch.add_argument("--output", default="", help="Optional output path")
+    p_batch.add_argument(
+        "--no-distill",
+        action="store_true",
+        help="Skip adaptive context distillation",
+    )
+    p_batch.add_argument(
+        "--no-augment",
+        action="store_true",
+        help="Skip quality-aware context augmentation",
+    )
+    p_batch.add_argument(
+        "--reranker",
+        default=pipeline.DEFAULT_RERANKER,
+        choices=list(pipeline.RERANKER_MODELS.keys()),
+    )
+    p_batch.add_argument("--n-results", type=int, default=pipeline.DEFAULT_N_RESULTS)
+    p_batch.add_argument(
+        "--max-passages",
+        type=int,
+        default=0,
+        help="Limit final passages/cards per topic after retrieval",
+    )
+    p_batch.add_argument("--max-takeaways", type=int, default=8)
+
+    p_mini = subparsers.add_parser(
+        "mini",
+        help="Lightning compact retrieval for short factual lookups",
+    )
+    p_mini.add_argument("query", help="Short factual or named lookup query")
+    p_mini.add_argument(
+        "--strategy",
+        choices=("auto", "lexical", "semantic", "hybrid"),
+        default="auto",
+    )
+    p_mini.add_argument("--limit", type=int, default=mini_pipeline.MINI_DEFAULT_LIMIT)
+    p_mini.add_argument(
+        "--max-chars",
+        type=int,
+        default=mini_pipeline.MINI_DEFAULT_MAX_CHARS,
+    )
+    p_mini.add_argument("--json", action="store_true", help="Emit the compact JSON packet")
+    p_mini.add_argument(
+        "--card-json",
+        action="store_true",
+        help="Emit compact JSONL source cards",
+    )
+    p_mini.add_argument("--max-takeaways", type=int, default=8)
+    p_mini.add_argument("--output", default="", help="Optional output path")
+
+    p_mini_batch = subparsers.add_parser(
+        "mini-batch",
+        help="Retrieve several short lookups with batched mini-RAG inference",
+    )
+    p_mini_batch.add_argument(
+        "--query",
+        action="append",
+        default=[],
+        help="Short lookup query; repeat for multiple topics",
+    )
+    p_mini_batch.add_argument(
+        "--query-file",
+        default="",
+        help="JSON list/object, JSONL, or one-query-per-line input",
+    )
+    p_mini_batch.add_argument(
+        "--strategy",
+        choices=("auto", "lexical", "semantic", "hybrid"),
+        default="auto",
+    )
+    p_mini_batch.add_argument(
+        "--limit",
+        type=int,
+        default=mini_pipeline.MINI_DEFAULT_LIMIT,
+    )
+    p_mini_batch.add_argument(
+        "--max-chars",
+        type=int,
+        default=mini_pipeline.MINI_DEFAULT_MAX_CHARS,
+    )
+    p_mini_batch.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit one compact JSON batch",
+    )
+    p_mini_batch.add_argument(
+        "--card-json",
+        action="store_true",
+        help="Emit compact multi-topic JSONL source cards",
+    )
+    p_mini_batch.add_argument("--max-takeaways", type=int, default=8)
+    p_mini_batch.add_argument("--output", default="", help="Optional output path")
+
+    subparsers.add_parser(
+        "mini-build",
+        help="Build/rebuild the pruned ONNX semantic lookup index",
+    )
+    subparsers.add_parser(
+        "mini-fts-build",
+        help="Build/rebuild the full-corpus SQLite FTS5 lookup sidecar",
+    )
+    subparsers.add_parser(
+        "mini-preflight",
+        help="Check mini-RAG model and semantic index readiness",
+    )
 
     subparsers.add_parser("list_textbooks", help="Show database inventory")
     p_list = subparsers.choices["list_textbooks"]
@@ -192,8 +357,133 @@ def main(argv: list[str] | None = None) -> int:
                         f"tokens={hit.get('passage_tokens', '?')}"
                     )
             return 0
+
+        if args.command == "batch":
+            queries = _load_batch_queries(args.query, args.query_file)
+            if not queries:
+                parser.error("batch requires --query and/or --query-file")
+            results = pipeline.retrieve_many(
+                queries,
+                n_results=args.n_results,
+                reranker_key=args.reranker,
+                distill=not args.no_distill,
+                augment=not args.no_augment,
+                max_passages=args.max_passages,
+            )
+            if args.card_json:
+                output = batch_pipeline.build_batch_source_cards_jsonl(
+                    results,
+                    max_takeaways=args.max_takeaways,
+                )
+            elif args.json:
+                output = _json_dumps(batch_pipeline.build_batch_packet(results))
+            else:
+                batch_meta = results[0].get("batch", {}) if results else {}
+                lines = [
+                    (
+                        f"OK {len(results)} topics | "
+                        f"{batch_meta.get('total_ms', 0):.0f}ms total | "
+                        f"{batch_meta.get('total_ms', 0) / max(1, len(results)):.0f}ms/topic"
+                    )
+                ]
+                for index, result in enumerate(results, 1):
+                    meta = result.get("metadata", {})
+                    lines.append(
+                        f"  [{index}] {meta.get('final_passages', 0)} passages | "
+                        f"{meta.get('unique_sources', 0)} sources | {result['query']}"
+                    )
+                output = "\n".join(lines) + "\n"
+            if args.output:
+                path = Path(args.output)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(output, encoding="utf-8")
+            else:
+                print(output, end="" if output.endswith("\n") else "\n")
+            return 0
+        if args.command == "mini-build":
+            print(json.dumps(mini_pipeline.build_index(), indent=2))
+            return 0
+
+        if args.command == "mini-fts-build":
+            print(json.dumps(mini_pipeline.build_fts_index(), indent=2))
+            return 0
+
+        if args.command == "mini-preflight":
+            payload = mini_pipeline.preflight()
+            print(json.dumps(payload, indent=2))
+            return 0 if payload.get("ok") else 2
+
+        if args.command == "mini":
+            packet = mini_pipeline.retrieve_mini(
+                args.query,
+                strategy=args.strategy,
+                limit=args.limit,
+                max_chars=args.max_chars,
+            )
+            if args.card_json:
+                output = mini_pipeline.build_source_cards_jsonl(
+                    [packet],
+                    max_takeaways=args.max_takeaways,
+                )
+            elif args.json:
+                output = json.dumps(
+                    packet,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+            else:
+                output = mini_pipeline.format_context(packet)
+            if args.output:
+                path = Path(args.output)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(output, encoding="utf-8")
+            else:
+                print(output, end="" if output.endswith("\n") else "\n")
+            return 0
+
+        if args.command == "mini-batch":
+            queries = _load_batch_queries(args.query, args.query_file)
+            if not queries:
+                parser.error("mini-batch requires --query and/or --query-file")
+            packets = mini_pipeline.retrieve_many(
+                queries,
+                strategy=args.strategy,
+                limit=args.limit,
+                max_chars=args.max_chars,
+            )
+            if args.card_json:
+                output = mini_pipeline.build_source_cards_jsonl(
+                    packets,
+                    max_takeaways=args.max_takeaways,
+                )
+            elif args.json:
+                output = json.dumps(
+                    {
+                        "type": "mini_rag_batch",
+                        "schema_version": 1,
+                        "batch": packets[0].get("batch", {}) if packets else {},
+                        "results": packets,
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+            else:
+                output = "\n".join(
+                    mini_pipeline.format_context(packet).rstrip()
+                    for packet in packets
+                ) + "\n"
+            if args.output:
+                path = Path(args.output)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(output, encoding="utf-8")
+            else:
+                print(output, end="" if output.endswith("\n") else "\n")
+            return 0
     except pipeline.RetrievalPreflightError as exc:
         print(f"RAG preflight failed: {exc}", file=__import__("sys").stderr)
+        return 2
+    except mini_pipeline.MiniRAGPreflightError as exc:
+        print(f"Mini-RAG preflight failed: {exc}", file=__import__("sys").stderr)
         return 2
 
     parser.print_help()

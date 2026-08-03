@@ -66,6 +66,15 @@ def _slide(idx: int, *, backup: bool = False) -> dict:
 
 
 class GrandRoundsGuardTests(unittest.TestCase):
+    def test_visual_qa_template_tracks_every_validator_failure_list(self) -> None:
+        template = guard.visual_qa_template(slide_count=7)
+        self.assertEqual(template["schema"], guard.VISUAL_QA_SCHEMA)
+        self.assertEqual(template["inspected_slide_count"], 7)
+        self.assertEqual(template["status"], "pending")
+        for key in guard.VISUAL_QA_EMPTY_LIST_KEYS:
+            with self.subTest(key=key):
+                self.assertEqual(template[key], [])
+
     def _package(self, root: Path) -> dict[str, Path]:
         deck = root / "deck.pptx"
         journal = root / "Journal Club" / "Hybrid.md"
@@ -74,8 +83,8 @@ class GrandRoundsGuardTests(unittest.TestCase):
         source.parent.mkdir(parents=True)
         source.write_bytes(b"%PDF-test")
         journal.write_text(
-            "Body\n\n---\nskill: journal-club\nsource_package_status: complete\n"
-            "source_pdf: Journal Club/Sources/Hybrid.pdf\n---\n",
+            "---\nskill: journal-club\nsource_package_status: complete\n"
+            "source_pdf: Journal Club/Sources/Hybrid.pdf\n---\n\nBody\n",
             encoding="utf-8",
         )
         slides = [_slide(idx) for idx in range(1, 10)] + [_slide(10, backup=True)]

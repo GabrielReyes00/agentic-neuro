@@ -7,18 +7,17 @@ Checks (per file):
   - Within that section, in order:
       * a TL;DR blockquote starting `> **TL;DR:**`
       * H3 `### When to Reference This Report`
-      * H3 `### Key Numbers at a Glance`
+      * H3 `### Key Numbers at a Glance` or `### Key Anchors at a Glance`
       * H3 `### Decision Framework`
-  - `### Key Numbers at a Glance` is followed by a Markdown table whose header
-    row matches `| Parameter | Value | Context | Source |` (whitespace-tolerant).
-  - H2 `## Mastery Objectives` appears after the opening block and before bottom
-    YAML, with 5-10 objective lines using testable action verbs.
+  - The selected anchor H3 is followed by its canonical Markdown table header.
+  - H2 `## Mastery Objectives` appears after the opening block with testable,
+    action-verb objectives.
   - Workflow mode markers are kept out of the final report body.
   - No H1 (`^# `) anywhere in the file.
-  - YAML metadata appears at the bottom, not the top (no `---` on line 1).
+  - YAML metadata uses native Obsidian frontmatter at the top.
   - If a RAG callout is present, it uses the exact sanctioned form
     `> [!info] RAG Supplemented` (case-sensitive, on its own line).
-  - Bottom YAML excludes workflow provenance and internal-knowledge tracking keys.
+  - Native frontmatter excludes workflow provenance and internal-knowledge tracking keys.
   - Textbook-style labels are not paired with PubMed/DOI links.
   - Optional coverage ledger gate: if `--coverage-ledger` is supplied, required
     ledger blocks must not have gap-like statuses.
@@ -40,19 +39,27 @@ import re
 import sys
 from pathlib import Path
 
+try:
+    from vault_schema import split_frontmatter
+except ModuleNotFoundError:  # pragma: no cover - package import in tests
+    from .vault_schema import split_frontmatter
+
 VAULT = Path("/Users/gabrielreyes/Documents/Obsidian/agentic-neuro")
 REPORTS_DIR = VAULT / "Reports"
 
 REQUIRED_H2 = "## Clinical Utility & Quick Reference"
-REQUIRED_H3_ORDER = [
-    "### When to Reference This Report",
-    "### Key Numbers at a Glance",
-    "### Decision Framework",
-]
+WHEN_H3 = "### When to Reference This Report"
+NUMBERS_H3 = "### Key Numbers at a Glance"
+ANCHORS_H3 = "### Key Anchors at a Glance"
+DECISION_H3 = "### Decision Framework"
 TLDR_RE = re.compile(r"^>\s*\*\*TL;DR:\*\*", re.MULTILINE)
 NUMBERS_HEADER_RE = re.compile(
     r"^\|\s*Parameter\s*\|\s*Value\s*\|\s*Context\s*\|\s*Source\s*\|",
     re.MULTILINE,
+)
+ANCHORS_HEADER_RE = re.compile(
+    r"^\|\s*Decision Or Structure\s*\|\s*Anchor\s*\|\s*Why It Matters\s*\|\s*Source\s*\|",
+    re.MULTILINE | re.IGNORECASE,
 )
 WORKFLOW_MODE_MARKER_RE = re.compile(r"^[A-Z][A-Za-z ]+\s+Mode\s*:", re.MULTILINE)
 H1_RE = re.compile(r"^#\s", re.MULTILINE)
@@ -89,16 +96,6 @@ FORBIDDEN_YAML_KEY_RE = re.compile(r"^\s*(?:provenance|internal_knowledge_used)\
 GAP_STATUSES = {"gap", "gapped", "missing", "uncovered", "incomplete"}
 
 
-def _bottom_yaml_start_line(text: str) -> int | None:
-    lines = text.splitlines()
-    if not lines or lines[-1].strip() != "---":
-        return None
-    for idx in range(len(lines) - 2, -1, -1):
-        if lines[idx].strip() == "---":
-            return idx + 1
-    return None
-
-
 def _strip_objective_markup(text: str) -> str:
     text = text.strip()
     text = re.sub(r"^\*\*(.*?)\*\*", r"\1", text)
@@ -108,7 +105,9 @@ def _strip_objective_markup(text: str) -> str:
 
 def validate(path: Path) -> list[str]:
     """Return a list of failure messages. Empty list = pass."""
-    text = path.read_text()
+    raw_text = path.read_text()
+    text, parsed_meta = split_frontmatter(raw_text)
+    meta = parsed_meta or {}
     lines = text.splitlines()
     failures: list[str] = []
 
@@ -118,21 +117,20 @@ def validate(path: Path) -> list[str]:
             failures.append(f"line {i}: H1 heading is not allowed (filename is the title)")
             break
 
-    # No YAML at top
-    if lines and lines[0].strip() == "---":
-        failures.append("line 1: YAML front matter at top is not allowed (YAML belongs at bottom)")
+    if not meta:
+        failures.append("missing or invalid native YAML frontmatter")
+    else:
+        for key in ("domain", "summary"):
+            if not str(meta.get(key) or "").strip():
+                failures.append(f"frontmatter `{key}` is required for report indexing")
     fenced_yaml = FENCED_YAML_RE.search(text)
     if fenced_yaml:
         line_no = text.count("\n", 0, fenced_yaml.start()) + 1
-        failures.append(f"line {line_no}: YAML metadata must use bottom `---` delimiters, not a fenced code block")
+        failures.append(f"line {line_no}: YAML metadata must use native frontmatter, not a fenced code block")
 
-    bottom_yaml_line = _bottom_yaml_start_line(text)
-    if bottom_yaml_line is not None:
-        for idx, line in enumerate(lines[bottom_yaml_line:], bottom_yaml_line + 1):
-            if FORBIDDEN_YAML_KEY_RE.match(line):
-                failures.append(
-                    f"line {idx}: `{line.split(':', 1)[0].strip()}` metadata is not allowed in Reports YAML"
-                )
+    for key in ("provenance", "internal_knowledge_used"):
+        if key in meta:
+            failures.append(f"frontmatter key `{key}` is not allowed in final Reports metadata")
 
     m = WORKFLOW_MODE_MARKER_RE.search(text)
     if m:
@@ -169,34 +167,41 @@ def validate(path: Path) -> list[str]:
             h3_positions.append((line.strip(), first_h2 + offset))
 
     found_names = [h[0] for h in h3_positions]
-    required_iter = iter(REQUIRED_H3_ORDER)
-    next_required = next(required_iter, None)
-    matched_order: list[tuple[str, int]] = []
-    for name, ln in h3_positions:
-        if name == next_required:
-            matched_order.append((name, ln))
-            next_required = next(required_iter, None)
-    missing = REQUIRED_H3_ORDER[len(matched_order):]
-    if missing:
-        present_str = ", ".join(found_names) if found_names else "none"
-        for m_name in missing:
-            failures.append(
-                f"Clinical Utility section: missing or out-of-order H3 `{m_name}` "
-                f"(H3 children found, in order: {present_str})"
-            )
+    present_str = ", ".join(found_names) if found_names else "none"
+    anchor_names = [name for name in found_names if name in {NUMBERS_H3, ANCHORS_H3}]
+    if len(anchor_names) != 1:
+        failures.append(
+            "Clinical Utility section must contain exactly one topic-shaped anchor H3: "
+            f"`{NUMBERS_H3}` or `{ANCHORS_H3}` (found: {present_str})"
+        )
+    expected_order = [WHEN_H3, anchor_names[0] if len(anchor_names) == 1 else None, DECISION_H3]
+    expected_order = [name for name in expected_order if name]
+    positions = [found_names.index(name) if name in found_names else -1 for name in expected_order]
+    if any(position < 0 for position in positions) or positions != sorted(positions):
+        failures.append(
+            "Clinical Utility section: required H3 children are missing or out of order "
+            f"(found: {present_str})"
+        )
 
     # Numbers table header
-    numbers_h3 = next((ln for name, ln in h3_positions if name == "### Key Numbers at a Glance"), None)
-    if numbers_h3 is not None:
-        # Look at the 12 lines after the heading for the canonical table header
-        window = "\n".join(lines[numbers_h3 : numbers_h3 + 12])
-        if not NUMBERS_HEADER_RE.search(window):
+    anchor_h3 = next(((name, ln) for name, ln in h3_positions if name in {NUMBERS_H3, ANCHORS_H3}), None)
+    numbers_h3 = anchor_h3[1] if anchor_h3 and anchor_h3[0] == NUMBERS_H3 else None
+    if anchor_h3 is not None:
+        anchor_name, anchor_line = anchor_h3
+        window = "\n".join(lines[anchor_line : anchor_line + 12])
+        expected_header = (
+            "| Parameter | Value | Context | Source |"
+            if anchor_name == NUMBERS_H3
+            else "| Decision Or Structure | Anchor | Why It Matters | Source |"
+        )
+        header_re = NUMBERS_HEADER_RE if anchor_name == NUMBERS_H3 else ANCHORS_HEADER_RE
+        if not header_re.search(window):
             failures.append(
-                f"line {numbers_h3}: `### Key Numbers at a Glance` must be followed by a table "
-                f"with header `| Parameter | Value | Context | Source |`"
+                f"line {anchor_line}: `{anchor_name}` must be followed by a table "
+                f"with header `{expected_header}`"
             )
 
-    # Mastery Objectives section: required after opening block and before bottom YAML.
+    # Mastery Objectives section: required after opening block.
     h2_positions = [(m.group(1).strip(), text.count("\n", 0, m.start()) + 1) for m in H2_RE.finditer(text)]
     mastery_positions = [(name, ln) for name, ln in h2_positions if name == "Mastery Objectives"]
     if not mastery_positions:
@@ -205,11 +210,8 @@ def validate(path: Path) -> list[str]:
         mastery_name, mastery_line = mastery_positions[0]
         if mastery_line <= first_h2:
             failures.append(f"line {mastery_line}: `## Mastery Objectives` must appear after the opening Clinical Utility section")
-        if bottom_yaml_line is not None and mastery_line >= bottom_yaml_line:
-            failures.append(f"line {mastery_line}: `## Mastery Objectives` must appear before bottom YAML metadata")
-
         next_mastery_h2 = next((ln for _, ln in h2_positions if ln > mastery_line), len(lines) + 1)
-        section_end = min(next_mastery_h2, bottom_yaml_line or len(lines) + 1)
+        section_end = next_mastery_h2
         mastery_lines = lines[mastery_line: section_end - 1]
         objectives: list[tuple[int, str]] = []
         for offset, line in enumerate(mastery_lines, mastery_line + 1):
@@ -218,10 +220,9 @@ def validate(path: Path) -> list[str]:
                 objective = _strip_objective_markup(match.group(1))
                 if objective:
                     objectives.append((offset, objective))
-        if len(objectives) < 5 or len(objectives) > 10:
+        if not objectives:
             failures.append(
-                f"line {mastery_line}: `## Mastery Objectives` must contain 5-10 objective list items "
-                f"(found {len(objectives)})"
+                f"line {mastery_line}: `## Mastery Objectives` must contain testable list items"
             )
         for ln, objective in objectives:
             if WEAK_OBJECTIVE_VERB_RE.search(objective):

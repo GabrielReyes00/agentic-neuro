@@ -18,16 +18,27 @@ Each complexity tier has a finite cycle budget. The cycle count includes the fir
 - **Intermediate procedure:** maximum 3 expert review cycles total.
 - **Complex procedure:** maximum 5 expert review cycles total.
 
-If the budget is exhausted and the draft still has `REVISION REQUIRED`, escalate to the user with the unresolved gaps surfaced verbatim. Do not write a known-incomplete real guide with a disclaimer.
+If the budget is exhausted and the draft still has `REVISION REQUIRED`, surface
+the unresolved gaps and attempted repairs. Do not install it as complete. The
+user may explicitly authorize an incomplete artifact under the orchestrator's
+policy (`status: incomplete` plus `## Unresolved Or Weak Areas`); otherwise
+defer or abort.
 
 ## Escalation Ladder
 
 The escalation ladder forces the workflow to broaden source recruitment when repeated repairs fail to close the same gap class.
 
 - **Cycle 1 → 2:** repair using the reviewer-assigned path (existing context, knowledge map, internal knowledge, RAG, or PubMed). No automatic escalation required.
-- **Cycle 2 → 3:** if any blocking gap repeats from the prior cycle, at least one **PubMed query** is mandatory for that gap, even if not the originally-assigned path. The reviewer's prior repair path was not enough.
+- **Cycle 2 → 3:** if a blocking gap repeats, recruit an independent source
+  appropriate to the gap: PubMed/current guidance for evolving outcomes,
+  devices, or comparative conduct; focused textbook/atlas evidence for anatomy,
+  sequence, or classic technique. Do not run a token PubMed query for an
+  anatomy-only defect.
 - **Cycle 3 → 4 (complex procedures only):** if any blocking gap repeats again, the operative knowledge map must be revised first, then the guide is re-drafted from the revised map. Map-completeness review is rerun before re-drafting if the map changes substantially.
-- **Cycle 4 → 5 (complex procedures only):** if any blocking gap still repeats, escalate to user. Surface the unresolved gap, the repair paths attempted, and what was learned. Ask whether to (a) ship with explicit gap labeling in the user-facing summary, (b) defer until a new source becomes available, or (c) abort the guide.
+- **Cycle 4 → 5 (complex procedures only):** if a blocking gap still repeats,
+  escalate to the user with the evidence trail. Offer: install explicitly as an
+  incomplete artifact under the required labeling, defer pending a new source,
+  or abort.
 
 A repeating gap is one whose `rubric_block` and `coverage_matrix_block` match a prior cycle's blocking gap, regardless of textual rewording.
 
@@ -38,7 +49,9 @@ For each blocking gap, follow the repair path assigned by the reviewer (subject 
 - **existing context:** revisit the research brief and revise the relevant section.
 - **knowledge map:** revise the guide from the already-approved map; if the map itself is incomplete, update it first and rerun map-completeness review before re-drafting.
 - **internal knowledge:** add expert synthesis using operative/anatomic reasoning. Keep it concrete and consequence-linked.
-- **RAG:** run one focused serial `lance_retriever.py compare` query for that gap. Use `--no-frontier` for classic anatomy/technique unless modern literature matters.
+- **RAG:** load `.agents/shared/commands/rag-routing.md` and run one focused
+  query through its smallest sufficient tier. Use current primary literature
+  when the gap concerns evolving outcomes, devices, guidelines, or conduct.
 - **PubMed:** use literature search when contemporary evidence, outcomes, approach comparisons, implants/devices, complication rates, or guidelines are necessary, and whenever the escalation ladder mandates it.
 
 If several gaps share the same knowledge target, combine them into one focused query. Do not run a new query for every sentence-level issue.
@@ -71,7 +84,8 @@ Before revising the guide, write a repair memo:
 
 The memo is for workflow control and should not be included in the final guide.
 
-Keep the repair memo compact. Target 60-120 words per blocking gap. The verdict JSON is the durable audit; the memo should support the next edit, not restate the whole review.
+Keep the repair memo compact. The verdict JSON is the durable audit; the memo
+supports the next edit and must not restate the whole review.
 
 Append the repair memo to the workflow ledger. If a blocking gap is repaired using internal knowledge rather than additional retrieval, state why another source query was not needed. If source support is needed and unavailable, the guide cannot be finalized as complete without surfacing that limitation.
 
@@ -122,4 +136,6 @@ Format:
 - Add source citations where new retrieved material supports a specific claim.
 - Remove generic filler if new information makes it redundant.
 
-After revision, return to `.agents/shared/commands/intraoperative-guide-review.md` for another expert completeness review (separate subagent).
+After revision, return to `.agents/shared/commands/intraoperative-guide-review.md`
+for another independent expert-completeness review using the runtime-supported
+reviewer role.

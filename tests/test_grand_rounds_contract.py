@@ -1,15 +1,23 @@
 from __future__ import annotations
 
+import json
+import re
 import unittest
 from pathlib import Path
+
+from src import grand_rounds_guard as guard
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def _normalized(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip()
+
+
 class GrandRoundsContractTests(unittest.TestCase):
     def test_router_uses_mode_specific_modules(self) -> None:
-        router = (ROOT / ".agents/shared/commands/grand-rounds.md").read_text(encoding="utf-8")
+        router = (ROOT / ".agents/shared/commands/grand-rounds.md").read_text()
         for name in (
             "grand-rounds-case.md",
             "grand-rounds-article.md",
@@ -20,35 +28,30 @@ class GrandRoundsContractTests(unittest.TestCase):
         ):
             self.assertIn(name, router)
 
-    def test_article_mode_consumes_journal_club_and_pdf(self) -> None:
-        article = (ROOT / ".agents/shared/commands/grand-rounds-article.md").read_text(encoding="utf-8")
+    def test_article_mode_consumes_a_complete_dossier_and_pdf(self) -> None:
+        article = _normalized(
+            (ROOT / ".agents/shared/commands/grand-rounds-article.md").read_text()
+        )
         for fragment in (
             "source_package_status: complete",
-            "Coverage Ledger",
+            "coverage_audit",
             "asset_manifest.json",
             "result_checks",
             "backup slides",
+            "speaker notes",
         ):
             self.assertIn(fragment, article)
-        self.assertIn("speaker\nnotes", article.lower())
 
-    def test_deck_contract_requires_real_render_and_guard(self) -> None:
-        deck = (ROOT / ".agents/shared/commands/grand-rounds-deck.md").read_text(encoding="utf-8")
+    def test_deck_contract_uses_executable_qa_schema_and_real_render(self) -> None:
+        deck = (ROOT / ".agents/shared/commands/grand-rounds-deck.md").read_text()
         for fragment in (
             "@oai/artifact-tool",
             "Render every slide",
             "visual_qa.json",
+            "visual-qa-template",
             "grand_rounds_guard.py",
             "Speaker notes are embedded",
             "zero-valued or absent outcomes",
-            "chart_label_failures",
-            "alignment_failures",
-            "misleading_quantitative_encoding_slides",
-            "color_overuse_slides",
-            "filled_container_overuse_slides",
-            "rounded_container_slides",
-            "decorative_line_overuse_slides",
-            "textbox_fit_failures",
             "publisher prose and page furniture",
             "editable PowerPoint tables",
             "grand_rounds_deck_plan_v2",
@@ -56,50 +59,54 @@ class GrandRoundsContractTests(unittest.TestCase):
             "layout_family",
             "repair_cycle_count",
             "meaningful_visual_main_slide_count",
-            "redundant_slides",
-            "semantic_legend_failures",
-            "watermarked_asset_slides",
-            "redundant_interpretive_band_slides",
-            "cross_platform_render_failures",
-            "10-12 pt",
-            "interpretive",
         ):
             self.assertIn(fragment, deck)
+        template = guard.visual_qa_template(slide_count=1)
+        self.assertEqual(template["schema"], guard.VISUAL_QA_SCHEMA)
+        for key in guard.VISUAL_QA_EMPTY_LIST_KEYS:
+            self.assertEqual(template[key], [])
 
-    def test_visual_design_contract_requires_academic_art_direction(self) -> None:
-        visual = (ROOT / ".agents/shared/commands/grand-rounds-visual-design.md").read_text(encoding="utf-8")
+    def test_visual_design_uses_one_declarative_style_registry(self) -> None:
+        visual = _normalized(
+            (ROOT / ".agents/shared/commands/grand-rounds-visual-design.md").read_text()
+        )
+        style = json.loads(
+            (ROOT / ".agents/shared/presentation-styles.json").read_text()
+        )["styles"]["baylor_minimal_academic"]
         for fragment in (
             "Required Design Brief",
             "sentence case",
             "meaningful visual or evidence anchor",
             "55-75%",
-            "white_only",
             "three consecutive",
             "repeated title underlines",
             "Fresh-Eyes Visual Critique",
             "Baylor Minimal Academic Surface",
-            "navy plus neutral gray",
-            "filled_content_containers_max_per_slide",
-            "Human-edited journal-club exemplar",
-            "Editorial subtraction pass",
             "reference_alignment",
             "native compact legend",
-            "#1F4E79",
-            "34-38 pt",
-            "13.5-16 pt",
+            "Editorial Subtraction Pass",
         ):
             self.assertIn(fragment, visual)
+        self.assertEqual(style["palette"]["primary"], "#1F4E79")
+        self.assertEqual(style["constraints"]["chart_palette"], "navy plus neutral gray")
+        self.assertEqual(
+            style["constraints"]["filled_content_containers_max_per_slide"], 0
+        )
+        self.assertEqual(style["font_floors_pt"]["body"], 13.5)
 
-    def test_article_contract_requires_slide_economy(self) -> None:
-        article = (ROOT / ".agents/shared/commands/grand-rounds-article.md").read_text(encoding="utf-8")
+    def test_article_contract_preserves_economy_and_evidence_dimensions(self) -> None:
+        article = _normalized(
+            (ROOT / ".agents/shared/commands/grand-rounds-article.md").read_text()
+        ).lower()
         for fragment in (
-            "Slide separation test",
+            "slide separation test",
             "separation_rationale",
-            "Every article deck requires one final main slide",
-            "Main Takeaways",
-            "Clinical Context",
-            "preference-sensitive initial-strategy trial",
-            "Verified longer-term or companion evidence",
+            "every article deck ends with one main",
+            "main takeaways",
+            "initial-strategy trials separate assignment from treatment received",
+            "companion evidence",
+            "longitudinal_results",
+            "interpretation_and_bias",
         ):
             self.assertIn(fragment, article)
 
@@ -111,8 +118,9 @@ class GrandRoundsContractTests(unittest.TestCase):
             ".gemini/commands/grand-rounds.toml",
             "plugins/agentic-neuro/commands/grand-rounds.md",
         ):
-            text = (ROOT / relative).read_text(encoding="utf-8")
+            text = (ROOT / relative).read_text()
             self.assertIn(".agents/shared/commands/grand-rounds.md", text)
+            self.assertLessEqual(len(text.split()), 120)
 
 
 if __name__ == "__main__":

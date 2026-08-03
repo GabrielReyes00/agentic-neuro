@@ -15,7 +15,13 @@ def _valid_report() -> str:
         f"| Parameter {idx} | Value {idx} | Context {idx} | Youmans 8th Ed, p. {700 + idx} |"
         for idx in range(1, 11)
     )
-    return f"""## Clinical Utility & Quick Reference
+    return f"""---
+domain: general
+summary: "Operational test report for validator coverage."
+tags: [type/report]
+---
+
+## Clinical Utility & Quick Reference
 > **TL;DR:** This report summarizes a neurosurgical topic with operationally useful detail.
 
 ### When to Reference This Report
@@ -34,14 +40,62 @@ Detailed source-grounded report content.
 
 ## Mastery Objectives
 {objectives}
-
----
-tags: [type/report]
----
 """
 
 
+def _valid_qualitative_report() -> str:
+    return _valid_report().replace(
+        "### Key Numbers at a Glance\n| Parameter | Value | Context | Source |\n|---|---|---|---|\n"
+        + "\n".join(
+            f"| Parameter {idx} | Value {idx} | Context {idx} | Youmans 8th Ed, p. {700 + idx} |"
+            for idx in range(1, 11)
+        ),
+        "### Key Anchors at a Glance\n"
+        "| Decision Or Structure | Anchor | Why It Matters | Source |\n"
+        "|---|---|---|---|\n"
+        "| Corridor selection | Preserve the safest working angle | Changes exposure risk | Youmans 8th Ed, p. 700 |",
+    )
+
+
 class ReportValidatorTests(unittest.TestCase):
+    def test_one_high_density_mastery_objective_is_not_rejected_by_quota(self) -> None:
+        report = _valid_report()
+        report = report.replace(
+            "\n".join(
+                f"- Distinguish management-changing feature {idx} from its closest mimic."
+                for idx in range(2, 6)
+            ),
+            "",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            report_path = Path(tmp) / "Focused.md"
+            report_path.write_text(report)
+            failures = report_validator.validate(report_path)
+        self.assertEqual(failures, [])
+
+    def test_qualitative_anchor_table_passes_without_numeric_padding(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            report_path = Path(tmp) / "Qualitative.md"
+            report_path.write_text(_valid_qualitative_report())
+            failures = report_validator.validate(report_path)
+        self.assertEqual(failures, [])
+
+    def test_both_anchor_table_modes_fail(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            report_path = Path(tmp) / "Ambiguous.md"
+            report_path.write_text(
+                _valid_report().replace(
+                    "### Decision Framework",
+                    "### Key Anchors at a Glance\n"
+                    "| Decision Or Structure | Anchor | Why It Matters | Source |\n"
+                    "|---|---|---|---|\n"
+                    "| Exposure | Preserve visualization | Avoid injury | Youmans 8th Ed, p. 700 |\n\n"
+                    "### Decision Framework",
+                )
+            )
+            failures = report_validator.validate(report_path)
+        self.assertTrue(any("exactly one" in failure for failure in failures))
+
     def test_coverage_ledger_gap_status_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             report_path = Path(tmp) / "Example.md"
@@ -116,8 +170,8 @@ class ReportValidatorTests(unittest.TestCase):
             report_path = Path(tmp) / "Example.md"
             report_path.write_text(
                 _valid_report().replace(
-                    "---\ntags: [type/report]\n---",
-                    "```yaml\ntags: [type/report]\n```",
+                    "---\ndomain: general\nsummary: \"Operational test report for validator coverage.\"\ntags: [type/report]\n---",
+                    "```yaml\ndomain: general\nsummary: \"Operational test report for validator coverage.\"\ntags: [type/report]\n```",
                 )
             )
 

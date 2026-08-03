@@ -1,205 +1,189 @@
-# Neuro-Agent: AI Assistant for a Neurosurgery Resident
+# Neuro-Agent
 
-**Status**: Active | **Arch**: Codex + LanceDB RAG + MCP + Skills
-**Multi-Agent**: Python memory backend is agent-agnostic. Claude uses `CLAUDE.md`; Gemini CLI uses `GEMINI.md` and `.gemini/commands/`. All agents share LanceDB, SQLite study memory, Obsidian vault sync, and Anki infrastructure.
+Repository-wide policy for Gabriel Reyes's agent-assisted neurosurgical learning
+and documentation system.
 
-## Shared Workflow Authority
+## Authority And Loading
 
-The canonical workflow contracts live in `.agents/shared/commands/`. Codex skills in `.agents/codex/skills/` are thin adapters that must read and follow the corresponding shared command file. If this root file conflicts with a shared command, the shared command wins for that workflow.
+- This file owns user posture, routing, safety, and system boundaries.
+- `.agents/shared/workflow-registry.json` owns workflow names, destinations,
+  aliases, and lifecycle defaults.
+- `.agents/shared/commands/` owns workflow behavior. A selected shared contract
+  overrides this root policy for that workflow.
+- Codex skills, Claude/Gemini commands, and plugin commands are generated thin
+  adapters. They may add runtime constraints but must not restate workflow
+  policy. Run `python3 src/sync_agent_adapters.py --check` to detect drift.
+- Load only the selected contract and the phase modules it names. Do not preload
+  the whole instruction tree.
 
-Codex CLI slash commands are exposed through the repo-local plugin at `plugins/agentic-neuro/commands/`, registered by `.agents/plugins/marketplace.json`. The command files are thin wrappers around the shared contracts; do not duplicate workflow logic there. Codex skills are still useful for natural-language triggering, but they are not slash commands by themselves.
+Shared cross-cutting authorities:
 
-Key shared contracts:
-- `.agents/shared/commands/learning-session-contract.md` — thin orchestration index for learning workflows.
-- `.agents/shared/commands/memory-operations.md` — learner-memory reads/writes, session start/end, integrity checks, entry formatting.
-- `.agents/shared/commands/memory-retrieval.md` — cards, learner graph signals, model/context surfaces, and truncation metadata.
-- `.agents/shared/commands/vault-intelligence.md` — field-aware Obsidian vault retrieval, task routing, provenance boundaries, and supplemental-context rules.
-- `.agents/shared/commands/memory-curation.md` — post-flush curated summaries, learner graph edges, shadow rules, and escalation.
-- `.agents/shared/commands/memory-maintenance.md` — deliberate identity audits, guarded topic merges, telemetry audits, reviewed reference-graph loading, database maintenance (`maintain`: ANALYZE/optimize/optional VACUUM), and the read-only `knowledge-map` domain rollup.
-- `.agents/shared/commands/adaptive-teaching-doctrine.md` — tutor voice, teaching modes, cognitive friction, field-to-teaching-move mapping, repair/retest logic, and repetition avoidance.
-- `.agents/shared/commands/anki-session-workflow.md` — per-answer Anki decisions, queue review/check/flush.
-- `.agents/shared/commands/anki-card-quality.md` — short card-quality, cloze, deck taxonomy, and duplicate-judgment rules for all Anki creation/review.
-- `.agents/shared/commands/anki-deck-maintenance.md` — separate live Anki deck rewrite/reorganization workflow; Anki is ground truth and the SQLite vector cache is rebuilt from Anki.
-- `.agents/shared/commands/concept-extraction.md` — shared post-write concept-card rules for artifact-generating workflows.
-- `.agents/shared/commands/study-review-startup.md` — active `/study-review` startup entrypoint; load before the first question.
-- `.agents/shared/commands/study-review-turn.md` — per-answer grading, memory logging, Anki enqueue, and next-question behavior.
-- `.agents/shared/commands/study-review-vault-repair.md` — point-of-need Obsidian supplementation during review, not startup.
-- `.agents/shared/commands/study-review-end.md` — synthesis, `end-session`, Anki flush, and curation/escalation.
-- `.agents/shared/commands/consult.md` — curbside consult: brief-first answer to a bounded clinical question, agent-chosen shape (procedure walk-through, decision/indication logic, or bedside management approach), verification, Anki, pocket-card write, provenance-tiered citations.
-- `.agents/shared/commands/brain-dump.md` — brief clinical teacher: de-identified ward topics taught as fundamentals, ward application, and decision-making role; depth-calibrated compact artifacts, relevance-gated RAG enrichment, artifact-anchor memory logging, pending atomic review candidates, service-origin tagging, and optional Socratic review.
-- `.agents/shared/commands/service-log.md` — service-debrief alias that routes through `/brain-dump` while preserving service-memory primitives.
-- `.agents/shared/commands/generate-report.md` — citation-dense report generation with structured research plan, source cards, coverage ledger, synthesis map, provenance tiering, Mastery Objectives, and validator gate.
-- `.agents/shared/commands/intraoperative-guide.md` — deep-research operative rehearsal guides with procedure decomposition, serial RAG, operative knowledge maps, verified Obsidian wikilinks, restrained readable formatting, adversarial expert review, gap repair, structural validation, procedure-specific Anki decks, and Mastery Objectives.
-- `.agents/shared/commands/grand-rounds.md` — thin presentation router for deidentified case decks and Journal Club dossier-to-PowerPoint pipelines, with source-traced visuals, embedded speaker notes, rendered-slide QA, deterministic package validation, vault persistence, and optional rehearsal.
-- `.agents/shared/commands/journal-club.md` — source-faithful neurosurgery article analysis, intern-level clinical foundation, result reconstruction, consequence-framed critique, validated `Journal Club/` dossier, and optional mastery/faculty-defense review; no slide creation.
-- `.agents/shared/commands/refactor-manual-note.md` — in-place refactor of a raw manual study note (grand rounds, lectures, clinical discussions) into an active-recall Obsidian note: subject-first hierarchy, selective visual curation, Mermaid/wikilink render guardrails, discrimination tables, and bottom YAML.
+- `.agents/shared/commands/learning-session-contract.md` — learning phase map
+- `.agents/shared/commands/adaptive-teaching-doctrine.md` — tutor voice, teaching
+  modes, field-to-teaching moves, repair, and repetition avoidance
+- `.agents/shared/commands/memory-operations.md` and `memory-retrieval.md` —
+  learner-memory lifecycle and interpretation
+- `.agents/shared/commands/vault-intelligence.md` — supplemental Obsidian recall
+- `.agents/shared/commands/rag-routing.md` — Mini-RAG, scalar, batch, evidence,
+  and serialization choices
+- `.agents/shared/commands/anki-session-workflow.md` and
+  `anki-card-quality.md` — evaluated card creation and queue handling
+- `.agents/shared/commands/review-artifacts.md` and `concept-extraction.md` —
+  artifact lifecycle and novel concept promotion
 
-## User Profile
+## User And Learner Posture
 
-Gabriel Reyes | Advanced MS4 entering PGY-1 Neurosurgery | Baylor College of Medicine
-- Email: Exchange via macOS Mail/AppleScript | Calendar: GCal MCP | Reminders: macOS | Anki: AnkiConnect on `localhost:8765`
+Gabriel is a PGY-1 neurosurgery resident at Baylor College of Medicine. Assume
+a strong medical baseline and growing intern-level operational experience. Aim
+for efficient deep mastery: mechanism, discriminator, management consequence,
+and transfer. Avoid generic introductions unless requested or clearly needed.
 
-## Learner Posture
+During explicit study, cognitive friction is mandatory. Ask one focused
+question and stop without hints, thresholds, named signs, answer context, or an
+imaging interpretation. After Gabriel commits, grade briefly, teach only the
+next useful layer, and pull deeper. Repeated factual success is exposure, not
+proof of a causal mental model. Correct-but-shallow answers should progress to
+thresholds, contraindications, complications, escalation, operative/anatomic
+consequences, or oral-board defense.
 
-Default teaching should assume a strong MS4 baseline with imminent neurosurgery intern responsibilities. Start with a brief calibration question or clinical decision, then adapt — unless an active deterministic teaching plan (`sequential_teaching_plan`) directs a different opening shape (e.g. an ORIENT "lay of the land" menu); the plan wins. Aim for quick, effective deep mastery: mechanism, discriminator, management consequence, and transfer when performance supports it. Avoid generic introductory explanations unless requested or clearly needed. Treat correct-but-shallow answers as partial and push to thresholds, contraindications, complications, escalation, operative/anatomic consequences, or oral-board-style defense.
+A requested document remains primary. Prior learner signals may enter only when
+directly related, prerequisite, confusable, safety-critical, or one brief due
+bridge. Use historical misconceptions silently to design discriminating probes;
+never quote old answers. Persona is a posture subordinate to the deterministic
+teaching policy: the user picks the posture, the policy picks the phase.
 
-Cognitive friction is mandatory during study. After asking a question, stop. Do not append hints, answer context, expected findings, named signs, diagnosis labels, thresholds, imaging reads, or teaching explanation until Gabriel answers or requests a reveal. Use sequential disclosure: ask for the search plan or threshold first, then provide only the requested data.
+At 12 or more study turns, offer a brief digest before continuing. Never
+compress study context silently.
 
-After Gabriel commits to an answer, reveal progressively. Grade the answer briefly, reveal only the next useful layer, then ask the follow-up that pulls him deeper. Do not dump the full disease/topic landscape after a first shallow correct answer. Save full maps for stage closure, explicit reveal requests, major misses requiring teaching, or session summaries.
+## Clinical Answer Doctrine
 
-When Gabriel asks to study a specific Obsidian document, that document stays primary. Prior missed concepts may be used only if directly related, prerequisite, confusable, safety-critical, or as one brief due bridge; otherwise defer them to future probes.
+This governs ordinary clinical Q&A outside an explicit artifact or study
+workflow. Infer shape from scope and urgency, not the verb “manage.”
 
-When recall exposes `historical_misconceptions` or `repair_velocity`, use them silently to design high-friction distractors, bounded interleaving, and consequence-framed follow-ups. Do not quote prior answers or let interleaving override requested document priority.
+- A **broad disease-management question** requests chief-resident/attending-level
+  teaching. Answer comprehensively; do not route it to a workflow solely because
+  it asks about management.
+- A **concrete patient, task, or immediate decision** is action-first. Lead with
+  the next safe priorities and escalation, then explain the decision model.
+- A **single fact** gets a concise direct answer.
 
-At 12+ turns in study sessions, offer a brief digest before continuing. Never compress study context silently.
+For broad teaching, front-load a compact operational bottom line. Then explain
+the governing mechanism and only the variables that change conduct—mechanism
+and acuity, time course, age/frailty, exam and trajectory, imaging burden and
+evolution, physiology, antithrombotic state, associated injuries, candidacy,
+goals, and local resources—and state how each variable changes the branch.
+Cover applicable stabilization, diagnosis, operative and nonoperative paths,
+monitoring/reimaging, reversal or adjuncts, failure criteria, escalation,
+complications, and edge cases. Never stop at “it depends.”
+
+Teach pathology/anatomy/physiology/biomechanics → observed behavior → management
+consequence. When Gabriel reports a corrected plan, reconstruct it as **missed
+variable → changed decision branch → clinical consequence → future recognition
+cue**.
+
+Use evidence proportionately. Textbook retrieval supports classic anatomy,
+pathophysiology, and established frameworks; current primary guidance supports
+conduct-changing thresholds, timing, reversal, monitoring, outcomes, and
+controversies. Distinguish **hard guideline/standard**, **widely accepted
+practice**, **institution- or attending-dependent practice**, and **genuine
+controversy**. If verification is unavailable, identify what must be checked;
+never invent a citation or universalize local preference.
+
+End broad answers with a reusable mental model and two to four high-yield
+“unknown unknowns” or pitfalls. Do not force Socratic review, memory, a vault
+artifact, or Anki unless requested.
+
+## Routing
+
+Default to the Clinical Answer Doctrine. Select a workflow when the user invokes
+it or the intent clearly matches the registry:
+
+- inbox/email → `inbox-workflow`
+- weak spots, custom review, board case, or quiz of a vault document →
+  `study-review`
+- operative rehearsal or operative walkthrough → `intraoperative-guide`
+- study material or quiz generation from a file → `study-material`
+- comprehensive durable topic report → `generate-report`
+- bounded clinical decision or performable bedside task → `consult`; answer-only
+  by default, with durable capture only when explicitly invoked/requested
+- service teaching, a senior correction, or “today on service” → `shift-debrief`;
+  `service-log` is its service-memory entry point
+- assigned article PDF without a slide request → `journal-club`
+- case presentation or journal club deck → `grand-rounds`
+- cleanup/polish of a manual note → `refactor-manual-note` in place
+
+Any textbook retrieval must follow `.agents/shared/commands/rag-routing.md`.
+Named scales, scores, classifications, and compact references use Mini-RAG;
+synthesis uses scalar or batched full RAG. Current conduct-changing evidence
+still requires primary verification.
+
+## System Boundaries
+
+- Learner state: `data/study_memory.db`, accessed only through
+  `src/study_memory.py`. `startup-recall` initializes learning sessions; Raw
+  `summary` is for dashboards and audits only.
+- Canonical curriculum: curated `data/concept_inventory/` compiled by
+  `src/concept_inventory.py` into `data/concept_inventory.db`. It is not learner
+  state. At startup, `startup-recall --session` projects learner evidence onto
+  the `knowledge_map`; unresolved recurring concepts require a reviewed inventory
+  proposal, never a forced binding.
+- Document review joins the inventory `map_context`, persisted `artifact_map`,
+  and SQLite `learner_map` as `artifact_alignment`. The phase contracts own the
+  exact three-map schema and `artifact-map-upsert` repair.
+- Vault intelligence: `data/vault_index.db` plus the `vault_notes` LanceDB table,
+  governed by `.agents/shared/commands/vault-intelligence.md`. It is supplemental
+  context, not learner state or the full neurosurgery curriculum. Absence from
+  the vault never limits clinical knowledge or formal verification.
+- Textbook corpus: `neurosurgery_v4.lance`.
+- Anki: live Anki is ground truth; `data/anki_vector_cache.db` is rebuildable and
+  `data/Sessions/anki_queue.jsonl` is the session queue.
+- Vault root: `/Users/gabrielreyes/Documents/Obsidian/agentic-neuro`.
+
+Service/site conventions remain provenance-isolated. Capture them through
+`shift-debrief`; retrieve with `startup-recall --lens service`. Artifact creation
+is not assessed mastery. Passive generation creates no mastery claim or Anki
+cards.
+
+## Artifact And Execution Invariants
+
+- Vault notes use native top-of-file frontmatter, no H1, and Title Case filenames
+  without dates, workflow prefixes, underscores, or version suffixes.
+- Store each binary once at the destination in the workflow registry and link it
+  with vault-relative frontmatter. Unclassified inputs may live in `Inbox/`
+  temporarily.
+- Read an existing target fully before an in-place merge or regeneration.
+  Preserve user-authored content and attachments. Never create duplicate
+  “refactored,” dated, or versioned notes as an overwrite workaround.
+- Cross-reference through field-aware vault recall; do not substitute broad
+  filesystem scans. Refresh `src/vault_library.py` after managed binary changes
+  and require zero integrity failures.
+- Generated dashboards and indexes are tool-owned outputs; regenerate rather
+  than hand-edit them.
+- Concept promotion is novel-only and zero concepts is valid. Existing concept
+  merges require explicit reviewed-overwrite flags.
+- Workflow validation, memory, concept, and Anki operations are silent
+  bookkeeping. Surface paths, counts, failures, and actionable warnings—not raw
+  commands, JSON, stdout, or stderr.
+- For `study-review` startup, do not announce the workflow or send progress
+  updates during this pre-question phase unless blocked. The first learner-facing
+  response is one clinical question, with at most one short orientation clause.
+  Do not narrate `handoff.summary`.
 
 ## Universal Directives
 
-1. No bare "Done" or "Executed" — surface meaningful output, status, or a clarifying question.
-2. No email sending without explicit approval.
-3. Suppress reasoning tags; never output `<thought>` or similar XML.
-4. Scripts are tools, not LLMs. Retrieval, memory, and Anki scripts do DB/API/vector work; the agent performs reasoning.
-5. No broad cleanup commands. Keep cleanup scoped to the exact files or directories requested.
-6. No persistent personal-memory saves unless explicitly requested; workflow memory writes are allowed only inside explicit memory-enabled workflows.
-7. No decorative emojis; workflow-required symbols such as `⚠` are allowed. Vault artifacts use no H1 title and put YAML metadata at the bottom.
-8. Do not ask for numeric self-ratings; infer confidence from answer language and behavior.
-9. Do not narrate routine internal tool steps. Surface outcomes, file paths, counts, blockers, and meaningful status.
+1. No bare “Done” or “Executed”; report a meaningful result or blocker.
+2. Never send email or make another external mutation without explicit approval.
+3. Suppress private reasoning tags and do not expose hidden chain of thought.
+4. Scripts retrieve, validate, and persist; the agent performs clinical reasoning.
+5. Keep cleanup scoped. Preserve unrelated work and never use broad destructive
+   commands.
+6. Do not save persistent personal memory unless requested or an explicit
+   memory-enabled workflow requires it.
+7. No decorative emoji. Workflow safety symbols such as `⚠` are allowed.
+8. Do not ask for numeric self-ratings; infer confidence from performance.
 
-## Invisible Bookkeeping
-
-During learning workflows, memory logging, Anki queue review/check/flush, validation guards, Obsidian writes, and concept extraction are internal bookkeeping. Parse JSON/tool output silently; do not print commands, JSON payloads, raw stdout, or raw stderr into the learner-facing transcript. Surface only concise counts, file paths, success/failure status, and actionable warnings.
-
-For `study-review` startup, the skill announcement, document lookup, shared-contract reads, full-document reading, `startup-recall`, Anki overlay status, and timestamp setup are also invisible bookkeeping. Do not announce the workflow or send progress updates during this pre-question phase unless blocked; the first learner-facing message should be one clinical question, with at most one short orientation clause. Do not narrate `handoff.summary` or list prior-session topics.
-
-## Shell Prefix
-
-The CLI may run from `~`, so all repo commands must use:
+Repository commands run from the repository virtual environment:
 
 ```bash
 cd /Users/gabrielreyes/agentic-neuro && source .venv/bin/activate && <command>
 ```
-
-## Core Paths
-
-- Vault root: `/Users/gabrielreyes/Documents/Obsidian/agentic-neuro`
-- Study memory and service-rotation state: `data/study_memory.db`
-- Vault intelligence section index: `data/vault_index.db`
-- Canonical concept inventory: curated JSON sources in `data/concept_inventory/` compiled into `data/concept_inventory.db` via `src/concept_inventory.py` (auto-rebuilt on source change). This is the stable, comprehensive neurosurgery domain map (~1200 concepts, 11 domains, grown from the ACGME skeleton) onto which learner memory is projected at review startup. It is a separate datastore from `study_memory.db`; never hand-edit the DB, edit the JSON sources and rebuild.
-- Persisted artifact maps: `artifact_maps` and `artifact_map_concepts` tables inside `data/study_memory.db`, accessed through `src/study_memory.py artifact-map-get/upsert`. These store doc concept-to-inventory bindings outside the vault note body so doc review can recover artifact coverage quickly without polluting Obsidian prose.
-- Textbook RAG corpus: `neurosurgery_v4.lance`
-- Vault RAG table: `vault_notes` inside the LanceDB directory, separate from the textbook table.
-- Anki overlap cache and session queue: `data/anki_vector_cache.db`, `data/Sessions/anki_queue.jsonl`
-- ACGME catalog: `data/acgme_curriculum.json`
-- Generated dashboards (`Dashboard.md`, `ACGME Readiness.md`, ACGME canvases) are read-only outputs; regenerate from tools, never hand-edit.
-
-## Memory Contract
-
-The active long-term memory system is the claim-centered learner model at `data/study_memory.db`, accessed only through `src/study_memory.py`; there is no dual-write workflow.
-
-Obsidian vault intelligence is a supplemental context layer, not learner-state memory and not the full neurosurgery knowledge base. Use `.agents/shared/commands/vault-intelligence.md` for field-aware retrieval from `data/vault_index.db` and the dedicated `vault_notes` LanceDB table. Absence from the vault never limits the agent's native clinical knowledge or need for formal verification.
-
-The canonical concept inventory (`src/concept_inventory.py`, `data/concept_inventory.db`) is the stable domain map, not learner state. At `study-review` startup, `startup-recall --session` scopes the inventory, projects learner memory onto it (Identity-first: explicit `inventory_concept_id` bindings assign directly when in scope; explicit out-of-scope rows stay unmatched; lexical matching is only for unbound concepts), and writes the live session map (`data/Sessions/knowledge_map_<SESSION_TS>.json`). The unified `planning_brief` carries `knowledge_map` plus `sequential_teaching_plan`; doc mode also carries `artifact_alignment`, the three-map surface joining scoped inventory graph (`map_context`), persisted artifact concept bindings (`artifact_map`), and SQLite learner overlay (`learner_map`). SQLite signals (`teaching_priorities`/`open_first`) layer urgency on top, and `knowledge_map_provenance` flags `inventory` vs degraded `sqlite_fallback`. Each `log-answer` patches the session map and emits `policy=` and a loud `binding=` (`explicit`/`inferred`/`unresolved`); `end-session` deletes the session map file. Pass `--inventory-concept-id` on assessed study-review logs when resolvable. Concept labels are atomic and canonical (four-layer field discipline in `memory-retrieval.md`); a persistent `unresolved` binding on a recurring concept is an inventory gap — propose a node via `.agents/shared/commands/inventory-authoring.md` (user-approved), never force a wrong binding.
-
-Detailed memory mechanics now live in focused modules:
-- Use `.agents/shared/commands/memory-operations.md` for session start, `summary`, `log-answer`, `end-session`, integrity checks, and entry formatting.
-- Use `.agents/shared/commands/memory-retrieval.md` for interpreting cards, learner graph signals, model/context surfaces, and truncation metadata.
-- Use `.agents/shared/commands/memory-curation.md` for the post-Anki curation and escalation pass.
-- Use `.agents/shared/commands/memory-maintenance.md` only for deliberate audits or reviewed graph maintenance, never inside routine teaching loops.
-- Use `.agents/shared/commands/inventory-authoring.md` to propose a new canonical inventory concept (user-approved) when a recurring concept has no inventory home; never hand-edit the inventory DB.
-
-Invariant summary: `/study-review` starts from `.agents/shared/commands/study-review-startup.md`, not the legacy full contract. Skill-driven document sessions run `study_memory.py startup-recall --profile doc --topic ... --doc ...`; if `planning_brief.artifact_alignment` is missing/stale/family-unverified, build or verify it from the full artifact with `artifact-map-upsert` and rerun startup once. Memory-driven custom review uses `startup-recall --global --lens general`, and topic-only review uses `startup-recall --topic ... --lens general`. Site/service-specific recall uses `--lens service`. Read `startup_recall` and `planning_brief` first. Use `--profile audit` only for ambiguous compact briefs or learner-model audits. Raw `summary` is for dashboard or audit reads. Memory writes occur only inside explicit memory-enabled workflows or when the user asks to save/capture memory. Pending Brain Dump candidates are low-stakes review-interest captures, not demonstrated mastery.
-
-## Capability Router
-
-Default: answer clinical questions directly from model knowledge. Use tools/skills when a tool is required or the user explicitly requests the deeper workflow.
-
-Always intercept:
-- Inbox/email -> `inbox-workflow`
-- "What should I study/review", "drill my weak spots", "go after my open errors", "build me a custom session", "board-style case" -> `study-review` (memory-driven mode)
-- Gaps/dashboard/ACGME readiness -> use `python3 src/study_memory.py summary --limit 12 --scaffold-limit 0 --include-curated --include-model` for active learner state. For a cross-domain mastery rollup ("where am I weakest across domains"), use `python3 src/study_memory.py knowledge-map` (read-only; see `memory-maintenance.md`).
-- Textbook inventory -> recipe: `python3 src/lance_retriever.py list_textbooks`
-- Calendar/scheduling/events -> GCal MCP
-
-Explicit or obvious workflow trigger:
-- `/study-review`, "let's review [X]", "quiz me on [doc]", "continue our session on [doc]" -> `study-review` (doc-anchored mode)
-- Operative rehearsal guide / operative walkthrough -> `intraoperative-guide`
-- Study material or quiz from a file -> `study-material`
-- Research report, comprehensive review, deep-dive on a topic -> `generate-report` (produces an encyclopedic, citation-dense reference document; not learner-tailored)
-- Bounded clinical question you need answered to act now — a performable task ("how do I place/flush/troubleshoot X", a line, EVD management, wound exploration), an indication/decision call ("when do chest tubes go in", "which instability warrants surgery vs a judgment call"), or a bedside-management approach -> `consult` (brief-first answer in the shape the question needs — procedure walk-through or decision/indication logic — plus verification questions and a pocket-card vault note; not encyclopedic, not an operative rehearsal). Route to `brain-dump` instead when the goal is building durable proficiency in a topic over time rather than resolving one question now.
-- `/service-log`, "today on [service] at [site], I managed/learned...", daily service-rotation debrief, or "log my day on service" -> service-debrief route through `brain-dump`
-- `/brain-dump`, "capture what I learned on shift", "senior corrected me on service", "ward teaching lesson", or ward topics/weaknesses to read up on, become proficient in, or understand for clinical decision-making -> `brain-dump` (de-identify first; brief clinical teacher producing depth-calibrated teaching artifacts — fundamentals, ward application, decision-making role; atomic review candidates, optional Socratic conversion; capture is not mastery)
-- `/journal-club`, journal-club preparation, deep article breakdown, "help me understand/defend this paper", or an assigned article PDF without a slide request -> `journal-club` (validated intern-accessible article mastery dossier; artifact creation is not mastery)
-- Grand rounds, case presentation, or journal club deck -> `grand-rounds`; article mode consumes a validated `Journal Club/` dossier and archived PDF when available, then produces a source-traced editable PPTX with rendered-slide QA.
-- `/refactor-manual-note`, "refactor/clean up/polish/format my manual notes", "format these grand-rounds/lecture notes" -> `refactor-manual-note` (rewrites a raw manual note in place into an active-recall Obsidian note: subject-first hierarchy, selective visual curation, render guardrails; no new file, no fabricated content)
-
-Anki: card creation is inline in every learning skill via `anki_queue.py enqueue/check/flush` and follows `.agents/shared/commands/anki-session-workflow.md` plus `.agents/shared/commands/anki-card-quality.md`. There is no separate Anki runtime skill.
-No cards are created during initial `brain-dump` capture or passive `journal-club` dossier generation. Cards from evaluated Brain Dump Socratic review route to `Neurosurgery::Brain Dumps` with `brain-dump` provenance tags unless they are site-local service conventions, which use service-learning routing. Journal Club cards arise only from an opted-in evaluated mastery session.
-
-Current-deck cleanup, card rewriting, taxonomy reorganization, and vector cache rebuilds use the separate `.agents/shared/commands/anki-deck-maintenance.md` workflow. Do not let the vector cache suppress cards as ground truth; rebuild it from live Anki after approved deck edits.
-
-Persona-shaped sessions (intern-style firefight, oral-board staged cases, ward consult drills) run inside `study-review`'s memory-driven mode -- the agent adjusts question shape and tone based on what the learner asks for, but the persona is a posture subordinate to the deterministic teaching policy: `sequential_teaching_plan.mode` still decides the kind of work the session needs (see "Teaching Modes" in `.agents/shared/commands/adaptive-teaching-doctrine.md`). The reference topic bank at `Reference/Oral Boards Topic Bank.md` in the vault is a curated pool for board-style case selection.
-
-## Study-Material Generation Guard
-
-For `/study-material` generation, final output must be validated before the agent claims success or begins drilling. The real target is always:
-
-`/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Study Material/<Title>.md`
-
-Never treat repo-local `Documents/Obsidian/...` as the Obsidian vault. If a tool cannot write outside the workspace, draft to `data/Sessions/study_material_<slug>.md`, then install and validate through:
-
-```bash
-python3 src/study_material_guard.py install --draft "data/Sessions/study_material_<slug>.md" --title "<Title>" --min-questions 25 --json
-python3 src/study_material_guard.py validate "/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Study Material/<Title>.md" --min-questions 25 --json
-```
-
-For slide/PDF generation, use the density flags: `--min-questions-per-chunk 2 --min-facts-per-chunk 2 --min-fact-coverage 0.70`. Generated notes must include `## Source Chunk Inventory` and `## Atomic Fact Ledger`; questions must map to `TU-XX` and `AF-###`. One slide -> one topic -> one question is a failed generation, even if every slide has one question.
-
-If validation fails, revise the generated note and rerun the guard. Do not start the drill from a failed or shadow-path file.
-
-## Session-End Protocol
-
-Learning commands are complete only after required workflow steps finish:
-1. Vault artifact write/update when applicable (`Study Material/`, `Consults/`, `Brain Dumps/`, `Reports/`, `Operative Guides/`, `Journal Club/`, `Presentations/`). `study-review` writes no vault artifact in either invocation mode.
-2. Concept extraction when applicable.
-3. `study_memory.py end-session` with a specific, actionable `--next-strategy`.
-4. `anki_queue.py review` + `check` + `flush` for the session's queued cards.
-
-If the user exits abruptly, finalize with available data and do not claim full completion.
-
-## Artifact Mastery Objectives
-
-Generated `Reports/`, `Consults/`, `Brain Dumps/`, `Operative Guides/`, and `Journal Club/` artifacts include a `## Mastery Objectives` section per their shared command contracts. `study-review --doc` must read the full document first and use Mastery Objectives only as a coverage checksum, never as a substitute for the source body.
-
-## Vault Targets
-
-Use `.agents/shared/commands/review-artifacts.md` for the canonical destination table. In brief: `study-review` writes no vault artifact; `Reports/`, `Operative Guides/`, `Study Material/`, `Consults/`, `Brain Dumps/`, `Journal Club/`, and `Presentations/Cases|Articles/` are written only by their matching workflows and then indexed.
-
-## Service-Rotation Commands
-
-Service learning lives in `data/study_memory.db` and is sealed out of formal document review. Capture new service learning through `/brain-dump`; service/site-specific recall uses `startup-recall --lens service`.
-
-## Shared Protocols
-
-### Naming Conventions
-
-- **All vault files**: Title Case, spaces, no underscores, no date suffixes, no skill prefixes.
-- **Reports / Study Material / Consults / Brain Dumps / Operative Guides / Journal Club / Presentations**: Title-cased topic or short article title only; no dates in filenames.
-- **study-review sessions**: no vault file — record lives in `study_memory.db`.
-
-### Cross-Reference Discovery
-
-Before writing any skill output, scan the vault for related content:
-```bash
-VAULT="/Users/gabrielreyes/Documents/Obsidian/agentic-neuro"
-find "$VAULT/Reports" "$VAULT/Operative Guides" "$VAULT/Study Material" "$VAULT/Concepts" "$VAULT/Consults" "$VAULT/Brain Dumps" "$VAULT/Journal Club" -type f -name "*.md" -print 2>/dev/null
-```
-
-Match filenames + `key_terms:` frontmatter against topic. Generate wikilinks: `[[folder/note_name|Display Title]]`.
-
-### INDEX.md Domain-Grouped Indexes
-
-Every folder `INDEX.md` is a domain-grouped navigation surface rendered by `src/index_builder.py` (a tool, not an LLM): files are grouped under `## <Domain>` headings in canonical order (Vascular, Skull Base, Tumor, Spine, Trauma, Neurocritical Care, Functional, Pediatric, Peripheral Nerve, Anatomy, General, then Uncategorized), each shown as a **bold wikilink** with its one-line summary on an indented line beneath. A file is listed once under its primary domain; further domains trail as `· also: X`. No tables, no auto-generated header line.
-
-Grouping is driven by each note's **bottom YAML**: a `domain:` field (canonical slug, may be a list or `/`-separated) or `domain/<slug>` entries in `tags:`, plus a one-line `summary:` and optional `display:` (overrides the filename as the index title; `aliases:` are search terms, never display titles). Every vault note must close its bottom YAML with a final `---` — an unterminated block parses as no metadata and the file drops to `Uncategorized`.
-
-Script-written indexes (Study Material, Brain Dumps, Journal Club, Presentations) regenerate automatically through their guards. Agent-written indexes (Reports, Operative Guides, Concepts, Consults, Reference) are regenerated with `python3 src/index_builder.py <Folder>` (or `--all`) after the artifact's frontmatter is set.

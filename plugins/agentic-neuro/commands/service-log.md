@@ -1,10 +1,11 @@
 ---
-description: service-rotation debrief route; follow brain-dump service-memory capture.
-argument-hint: [today on <service> at <site>, I managed/learned...]
+description: Alias a service-rotation debrief to the Shift Debrief workflow.
+argument-hint: [de-identified-service-lessons]
 ---
 
 # Service Log
 
 The user invoked `/service-log` with: $ARGUMENTS
 
-Read `.agents/shared/commands/service-log.md`; it routes service debriefs through `.agents/shared/commands/brain-dump.md` with service-memory handling.
+Read `.agents/shared/workflow-registry.json`, then read and follow
+`.agents/shared/commands/service-log.md`. The shared contract is the behavioral authority.

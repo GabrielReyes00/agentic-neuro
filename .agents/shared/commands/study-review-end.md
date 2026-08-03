@@ -10,7 +10,10 @@ This is not a tracked claim. Use the answer to shape the session summary and nex
 
 ## End Session
 
-Run silently:
+Before closing, derive `priority_inventory_ids`, `improved_inventory_ids`, and
+`session_progress` from the live session map and assessed exchanges. Use those
+values to author the actionable `--next-strategy` and `--stats-json`, then run
+silently:
 
 ```bash
 python3 src/study_memory.py end-session \
@@ -23,7 +26,12 @@ python3 src/study_memory.py end-session \
 
 `--next-strategy` must be actionable and inventory-ID-aware when possible (e.g. `vas.vasospasm_threshold`). Name the concept, gap, and next move. Do not write generic handoffs like "continue reviewing."
 
-`end-session` returns `handoff_skeleton` with `priority_inventory_ids`, `improved_inventory_ids`, and `session_progress` derived from the live session map. Merge these into `--stats-json` for audit; use `priority_inventory_ids` to author inventory-ID-aware `--next-strategy`. Startup recall does not pull full stats — only lean `handoff.next_action`. The session knowledge map file is deleted automatically by `end-session`.
+`end-session` returns `handoff_skeleton` as confirmation of the values it
+persisted. Compare the returned priority IDs and progress against the inputs. If
+they materially disagree, rerun `end-session` once with corrected
+`--next-strategy`/`--stats-json`; the operation is an idempotent update for the
+same session. Startup recall pulls only the lean `handoff.next_action`. The
+session knowledge-map file is deleted after a successful close.
 
 Read the JSON silently and remember `curation.recommended`.
 
@@ -46,4 +54,3 @@ Read queue output silently. Surface only useful counts or blockers: queued, crea
 ## Curation and Escalation
 
 If `curation.recommended=true` after Anki flush, or if you logged a `correct=2` score on a concept associated with an active curation summary or relationship from startup, run the curation and escalation pass. Load `.agents/shared/commands/memory-curation.md` to execute the curation audit and write the new escalation summaries. If neither condition is met, stop.
-

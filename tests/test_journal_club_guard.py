@@ -9,7 +9,23 @@ from src import journal_club_guard as guard
 
 
 def _valid_note(*, status: str = "complete", source_pdf: str = "Journal Club/Sources/Hybrid Epilepsy Surgery.pdf") -> str:
-    return f"""**Citation:** Reyes et al. Operative Neurosurgery. 2026.
+    return f"""---
+aliases: [combined resection and RNS]
+article_title: "Combined Surgical Resection and Responsive Neurostimulation for Drug-Resistant Epilepsy: A Case Series"
+authors: "Reyes G, Giridharan N, Shofty B, et al."
+journal: "Operative Neurosurgery"
+year: 2026
+doi: "10.1227/ons.0000000000001962"
+source_pdf: "{source_pdf}"
+source_package_status: {status}
+domain: functional
+summary: "Hybrid resection and RNS case series for selected unresectable focal epilepsy."
+generated: 2026-06-22
+skill: journal-club
+tags: [skill/journal-club, type/article, domain/functional, source/article]
+---
+
+**Citation:** Reyes et al. Operative Neurosurgery. 2026.
 
 ## Start Here
 
@@ -23,7 +39,13 @@ def _valid_note(*, status: str = "complete", source_pdf: str = "Journal Club/Sou
 
 ## Clinical Foundation
 
+### Rapid Orientation
+
 Drug-resistant focal epilepsy can arise from an epileptogenic network that overlaps eloquent cortex. Resection offers the greatest chance of seizure freedom when the clinically relevant network can be removed safely; RNS is a palliative closed-loop option when it cannot.
+
+### Resident Deep Model
+
+The decision is whether concordant localization permits complete safe resection. When a causal component is resectable but another localized component overlaps eloquent tissue, a hybrid strategy partitions treatment across resection and neuromodulation.
 
 ## Essential Concepts for This Paper
 
@@ -107,11 +129,21 @@ Resection and RNS were established separately, while evidence for a planned hybr
 
 The paper remains an early feasibility and selection report rather than comparative evidence.
 
+Before this paper, resection and RNS were used mainly as separate strategies.
+
+This paper added or contested the feasibility of a deliberately planned hybrid operation.
+
+Today, the report supports selected-case discussion but not comparative superiority.
+
 ## Presentation Core
 
 **Central Thesis:** Hybrid surgery is a network-partitioning strategy for selected unresectable focal epilepsy, supported here by feasibility rather than comparative proof.
 
+**Clinical Context Slide:** Drug resistance, concordant localization, eloquent overlap, and the treatment-selection gap.
+
 **Data Worth Showing:** Seven patients, 79.3% mean seizure reduction, 0%-100% range, 3/7 final seizure freedom, and 0 reported complications.
+
+**Central Visual:** The patient-level outcome table because it reveals the heterogeneity hidden by the mean.
 
 **Discussion Priorities:** Patient selection, contribution of each treatment component, and how RNS recordings should influence interpretation.
 
@@ -156,22 +188,6 @@ Article-derived claims use PDF page, table, or figure locators. External context
 
 - Primary article: [Reyes et al., 2026](https://doi.org/10.1227/ons.0000000000001962)
 - External context: [Nair et al., 2020](https://pmc.ncbi.nlm.nih.gov/articles/PMC7538230/)
-
----
-aliases: [combined resection and RNS]
-article_title: "Combined Surgical Resection and Responsive Neurostimulation for Drug-Resistant Epilepsy: A Case Series"
-authors: "Reyes G, Giridharan N, Shofty B, et al."
-journal: "Operative Neurosurgery"
-year: 2026
-doi: "10.1227/ons.0000000000001962"
-source_pdf: "{source_pdf}"
-source_package_status: {status}
-domain: functional
-summary: "Hybrid resection and RNS case series for selected unresectable focal epilepsy."
-generated: 2026-06-22
-skill: journal-club
-tags: [skill/journal-club, type/article, domain/functional, source/article]
----
 """
 
 
@@ -223,7 +239,7 @@ class JournalClubGuardTests(unittest.TestCase):
         note = _valid_note().replace("**Technical concept:** Responsive neurostimulation", "**Concept:** Responsive neurostimulation")
         result = guard.validate_text(note, path=Path("draft.md"))
         self.assertFalse(result.ok)
-        self.assertTrue(any("translation triplets" in error for error in result.errors))
+        self.assertTrue(any("translation triplet" in error for error in result.errors))
 
     def test_rejects_generic_unstructured_limitations(self) -> None:
         section = guard._section_body(_valid_note(), "Limitations That Actually Matter")
@@ -231,19 +247,35 @@ class JournalClubGuardTests(unittest.TestCase):
         note = _valid_note().replace(section or "", "- Small sample.\n- Retrospective design.")
         result = guard.validate_text(note, path=Path("draft.md"))
         self.assertFalse(result.ok)
-        self.assertTrue(any("consequence-framed limitations" in error for error in result.errors))
+        self.assertTrue(any("interpretation-changing limitation" in error for error in result.errors))
 
     def test_rejects_thin_faculty_defense(self) -> None:
-        note = _valid_note().replace("### Question:", "### Prompt:", 2)
+        note = _valid_note().replace("### Question:", "### Prompt:")
         result = guard.validate_text(note, path=Path("draft.md"))
         self.assertFalse(result.ok)
         self.assertTrue(any("Faculty Defense" in error for error in result.errors))
 
-    def test_rejects_complete_dossier_without_locators(self) -> None:
-        note = re.sub(r"\[Article[^\]]+\]", "[paper]", _valid_note())
+    def test_rejects_result_row_without_locator(self) -> None:
+        note = _valid_note().replace(
+            "[Article PDF p. 1, Table 1]",
+            "[paper]",
+            1,
+        )
         result = guard.validate_text(note, path=Path("draft.md"))
         self.assertFalse(result.ok)
-        self.assertTrue(any("article source locators" in error for error in result.errors))
+        self.assertTrue(any("row 1 lacks an article source locator" in error for error in result.errors))
+
+    def test_accepts_one_complete_translation_triplet(self) -> None:
+        note = _valid_note().replace(
+            """\n**Technical concept:** Responsive neurostimulation
+
+**Plain-language meaning:** An implanted device detects selected electrographic patterns and delivers programmed stimulation.
+
+**Why it matters here:** RNS is intended to treat and monitor the residual unresectable network rather than replace the resection.\n""",
+            "\n",
+        )
+        result = guard.validate_text(note, path=Path("draft.md"))
+        self.assertTrue(result.ok, result.errors)
 
     def test_rejects_overwrite_without_flag(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

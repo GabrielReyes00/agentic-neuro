@@ -62,7 +62,7 @@ DB_PATH = Path(os.environ.get("NEURO_STUDY_MEMORY_DB", DATA_DIR / "study_memory.
 # reviewed the content yet — that happens later via /study-review pointed at the
 # file). They never count toward the curation threshold and are not curation
 # evidence (no learner performance to synthesize).
-ARTIFACT_ANCHOR_SKILLS = frozenset({"generate-report", "intraoperative-guide", "brain-dump"})
+ARTIFACT_ANCHOR_SKILLS = frozenset({"generate-report", "intraoperative-guide", "shift-debrief"})
 
 # Skills whose ended sessions must NOT advance the rolling curation counter.
 # study-material/grand-rounds are generative skills (drill/rehearsal are
@@ -252,10 +252,13 @@ CREATE TABLE IF NOT EXISTS claim_results (
     score INTEGER NOT NULL CHECK(score IN (0, 1, 2)),
     gap_type TEXT DEFAULT '',
     learner_claim TEXT NOT NULL DEFAULT '',
+    demonstrated_edge TEXT NOT NULL DEFAULT '',
+    misconception_text TEXT NOT NULL DEFAULT '',
     missing_edge TEXT NOT NULL DEFAULT '',
     corrected_rule TEXT NOT NULL DEFAULT '',
     clinical_consequence TEXT NOT NULL DEFAULT '',
     retest_prompt_shape TEXT NOT NULL DEFAULT '',
+    teaching_intervention TEXT NOT NULL DEFAULT '',
     learning_operation TEXT NOT NULL DEFAULT '',
     agent_signal_json TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL DEFAULT '',
@@ -365,7 +368,7 @@ CREATE INDEX IF NOT EXISTS idx_memory_retrieval_topic ON retrieval_cards(topic_i
 CREATE INDEX IF NOT EXISTS idx_memory_retrieval_priority ON retrieval_cards(priority);
 CREATE INDEX IF NOT EXISTS idx_memory_retrieval_status ON retrieval_cards(status);
 
-CREATE TABLE IF NOT EXISTS brain_dump_review_candidates (
+CREATE TABLE IF NOT EXISTS shift_debrief_review_candidates (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id TEXT NOT NULL DEFAULT '',
     topic_id INTEGER NOT NULL,
@@ -391,9 +394,9 @@ CREATE TABLE IF NOT EXISTS brain_dump_review_candidates (
     FOREIGN KEY(reviewed_claim_state_id) REFERENCES claim_state(id),
     FOREIGN KEY(reviewed_result_id) REFERENCES claim_results(id)
 );
-CREATE INDEX IF NOT EXISTS idx_brain_dump_candidates_status ON brain_dump_review_candidates(status);
-CREATE INDEX IF NOT EXISTS idx_brain_dump_candidates_topic ON brain_dump_review_candidates(topic_id);
-CREATE INDEX IF NOT EXISTS idx_brain_dump_candidates_concept ON brain_dump_review_candidates(concept_id);
+CREATE INDEX IF NOT EXISTS idx_shift_debrief_candidates_status ON shift_debrief_review_candidates(status);
+CREATE INDEX IF NOT EXISTS idx_shift_debrief_candidates_topic ON shift_debrief_review_candidates(topic_id);
+CREATE INDEX IF NOT EXISTS idx_shift_debrief_candidates_concept ON shift_debrief_review_candidates(concept_id);
 
 CREATE TABLE IF NOT EXISTS curation_state (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -592,9 +595,11 @@ class TopicResolution:
 
 # Bump whenever SCHEMA_SQL or _migrate_schema changes so existing DBs re-run the
 # (idempotent) schema/migration exactly once, then skip it on every later open.
-# v5: v_concept_mastery gains recent_success_rate and is now DROP+CREATE (not
-# IF NOT EXISTS) so existing DBs converge on the recency-aware definition.
-SCHEMA_VERSION = 5
+# v6: claim results preserve the learner's demonstrated edge, explicit false
+# belief, and the compact teaching intervention separately. This prevents a
+# partial answer from being remembered only as a deficit and lets future tutors
+# avoid repeating an explanation that already failed.
+SCHEMA_VERSION = 6
 
 
 def _apply_connection_pragmas(conn: sqlite3.Connection) -> None:
@@ -778,6 +783,18 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
         cols = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
         if "inventory_concept_id" not in cols:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN inventory_concept_id TEXT")
+    claim_result_cols = {
+        row["name"] for row in conn.execute("PRAGMA table_info(claim_results)")
+    }
+    for column in (
+        "demonstrated_edge",
+        "misconception_text",
+        "teaching_intervention",
+    ):
+        if column not in claim_result_cols:
+            conn.execute(
+                f"ALTER TABLE claim_results ADD COLUMN {column} TEXT NOT NULL DEFAULT ''"
+            )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_memory_concepts_inventory ON concepts(inventory_concept_id)"
     )
@@ -898,6 +915,7 @@ def _validate_strict_telemetry(
     score: int,
     error_type: str,
     misconception: str,
+    demonstrated_edge: str,
     missing_edge: str,
     corrected_rule: str,
     correction: str,
@@ -952,6 +970,11 @@ def _validate_strict_telemetry(
             raise StrictTelemetryError(
                 "strict telemetry requires corrected_rule or correction for score < 2",
                 remedy="add --corrected-rule \"<the right rule>\" or --correction \"<the fix>\"",
+            )
+        if score == 1 and not demonstrated_edge.strip():
+            raise StrictTelemetryError(
+                "strict telemetry requires demonstrated_edge for a partial answer so future tutors preserve what the learner already knew",
+                remedy="add --demonstrated-edge \"<the portion the learner got right>\"",
             )
 
 
@@ -1798,35 +1821,66 @@ def _learner_overlay_for_inventory_id(
     conn: sqlite3.Connection,
     inventory_concept_id: str,
 ) -> dict[str, object]:
-    rows = conn.execute(
-        """SELECT c.id, c.display_name,
-                  COUNT(cr.id) AS attempts,
-                  SUM(CASE WHEN cr.score >= 2.0 THEN 1 ELSE 0 END) AS successes,
-                  (SELECT score FROM claim_results cr2
-                   WHERE cr2.concept_id = c.id AND cr2.origin = 'assessed'
-                   ORDER BY cr2.created_at DESC, cr2.id DESC LIMIT 1) AS last_score
-           FROM concepts c
-           LEFT JOIN claim_results cr
-             ON cr.concept_id = c.id AND cr.origin = 'assessed'
-           WHERE c.inventory_concept_id = ?
-           GROUP BY c.id, c.display_name
-           ORDER BY c.id""",
+    from cognitive_ops import mastery_depth_from_evidence, trusted_operation_from_signal  # noqa: PLC0415
+
+    learner_rows = conn.execute(
+        """SELECT DISTINCT c.id, c.display_name
+             FROM concepts c
+             LEFT JOIN claim_results cr
+               ON cr.concept_id = c.id AND cr.origin = 'assessed'
+            WHERE c.inventory_concept_id = ?
+               OR COALESCE(NULLIF(cr.inventory_concept_id, ''), c.inventory_concept_id, '') = ?
+            ORDER BY c.id""",
+        (inventory_concept_id, inventory_concept_id),
+    ).fetchall()
+    result_rows = conn.execute(
+        """SELECT cr.concept_id, cr.score, cr.learning_operation,
+                  cr.agent_signal_json, cr.created_at, cr.id, ex.session_id
+             FROM claim_results cr
+             JOIN concepts c ON c.id = cr.concept_id
+             JOIN exchanges ex ON ex.id = cr.exchange_id
+            WHERE cr.origin = 'assessed'
+              AND COALESCE(NULLIF(cr.inventory_concept_id, ''), c.inventory_concept_id, '') = ?
+            ORDER BY cr.created_at DESC, cr.id DESC""",
         (inventory_concept_id,),
     ).fetchall()
-    learner_ids = [int(row["id"]) for row in rows]
-    states: list[sqlite3.Row] = []
-    if learner_ids:
-        placeholders = ",".join("?" for _ in learner_ids)
-        states = conn.execute(
-            f"""SELECT concept_id, state, priority, stability, gap_type
-                FROM claim_state
-                WHERE concept_id IN ({placeholders}) AND origin = 'assessed'
-                ORDER BY id""",
-            learner_ids,
-        ).fetchall()
-    attempts = sum(int(row["attempts"] or 0) for row in rows)
-    successes = sum(int(row["successes"] or 0) for row in rows)
-    last_score = max((int(row["last_score"]) for row in rows if row["last_score"] is not None), default=0)
+    operation_evidence: dict[str, dict[str, object]] = {}
+    for row in result_rows:
+        if int(row["score"]) < 2:
+            continue
+        op = trusted_operation_from_signal(
+            operation=str(row["learning_operation"] or ""),
+            agent_signal_json=str(row["agent_signal_json"] or ""),
+        )
+        if not op:
+            continue
+        bucket = operation_evidence.setdefault(op, {"count": 0, "session_ids": set()})
+        bucket["count"] = int(bucket["count"]) + 1
+        sessions = bucket["session_ids"]
+        if isinstance(sessions, set) and row["session_id"]:
+            sessions.add(str(row["session_id"]))
+    serialized_operation_evidence = {
+        operation: {
+            "count": int(values["count"]),
+            "session_count": len(values["session_ids"]),
+            "session_ids": sorted(values["session_ids"]),
+        }
+        for operation, values in operation_evidence.items()
+    }
+    successful_operations = sorted(serialized_operation_evidence)
+    states = conn.execute(
+        """SELECT cs.concept_id, cs.state, cs.priority, cs.stability, cs.gap_type
+             FROM claim_state cs
+             JOIN concepts c ON c.id = cs.concept_id
+             LEFT JOIN claim_results last_cr ON last_cr.id = cs.last_result_id
+            WHERE cs.origin = 'assessed'
+              AND COALESCE(NULLIF(last_cr.inventory_concept_id, ''), c.inventory_concept_id, '') = ?
+            ORDER BY cs.id""",
+        (inventory_concept_id,),
+    ).fetchall()
+    attempts = len(result_rows)
+    successes = sum(1 for row in result_rows if int(row["score"]) >= 2)
+    last_score = int(result_rows[0]["score"]) if result_rows else 0
     success_rate = round(successes / attempts, 3) if attempts else 0.0
     stabilities = [float(row["stability"]) for row in states if row["stability"] is not None]
     avg_stability = sum(stabilities) / len(stabilities) if stabilities else 1.0
@@ -1855,6 +1909,12 @@ def _learner_overlay_for_inventory_id(
         "attempts_count": attempts,
         "successes_count": successes,
         "sqlite_success_rate": success_rate,
+        "successful_operations": successful_operations,
+        "successful_operation_evidence": serialized_operation_evidence,
+        "mastery_depth": mastery_depth_from_evidence(
+            serialized_operation_evidence,
+            active_gap=bool(open_gaps),
+        ),
         "avg_stability": avg_stability,
         "safety_critical": any(str(row["priority"]) in {"urgent", "high"} for row in states),
         "active_misconception": any(
@@ -1868,7 +1928,7 @@ def _learner_overlay_for_inventory_id(
                 "match_score": 1.0,
                 "binding_source": "explicit",
             }
-            for row in rows
+            for row in learner_rows
         ],
     }
 
@@ -1953,25 +2013,64 @@ def identity_audit(conn: sqlite3.Connection) -> dict[str, object]:
     duplicate_topics.sort(
         key=lambda item: (-float(item["containment"]), -float(item["f1"]), str(item["source_topic"]))
     )
-    duplicate_claim_states = [
-        {
-            "topic": row["topic"],
-            "concept_id": int(row["concept_id"]),
-            "concept": row["concept"],
-            "claim_state_count": int(row["claim_state_count"]),
-            "claim_state_ids": [int(value) for value in str(row["claim_state_ids"]).split(",")],
-        }
-        for row in conn.execute(
-            """SELECT t.canonical_slug AS topic, cs.concept_id, c.display_name AS concept,
-                      COUNT(*) AS claim_state_count, GROUP_CONCAT(cs.id) AS claim_state_ids
-                 FROM claim_state cs
-                 JOIN topics t ON t.id = cs.topic_id
-                 JOIN concepts c ON c.id = cs.concept_id
-                GROUP BY cs.topic_id, cs.concept_id
-               HAVING COUNT(*) > 1
-                ORDER BY claim_state_count DESC, topic, concept"""
-        ).fetchall()
-    ]
+    # Multiple atomic claims under one concept are expected; they are not an
+    # identity collision. Flag only pairwise semantic near-duplicates within the
+    # same topic, concept, and provenance envelope.
+    claim_rows = conn.execute(
+        """SELECT cs.id, cs.topic_id, cs.concept_id, cs.origin, cs.claim_slug,
+                  cs.claim_text, t.canonical_slug AS topic, c.display_name AS concept
+             FROM claim_state cs
+             JOIN topics t ON t.id = cs.topic_id
+             JOIN concepts c ON c.id = cs.concept_id
+            ORDER BY cs.topic_id, cs.concept_id, cs.origin, cs.id"""
+    ).fetchall()
+    grouped_claims: dict[tuple[int, int, str], list[sqlite3.Row]] = {}
+    for row in claim_rows:
+        grouped_claims.setdefault(
+            (int(row["topic_id"]), int(row["concept_id"]), str(row["origin"] or "")),
+            [],
+        ).append(row)
+    duplicate_claim_states: list[dict[str, object]] = []
+    for rows in grouped_claims.values():
+        for idx, left in enumerate(rows):
+            left_tokens = _tokens(str(left["claim_text"] or ""))
+            for right in rows[idx + 1:]:
+                right_tokens = _tokens(str(right["claim_text"] or ""))
+                exact_slug = bool(left["claim_slug"] and left["claim_slug"] == right["claim_slug"])
+                overlap = len(left_tokens & right_tokens)
+                containment = overlap / max(1, min(len(left_tokens), len(right_tokens)))
+                f1 = 2 * overlap / max(1, len(left_tokens) + len(right_tokens))
+                near_duplicate = (
+                    exact_slug
+                    or (
+                        min(len(left_tokens), len(right_tokens)) >= 3
+                        and containment >= 0.8
+                        and f1 >= 0.67
+                    )
+                )
+                if not near_duplicate:
+                    continue
+                duplicate_claim_states.append({
+                    "topic": left["topic"],
+                    "concept_id": int(left["concept_id"]),
+                    "concept": left["concept"],
+                    "origin": str(left["origin"] or ""),
+                    "claim_state_ids": [int(left["id"]), int(right["id"])],
+                    "claims": [str(left["claim_text"]), str(right["claim_text"])],
+                    "exact_slug": exact_slug,
+                    "shared_tokens": sorted(left_tokens & right_tokens),
+                    "containment": round(containment, 3),
+                    "f1": round(f1, 3),
+                })
+    duplicate_claim_states.sort(
+        key=lambda item: (
+            -int(bool(item["exact_slug"])),
+            -float(item["containment"]),
+            -float(item["f1"]),
+            str(item["topic"]),
+            item["claim_state_ids"],
+        )
+    )
     return {
         "counts": {
             "topics": len(topics),
@@ -3138,10 +3237,12 @@ def _log_claim_result(
     misconception: str,
     tested_claim: str,
     learner_claim: str,
+    demonstrated_edge: str,
     missing_edge: str,
     corrected_rule: str,
     clinical_consequence: str,
     retest_prompt_shape: str,
+    teaching_intervention: str,
     learning_operation: str,
     agent_signal: dict[str, str],
     now: str,
@@ -3213,10 +3314,11 @@ def _log_claim_result(
     conn.execute(
         """INSERT INTO claim_results
            (exchange_id, topic_id, concept_id, claim_slug, claim_text, score, gap_type,
-            learner_claim, missing_edge, corrected_rule, clinical_consequence,
-            retest_prompt_shape, learning_operation, agent_signal_json, created_at,
+            learner_claim, demonstrated_edge, misconception_text, missing_edge,
+            corrected_rule, clinical_consequence, retest_prompt_shape,
+            teaching_intervention, learning_operation, agent_signal_json, created_at,
             origin, rotation_id, inventory_concept_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             exchange_id,
             topic_id,
@@ -3226,10 +3328,13 @@ def _log_claim_result(
             score,
             gap_type,
             learner,
+            _compact_text(demonstrated_edge, 500),
+            _compact_text(misconception, 500),
             missing,
             fixed_rule,
             consequence,
             retest,
+            _compact_text(teaching_intervention, 700),
             _learning_operation(concept, claim_text, learning_operation),
             json.dumps(agent_signal, sort_keys=True),
             now,
@@ -3423,10 +3528,12 @@ def log_answer(
     ts: str | None = None,
     tested_claim: str = "",
     learner_claim: str = "",
+    demonstrated_edge: str = "",
     missing_edge: str = "",
     corrected_rule: str = "",
     clinical_consequence: str = "",
     retest_prompt_shape: str = "",
+    teaching_intervention: str = "",
     learning_operation: str = "",
     teaching_intent: str = "",
     expected_answer_edge: str = "",
@@ -3446,7 +3553,7 @@ def log_answer(
     rotation_id: int | None = None,
     competency_target: str = "",
     convention: bool = False,
-    brain_dump_candidate_id: int | None = None,
+    shift_debrief_candidate_id: int | None = None,
     inventory_concept_id: str = "",
 ) -> int:
     binding_resolution = None
@@ -3484,6 +3591,7 @@ def log_answer(
             score=correct,
             error_type=error_type,
             misconception=misconception,
+            demonstrated_edge=demonstrated_edge,
             missing_edge=missing_edge,
             corrected_rule=corrected_rule,
             correction=correction,
@@ -3514,6 +3622,14 @@ def log_answer(
     _ensure_session(conn, session_id, now, skill, topic_id, doc_path)
     if turn is None:
         turn = int(conn.execute("SELECT COUNT(*) FROM exchanges WHERE session_id = ?", (session_id,)).fetchone()[0]) + 1
+    from cognitive_ops import VALID_COGNITIVE_OPS  # noqa: PLC0415
+
+    explicit_operation = _normalize(learning_operation).replace(" ", "_").replace("-", "_")
+    classified_operation = _learning_operation(
+        concept,
+        tested_claim or question,
+        learning_operation,
+    )
     source = {
         "teaching_intent": teaching_intent,
         "expected_answer_edge": expected_answer_edge,
@@ -3524,6 +3640,8 @@ def log_answer(
         "answer_mode": answer_mode,
         "confidence_observed": confidence_observed,
         "teaching_move": teaching_move,
+        "cognitive_op": classified_operation,
+        "cognitive_op_source": "explicit" if explicit_operation in VALID_COGNITIVE_OPS else "inferred",
     }
     conn.execute(
         """INSERT INTO exchanges
@@ -3564,11 +3682,13 @@ def log_answer(
             misconception=misconception,
             tested_claim=tested_claim,
             learner_claim=learner_claim,
+            demonstrated_edge=demonstrated_edge,
             missing_edge=missing_edge,
             corrected_rule=corrected_rule,
             clinical_consequence=clinical_consequence,
             retest_prompt_shape=retest_prompt_shape,
-            learning_operation=learning_operation,
+            teaching_intervention=teaching_intervention,
+            learning_operation=classified_operation,
             agent_priority=agent_priority,
             match_claim_state_id=match_claim_state_id,
             force_new_claim=force_new_claim,
@@ -3594,24 +3714,20 @@ def log_answer(
                     learner_concept_id=concept_id,
                     inventory_concept_id=inventory_concept_id,
                 )
-        if brain_dump_candidate_id is not None or doc_path.startswith("Brain Dumps/"):
-            _mark_brain_dump_candidate_reviewed(
+        if shift_debrief_candidate_id is not None or doc_path.startswith("Shift Debriefs/"):
+            _mark_shift_debrief_candidate_reviewed(
                 conn,
                 result_id=result_id,
-                candidate_id=brain_dump_candidate_id,
+                candidate_id=shift_debrief_candidate_id,
                 topic_id=topic_id,
                 concept_id=concept_id,
                 doc_path=doc_path,
                 now=now,
             )
         if origin == "assessed":
-            from cognitive_ops import classify_cognitive_op, probe_feedback  # noqa: PLC0415
+            from cognitive_ops import probe_feedback  # noqa: PLC0415
 
-            cognitive_op = classify_cognitive_op(
-                concept=concept,
-                question=tested_claim or question,
-                explicit=learning_operation,
-            )
+            cognitive_op = classified_operation
             # Mirror the gap_type the claim_result stored so a misconception
             # discovered this turn flags the live node for REMEDIATE.
             turn_gap_type = "convention" if convention else _normalize_gap_type(
@@ -3886,6 +4002,7 @@ def _retrieval_card_payload(row: sqlite3.Row) -> dict[str, str | None]:
         "claim": row["claim_text"],
         "summary": row["summary"],
         "next_action": row["next_action"],
+        "updated_ts": row["updated_ts"],
     }
 
 
@@ -3893,7 +4010,7 @@ def _candidate_claim_slug(concept: str, claim_text: str, prompt: str) -> str:
     return _slug(claim_text.strip() or prompt.strip() or concept.strip())
 
 
-def add_brain_dump_candidate(
+def add_shift_debrief_candidate(
     conn: sqlite3.Connection,
     *,
     session_id: str,
@@ -3909,8 +4026,8 @@ def add_brain_dump_candidate(
     detail: dict[str, object] | None = None,
     ts: str | None = None,
 ) -> int:
-    if not doc_path.startswith("Brain Dumps/"):
-        raise ValueError("brain-dump candidates must use a Brain Dumps/<Title>.md doc path")
+    if not doc_path.startswith("Shift Debriefs/"):
+        raise ValueError("shift-debrief candidates must use a Shift Debriefs/<Title>.md doc path")
     if origin not in {"assessed", "service"}:
         raise ValueError("origin must be assessed or service")
     now = ts or datetime.now(timezone.utc).isoformat()
@@ -3922,7 +4039,7 @@ def add_brain_dump_candidate(
     site_row = _site_for_rotation(conn, rotation_id) if (origin == "service" and rotation_id) else None
     if origin == "service" and (rotation_id is None or service_row is None or site_row is None):
         raise ValueError(
-            "service-origin brain-dump candidates require an active or explicit valid rotation"
+            "service-origin shift-debrief candidates require an active or explicit valid rotation"
         )
     resolution = resolve_topic(conn, topic, doc_path)
     topic_id = _ensure_topic(conn, resolution, doc_path)
@@ -3930,7 +4047,7 @@ def add_brain_dump_candidate(
     candidate_slug = _candidate_claim_slug(concept, claim_text, prompt)
     payload = json.dumps(detail or {}, sort_keys=True)
     conn.execute(
-        """INSERT INTO brain_dump_review_candidates
+        """INSERT INTO shift_debrief_review_candidates
            (session_id, topic_id, concept_id, doc_path, candidate_slug, prompt,
             claim_text, provenance_tier, origin, rotation_id, convention, status,
             created_at, updated_at, detail_json)
@@ -3944,7 +4061,7 @@ def add_brain_dump_candidate(
              rotation_id = excluded.rotation_id,
              convention = excluded.convention,
              status = CASE
-               WHEN brain_dump_review_candidates.status = 'reviewed' THEN 'reviewed'
+               WHEN shift_debrief_review_candidates.status = 'reviewed' THEN 'reviewed'
                ELSE 'pending'
              END,
              updated_at = excluded.updated_at,
@@ -3967,7 +4084,7 @@ def add_brain_dump_candidate(
         ),
     )
     row = conn.execute(
-        """SELECT id FROM brain_dump_review_candidates
+        """SELECT id FROM shift_debrief_review_candidates
            WHERE doc_path = ? AND topic_id = ? AND concept_id = ? AND candidate_slug = ?""",
         (doc_path, topic_id, concept_id, candidate_slug),
     ).fetchone()
@@ -3975,7 +4092,7 @@ def add_brain_dump_candidate(
     return int(row["id"])
 
 
-def _brain_dump_candidates_for_summary(
+def _shift_debrief_candidates_for_summary(
     conn: sqlite3.Connection,
     *,
     topic_id: int | None,
@@ -3991,7 +4108,7 @@ def _brain_dump_candidates_for_summary(
         f"""SELECT b.id, b.doc_path, b.prompt, b.claim_text, b.provenance_tier,
                   b.origin, b.rotation_id, b.convention, b.status, b.updated_at,
                   t.canonical_slug AS topic, c.display_name AS concept
-             FROM brain_dump_review_candidates b
+             FROM shift_debrief_review_candidates b
              JOIN topics t ON t.id = b.topic_id
              JOIN concepts c ON c.id = b.concept_id
             WHERE b.status = ? {topic_filter}
@@ -4003,7 +4120,7 @@ def _brain_dump_candidates_for_summary(
     return [
         {
             "candidate_id": int(row["id"]),
-            "type": "brain_dump_review_candidate",
+            "type": "shift_debrief_review_candidate",
             "topic": row["topic"],
             "concept": row["concept"],
             "claim": row["claim_text"] or row["prompt"],
@@ -4021,7 +4138,7 @@ def _brain_dump_candidates_for_summary(
     ]
 
 
-def _mark_brain_dump_candidate_reviewed(
+def _mark_shift_debrief_candidate_reviewed(
     conn: sqlite3.Connection,
     *,
     result_id: int,
@@ -4040,7 +4157,7 @@ def _mark_brain_dump_candidate_reviewed(
     claim_state_id = int(state["id"])
     if candidate_id is not None:
         conn.execute(
-            """UPDATE brain_dump_review_candidates
+            """UPDATE shift_debrief_review_candidates
                   SET status = 'reviewed',
                       reviewed_claim_state_id = ?,
                       reviewed_result_id = ?,
@@ -4050,9 +4167,9 @@ def _mark_brain_dump_candidate_reviewed(
             (claim_state_id, result_id, now, now, int(candidate_id)),
         )
         return
-    if doc_path.startswith("Brain Dumps/") and topic_id is not None and concept_id is not None:
+    if doc_path.startswith("Shift Debriefs/") and topic_id is not None and concept_id is not None:
         conn.execute(
-            """UPDATE brain_dump_review_candidates
+            """UPDATE shift_debrief_review_candidates
                   SET status = 'reviewed',
                       reviewed_claim_state_id = ?,
                       reviewed_result_id = ?,
@@ -4086,10 +4203,13 @@ def _due_claims_for_summary(
     rows = conn.execute(
         f"""SELECT cs.id, cs.concept_id, cs.claim_text, cs.state, cs.priority, cs.last_seen_ts,
                    cs.next_due_ts, cs.difficulty, cs.stability,
-                   t.canonical_slug AS topic, c.display_name AS concept
+                   t.canonical_slug AS topic, c.display_name AS concept,
+                   COALESCE(NULLIF(last_cr.inventory_concept_id, ''), c.inventory_concept_id, '')
+                     AS inventory_concept_id
               FROM claim_state cs
               JOIN topics t ON t.id = cs.topic_id
               JOIN concepts c ON c.id = cs.concept_id
+              LEFT JOIN claim_results last_cr ON last_cr.id = cs.last_result_id
               {where}
               ORDER BY CASE cs.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,
                        cs.next_due_ts ASC
@@ -4100,6 +4220,7 @@ def _due_claims_for_summary(
         {
             "claim_state_id": int(r["id"]),
             "concept_id": int(r["concept_id"]),
+            "inventory_concept_id": str(r["inventory_concept_id"] or ""),
             "topic": r["topic"],
             "concept": r["concept"],
             "claim": r["claim_text"],
@@ -4312,7 +4433,7 @@ def _shadow_queue_for_summary(
     *,
     topic_id: int | None,
     limit: int,
-    include_brain_dump_candidates: bool = False,
+    include_shift_debrief_candidates: bool = False,
 ) -> list[dict[str, object]]:
     items: list[dict[str, object]] = []
     artifact_skills = tuple(sorted(ARTIFACT_ANCHOR_SKILLS))
@@ -4357,9 +4478,9 @@ def _shadow_queue_for_summary(
         }
         for row in artifact_rows
     )
-    if include_brain_dump_candidates:
+    if include_shift_debrief_candidates:
         items.extend(
-            _brain_dump_candidates_for_summary(
+            _shift_debrief_candidates_for_summary(
                 conn,
                 topic_id=topic_id,
                 limit=max(0, limit),
@@ -4429,10 +4550,15 @@ def _telemetry_profile_for_summary(
         where = "WHERE cr.topic_id = ?"
         params.append(topic_id)
     rows = conn.execute(
-        f"""SELECT cr.score, cr.gap_type, ex.source_json
+        f"""SELECT cr.score, cr.gap_type, cr.learner_claim,
+                   cr.demonstrated_edge, cr.misconception_text, cr.missing_edge,
+                   cr.corrected_rule, cr.clinical_consequence,
+                   cr.retest_prompt_shape, cr.teaching_intervention,
+                   cr.learning_operation, cr.created_at, ex.source_json
               FROM claim_results cr
               JOIN exchanges ex ON ex.id = cr.exchange_id
-              {where}""",
+              {where}
+             ORDER BY cr.created_at DESC, cr.id DESC""",
         params,
     ).fetchall()
     fields = ("answer_mode", "confidence_observed", "teaching_move")
@@ -4445,24 +4571,101 @@ def _telemetry_profile_for_summary(
     }
     miss_metadata_complete = 0
     misses = 0
+    legacy_rows = 0
+    calibration_grade_rows = 0
+    incomplete_modern_rows = 0
+    modern_violations = {field: 0 for field in fields}
+    subjective_specs = {
+        "learner_claim": {"eligible": 0, "populated": 0},
+        "demonstrated_edge": {"eligible": 0, "populated": 0},
+        "misconception_text": {"eligible": 0, "populated": 0},
+        "missing_edge": {"eligible": 0, "populated": 0},
+        "corrected_rule": {"eligible": 0, "populated": 0},
+        "clinical_consequence": {"eligible": 0, "populated": 0},
+        "retest_prompt_shape": {"eligible": 0, "populated": 0},
+        "teaching_intervention": {"eligible": 0, "populated": 0},
+    }
     for row in rows:
         try:
             source = json.loads(row["source_json"] or "{}")
         except json.JSONDecodeError:
             source = {}
+        controlled: dict[str, str] = {}
         for field in fields:
             value = _controlled_value(str(source.get(field) or ""))
+            controlled[field] = value
             if value:
                 populated[field] += 1
                 if value not in allowed[field]:
                     violations[field] += 1
-        if int(row["score"]) < 2:
+        legacy = controlled["answer_mode"] == "legacy_import"
+        if legacy:
+            legacy_rows += 1
+        else:
+            for field in fields:
+                if controlled[field] and controlled[field] not in allowed[field]:
+                    modern_violations[field] += 1
+        score = int(row["score"])
+        is_miss = score < 2
+        is_partial = score == 1
+        is_misconception = str(row["gap_type"] or "") in MISCONCEPTION_GAP_TYPES
+        eligibility = {
+            "learner_claim": True,
+            "demonstrated_edge": is_partial,
+            "misconception_text": is_miss and is_misconception,
+            "missing_edge": is_miss,
+            "corrected_rule": is_miss,
+            "clinical_consequence": is_miss,
+            "retest_prompt_shape": is_miss,
+            "teaching_intervention": bool(controlled["teaching_move"]),
+        }
+        for field, eligible in eligibility.items():
+            if not eligible:
+                continue
+            subjective_specs[field]["eligible"] += 1
+            if str(row[field] or "").strip():
+                subjective_specs[field]["populated"] += 1
+        if is_miss:
             misses += 1
             if row["gap_type"]:
                 miss_metadata_complete += 1
+        calibration_grade = (
+            not legacy
+            and all(controlled[field] in allowed[field] for field in fields)
+            and bool(str(row["learner_claim"] or "").strip())
+            and (
+                not is_miss
+                or (
+                    bool(str(row["gap_type"] or "").strip())
+                    and bool(str(row["missing_edge"] or "").strip())
+                    and bool(str(row["corrected_rule"] or "").strip())
+                    and bool(str(row["clinical_consequence"] or "").strip())
+                    and bool(str(row["retest_prompt_shape"] or "").strip())
+                )
+            )
+            and (not is_partial or bool(str(row["demonstrated_edge"] or "").strip()))
+            and (
+                not is_misconception
+                or bool(str(row["misconception_text"] or "").strip())
+            )
+        )
+        if calibration_grade:
+            calibration_grade_rows += 1
+        elif not legacy:
+            incomplete_modern_rows += 1
     total = len(rows)
     return {
         "assessed_claim_results": total,
+        "cohorts": {
+            "legacy_import": legacy_rows,
+            "modern": total - legacy_rows,
+            "calibration_grade": calibration_grade_rows,
+            "incomplete_modern": incomplete_modern_rows,
+            "calibration_grade_rate_all": round(calibration_grade_rows / max(1, total), 3),
+            "calibration_grade_rate_modern": round(
+                calibration_grade_rows / max(1, total - legacy_rows), 3
+            ),
+        },
         "field_completeness": {
             field: {
                 "populated": populated[field],
@@ -4471,12 +4674,22 @@ def _telemetry_profile_for_summary(
             }
             for field in fields
         },
+        "modern_controlled_value_violations": modern_violations,
+        "subjective_field_completeness": {
+            field: {
+                **counts,
+                "rate": round(counts["populated"] / max(1, counts["eligible"]), 3),
+            }
+            for field, counts in subjective_specs.items()
+        },
         "miss_gap_type_completeness": {
             "misses": misses,
             "populated": miss_metadata_complete,
             "rate": round(miss_metadata_complete / max(1, misses), 3),
         },
-        "guardrail": "Use --strict-telemetry for assessed learning exchanges. Historical gaps remain visible but are not treated as clean efficacy evidence.",
+        "guardrail": (
+            "Use calibration_grade rows for tutor-efficacy inference. Legacy and incomplete-modern rows remain valid learner-history evidence but are not clean intervention evidence."
+        ),
     }
 
 
@@ -4765,32 +4978,146 @@ def _scouting_candidates_for_summary(
     return candidates[: max(0, limit)]
 
 
+def _claim_memory_trace(
+    conn: sqlite3.Connection,
+    claim_state_id: int,
+    *,
+    history_limit: int = 4,
+) -> dict[str, object]:
+    """Return the exact evidence trace for one claim state.
+
+    Retrieval previously attached the two most recent misses from the *entire
+    concept* to every card under that concept. A concept such as EVD management
+    can contain dozens of distinct claims, so the card for drain-height direction
+    could inherit a waveform misconception. This query keys on the claim state's
+    topic, concept, and stable claim slug, preserving the actual learner model.
+    """
+    state = conn.execute(
+        """SELECT id, topic_id, concept_id, claim_slug, state, priority, gap_type,
+                  last_result_id, source_result_id
+             FROM claim_state WHERE id = ?""",
+        (claim_state_id,),
+    ).fetchone()
+    if not state:
+        return {}
+    rows = conn.execute(
+        """SELECT cr.id, cr.claim_text, cr.score, cr.learner_claim,
+                  cr.demonstrated_edge, cr.misconception_text, cr.missing_edge,
+                  cr.corrected_rule, cr.clinical_consequence,
+                  cr.retest_prompt_shape, cr.teaching_intervention,
+                  cr.learning_operation, cr.created_at, ex.raw_answer,
+                  ex.source_json
+             FROM claim_results cr
+             JOIN exchanges ex ON ex.id = cr.exchange_id
+            WHERE cr.topic_id = ? AND cr.concept_id = ? AND cr.claim_slug = ?
+              AND COALESCE(cr.origin, 'assessed') = 'assessed'
+            ORDER BY cr.created_at DESC, cr.id DESC
+            LIMIT ?""",
+        (
+            int(state["topic_id"]),
+            int(state["concept_id"]),
+            str(state["claim_slug"]),
+            max(1, history_limit),
+        ),
+    ).fetchall()
+    if not rows:
+        return {}
+
+    latest = rows[0]
+    try:
+        signal = json.loads(latest["source_json"] or "{}")
+    except (json.JSONDecodeError, TypeError):
+        signal = {}
+    if not isinstance(signal, dict):
+        signal = {}
+
+    explicit_misconception = str(latest["misconception_text"] or "").strip()
+    fallback_misconception = (
+        str(latest["missing_edge"] or "").strip()
+        if str(state["gap_type"] or "") in MISCONCEPTION_GAP_TYPES
+        else ""
+    )
+    trace: dict[str, object] = {
+        "claim_result_id": int(latest["id"]),
+        "tested_claim": _compact_text(str(latest["claim_text"] or ""), 220),
+        "score": int(latest["score"]),
+        "learner_claim": _compact_text(str(latest["learner_claim"] or ""), 220),
+        "learner_answer": _compact_text(str(latest["raw_answer"] or ""), 220),
+        "demonstrated_edge": _compact_text(str(latest["demonstrated_edge"] or ""), 180),
+        "misconception": _compact_text(explicit_misconception or fallback_misconception, 180),
+        "misconception_source": (
+            "explicit" if explicit_misconception
+            else ("legacy_missing_edge" if fallback_misconception else "none")
+        ),
+        "missing_edge": _compact_text(str(latest["missing_edge"] or ""), 180),
+        "corrected_rule": _compact_text(str(latest["corrected_rule"] or ""), 220),
+        "clinical_consequence": _compact_text(str(latest["clinical_consequence"] or ""), 180),
+        "retest_prompt_shape": _compact_text(str(latest["retest_prompt_shape"] or ""), 180),
+        "prior_teaching_intervention": _compact_text(str(latest["teaching_intervention"] or ""), 240),
+        "cognitive_op": str(latest["learning_operation"] or ""),
+        "answer_mode": str(signal.get("answer_mode") or ""),
+        "confidence_observed": str(signal.get("confidence_observed") or ""),
+        "teaching_move": str(signal.get("teaching_move") or ""),
+        "teaching_intent": str(signal.get("teaching_intent") or ""),
+        "last_seen_ts": str(latest["created_at"] or ""),
+        "recent_outcomes": [
+            {
+                "claim_result_id": int(row["id"]),
+                "score": int(row["score"]),
+                "created_at": str(row["created_at"] or ""),
+            }
+            for row in rows
+        ],
+    }
+    return {
+        key: value
+        for key, value in trace.items()
+        if value not in ("", [], None)
+    }
+
+
 def _verbatim_misconceptions(
     conn: sqlite3.Connection,
     concept_id: int,
     *,
+    claim_state_id: int | None = None,
     limit: int = 2,
     answer_limit: int = 180,
     misconception_limit: int = 140,
 ) -> list[dict[str, str]]:
+    claim_filter = ""
+    params: list[object] = [concept_id]
+    if claim_state_id is not None:
+        state = conn.execute(
+            "SELECT topic_id, claim_slug FROM claim_state WHERE id = ?",
+            (claim_state_id,),
+        ).fetchone()
+        if not state:
+            return []
+        claim_filter = "AND cr.topic_id = ? AND cr.claim_slug = ?"
+        params.extend((int(state["topic_id"]), str(state["claim_slug"])))
+    params.append(max(0, limit))
     rows = conn.execute(
-        """SELECT DISTINCT ex.raw_answer, cr.missing_edge
-           FROM claim_results cr
-           JOIN exchanges ex ON ex.id = cr.exchange_id
-           WHERE cr.concept_id = ? AND cr.score < 2
-             AND COALESCE(cr.origin, 'assessed') = 'assessed'
-             AND COALESCE(ex.origin, 'assessed') = 'assessed'
-             AND (COALESCE(ex.raw_answer, '') != '' OR COALESCE(cr.missing_edge, '') != '')
-           ORDER BY cr.id DESC LIMIT ?""",
-        (concept_id, max(0, limit)),
+        f"""SELECT DISTINCT ex.raw_answer,
+                   COALESCE(NULLIF(cr.misconception_text, ''), cr.missing_edge) AS misconception
+              FROM claim_results cr
+              JOIN exchanges ex ON ex.id = cr.exchange_id
+             WHERE cr.concept_id = ? AND cr.score < 2 {claim_filter}
+               AND COALESCE(cr.origin, 'assessed') = 'assessed'
+               AND COALESCE(ex.origin, 'assessed') = 'assessed'
+               AND (COALESCE(ex.raw_answer, '') != ''
+                    OR COALESCE(cr.misconception_text, '') != ''
+                    OR COALESCE(cr.missing_edge, '') != '')
+             ORDER BY cr.id DESC LIMIT ?""",
+        params,
     ).fetchall()
     res = []
     for r in rows:
         item = {}
         if r["raw_answer"]:
             item["verbatim"] = _compact_text(r["raw_answer"], answer_limit)
-        if r["missing_edge"]:
-            item["misconception"] = _compact_text(r["missing_edge"], misconception_limit)
+        if r["misconception"]:
+            item["misconception"] = _compact_text(r["misconception"], misconception_limit)
         if item:
             res.append(item)
     return res
@@ -4870,6 +5197,8 @@ def _active_prereq_gaps(conn: sqlite3.Connection, cid: int) -> list[str]:
 
 def _build_schema_map(conn: sqlite3.Connection, topic_slug: str) -> list[dict[str, object]]:
     """Deterministic per-concept exposure/mastery map for a topic from the learner model."""
+    from cognitive_ops import mastery_depth_from_evidence, trusted_operation_from_signal  # noqa: PLC0415
+
     topic_row = conn.execute("SELECT id FROM topics WHERE canonical_slug = ?", (topic_slug,)).fetchone()
     if not topic_row:
         return []
@@ -4891,6 +5220,25 @@ def _build_schema_map(conn: sqlite3.Connection, topic_slug: str) -> list[dict[st
         (topic_id,),
     ).fetchall()
     attempts_map = {r[0]: (r[1], r[2], r[3]) for r in attempts_rows}
+    operation_evidence: dict[int, dict[str, dict[str, object]]] = {}
+    for row in conn.execute(
+        """SELECT cr.concept_id, cr.learning_operation, cr.agent_signal_json, ex.session_id
+             FROM claim_results cr
+             JOIN exchanges ex ON ex.id = cr.exchange_id
+            WHERE cr.topic_id = ? AND cr.origin = 'assessed' AND cr.score >= 2.0""",
+        (topic_id,),
+    ):
+        operation = trusted_operation_from_signal(
+            operation=str(row["learning_operation"] or ""),
+            agent_signal_json=str(row["agent_signal_json"] or ""),
+        )
+        if operation:
+            concept_evidence = operation_evidence.setdefault(int(row["concept_id"]), {})
+            bucket = concept_evidence.setdefault(operation, {"count": 0, "session_ids": set()})
+            bucket["count"] = int(bucket["count"]) + 1
+            sessions = bucket["session_ids"]
+            if isinstance(sessions, set) and row["session_id"]:
+                sessions.add(str(row["session_id"]))
     state_rows = conn.execute(
         """SELECT concept_id, state, priority, stability, gap_type
            FROM claim_state
@@ -4954,6 +5302,14 @@ def _build_schema_map(conn: sqlite3.Connection, topic_slug: str) -> list[dict[st
             exposure_status = "exposed_superficial"
         else:
             exposure_status = "exposed_deep"
+        serialized_operation_evidence = {
+            operation: {
+                "count": int(values["count"]),
+                "session_count": len(values["session_ids"]),
+                "session_ids": sorted(values["session_ids"]),
+            }
+            for operation, values in operation_evidence.get(cid, {}).items()
+        }
         schema_map.append({
             "concept_id": cid,
             "concept": c_display,
@@ -4962,6 +5318,12 @@ def _build_schema_map(conn: sqlite3.Connection, topic_slug: str) -> list[dict[st
             "attempts_count": att_cnt,
             "successes_count": succ_cnt,
             "sqlite_success_rate": sqlite_rate,
+            "successful_operations": sorted(serialized_operation_evidence),
+            "successful_operation_evidence": serialized_operation_evidence,
+            "mastery_depth": mastery_depth_from_evidence(
+                serialized_operation_evidence,
+                active_gap=is_gap,
+            ),
             "anki_reviews_count": 0,
             "anki_success_rate": 0.0,
             "prerequisites": prereqs,
@@ -4991,6 +5353,7 @@ def _compute_teaching_policy(
     """
     if not schema_map:
         return {}
+    from cognitive_ops import mastery_depth_from_evidence, mastery_depth_from_operations  # noqa: PLC0415
     from mastery_intelligence import should_skip_orient  # noqa: PLC0415
 
     orient_skip_meta = orient_skip or {}
@@ -5000,10 +5363,30 @@ def _compute_teaching_policy(
         if skip_orient
         else [c for c in schema_map if c["exposure_status"] == "unexposed"]
     )
+    factual_depth_gaps = [
+        c for c in schema_map
+        if c.get("exposure_status") == "exposed_deep"
+        and (
+            str(c.get("mastery_depth") or "")
+            or (
+                mastery_depth_from_evidence(
+                    c.get("successful_operation_evidence"),
+                    active_gap=str(c.get("knowledge_state") or "") in OPEN_GAP_STATES,
+                )
+                if c.get("successful_operation_evidence")
+                else mastery_depth_from_operations(c.get("successful_operations"))
+            )
+        ) == "factual"
+    ]
     gap_or_superficial = [
         c for c in schema_map
         if c["exposure_status"] == "exposed_superficial" or c["knowledge_state"] in OPEN_GAP_STATES
     ]
+    gap_ids = {c.get("concept_id") for c in gap_or_superficial}
+    gap_or_superficial.extend(
+        c for c in factual_depth_gaps
+        if c.get("concept_id") not in gap_ids
+    )
     if skip_orient:
         # Predominant-exposure skip: fold the few still-unexposed ENTRY nodes into
         # DEEPEN so a central concept is introduced, not orphaned by the skip.
@@ -5035,6 +5418,12 @@ def _compute_teaching_policy(
             "Prioritize prerequisite concepts before their dependent concepts.",
             "Contrast semantic competitors if confused.",
         ]
+        if factual_depth_gaps:
+            directives.append(
+                "Depth bridge: repeated factual success is not synthesis-ready. For depth_gap_targets, "
+                "elicit one causal or relational chain (structure/biomechanics/physiology -> clinical "
+                "behavior -> decision consequence), or a changed-frame application, before advancing."
+            )
         socratic_choice = "Invite the user to choose which specific gap or concept they want to deep-dive into next, or recommend a prerequisite gap."
     else:
         phase = "phase_3_force_connections"
@@ -5085,11 +5474,21 @@ def _compute_teaching_policy(
             "ESCALATE interrupt: the listed nodes were probed repeatedly without improvement this session. "
             "Narrow to one node, repair the last missed cognitive operation, then retest with a changed frame."
         )
+    depth_gap_payload = [
+        {
+            "concept_id": c.get("concept_id"),
+            "concept": c.get("concept"),
+            "mastery_depth": "factual",
+            "successful_operations": list(c.get("successful_operations") or []),
+        }
+        for c in factual_depth_gaps[:TARGET_CONCEPTS_COMPACT_CAP]
+    ]
     plan: dict[str, object] = {
         "current_phase": phase,
         "mode": POLICY_MODE_FOR_PHASE[phase],
         "phase_description": desc,
         "target_concepts": targets,
+        "depth_gap_targets": depth_gap_payload,
         "pedagogical_directives": directives,
         "socratic_choice_directives": socratic_choice,
         "interrupts": {
@@ -5101,11 +5500,14 @@ def _compute_teaching_policy(
             "concepts_total": len(schema_map),
             "unexposed": len(unexposed_concepts),
             "gap_or_superficial": len(gap_or_superficial),
+            "factual_depth_gaps": len(factual_depth_gaps),
             "remediate_flags": len(remediate),
             "due_claims": len(consolidate),
             "escalate_targets": len(escalate),
         },
     }
+    if len(factual_depth_gaps) > len(depth_gap_payload):
+        plan["depth_gap_targets_omitted"] = len(factual_depth_gaps) - len(depth_gap_payload)
     if skip_orient:
         plan["orient_skip"] = {
             "skipped": True,
@@ -5335,9 +5737,20 @@ def _suggest_concept_realignments(
     ]
 
     proposals: list[dict[str, object]] = []
+    generic_alignment_tokens = {
+        "anatomy", "care", "clinical", "complication", "complications",
+        "csf", "goals", "icp", "management", "pressure", "reflex",
+        "reflexes", "target", "targets", "threshold", "thresholds",
+        "treatment", "physiology",
+    }
     for node in unexposed:
         inv_id = str(node["concept_id"])
-        sig_tokens = _tokens(str(node.get("concept") or ""))
+        node_name = str(node.get("concept") or "")
+        sig_tokens = _tokens(node_name)
+        acronym_tokens = {
+            token.lower()
+            for token in re.findall(r"\b[A-Z][A-Z0-9]{2,}\b", node_name)
+        }
         if not sig_tokens:
             continue
         # group matching claims by (source concept, its current binding)
@@ -5347,11 +5760,19 @@ def _suggest_concept_realignments(
             if cl["current_binding"] == inv_id:
                 continue  # already bound to this node
             matched = {t for t in sig_tokens if t in cl["words"] and t not in cl["binding_words"]}
-            if not matched:
+            specific = matched - generic_alignment_tokens
+            # One generic shared token is not identity evidence. A single term is
+            # accepted only when it is an explicit acronym (NASCIS, ASIA) or a
+            # highly distinctive long token (overdrainage, hydrocephalus).
+            if not specific or (
+                len(specific) == 1
+                and not (specific & acronym_tokens)
+                and max(len(term) for term in specific) < 9
+            ):
                 continue
             key = (cl["concept_id"], cl["current_binding"], cl["concept_name"])
             group_counts[key] = group_counts.get(key, 0) + 1
-            group_terms.setdefault(key, set()).update(matched)
+            group_terms.setdefault(key, set()).update(specific)
         for key, count in group_counts.items():
             cid, binding, cname = key
             terms = sorted(group_terms[key])
@@ -5450,7 +5871,17 @@ def _integrate_inventory_knowledge_map(
         write as write_session_map,
     )
 
-    projection = build_inventory_projection(topic=topic, doc_path=doc_path, memory_db=DB_PATH)
+    # Keep the inventory overlay tied to the same SQLite database as the caller.
+    # This matters for tests, copied dry-runs, and any future alternate profile;
+    # silently projecting the production DB over a different connection creates a
+    # plausible but false learner map.
+    main_db_path = ""
+    for row in conn.execute("PRAGMA database_list").fetchall():
+        if str(row[1]) == "main":
+            main_db_path = str(row[2] or "")
+            break
+    memory_db = Path(main_db_path) if main_db_path else DB_PATH
+    projection = build_inventory_projection(topic=topic, doc_path=doc_path, memory_db=memory_db)
     if not projection:
         return
     knowledge_map = list(projection.get("knowledge_map") or [])
@@ -5588,6 +6019,9 @@ def _planning_brief_for_summary(
             res["topic"] = card_topic
         if conn and state_id is not None:
             res["repair_velocity"] = _claim_state_repair_stats(conn, int(state_id))
+            trace = _claim_memory_trace(conn, int(state_id))
+            if trace:
+                res["memory_trace"] = trace
             op_row = conn.execute(
                 """SELECT cr.learning_operation
                      FROM claim_state cs
@@ -5606,7 +6040,6 @@ def _planning_brief_for_summary(
             ).fetchone()
             if inv_row and inv_row["inventory_concept_id"]:
                 res["inventory_concept_id"] = inv_row["inventory_concept_id"]
-            res["historical_misconceptions"] = _verbatim_misconceptions(conn, int(concept_id))
             relations = _concept_relations(conn, int(concept_id))
             if "prerequisites" in relations:
                 res["prerequisites"] = relations["prerequisites"]
@@ -5633,6 +6066,9 @@ def _planning_brief_for_summary(
             res["topic"] = item_topic
         if conn and state_id is not None:
             res["repair_velocity"] = _claim_state_repair_stats(conn, int(state_id))
+            trace = _claim_memory_trace(conn, int(state_id))
+            if trace:
+                res["memory_trace"] = trace
             op_row = conn.execute(
                 """SELECT cr.learning_operation
                      FROM claim_state cs
@@ -5648,7 +6084,6 @@ def _planning_brief_for_summary(
             ).fetchone()
             if inv_row and inv_row["inventory_concept_id"]:
                 res["inventory_concept_id"] = inv_row["inventory_concept_id"]
-            res["historical_misconceptions"] = _verbatim_misconceptions(conn, int(concept_id))
             relations = _concept_relations(conn, int(concept_id))
             if "prerequisites" in relations:
                 res["prerequisites"] = relations["prerequisites"]
@@ -5776,7 +6211,12 @@ def _planning_brief_for_summary(
         else:
             card["adjusted_priority"] = base_priority
 
-    must_retest.sort(key=lambda x: (-x.get("adjusted_priority", 0.0), -float(x.get("updated_ts", 0.0) or 0.0) if x.get("updated_ts") else 0))
+    def card_sort_key(card: dict[str, object]) -> tuple[float, float]:
+        parsed = _parse_ts(str(card.get("updated_ts") or ""))
+        timestamp = parsed.timestamp() if parsed else 0.0
+        return (-float(card.get("adjusted_priority", 0.0) or 0.0), -timestamp)
+
+    must_retest.sort(key=card_sort_key)
 
     # Build knowledge map and deterministic teaching policy (SQLite fallback;
     # startup-recall replaces with inventory-grounded map when available).
@@ -5953,6 +6393,10 @@ def _refine_brief_with_anki(brief: dict[str, object], anki_profile: dict[str, ob
 
 SCHEMA_MAP_COMPACT_CAP = 40
 TARGET_CONCEPTS_COMPACT_CAP = 25
+MEMORY_SCHEMA_MAP_COMPACT_CAP = 20
+MEMORY_OPEN_FIRST_CAP = 6
+MEMORY_RECENT_REPAIRS_CAP = 3
+MEMORY_SCAFFOLDS_CAP = 3
 _EXPOSURE_COMPACT_ORDER = {"exposed_superficial": 0, "unexposed": 1, "exposed_deep": 2}
 _STATE_COMPACT_SEVERITY = {
     "missed": 0,
@@ -6025,8 +6469,8 @@ def _compact_doc_review_payload(
         }
         if "repair_velocity" in item:
             res["repair_velocity"] = item["repair_velocity"]
-        if "historical_misconceptions" in item:
-            res["historical_misconceptions"] = item["historical_misconceptions"]
+        if "memory_trace" in item:
+            res["memory_trace"] = item["memory_trace"]
         if "prerequisites" in item:
             res["prerequisites"] = item["prerequisites"]
         if "active_prerequisite_gaps" in item:
@@ -6148,6 +6592,194 @@ def _compact_doc_review_payload(
         "planning_brief": doc_brief,
         "counts": counts,
         "omitted": omitted,
+        "retrieval_guidance": retrieval_guidance,
+    }
+
+
+def _compact_memory_review_payload(
+    payload: dict[str, object],
+    *,
+    startup_meta: dict[str, object],
+) -> dict[str, object]:
+    """Emit a bounded agent-ready memory brief without hiding durable evidence.
+
+    The audit profile remains the rich surface. Routine memory startup carries
+    the highest-priority exact claim traces, a compact canonical map, and explicit
+    deferred counts plus node-level drilldown guidance. Teaching policy is always
+    computed from the full evidence set before this presentation-layer cap.
+    """
+    brief = payload.get("planning_brief") if isinstance(payload.get("planning_brief"), dict) else {}
+    assert isinstance(brief, dict)
+
+    def raw_list(key: str) -> list[dict[str, object]]:
+        value = brief.get(key, [])
+        if not isinstance(value, list):
+            return []
+        return [item for item in value if isinstance(item, dict)]
+
+    def compact_trace(value: object) -> dict[str, object]:
+        if not isinstance(value, dict):
+            return {}
+        keep = (
+            "claim_result_id", "tested_claim", "score", "learner_claim", "learner_answer",
+            "demonstrated_edge", "misconception", "misconception_source",
+            "missing_edge", "corrected_rule", "clinical_consequence",
+            "retest_prompt_shape", "prior_teaching_intervention", "cognitive_op",
+            "answer_mode", "confidence_observed", "teaching_move",
+            "teaching_intent", "last_seen_ts", "recent_outcomes",
+        )
+        return {key: value[key] for key in keep if key in value}
+
+    def compact_card(item: dict[str, object]) -> dict[str, object]:
+        card = {
+            "claim_state_id": item.get("claim_state_id"),
+            "concept_id": item.get("concept_id"),
+            "inventory_concept_id": item.get("inventory_concept_id"),
+            "topic": item.get("topic"),
+            "concept": item.get("concept"),
+            "priority": item.get("priority"),
+            "state": item.get("state"),
+            "retrievability": item.get("retrievability"),
+            "summary": item.get("summary"),
+            "next_action": item.get("next_action"),
+            "repair_velocity": item.get("repair_velocity"),
+            "cognitive_op": item.get("cognitive_op"),
+        }
+        trace = compact_trace(item.get("memory_trace"))
+        if trace:
+            card["memory_trace"] = trace
+        for key in ("prerequisites", "active_prerequisite_gaps", "semantic_competitors"):
+            if item.get(key):
+                card[key] = item[key]
+        return {key: value for key, value in card.items() if value not in (None, "", [], {})}
+
+    def compact_node(item: dict[str, object]) -> dict[str, object]:
+        keep = (
+            "concept_id", "concept", "topic_id", "tier", "type", "role",
+            "exposure_status", "knowledge_state", "attempts_count",
+            "successes_count", "sqlite_success_rate", "mastery_depth",
+            "successful_operations", "safety_critical", "active_misconception",
+            "memory_context_count", "prerequisites", "active_prerequisite_gaps",
+            "semantic_competitors", "artifact_native", "artifact_presence",
+            "stuck_probe_count", "last_miss_cognitive_op",
+        )
+        return {key: item[key] for key in keep if key in item and item[key] not in (None, "", [], {})}
+
+    def compact_frontier(item: dict[str, object]) -> dict[str, object]:
+        keep = (
+            "candidate_id", "source_surface", "topic", "concept", "relationship",
+            "relevance_reason", "recommended_use", "score",
+        )
+        result = {key: item[key] for key in keep if key in item and item[key] not in (None, "", [], {})}
+        result["agent_validation_required"] = True
+        return result
+
+    open_all = raw_list("open_first")
+    repair_all = raw_list("recent_repairs")
+    scaffold_all = raw_list("known_scaffolds_due")
+    open_first = [compact_card(item) for item in open_all[:MEMORY_OPEN_FIRST_CAP]]
+    recent_repairs = [compact_card(item) for item in repair_all[:MEMORY_RECENT_REPAIRS_CAP]]
+    scaffolds = [compact_card(item) for item in scaffold_all[:MEMORY_SCAFFOLDS_CAP]]
+
+    raw_knowledge_map = raw_list("knowledge_map")
+    capped_map, map_omitted = _compact_schema_map(
+        raw_knowledge_map,
+        cap=MEMORY_SCHEMA_MAP_COMPACT_CAP,
+    )
+    knowledge_map = [compact_node(item) for item in capped_map]
+
+    trimmed_counts = {
+        "open_first": max(0, len(open_all) - len(open_first)),
+        "recent_repairs": max(0, len(repair_all) - len(recent_repairs)),
+        "known_scaffolds_due": max(0, len(scaffold_all) - len(scaffolds)),
+        "knowledge_map_nodes": int(map_omitted.get("count", 0) or 0),
+    }
+    trimmed_counts = {key: value for key, value in trimmed_counts.items() if value}
+    source_guidance = payload.get("retrieval_guidance")
+    source_deferred = (
+        dict(source_guidance.get("omitted_high_signal") or {})
+        if isinstance(source_guidance, dict)
+        else {}
+    )
+    for key, value in trimmed_counts.items():
+        source_deferred[key] = int(source_deferred.get(key, 0) or 0) + int(value)
+
+    plan = dict(brief.get("sequential_teaching_plan") or {})
+    targets = plan.get("target_concepts")
+    if isinstance(targets, list) and len(targets) > TARGET_CONCEPTS_COMPACT_CAP:
+        plan["target_concepts"] = targets[:TARGET_CONCEPTS_COMPACT_CAP]
+        plan["target_concepts_omitted"] = len(targets) - TARGET_CONCEPTS_COMPACT_CAP
+
+    compact_brief: dict[str, object] = {
+        "read_first": True,
+        "profile": "memory_review_compact",
+        "resolution_warning": brief.get("resolution_warning", ""),
+        "resolution_candidates": raw_list("resolution_candidates")[:5],
+        "new_topic_orientation": brief.get("new_topic_orientation", {}),
+        "handoff": brief.get("handoff", {}),
+        "open_first": open_first,
+        "recent_repairs": recent_repairs,
+        "known_scaffolds_due": scaffolds,
+        "knowledge_map": knowledge_map,
+        "knowledge_map_status": brief.get("knowledge_map_status", ""),
+        "knowledge_map_provenance": brief.get("knowledge_map_provenance", ""),
+        "sequential_teaching_plan": plan,
+        "misconception_rules": raw_list("misconception_rules")[:2],
+        "domain_patterns": raw_list("domain_patterns")[:2],
+        "contextual_frontier": [
+            compact_frontier(item) for item in raw_list("contextual_frontier")[:3]
+        ],
+        "alignment_proposals": raw_list("alignment_proposals")[:4],
+        "inventory_unmatched_learner_concepts": raw_list("inventory_unmatched_learner_concepts")[:3],
+        "inventory_counts": brief.get("inventory_counts", {}),
+        "question_design_bias": {
+            "high_confidence_misses": top_list_from(
+                brief.get("question_design_bias") if isinstance(brief.get("question_design_bias"), dict) else {},
+                "high_confidence_misses",
+                2,
+            ),
+            "weak_operations": top_list_from(
+                brief.get("question_design_bias") if isinstance(brief.get("question_design_bias"), dict) else {},
+                "weak_operations",
+                2,
+            ),
+        },
+        "deferred_evidence": {
+            "counts": source_deferred,
+            "teaching_use": "Use node recall when a selected concept needs its full history; use audit only for model review.",
+        },
+        "agent_validation_checkpoint": brief.get("agent_validation_checkpoint", {}),
+        "anki_overlay": brief.get("anki_overlay", {}),
+        "fallback": {
+            "node_recall": "preferred for one selected canonical concept",
+            "audit_profile": "full learner-model inspection only",
+        },
+    }
+    if map_omitted:
+        compact_brief["knowledge_map_omitted"] = map_omitted
+    compact_brief = {
+        key: value for key, value in compact_brief.items()
+        if value not in (None, "", [], {})
+    }
+    retrieval_guidance = {
+        "scope": "topic",
+        "policy": "memory_agent_compact",
+        "is_truncated": bool(source_deferred),
+        "omitted_high_signal": (
+            dict(source_guidance.get("omitted_high_signal") or {})
+            if isinstance(source_guidance, dict)
+            else {}
+        ),
+        "deferred_high_signal_counts": source_deferred,
+        "full_policy_computed_before_compaction": True,
+        "drilldown": "Use node-recall for the chosen concept; request profile=audit only for explicit learner-model audits.",
+        "pre_question_expansion_allowed": bool(startup_meta.get("routing_required")),
+    }
+    return {
+        "startup_recall": startup_meta,
+        "planning_brief": compact_brief,
+        "counts": payload.get("counts", {}),
+        "omitted": payload.get("omitted", {}),
         "retrieval_guidance": retrieval_guidance,
     }
 
@@ -6455,6 +7087,7 @@ def retrieval_summary(
     }
 
     select_sql = f"""SELECT rc.card_type, rc.priority, rc.summary, rc.next_action,
+                  rc.updated_ts,
                   rc.claim_state_id,
                   t.canonical_slug AS topic, cs.claim_text, cs.state,
                   cs.concept_id, c.display_name AS concept
@@ -6526,15 +7159,15 @@ def retrieval_summary(
     }
 
     if include_model and lens == "general":
-        brain_dump_candidates = _brain_dump_candidates_for_summary(
+        shift_debrief_candidates = _shift_debrief_candidates_for_summary(
             conn,
             topic_id=resolved_topic_id,
             limit=max(4, limit),
             status="pending",
         )
-        payload["brain_dump_review_candidates"] = brain_dump_candidates
-        if brain_dump_candidates:
-            counts["brain_dump_review_candidate"] = len(brain_dump_candidates)
+        payload["shift_debrief_review_candidates"] = shift_debrief_candidates
+        if shift_debrief_candidates:
+            counts["shift_debrief_review_candidate"] = len(shift_debrief_candidates)
 
     if include_curated:
         curated_limit = max(4, limit)
@@ -6630,7 +7263,7 @@ def retrieval_summary(
             conn,
             topic_id=resolved_topic_id,
             limit=max(4, limit),
-            include_brain_dump_candidates=(lens == "general"),
+            include_shift_debrief_candidates=(lens == "general"),
         )
         if context:
             payload["context_focus"] = _context_focus_for_summary(
@@ -6724,7 +7357,7 @@ def startup_recall(
 
     lens='formal' is the standardized document surface and seals out
     service-origin material. lens='general' is for topic-only memory review and
-    includes low-weight brain-dump review candidates. lens='service' delegates
+    includes low-weight shift-debrief review candidates. lens='service' delegates
     to the service lens, which leads with service-rotation gaps.
     """
     if lens == "service":
@@ -6752,12 +7385,14 @@ def startup_recall(
     requested_topic = topic
     resolved: TopicResolution | None = None
     recall_topic = ""
+    novel_topic = False
     if not global_mode:
         resolved = resolve_topic(conn, topic, doc_path)
         stored_topic = conn.execute(
             "SELECT 1 FROM topics WHERE canonical_slug = ?",
             (resolved.slug,),
         ).fetchone()
+        novel_topic = not bool(stored_topic)
         recall_topic = resolved.slug if stored_topic else (topic or _doc_alias(doc_path))
 
     effective_profile = profile
@@ -6825,6 +7460,38 @@ def startup_recall(
             payload["planning_brief"] = brief
         except Exception as exc:
             print(f"WARN inventory_integration_failed: {exc}", file=sys.stderr)
+    # A legitimate new curriculum topic should not be blocked merely because an
+    # old learner-state row shares one generic word. If the inventory produced a
+    # coherent ORIENT map and no existing topic has at least two overlapping
+    # terms, treat this as new learning with no history. Stronger overlaps remain
+    # blocked for agent validation so historical state is not accidentally split.
+    if routing_required and novel_topic and isinstance(brief, dict):
+        candidates = brief.get("resolution_candidates")
+        candidate_rows = candidates if isinstance(candidates, list) else []
+        strong_candidate = any(
+            isinstance(item, dict) and int(item.get("overlap", 0) or 0) >= 2
+            for item in candidate_rows
+        )
+        inventory_ready = (
+            brief.get("knowledge_map_provenance") == "inventory"
+            and brief.get("knowledge_map_status") == "ok"
+            and bool(brief.get("knowledge_map"))
+        )
+        if inventory_ready and not strong_candidate:
+            warning = str(brief.pop("resolution_warning", "") or "")
+            brief["new_topic_orientation"] = {
+                "status": "new_topic_no_learner_history",
+                "inventory_grounded": True,
+                "prior_resolution_warning": warning,
+                "weak_related_topics": candidate_rows,
+                "teaching_directive": "Begin with the inventory-grounded ORIENT plan; do not infer prior mastery from weak lexical neighbors.",
+            }
+            brief["resolution_candidates"] = []
+            brief["agent_validation_checkpoint"] = {
+                "required_before_teaching": False,
+                "task": "Treat as a new topic unless the learner identifies an existing historical anchor.",
+            }
+            routing_required = False
     deferred_high_signal = payload.get("retrieval_guidance", {}).get("omitted_high_signal", {})
     anki_feedback_status: dict[str, object] = {"status": "skipped", "reason": "not evaluated"}
     if routing_required:
@@ -6882,7 +7549,13 @@ def startup_recall(
         except Exception as e:  # noqa: BLE001 - startup recall must remain available.
             anki_feedback_status = {"status": "error", "message": str(e)[:200]}
 
-    if not global_mode and resolved and isinstance(brief, dict) and brief.get("sequential_teaching_plan"):
+    if (
+        not global_mode
+        and session_id
+        and resolved
+        and isinstance(brief, dict)
+        and brief.get("sequential_teaching_plan")
+    ):
         # Auditable session-start policy event; failure must not block recall.
         try:
             topic_row = conn.execute(
@@ -6948,6 +7621,13 @@ def startup_recall(
                 startup_meta=payload["startup_recall"],  # type: ignore[arg-type]
             )
         )
+    if effective_profile == "memory" and not global_mode:
+        return _json_dumps(
+            _compact_memory_review_payload(
+                payload,
+                startup_meta=payload["startup_recall"],  # type: ignore[arg-type]
+            )
+        )
     return _json_dumps(payload)
 
 
@@ -6991,12 +7671,14 @@ def main() -> None:
     p_log.add_argument("--skill", default="")
     p_log.add_argument("--tested-claim", default="")
     p_log.add_argument("--learner-claim", default="")
+    p_log.add_argument("--demonstrated-edge", default="", help="What the learner got right in a partial answer")
     p_log.add_argument("--missing-edge", default="")
     p_log.add_argument("--corrected-rule", default="")
     p_log.add_argument("--clinical-consequence", default="")
     p_log.add_argument("--retest-prompt-shape", default="")
+    p_log.add_argument("--teaching-intervention", default="", help="Compact description of the explanation, contrast, or model used after this answer")
     p_log.add_argument("--learning-operation", default="")
-    p_log.add_argument("--cognitive-op", default="", help="Alias for --learning-operation: discrimination|quantification|sequencing|mechanism|transfer")
+    p_log.add_argument("--cognitive-op", default="", help="Alias for --learning-operation: recall|discrimination|quantification|sequencing|mechanism|transfer")
     p_log.add_argument("--teaching-intent", default="")
     p_log.add_argument("--expected-answer-edge", default="")
     p_log.add_argument("--coverage-role", default="")
@@ -7015,7 +7697,7 @@ def main() -> None:
     p_log.add_argument("--rotation", type=int, default=None, help="Rotation id this service-origin answer belongs to (defaults to the active rotation)")
     p_log.add_argument("--competency-target", default="", help="Service competency_target slug this answer advances")
     p_log.add_argument("--convention", action="store_true", help="Mark as a (service x site) local convention rather than a portable clinical gap")
-    p_log.add_argument("--brain-dump-candidate-id", type=int, default=None, help="Mark this pending brain-dump review candidate as reviewed by the logged answer")
+    p_log.add_argument("--shift-debrief-candidate-id", type=int, default=None, help="Mark this pending shift-debrief review candidate as reviewed by the logged answer")
     p_log.add_argument(
         "--inventory-concept-id",
         default="",
@@ -7040,7 +7722,7 @@ def main() -> None:
     p_summary.add_argument("--include-model", action="store_true")
     p_summary.add_argument("--context", default="", help="Optional upcoming case/rotation/context string for relevance weighting")
     p_summary.add_argument("--brief-only", action="store_true", help="Return the synthesized planning brief plus truncation diagnostics")
-    p_summary.add_argument("--lens", choices=["formal", "general", "service"], default="formal", help="formal doc/audit surface; general includes brain-dump review candidates; service routes to service memory")
+    p_summary.add_argument("--lens", choices=["formal", "general", "service"], default="formal", help="formal doc/audit surface; general includes shift-debrief review candidates; service routes to service memory")
     p_summary.add_argument("--service", default="", help="Service slug for --lens service")
     p_summary.add_argument("--site", default="", help="Site slug for --lens service convention scoping")
     p_summary.add_argument("--rotation", type=int, default=None, help="Rotation id for --lens service")
@@ -7070,7 +7752,7 @@ def main() -> None:
     p_startup.add_argument("--scaffold-limit", type=int, default=None)
     p_startup.add_argument("--include-global-scaffolds", action="store_true")
     p_startup.add_argument("--context", default="", help="Optional upcoming case/rotation/context string for relevance weighting")
-    p_startup.add_argument("--lens", choices=["formal", "general", "service"], default="formal", help="formal seals out service material; general includes brain-dump review candidates; service leads with rotation gaps")
+    p_startup.add_argument("--lens", choices=["formal", "general", "service"], default="formal", help="formal seals out service material; general includes shift-debrief review candidates; service leads with rotation gaps")
     p_startup.add_argument("--service", default="", help="Service slug for --lens service (defaults to the active rotation)")
     p_startup.add_argument("--site", default="", help="Site slug for --lens service convention scoping")
     p_startup.add_argument("--rotation", type=int, default=None, help="Rotation id for --lens service")
@@ -7164,7 +7846,7 @@ def main() -> None:
     p_apply_src.add_argument("--input", dest="input_path", default=None, help="Path to apply payload JSON file")
     p_apply_src.add_argument("--stdin", action="store_true", help="Read apply payload from stdin")
 
-    p_bd_add = sub.add_parser("brain-dump-candidate-add")
+    p_bd_add = sub.add_parser("shift-debrief-candidate-add")
     p_bd_add.add_argument("--session", required=True)
     p_bd_add.add_argument("--topic", required=True)
     p_bd_add.add_argument("--concept", required=True)
@@ -7177,12 +7859,12 @@ def main() -> None:
     p_bd_add.add_argument("--convention", action="store_true")
     p_bd_add.add_argument("--detail-json", default="{}")
 
-    p_bd_list = sub.add_parser("brain-dump-candidate-list")
+    p_bd_list = sub.add_parser("shift-debrief-candidate-list")
     p_bd_list.add_argument("--topic", default="")
     p_bd_list.add_argument("--status", choices=["pending", "reviewed", "dismissed"], default="pending")
     p_bd_list.add_argument("--limit", type=int, default=20)
 
-    p_bd_mark = sub.add_parser("brain-dump-candidate-mark")
+    p_bd_mark = sub.add_parser("shift-debrief-candidate-mark")
     p_bd_mark.add_argument("--candidate-id", type=int, required=True)
     p_bd_mark.add_argument("--status", choices=["pending", "dismissed"], required=True)
 
@@ -7211,10 +7893,12 @@ def main() -> None:
                 skill=args.skill,
                 tested_claim=args.tested_claim,
                 learner_claim=args.learner_claim,
+                demonstrated_edge=args.demonstrated_edge,
                 missing_edge=args.missing_edge,
                 corrected_rule=args.corrected_rule,
                 clinical_consequence=args.clinical_consequence,
                 retest_prompt_shape=args.retest_prompt_shape,
+                teaching_intervention=args.teaching_intervention,
                 learning_operation=args.cognitive_op or args.learning_operation,
                 teaching_intent=args.teaching_intent,
                 expected_answer_edge=args.expected_answer_edge,
@@ -7236,7 +7920,7 @@ def main() -> None:
                 rotation_id=args.rotation,
                 competency_target=args.competency_target,
                 convention=args.convention,
-                brain_dump_candidate_id=args.brain_dump_candidate_id,
+                shift_debrief_candidate_id=args.shift_debrief_candidate_id,
                 inventory_concept_id=args.inventory_concept_id,
             )
             print(f"OK exchange_id={exchange_id}")
@@ -7448,13 +8132,13 @@ def main() -> None:
             ))
         elif args.command == "curation-status":
             print(_json_dumps(curation_status(conn)))
-        elif args.command == "brain-dump-candidate-add":
+        elif args.command == "shift-debrief-candidate-add":
             try:
                 detail = json.loads(args.detail_json or "{}")
             except json.JSONDecodeError as exc:
                 print(_json_dumps({"ok": False, "error": f"invalid --detail-json: {exc}"}), file=sys.stderr)
                 sys.exit(2)
-            candidate_id = add_brain_dump_candidate(
+            candidate_id = add_shift_debrief_candidate(
                 conn,
                 session_id=args.session,
                 topic=args.topic,
@@ -7469,7 +8153,7 @@ def main() -> None:
                 detail=detail if isinstance(detail, dict) else {"value": detail},
             )
             print(_json_dumps({"ok": True, "candidate_id": candidate_id}))
-        elif args.command == "brain-dump-candidate-list":
+        elif args.command == "shift-debrief-candidate-list":
             topic_id = None
             if args.topic:
                 resolution = resolve_topic(conn, args.topic)
@@ -7480,17 +8164,17 @@ def main() -> None:
                     print(_json_dumps([]))
                     return
             print(_json_dumps(
-                _brain_dump_candidates_for_summary(
+                _shift_debrief_candidates_for_summary(
                     conn,
                     topic_id=topic_id,
                     limit=args.limit,
                     status=args.status,
                 )
             ))
-        elif args.command == "brain-dump-candidate-mark":
+        elif args.command == "shift-debrief-candidate-mark":
             now = datetime.now(timezone.utc).isoformat()
             conn.execute(
-                """UPDATE brain_dump_review_candidates
+                """UPDATE shift_debrief_review_candidates
                       SET status = ?, updated_at = ?
                     WHERE id = ? AND status != 'reviewed'""",
                 (args.status, now, args.candidate_id),

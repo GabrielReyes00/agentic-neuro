@@ -1,8 +1,9 @@
 ---
 name: consult
-description: Curbside consult on a bounded clinical question — procedure walk-through or decision/indication logic, shape chosen by the agent — with verification questions, Anki cards, pocket-card vault note in Consults/.
+description: Answer a bounded bedside task or immediate clinical decision; durable capture is optional.
 ---
 
 # Consult
 
-Read and follow `.agents/shared/commands/consult.md`.
+Read `.agents/shared/workflow-registry.json`, then read and follow
+`.agents/shared/commands/consult.md`. The shared contract is the behavioral authority.

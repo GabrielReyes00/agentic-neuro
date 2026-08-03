@@ -13,15 +13,15 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import grand_rounds_writer as grw
+from vault_schema import parse_frontmatter
 
 
 def _make_vault(root: Path) -> Path:
     return root
 
 
-def _bottom_yaml(text: str) -> dict:
-    _body, meta = grw._split_bottom_yaml(text)
-    return meta or {}
+def _frontmatter(text: str) -> dict:
+    return parse_frontmatter(text)
 
 
 def _quality_body() -> str:
@@ -50,7 +50,7 @@ class TitleSlugTests(unittest.TestCase):
 
 
 class CreatePresentationTests(unittest.TestCase):
-    def test_case_presentation_written_to_cases_with_bottom_yaml(self):
+    def test_case_presentation_written_to_cases_with_native_frontmatter(self):
         with tempfile.TemporaryDirectory() as tmp:
             vault = _make_vault(Path(tmp))
             path = grw.create_presentation(
@@ -75,8 +75,8 @@ class CreatePresentationTests(unittest.TestCase):
             text = path.read_text(encoding="utf-8")
             first_non_blank = next((ln for ln in text.splitlines() if ln.strip()), "")
             self.assertFalse(first_non_blank.startswith("# "))
-            self.assertTrue(text.rstrip().endswith("---"))
-            meta = _bottom_yaml(text)
+            self.assertTrue(text.startswith("---\n"))
+            meta = _frontmatter(text)
             self.assertEqual(meta["mode"], "case")
             self.assertEqual(meta["domain"], "pediatric")
             self.assertEqual(meta["citation_count"], 1)
@@ -187,7 +187,7 @@ class CreatePresentationTests(unittest.TestCase):
                 sessions_dir=vault / "Sessions",
                 require_quality_gate=True,
             )
-            meta = _bottom_yaml(path.read_text(encoding="utf-8"))
+            meta = _frontmatter(path.read_text(encoding="utf-8"))
             manifest = json.loads(Path(meta["manifest_path"]).read_text(encoding="utf-8"))
             self.assertEqual(manifest["attending_angle"], "operative anatomy and management controversy")
             self.assertEqual(manifest["quality_gate_failures"], [])
@@ -231,7 +231,7 @@ class CreatePresentationTests(unittest.TestCase):
                 sessions_dir=vault / "Sessions",
                 require_quality_gate=True,
             )
-            meta = _bottom_yaml(path.read_text(encoding="utf-8"))
+            meta = _frontmatter(path.read_text(encoding="utf-8"))
             self.assertEqual(meta["source_journal_club"], "Journal Club/Hybrid Epilepsy Surgery.md")
             self.assertEqual(meta["source_pdf"], "Journal Club/Sources/Hybrid Epilepsy Surgery.pdf")
             self.assertEqual(meta["duration_minutes"], 15)
@@ -240,7 +240,7 @@ class CreatePresentationTests(unittest.TestCase):
 
 
 class RehearsalTests(unittest.TestCase):
-    def test_append_rehearsal_notes_preserves_single_bottom_yaml(self):
+    def test_append_rehearsal_notes_preserves_single_frontmatter_block(self):
         with tempfile.TemporaryDirectory() as tmp:
             vault = Path(tmp)
             path = grw.create_presentation(
@@ -260,8 +260,9 @@ class RehearsalTests(unittest.TestCase):
             text = path.read_text(encoding="utf-8")
             self.assertIn("## Rehearsal Notes - ", text)
             self.assertIn("Needs tighter defense", text)
-            self.assertEqual(text.count("\n---\n"), 2)
-            meta = _bottom_yaml(text)
+            self.assertTrue(text.startswith("---\n"))
+            self.assertEqual(text.count("\n---\n"), 1)
+            meta = _frontmatter(text)
             self.assertIn("last_rehearsal", meta)
 
 

@@ -12,7 +12,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import yaml
+try:
+    from vault_schema import parse_frontmatter, split_frontmatter
+except ModuleNotFoundError:  # pragma: no cover - package import in tests
+    from .vault_schema import parse_frontmatter, split_frontmatter
 
 
 DEFAULT_VAULT_ROOT = Path("/Users/gabrielreyes/Documents/Obsidian/agentic-neuro")
@@ -69,7 +72,9 @@ INTERPRETATION_LABELS = (
 
 PRESENTATION_LABELS = (
     "Central Thesis",
+    "Clinical Context Slide",
     "Data Worth Showing",
+    "Central Visual",
     "Discussion Priorities",
     "Spoken Arc",
     "What Not To Say",
@@ -83,7 +88,7 @@ LIMITATION_LABELS = (
 )
 
 ARTICLE_LOCATOR_RE = re.compile(
-    r"\[(?:Article (?:PDF p\.\s*\d+|Table\s+[A-Za-z0-9.-]+|Figure\s+[A-Za-z0-9.-]+|"
+    r"\[(?:Article (?:PDF p\.\s*\d+[^\]]*|Table\s+[A-Za-z0-9.-]+|Figure\s+[A-Za-z0-9.-]+|"
     r"Supplement(?:\s+p\.\s*\d+|\s+[A-Za-z0-9.-]+)?|Abstract)|"
     r"Calculated from Article (?:Table|Figure|PDF p\.)[^\]]*)\]",
     re.I,
@@ -138,40 +143,9 @@ def _source_target(vault_root: Path, title: str) -> Path:
     return vault_root / JOURNAL_CLUB_DIRNAME / SOURCES_DIRNAME / f"{_safe_title(title)}.pdf"
 
 
-def _bottom_yaml_bounds(text: str) -> tuple[int, int] | None:
-    lines = text.splitlines(keepends=True)
-    while lines and not lines[-1].strip():
-        lines.pop()
-    if not lines or lines[-1].strip() != "---":
-        return None
-    close_idx = len(lines) - 1
-    open_idx = next(
-        (i for i in range(close_idx - 1, -1, -1) if lines[i].strip() == "---"),
-        None,
-    )
-    if open_idx is None:
-        return None
-    offsets = [0]
-    for line in lines:
-        offsets.append(offsets[-1] + len(line))
-    return offsets[open_idx], offsets[close_idx + 1]
-
-
-def _parse_bottom_yaml(text: str) -> dict[str, Any]:
-    bounds = _bottom_yaml_bounds(text)
-    if bounds is None:
-        return {}
-    block = text[bounds[0] : bounds[1]].splitlines()[1:-1]
-    try:
-        parsed = yaml.safe_load("\n".join(block))
-    except yaml.YAMLError:
-        return {}
-    return parsed if isinstance(parsed, dict) else {}
-
-
 def _section_body(text: str, heading: str) -> str | None:
     match = re.search(
-        rf"^## {re.escape(heading)}\s*$([\s\S]*?)(?=^## |\n---\n|\Z)",
+        rf"^## {re.escape(heading)}\s*$([\s\S]*?)(?=^## |\Z)",
         text,
         flags=re.M,
     )
@@ -180,6 +154,18 @@ def _section_body(text: str, heading: str) -> str | None:
 
 def _bold_label_present(text: str, label: str) -> bool:
     return bool(re.search(rf"\*\*{re.escape(label)}:\*\*", text, flags=re.I))
+
+
+def _markdown_data_rows(section: str) -> list[str]:
+    """Return Markdown table data rows, excluding header and delimiter rows."""
+    rows = [line.strip() for line in section.splitlines() if line.strip().startswith("|")]
+    if len(rows) < 3:
+        return []
+    return [
+        row
+        for row in rows[2:]
+        if not re.fullmatch(r"\|?[\s:|-]+\|?", row)
+    ]
 
 
 def _metadata_tags(meta: dict[str, Any]) -> set[str]:
@@ -210,16 +196,15 @@ def validate_text(
     check_physical_source: bool = False,
 ) -> ValidationResult:
     errors: list[str] = []
-    stripped = text.lstrip()
+    body, parsed_meta = split_frontmatter(text)
+    meta = parsed_meta or {}
 
-    if re.search(r"^#\s+\S", text, flags=re.M):
+    if re.search(r"^#\s+\S", body, flags=re.M):
         errors.append("vault note must not contain an H1 heading")
-    if stripped.startswith("---\n"):
-        errors.append("vault metadata must not be at the top; use bottom YAML only")
 
     heading_positions: list[int] = []
     for heading in REQUIRED_HEADINGS:
-        match = re.search(rf"^## {re.escape(heading)}\s*$", text, flags=re.M)
+        match = re.search(rf"^## {re.escape(heading)}\s*$", body, flags=re.M)
         if not match:
             errors.append(f"missing required heading: ## {heading}")
         else:
@@ -227,26 +212,25 @@ def validate_text(
     if len(heading_positions) == len(REQUIRED_HEADINGS) and heading_positions != sorted(heading_positions):
         errors.append("required dossier headings are out of dependency order")
 
-    meta = _parse_bottom_yaml(text)
     if not meta:
-        errors.append("missing or invalid bottom YAML metadata block")
+        errors.append("missing or invalid native YAML frontmatter")
     else:
         for key in sorted(REQUIRED_METADATA_KEYS - set(meta)):
-            errors.append(f"bottom YAML missing key: {key}")
+            errors.append(f"frontmatter missing key: {key}")
         if meta.get("skill") != "journal-club":
-            errors.append("bottom YAML skill must be journal-club")
+            errors.append("frontmatter skill must be journal-club")
         status = meta.get("source_package_status")
         if status not in {"complete", "incomplete", "preliminary"}:
             errors.append("source_package_status must be complete, incomplete, or preliminary")
         for key in ("article_title", "authors", "journal", "domain", "summary", "generated"):
             if key in meta and not str(meta.get(key) or "").strip():
-                errors.append(f"bottom YAML {key} must not be empty")
+                errors.append(f"frontmatter {key} must not be empty")
         year = str(meta.get("year") or "")
         if year and not re.fullmatch(r"(?:19|20)\d{2}", year):
-            errors.append("bottom YAML year must be a four-digit year")
+            errors.append("frontmatter year must be a four-digit year")
         doi = str(meta.get("doi") or "").strip()
         if doi and not DOI_RE.fullmatch(doi):
-            errors.append("bottom YAML doi is not a valid DOI")
+            errors.append("frontmatter doi is not a valid DOI")
         source_pdf = str(meta.get("source_pdf") or "").strip()
         if status == "complete":
             if not source_pdf:
@@ -256,24 +240,37 @@ def validate_text(
         tags = _metadata_tags(meta)
         for tag in ("skill/journal-club", "type/article"):
             if tag not in tags:
-                errors.append(f"bottom YAML tags missing: {tag}")
+                errors.append(f"frontmatter tags missing: {tag}")
         if check_physical_source:
             physical_error = _physical_source_error(meta, vault_root)
             if physical_error:
                 errors.append(physical_error)
 
-    start = _section_body(text, "Start Here") or ""
+    start = _section_body(body, "Start Here") or ""
     for label in START_LABELS:
         if not _bold_label_present(start, label):
             errors.append(f"Start Here missing label: **{label}:**")
 
-    essentials = _section_body(text, "Essential Concepts for This Paper") or ""
+    foundation = _section_body(body, "Clinical Foundation") or ""
+    for subsection in ("Rapid Orientation", "Resident Deep Model"):
+        if not re.search(rf"^### {re.escape(subsection)}\s*$", foundation, flags=re.M):
+            errors.append(f"Clinical Foundation missing: ### {subsection}")
+
+    essentials = _section_body(body, "Essential Concepts for This Paper") or ""
     technical_count = len(re.findall(r"\*\*Technical concept:\*\*", essentials, flags=re.I))
     plain_count = len(re.findall(r"\*\*Plain-language meaning:\*\*", essentials, flags=re.I))
     matters_count = len(re.findall(r"\*\*Why it matters here:\*\*", essentials, flags=re.I))
     teaching_triplets = min(technical_count, plain_count, matters_count)
-    if teaching_triplets < 2:
-        errors.append("Essential Concepts must include at least 2 complete technical translation triplets")
+    if len({technical_count, plain_count, matters_count}) != 1:
+        errors.append("Essential Concepts contains an incomplete technical translation triplet")
+    if teaching_triplets == 0 and not re.search(
+        r"no\s+(?:paper-specific\s+)?technical\s+(?:concept|translation)",
+        essentials,
+        flags=re.I,
+    ):
+        errors.append(
+            "Essential Concepts must contain complete translation triplets or explicitly state that none are needed"
+        )
 
     results = _section_body(text, "Results That Matter") or ""
     header_line = next((line for line in results.splitlines() if line.strip().startswith("|")), "")
@@ -282,9 +279,16 @@ def validate_text(
         if column not in normalized_header:
             errors.append(f"Results That Matter table missing column: {column}")
 
+    result_rows = _markdown_data_rows(results)
+    if not result_rows:
+        errors.append("Results That Matter must include at least one data row")
+    for row_number, row in enumerate(result_rows, start=1):
+        if not ARTICLE_LOCATOR_RE.search(row):
+            errors.append(
+                f"Results That Matter row {row_number} lacks an article source locator"
+            )
+
     article_locators = len(ARTICLE_LOCATOR_RE.findall(text))
-    if meta.get("source_package_status") == "complete" and article_locators < 3:
-        errors.append("complete dossiers require at least 3 article source locators")
 
     interpretation = _section_body(text, "Interpretation") or ""
     for label in INTERPRETATION_LABELS:
@@ -297,13 +301,18 @@ def validate_text(
         len(re.findall(rf"\*\*{re.escape(label)}:\*\*", limitations, flags=re.I))
         for label in LIMITATION_LABELS
     ) if limitations else 0
-    if limitation_subsections < 2 or complete_limitation_sets < 2:
-        errors.append("Limitations That Actually Matter must include at least 2 consequence-framed limitations")
+    if limitation_subsections == 0:
+        errors.append("Limitations That Actually Matter must name an interpretation-changing limitation")
+    elif complete_limitation_sets != limitation_subsections:
+        errors.append("every named limitation must include the complete consequence frame")
 
     context = _section_body(text, "Historical and Current Context") or ""
     for subsection in ("At Publication", "Current Context"):
         if not re.search(rf"^### {re.escape(subsection)}\s*$", context, flags=re.M):
             errors.append(f"Historical and Current Context missing: ### {subsection}")
+    for synthesis_lead in ("Before this paper", "This paper added or contested", "Today"):
+        if not re.search(rf"(?:^|\n)\s*{re.escape(synthesis_lead)}\b", context, flags=re.I):
+            errors.append(f"Historical and Current Context missing synthesis: {synthesis_lead}...")
 
     presentation = _section_body(text, "Presentation Core") or ""
     for label in PRESENTATION_LABELS:
@@ -312,13 +321,13 @@ def validate_text(
 
     faculty = _section_body(text, "Faculty Defense") or ""
     faculty_questions = len(QUESTION_RE.findall(faculty))
-    if faculty_questions < 4:
-        errors.append("Faculty Defense must include at least 4 article-specific questions")
+    if faculty_questions == 0:
+        errors.append("Faculty Defense must include article-specific questions")
 
     objectives = _section_body(text, "Mastery Objectives") or ""
     mastery_objectives = len(re.findall(r"^\s*[-*]\s+\S", objectives, flags=re.M))
-    if mastery_objectives < 5:
-        errors.append("Mastery Objectives must include at least 5 testable objectives")
+    if mastery_objectives == 0:
+        errors.append("Mastery Objectives must include testable objectives")
 
     source_trace = _section_body(text, "Source Trace") or ""
     if not _bold_label_present(source_trace, "Source-Package Limitations"):
@@ -411,7 +420,7 @@ def install_draft(
     safe_title = _safe_title(title)
     target = _target_path(vault_root, safe_title)
     source_target = _source_target(vault_root, safe_title)
-    meta = _parse_bottom_yaml(draft.read_text(encoding="utf-8"))
+    meta = parse_frontmatter(draft.read_text(encoding="utf-8"))
     expected_source_rel = str(source_target.relative_to(vault_root))
 
     if target.exists() and not overwrite:
@@ -420,7 +429,7 @@ def install_draft(
 
     if source_pdf is not None and str(meta.get("source_pdf") or "") != expected_source_rel:
         source_result.errors.append(
-            f"bottom YAML source_pdf must equal {expected_source_rel} when installing a PDF"
+            f"frontmatter source_pdf must equal {expected_source_rel} when installing a PDF"
         )
         return source_result
 

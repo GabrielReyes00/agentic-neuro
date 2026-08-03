@@ -1,0 +1,219 @@
+[
+  {
+    "id": "hunt_hess_named",
+    "kind": "named",
+    "query": "Hunt and Hess scale grades",
+    "entity_terms": ["hunt and hess", "hunt & hess"],
+    "anchor_groups": [
+      ["asymptomatic", "minimal headache"],
+      ["drowsiness", "confusion"],
+      ["stupor"],
+      ["deep coma", "moribund"]
+    ],
+    "expectation": "A compact passage should state all five clinical grades without drifting into general SAH management."
+  },
+  {
+    "id": "modified_fisher_named",
+    "kind": "named",
+    "query": "modified Fisher scale for subarachnoid hemorrhage",
+    "entity_terms": ["modified fisher"],
+    "anchor_groups": [
+      ["thin", "minimal"],
+      ["thick"],
+      ["intraventricular hemorrhage", "ivh"],
+      ["grade 4", "4,"]
+    ],
+    "expectation": "The passage should distinguish cisternal clot burden and the presence or absence of IVH across grades."
+  },
+  {
+    "id": "spetzler_martin_named",
+    "kind": "named",
+    "query": "Spetzler-Martin AVM grading scale",
+    "entity_terms": ["spetzler-martin", "spetzler martin"],
+    "anchor_groups": [
+      ["size"],
+      ["eloquent", "eloquence"],
+      ["deep venous", "venous drainage"],
+      ["grade v", "grade 5", "5 points"]
+    ],
+    "expectation": "The passage should recover the three variables and their point-to-grade interpretation."
+  },
+  {
+    "id": "sins_named",
+    "kind": "named",
+    "query": "Spinal Instability Neoplastic Score components and interpretation",
+    "entity_terms": ["spinal instability neoplastic score", "sins"],
+    "anchor_groups": [
+      ["location", "junctional"],
+      ["mechanical pain", "pain"],
+      ["lytic", "bone lesion"],
+      ["alignment"],
+      ["collapse", "vertebral body"],
+      ["posterior", "posterolateral"],
+      ["18", "unstable"]
+    ],
+    "expectation": "The passage should enumerate all six SINS domains and the stable/potentially unstable/unstable interpretation."
+  },
+  {
+    "id": "simpson_named",
+    "kind": "named",
+    "query": "Simpson meningioma resection grading",
+    "entity_terms": ["simpson"],
+    "anchor_groups": [
+      ["dural attachment"],
+      ["abnormal bone"],
+      ["subtotal"],
+      ["simple decompression", "biopsy"],
+      ["grade 5", "grade v"]
+    ],
+    "expectation": "The passage should distinguish the five resection grades by residual tumor, dural attachment, and involved bone."
+  },
+  {
+    "id": "knosp_named",
+    "kind": "named",
+    "query": "Knosp cavernous sinus invasion grades",
+    "entity_terms": ["knosp"],
+    "anchor_groups": [
+      ["cavernous sinus"],
+      ["carotid", "ica"],
+      ["medial", "intercarotid"],
+      ["lateral"],
+      ["grade 4", "grade iv"]
+    ],
+    "expectation": "The passage should anchor the grades to tumor extension relative to intracavernous carotid reference lines."
+  },
+  {
+    "id": "wfns_named",
+    "kind": "named",
+    "query": "WFNS subarachnoid hemorrhage grading scale",
+    "entity_terms": ["wfns", "world federation of neurological surgeons"],
+    "anchor_groups": [
+      ["glasgow coma", "gcs"],
+      ["motor deficit", "focal deficit"],
+      ["15"],
+      ["3", "6-3"]
+    ],
+    "expectation": "The passage should map GCS and motor deficit to all five WFNS grades."
+  },
+  {
+    "id": "asia_named",
+    "kind": "named",
+    "query": "ASIA Impairment Scale grades A through E",
+    "entity_terms": ["asia impairment scale", "ais"],
+    "anchor_groups": [
+      ["complete"],
+      ["sensory incomplete"],
+      ["motor incomplete"],
+      ["normal"],
+      ["sacral", "s4-5"]
+    ],
+    "expectation": "The passage should distinguish complete, sensory-incomplete, motor-incomplete, and normal examinations."
+  },
+  {
+    "id": "avm_paraphrase",
+    "kind": "paraphrase",
+    "query": "How do size, eloquent location, and deep venous drainage combine to estimate AVM operative risk?",
+    "entity_terms": ["spetzler-martin", "spetzler martin"],
+    "anchor_groups": [
+      ["size"],
+      ["eloquent", "eloquence"],
+      ["deep venous", "venous drainage"],
+      ["spetzler-martin", "spetzler martin"]
+    ],
+    "expectation": "A paraphrase without the formal name should identify Spetzler-Martin and recover all three variables."
+  },
+  {
+    "id": "sins_paraphrase",
+    "kind": "paraphrase",
+    "query": "Which score uses location, mechanical pain, bone lesion, alignment, collapse, and posterior elements to judge metastatic spine stability?",
+    "entity_terms": ["spinal instability neoplastic score", "sins"],
+    "anchor_groups": [
+      ["location", "junctional"],
+      ["mechanical pain", "pain"],
+      ["lytic", "bone lesion"],
+      ["alignment"],
+      ["collapse", "vertebral body"],
+      ["posterior", "posterolateral"]
+    ],
+    "expectation": "The top passage should identify SINS and preferably contain the actual scoring table rather than a broader NOMS discussion."
+  },
+  {
+    "id": "modified_fisher_paraphrase",
+    "kind": "paraphrase",
+    "query": "In aneurysmal SAH, which CT blood burden system incorporates IVH and thick cisternal clot?",
+    "entity_terms": ["modified fisher"],
+    "anchor_groups": [
+      ["intraventricular hemorrhage", "ivh"],
+      ["thick"],
+      ["cistern", "subarachnoid"],
+      ["modified fisher"]
+    ],
+    "expectation": "The passage should identify modified Fisher and explain the two blood-burden axes."
+  },
+  {
+    "id": "simpson_paraphrase",
+    "kind": "paraphrase",
+    "query": "What meningioma resection system distinguishes removal of dural attachment and abnormal bone from subtotal resection?",
+    "entity_terms": ["simpson"],
+    "anchor_groups": [
+      ["dural attachment"],
+      ["abnormal bone"],
+      ["subtotal"],
+      ["simpson"]
+    ],
+    "expectation": "The passage should identify Simpson grading and directly support the distinctions in the question."
+  },
+  {
+    "id": "knosp_paraphrase",
+    "kind": "paraphrase",
+    "query": "Pituitary tumor lateral extension relative to intracavernous carotid lines: what grading system is used?",
+    "entity_terms": ["knosp"],
+    "anchor_groups": [
+      ["intracavernous", "carotid"],
+      ["medial", "intercarotid"],
+      ["lateral"],
+      ["knosp"]
+    ],
+    "expectation": "The passage should identify Knosp and state how carotid reference lines define lateral extension."
+  },
+  {
+    "id": "wfns_paraphrase",
+    "kind": "paraphrase",
+    "query": "Which poor-grade SAH clinical scale is based on GCS and the presence of a focal motor deficit?",
+    "entity_terms": ["wfns", "world federation of neurological surgeons"],
+    "anchor_groups": [
+      ["glasgow coma", "gcs"],
+      ["motor deficit", "focal deficit"],
+      ["wfns", "world federation"],
+      ["grade 5", "6-3"]
+    ],
+    "expectation": "The passage should identify WFNS and give enough of the GCS/motor-deficit mapping to answer accurately."
+  },
+  {
+    "id": "koos_paraphrase",
+    "kind": "paraphrase",
+    "query": "How are vestibular schwannomas staged from an intracanalicular tumor through brainstem compression?",
+    "entity_terms": ["koos"],
+    "anchor_groups": [
+      ["intracanalicular"],
+      ["cistern", "cerebellopontine"],
+      ["brainstem"],
+      ["koos"]
+    ],
+    "expectation": "An unnamed staging description should recover the Koos system and the anatomic progression of its grades."
+  },
+  {
+    "id": "house_brackmann_paraphrase",
+    "kind": "paraphrase",
+    "query": "How is facial nerve function described from normal movement through total paralysis after vestibular schwannoma surgery?",
+    "entity_terms": ["house-brackmann", "house brackmann", "house and brackmann"],
+    "anchor_groups": [
+      ["normal"],
+      ["moderate", "moderately"],
+      ["severe", "severely"],
+      ["total paralysis", "complete paralysis"],
+      ["house-brackmann", "house brackmann", "house and brackmann"]
+    ],
+    "expectation": "An unnamed functional description should recover House-Brackmann and distinguish the clinically meaningful endpoints."
+  }
+]

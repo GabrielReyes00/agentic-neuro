@@ -55,7 +55,7 @@ tags: [type/concept, domain/vascular, source/agent]
 """
 
 
-BRAIN_DUMP_NOTE = """## Clinical Focus
+SHIFT_DEBRIEF_NOTE = """## Clinical Focus
 
 - VA spine consult readiness.
 
@@ -76,7 +76,7 @@ Postoperative neck swelling after ACDF requires immediate airway concern and sen
 - External review: [Airway compromise](https://example.com/airway).
 
 ---
-tags: [skill/brain-dump, domain/spine, type/reference, source/user]
+tags: [skill/shift-debrief, domain/spine, type/reference, source/user]
 generated: 2026-06-06
 summary: "Local spine-service teaching about ACDF airway escalation."
 domain: spine
@@ -90,11 +90,11 @@ class VaultIndexTests(unittest.TestCase):
     def _build_vault(self, root: Path) -> Path:
         vault = root / "vault"
         concepts = vault / "Concepts"
-        brain_dumps = vault / "Brain Dumps"
+        shift_debriefs = vault / "Shift Debriefs"
         concepts.mkdir(parents=True)
-        brain_dumps.mkdir(parents=True)
+        shift_debriefs.mkdir(parents=True)
         (concepts / "ENRICH Trial.md").write_text(CONCEPT_NOTE, encoding="utf-8")
-        (brain_dumps / "ACDF Airway Teaching.md").write_text(BRAIN_DUMP_NOTE, encoding="utf-8")
+        (shift_debriefs / "ACDF Airway Teaching.md").write_text(SHIFT_DEBRIEF_NOTE, encoding="utf-8")
         return vault
 
     def test_sync_indexes_field_aware_sections(self) -> None:
@@ -156,8 +156,8 @@ class VaultIndexTests(unittest.TestCase):
                 limit=5,
             )
 
-            self.assertTrue(any(hit["folder"] == "Brain Dumps" for hit in local["hits"]))
-            self.assertFalse(any(hit["folder"] == "Brain Dumps" for hit in formal["hits"]))
+            self.assertTrue(any(hit["folder"] == "Shift Debriefs" for hit in local["hits"]))
+            self.assertFalse(any(hit["folder"] == "Shift Debriefs" for hit in formal["hits"]))
 
     def test_task_plan_names_field_policy(self) -> None:
         plan = vault_index.task_plan("consult")
@@ -200,8 +200,8 @@ class VaultIndexTests(unittest.TestCase):
         vault = root / "vault"
         reports = vault / "Reports"
         concepts = vault / "Concepts"
-        brain_dumps = vault / "Brain Dumps"
-        for d in (reports, concepts, brain_dumps):
+        shift_debriefs = vault / "Shift Debriefs"
+        for d in (reports, concepts, shift_debriefs):
             d.mkdir(parents=True)
         # Anchor report links out to two concepts.
         (reports / "Acute Spinal Cord Injury.md").write_text(
@@ -224,7 +224,7 @@ class VaultIndexTests(unittest.TestCase):
             encoding="utf-8",
         )
         # A brain dump links *into* the anchor (inbound edge).
-        (brain_dumps / "SCI Service Note.md").write_text(
+        (shift_debriefs / "SCI Service Note.md").write_text(
             "## Clinical Focus\n\n- Inbound link test.\n\n"
             "## Related In This Vault\n\n- [[Reports/Acute Spinal Cord Injury|Acute Spinal Cord Injury]]\n\n"
             "---\ndomain: spine\nsummary: \"Service note linking to the anchor.\"\n"
@@ -262,7 +262,7 @@ class VaultIndexTests(unittest.TestCase):
             )
             self.assertTrue(res["ok"], res)
             titles = {n["title"] for n in res["neighbors"]}
-            # Outbound concept links and the inbound brain-dump link are all found.
+            # Outbound concept links and the inbound shift-debrief link are all found.
             self.assertIn("MAP Augmentation", titles)
             self.assertIn("Steroid Decision", titles)
             self.assertIn("SCI Service Note", titles)

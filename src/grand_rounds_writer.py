@@ -3,7 +3,7 @@
 
 Responsibilities:
   - Write Presentations/Cases/<Title>.md or Presentations/Articles/<Title>.md.
-  - Keep metadata YAML at the bottom of the file, never at the top.
+  - Keep metadata in native Obsidian frontmatter.
   - Reject H1 headings because the filename is the Obsidian title.
   - Upsert Presentations/INDEX.md with one row per presentation.
   - Append rehearsal notes after optional post-creation practice.
@@ -22,21 +22,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import yaml
+try:
+    from vault_schema import compose_note, split_frontmatter
+except ModuleNotFoundError:  # imported as part of the `src` package
+    from .vault_schema import compose_note, split_frontmatter
 
 
 DEFAULT_VAULT_ROOT = Path("/Users/gabrielreyes/Documents/Obsidian/agentic-neuro")
-DEFAULT_DESKTOP = Path("/Users/gabrielreyes/Desktop")
 DEFAULT_SESSIONS_DIR = Path(__file__).resolve().parent.parent / "data" / "Sessions"
 PRESENTATIONS_DIRNAME = "Presentations"
 CASES_DIRNAME = "Cases"
 ARTICLES_DIRNAME = "Articles"
 INDEX_FILENAME = "INDEX.md"
 
-_BOTTOM_YAML_RE = re.compile(
-    r"(?P<body>.*?)(?P<yaml>^---\s*$\n.*?^---\s*$\n?)\Z",
-    re.MULTILINE | re.DOTALL,
-)
 _TOP_H1_RE = re.compile(r"^\s*#\s+\S", re.MULTILINE)
 _FORBIDDEN_FILENAME_CHARS_RE = re.compile(r"[^A-Za-z0-9 \-:']")
 _ROMAN_NUMERAL_RE = re.compile(r"^(?=[IVXLCDM]+$)[IVXLCDM]+$", re.IGNORECASE)
@@ -109,8 +107,19 @@ def _subdir_for_mode(mode: str) -> str:
     raise ValueError("mode must be 'case' or 'article'")
 
 
-def _deck_path_for_title(title: str, desktop: Path = DEFAULT_DESKTOP) -> Path:
-    return desktop / f"{_title_case_slug(title)}.pptx"
+def _deck_path_for_title(
+    title: str,
+    vault_root: Path = DEFAULT_VAULT_ROOT,
+    mode: str = "article",
+) -> Path:
+    deck_kind = "Cases" if mode.strip().lower() == "case" else "Articles"
+    return (
+        vault_root
+        / PRESENTATIONS_DIRNAME
+        / "Decks"
+        / deck_kind
+        / f"{_title_case_slug(title)}.pptx"
+    )
 
 
 def _refresh_vault_intelligence(vault_root: Path) -> None:
@@ -119,6 +128,15 @@ def _refresh_vault_intelligence(vault_root: Path) -> None:
     except ModuleNotFoundError:  # imported as part of the `src` package
         from . import vault_index
     vault_index.refresh_default_index_after_vault_write(vault_root=vault_root)
+
+
+def _durable_deck_metadata(deck_path: Path, vault_root: Path) -> tuple[str, str]:
+    """Return the durable path value and optional Obsidian attachment link."""
+    try:
+        relative = deck_path.resolve().relative_to(vault_root.resolve()).as_posix()
+    except ValueError:
+        return str(deck_path), ""
+    return relative, f"[[{relative}]]"
 
 
 def _reject_h1(body: str) -> None:
@@ -204,25 +222,6 @@ def _validate_quality_gate(
     return failures
 
 
-def _render_bottom_yaml(meta: dict[str, Any]) -> str:
-    return "---\n" + yaml.safe_dump(meta, sort_keys=False).strip() + "\n---\n"
-
-
-def _split_bottom_yaml(text: str) -> tuple[str, dict[str, Any] | None]:
-    match = _BOTTOM_YAML_RE.match(text)
-    if not match:
-        return text, None
-    body = match.group("body")
-    yaml_block = match.group("yaml")
-    inner = re.sub(r"^---\s*$\n", "", yaml_block, count=1, flags=re.MULTILINE)
-    inner = re.sub(r"\n?---\s*$\n?", "", inner, count=1, flags=re.MULTILINE)
-    try:
-        parsed = yaml.safe_load(inner) or {}
-    except yaml.YAMLError:
-        parsed = None
-    return body.rstrip() + "\n", parsed if isinstance(parsed, dict) else None
-
-
 def _atomic_write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
@@ -234,6 +233,8 @@ def _ensure_dirs(vault_root: Path) -> None:
     root = vault_root / PRESENTATIONS_DIRNAME
     (root / CASES_DIRNAME).mkdir(parents=True, exist_ok=True)
     (root / ARTICLES_DIRNAME).mkdir(parents=True, exist_ok=True)
+    (root / "Decks" / CASES_DIRNAME).mkdir(parents=True, exist_ok=True)
+    (root / "Decks" / ARTICLES_DIRNAME).mkdir(parents=True, exist_ok=True)
 
 
 def _manifest_path(title: str, sessions_dir: Path = DEFAULT_SESSIONS_DIR) -> Path:
@@ -311,6 +312,8 @@ def _default_metadata(
     normalized_mode = "article" if mode_lower in {"journal", "journal-club"} else mode_lower
     return {
         "aliases": [],
+        "artifact_type": "presentation",
+        "status": "current",
         "mode": normalized_mode,
         "topic": topic,
         "domain": domain or "general",
@@ -376,7 +379,9 @@ def create_presentation(
 
     subdir = _subdir_for_mode(mode)
     clean_title = _title_case_slug(title)
-    final_deck_path = deck_path or _deck_path_for_title(clean_title)
+    final_deck_path = deck_path or _deck_path_for_title(
+        clean_title, vault_root=vault_root, mode=mode
+    )
     out_path = vault_root / PRESENTATIONS_DIRNAME / subdir / f"{clean_title}.md"
     if out_path.exists() and not overwrite:
         raise FileExistsError(f"{out_path} already exists; pass --overwrite to replace")
@@ -448,8 +453,12 @@ def create_presentation(
     )
     if summary:
         meta["summary"] = summary
+    durable_deck_path, deck_file = _durable_deck_metadata(final_deck_path, vault_root)
+    meta["deck_path"] = durable_deck_path
+    if deck_file:
+        meta["deck_file"] = deck_file
 
-    content = body.rstrip() + "\n\n" + _render_bottom_yaml(meta)
+    content = compose_note(body, meta)
     _atomic_write(out_path, content)
     upsert_index(
         vault_root=vault_root,
@@ -477,9 +486,9 @@ def append_rehearsal_notes(
         raise FileNotFoundError(f"presentation note not found: {abs_path}")
 
     original = abs_path.read_text(encoding="utf-8")
-    body, meta = _split_bottom_yaml(original)
-    if meta is None:
-        raise ValueError("presentation note is missing bottom YAML metadata")
+    body, meta = split_frontmatter(original)
+    if not meta:
+        raise ValueError("presentation note is missing native frontmatter metadata")
 
     date = _utc_today()
     section_lines = [f"## Rehearsal Notes - {date}", "", notes.strip()]
@@ -490,8 +499,10 @@ def append_rehearsal_notes(
     meta["updated"] = _utc_iso()
     meta["last_rehearsal"] = date
 
-    content = body.rstrip() + "\n\n" + "\n".join(section_lines).rstrip()
-    content += "\n\n" + _render_bottom_yaml(meta)
+    content = compose_note(
+        body.rstrip() + "\n\n" + "\n".join(section_lines).rstrip(),
+        meta,
+    )
     _atomic_write(abs_path, content)
     return abs_path
 
@@ -509,7 +520,7 @@ def upsert_index(
 ) -> Path:
     """Regenerate Presentations/INDEX.md from note frontmatter.
 
-    The presentation note's bottom YAML is the source of truth for the
+    The presentation note's native frontmatter is the source of truth for the
     domain-grouped index, so this first syncs the passed mode/topic/deck/summary
     into that note, then rebuilds the whole index via the shared index_builder.
     """
@@ -523,16 +534,20 @@ def upsert_index(
     )
     note_path = vault_root / rel
     if note_path.exists():
-        body, meta = _split_bottom_yaml(note_path.read_text(encoding="utf-8"))
-        meta = meta or {}
+        body, meta = split_frontmatter(note_path.read_text(encoding="utf-8"))
         meta["mode"] = normalized_mode
         meta["topic"] = topic
-        meta["deck_path"] = str(deck_path)
+        durable_deck_path, deck_file = _durable_deck_metadata(deck_path, vault_root)
+        meta["deck_path"] = durable_deck_path
+        if deck_file:
+            meta["deck_file"] = deck_file
+        else:
+            meta.pop("deck_file", None)
         if summary:
             meta["summary"] = summary
         if date:
             meta["presentation_date"] = date
-        _atomic_write(note_path, body.rstrip() + "\n\n" + _render_bottom_yaml(meta))
+        _atomic_write(note_path, compose_note(body, meta))
 
     try:
         import index_builder

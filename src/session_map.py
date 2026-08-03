@@ -85,6 +85,8 @@ def create_from_projection(
     learner_topics: list[str] | None = None,
 ) -> dict[str, Any]:
     """Build a session map document from a map-learner projection."""
+    from cognitive_ops import mastery_depth_from_evidence, mastery_depth_from_operations  # noqa: PLC0415
+
     knowledge_map = list(projection.get("knowledge_map") or [])
     for entry in knowledge_map:
         entry.setdefault("binding_source", "startup_projection")
@@ -92,6 +94,19 @@ def create_from_projection(
         entry.setdefault("artifact_native", False)
         entry.setdefault("stuck_probe_count", 0)
         entry.setdefault("last_miss_cognitive_op", "")
+        entry.setdefault("successful_operations", [])
+        entry.setdefault("successful_operation_evidence", {})
+        entry.setdefault(
+            "mastery_depth",
+            (
+                mastery_depth_from_evidence(
+                    entry.get("successful_operation_evidence"),
+                    active_gap=str(entry.get("knowledge_state") or "") in OPEN_GAP_STATES,
+                )
+                if entry.get("successful_operation_evidence")
+                else mastery_depth_from_operations(entry.get("successful_operations"))
+            ),
+        )
     return {
         "version": 1,
         "session_id": session_id,
@@ -281,6 +296,8 @@ def patch_after_log(
     gap_type: str = "",
 ) -> tuple[dict[str, Any], str]:
     """Incrementally update one knowledge-map node after an assessed exchange."""
+    from cognitive_ops import VALID_COGNITIVE_OPS, mastery_depth_from_evidence  # noqa: PLC0415
+
     inv_id, binding_tier, match_score = resolve_inventory_id(
         inventory_concept_id=inventory_concept_id,
         concept_text=concept_text,
@@ -354,6 +371,51 @@ def patch_after_log(
     else:
         active_misconception = bool(entry.get("active_misconception"))
 
+    successful_operations = {
+        str(operation)
+        for operation in (entry.get("successful_operations") or [])
+        if str(operation) in VALID_COGNITIVE_OPS
+    }
+    normalized_operation = str(cognitive_op or "").strip().lower().replace("-", "_").replace(" ", "_")
+    operation_evidence: dict[str, dict[str, Any]] = {}
+    stored_evidence = entry.get("successful_operation_evidence") or {}
+    if isinstance(stored_evidence, dict):
+        for operation, values in stored_evidence.items():
+            if str(operation) not in VALID_COGNITIVE_OPS or not isinstance(values, dict):
+                continue
+            operation_evidence[str(operation)] = {
+                "count": int(values.get("count", 0) or 0),
+                "session_ids": sorted({
+                    str(item) for item in values.get("session_ids", []) if str(item)
+                }),
+                "session_count": int(values.get("session_count", 0) or 0),
+            }
+    # Legacy session maps carried operation names but no counted evidence. Keep
+    # their lower-level signal without inventing cross-session transfer mastery.
+    for operation in successful_operations:
+        operation_evidence.setdefault(
+            operation,
+            {"count": 1, "session_ids": [], "session_count": 0},
+        )
+    if correct >= 2 and normalized_operation in VALID_COGNITIVE_OPS:
+        successful_operations.add(normalized_operation)
+        bucket = operation_evidence.setdefault(
+            normalized_operation,
+            {"count": 0, "session_ids": [], "session_count": 0},
+        )
+        bucket["count"] = int(bucket.get("count", 0) or 0) + 1
+        session_ids = {
+            str(item) for item in bucket.get("session_ids", []) if str(item)
+        }
+        current_session = str(data.get("session_id") or "")
+        if current_session:
+            session_ids.add(current_session)
+        bucket["session_ids"] = sorted(session_ids)
+        bucket["session_count"] = max(
+            int(bucket.get("session_count", 0) or 0),
+            len(session_ids),
+        )
+
     entry.update({
         "exposure_status": new_exposure,
         "knowledge_state": new_state,
@@ -370,6 +432,12 @@ def patch_after_log(
         "active_misconception": active_misconception,
         "stuck_probe_count": stuck_probe_count,
         "last_cognitive_op": cognitive_op or entry.get("last_cognitive_op", ""),
+        "successful_operations": sorted(successful_operations),
+        "successful_operation_evidence": operation_evidence,
+        "mastery_depth": mastery_depth_from_evidence(
+            operation_evidence,
+            active_gap=is_gap,
+        ),
     })
     if correct < 2 and cognitive_op:
         entry["last_miss_cognitive_op"] = cognitive_op

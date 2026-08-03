@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+import re
+import json
 import unittest
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _normalized(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip()
 
 
 class JournalClubContractTests(unittest.TestCase):
@@ -28,7 +34,7 @@ class JournalClubContractTests(unittest.TestCase):
             "journal-club-artifact.md",
             "journal_club_guard.py",
             "Journal Club/Sources/<Short Article Title>.pdf",
-            "Artifact is not mastery",
+            "Artifact generation is not mastery",
             "Combined Preparation",
         ):
             with self.subTest(fragment=fragment):
@@ -59,10 +65,16 @@ class JournalClubContractTests(unittest.TestCase):
                 self.assertIn(fragment, artifact)
 
     def test_root_router_distinguishes_analysis_from_deck_creation(self) -> None:
-        root = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
-        self.assertIn("assigned article PDF without a slide request -> `journal-club`", root)
-        self.assertIn("journal club deck -> `grand-rounds`", root)
-        self.assertIn("Journal Club/", root)
+        root = _normalized((ROOT / "AGENTS.md").read_text(encoding="utf-8"))
+        self.assertIn("assigned article PDF without a slide request → `journal-club`", root)
+        self.assertIn("journal club deck → `grand-rounds`", root)
+        registry = json.loads(
+            (ROOT / ".agents/shared/workflow-registry.json").read_text()
+        )
+        self.assertEqual(
+            registry["workflows"]["journal-club"]["vault_destination"],
+            "Journal Club/<Short Article Title>.md",
+        )
 
 
 if __name__ == "__main__":

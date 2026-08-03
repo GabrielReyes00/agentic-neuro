@@ -1,159 +1,104 @@
-# Intraoperative Guide Synthesis Module
+# Intraoperative Guide Synthesis
 
-Use this module when the main `/intraoperative-guide` workflow has structured source cards, a coverage ledger, and an approved operative knowledge map (`MAP_APPROVED` verdict) and must draft or revise the operative guide.
+Draft the guide only after `knowledge_map.json` has `MAP_APPROVED`. Use the map,
+coverage ledger, referenced source cards, and repair notes. The draft is not final
+until independent expert review and deterministic validation pass.
 
-## Purpose
+## Readiness Standard
 
-Transform the approved operative knowledge map, coverage ledger, compact source cards, expert knowledge, and gap-repair notes into a coherent standalone operative reference. This module writes the guide draft, but the draft is not final until it passes the expert completeness review (separate subagent) and deterministic validation.
+Write a standalone reference that lets a resident plan, mentally execute,
+recognize danger, recover, and defend the procedure while naming what still
+requires supervised OR, cadaver, atlas, or point-of-care confirmation. Never use
+a numerical mastery estimate.
 
-## Depth Target: 85% Resident Mastery
+Every applicable Coverage Matrix block must be findable in the draft, but section
+headings are procedure-specific and adjacent blocks may be combined. Compact
+treatment is acceptable for a genuinely simple block; silent omission is not.
 
-The guide must contain enough material that a neurosurgery resident studying *only* this document achieves roughly **85% of the deep understanding** needed to perform and defend this procedure. The remaining 15% comes from hands-on cadaver/OR exposure and procedure-specific atlas figures.
+## Draft From Relationships
 
-This target is operationalized by the Coverage Matrix from decomposition. Every Coverage Matrix block must be addressable in the final draft. Sections may be compact when a block is genuinely simple for this procedure (e.g., neuromonitoring for an EVD), but no block may be silently dropped — compact treatment is fine, omission is not.
-
-## Role
-
-You are a senior neurosurgical fellow writing for a resident preparing to perform and defend the operation. Write with operative consequence, not encyclopedic trivia. The resident should be able to mentally rehearse the case, answer attending questions, recognize danger, and execute bail-outs.
-
-Do not draft directly from raw RAG. Draft from `knowledge_map.json`, `coverage_ledger.json`, and the source-card rows referenced by those map blocks so the final guide reflects a complete procedure model rather than a stitched source summary.
-
-## Structured Handoff Discipline
-
-Use the structured artifacts as pointers:
-
-- Expand `knowledge_map.json` block-by-block into readable prose.
-- Use `coverage_ledger.json` as the checklist that every Coverage Matrix block appears in the draft.
-- Pull source-card details only where a section needs numbers, controversy, anatomy-risk specificity, or citation support.
-- Do not restate source-card takeaways mechanically. The guide is the synthesis layer, not a card dump.
-
-## Drafting Standard
-
-For every operative phase (pre-OR, intra-OR, and post-OR), include:
-
-- Purpose of the phase.
-- Landmarks that prove correct location or trajectory (intra-OR) or correct decision (pre-/post-OR).
-- Structures at risk and why they are vulnerable.
-- Technical decision points.
-- Novice errors.
-- Expert behavior.
-- Recovery move if the step goes wrong.
-- **Step rationale chain**: mechanical or anatomic goal → why this technique vs alternatives → consequence if skipped → downstream step it enables. This is the *WHY* layer and must be explicit, not implied.
-
-For anatomy, expand only when it changes operative conduct. Anatomy expansion should connect location, blood supply or function, plane/corridor relationship, neurophysiologic role (what is lost if injured), injury syndrome, and avoidance or rescue.
-
-For equipment, name items when the name changes what the resident asks for, prepares, recognizes, or uses. Do not pad with generic instrument lists.
-
-For pitfalls and complications, use mechanism chains:
+Expand `knowledge_map.json` rather than copying source cards. For each important
+operative phase, preserve:
 
 ```text
-operative step -> failure mechanism -> early recognition -> immediate action -> postoperative signature
+objective → landmark → action → rationale/alternative → danger → recognition →
+avoidance or rescue → endpoint → downstream step or postoperative signature
 ```
 
-## Required Guide Domains (Coverage Matrix mapping)
+Anatomy belongs when it changes conduct: where encountered, functional or
+vascular role, why vulnerable, injury syndrome, and avoidance/rescue. Equipment
+belongs when its identity changes what the resident must request, prepare, or do.
+Pitfalls use the causal chain:
 
-The final guide may use procedure-specific section headings, but every Coverage Matrix block from decomposition must be addressable in the draft. The reviewer will check coverage independent of heading text.
+```text
+operative step → failure mechanism → early recognition → immediate action →
+escalation/abort → postoperative signature
+```
 
-First-principle knowledge blocks shared across all neurosurgical procedures:
+## Content Families
 
-1. **Operative Mental Model** — short framing for intermediate/complex procedures; a `> [!tip] Operative Mental Model` callout is welcome.
-2. **Pathology and Natural History** — disease mechanism, biomechanics or pathophysiology, untreated trajectory, when natural history forces surgery.
-3. **Workup and Surgical Decision-Making** — imaging sequences/planes/findings with decision thresholds, adjunct studies (EMG/NCV, CTA/DSA, CT myelogram, dynamic films, perfusion, fMRI/DTI, neuropsych), timing logic.
-4. **Indications, Contraindications, and Approach Selection** — alternative procedures compared with outcomes when relevant.
-5. **Preoperative Planning** — implant/graft/side selection, image checklist, team and ancillary readiness, consent specifics.
-6. **Room, Positioning, and Equipment Setup**.
-7. **Anesthetic and Physiologic Plan** — MAP/CPP, ventilation, paralytic posture (monitoring compatibility), brain relaxation, cuff pressure, vasoactive readiness, surgeon-anesthesia communication points.
-8. **Neuromonitoring Strategy** — modalities, signal-change thresholds, surgical response algorithms; or explicit justification when omitted.
-9. **Step-by-Step Operative Walkthrough with Step Rationale** — every phase carries its rationale chain.
-10. **Hemostasis Strategy** — phase-by-phase bleeding sources, control points, hemostatic tools, transfusion thresholds.
-11. **Critical Moments**.
-12. **Surgical Anatomy with Neurophysiologic Consequence**.
-13. **Pitfalls and Fail-Safe Plans** — mechanism-linked, executable bail-outs.
-14. **Endpoint / Completion Criteria** — what must be true before closure; intraoperative confirmation tools (ICG, doppler, intraop angio, intraop MRI/CT, monitoring stability, fluoroscopy).
-15. **Variants and Intraoperative Decision Branches** — including conversion, staging, and abort criteria.
-16. **Closure and Immediate Postoperative Management** — op-note essentials specific to this procedure.
-17. **Complications and Signatures** — postop imaging interpretation (expected vs alarm), causal chain back to operative step.
-18. **Outcomes and Evidence** — modern outcomes, comparative effectiveness, effect sizes, practice-changing trials/guidelines.
-19. **Patient-Specific Modifiers** — host factors, anatomic variants, prior-surgery, pediatric/elderly/pregnancy.
-20. **OR Team Choreography** — closed-loop communication points (compact when not conduct-critical).
-21. **Pre-Scrub Mental Rehearsal** — consolidated 8–12 highest-yield mistakes with verbal cue and immediate avoidance/recovery, placed near the end of the guide.
-22. **Mastery Objectives** — 5–10 testable, action-verb objectives.
-23. **Related in This Vault** — only verified wikilinks.
+Use the Coverage Matrix to shape the guide. Applicable content ordinarily falls
+into these families, which may be combined or renamed:
 
-Section organization may collapse adjacent blocks under one heading where readability benefits (e.g., "Workup and Approach Selection" combining 3 + 4), but the underlying knowledge must be present and the reviewer will check it block by block.
+- disease mechanism, natural history, workup, imaging, indications,
+  contraindications, timing, alternatives, and approach selection;
+- patient-specific planning, consent, positioning, room/equipment, anesthesia,
+  physiology, monitoring, hemostasis, and team choreography;
+- phase-by-phase operative walkthrough with landmarks, step rationale, critical
+  moments, variants, and conversion/abort decisions;
+- anatomy-risk and neurophysiologic consequences;
+- pitfalls, bail-outs, completion criteria, confirmation tools, closure, and
+  procedure-specific op-note essentials;
+- immediate postoperative management, expected-versus-alarm findings,
+  complications, surveillance, outcomes, and evidence limits.
 
-## Visual Reasoning (encouraged where it deepens rehearsal)
+Intermediate and complex guides should open with a compact `## Operative Mental
+Model` and include `## Pre-Scrub Mental Rehearsal` near the end: only the
+highest-value errors, each with a recognition or verbal cue and immediate
+avoidance/recovery. Every guide ends with testable `## Mastery Objectives` and
+`## Related in This Vault`; neither section has a numerical quota.
 
-Mermaid diagrams are encouraged for material that is spatially or causally hard to convey in prose:
+## Visual And Obsidian Use
 
-- Approach-selection decision trees.
-- Failure-mode causality flows.
-- Anatomic corridor schematics (compact).
-- Hemostasis crisis algorithms.
+Use Mermaid only when a decision tree, spatial corridor, or failure pathway is
+clearer than prose. Point to specific atlas/textbook figures when external visual
+study is necessary. Use warning/danger callouts sparingly for true safety points
+and executable bail-outs; avoid decorative dividers, card grids, emoji, or table
+overuse.
 
-Do not force a diagram when prose is clearer. If figures from a textbook would help mental rehearsal, include a short `## Reference Figures` subsection pointing to specific atlas/textbook figure numbers and pages so the resident knows what visuals to study alongside the guide. Visual reasoning is welcomed but not yet mandated — text completeness remains the priority until the workflow is fully calibrated.
+No H1. Begin with native frontmatter carrying canonical domain, summary,
+provenance, complexity, `internal_knowledge_used`, and current/incomplete status. Keep
+workflow scaffolding and Anki routing out of the note. Use verified wikilinks
+only, following `intraoperative-guide-crosslinks.md`.
 
-## Readability and Obsidian Formatting
+## Provenance
 
-These guides are long. Make them inviting to read without making them decorative. Use Obsidian-native structure to help rehearsal:
-
-- Start with the sanctioned RAG callout if RAG was used.
-- For intermediate or complex procedures, include an early `## Operative Mental Model` section. A `> [!tip] Operative Mental Model` callout is appropriate when the model compresses into a memorable frame.
-- Use `> [!warning] Critical Safety Point` callouts for wrong-level risk, airway risk, major vascular risk, cranial nerve risk, spinal cord risk, or other points that should interrupt the reader's attention.
-- Use `> [!danger] Bail-Out` callouts for actionable rescue plans. Concise, executable, mechanism-linked.
-- Use compact tables for approach-selection comparisons, complication signatures, or failure-mode causality when a table is clearer than prose.
-- Keep prose as the main medium. Do not over-table, over-callout, add emoji, add ornamental dividers, or use decorative wording.
-- Use short, descriptive subheadings within long sections so the guide can be scanned before an operation.
-
-## Source Use
-
-RAG and literature support should appear where they add specificity: pathology mechanism, workup thresholds, operative sequence, anatomy, approach comparison, complication signatures, technique variants, outcomes, implants, and controversial decisions. Do not cite every sentence.
-
-If RAG was used, include this exact callout immediately above the first H2:
+Draft from source-card pointers and use exact locators where claims need support.
+If RAG was used, place immediately before the first H2:
 
 ```markdown
 > [!info] RAG Supplemented
 > Textbook retrieval was used to ground operative sequence, anatomy, equipment, pitfalls, and bail-outs.
 ```
 
-## Provenance Tiering (reader-facing)
+Apply provenance at the claim:
 
-The reader must be able to tell which claims are grounded in retrieved sources and which are expert synthesis the reader should confirm before trusting operatively. The verdict chain records provenance for audit; this surfaces it inside the guide. Every clinical claim carries one of three provenance tiers:
+- **RAG-grounded:** cite the retrieved source card's exact textbook/page or PMID.
+- **Model knowledge — verified:** cite the confirming source found during repair.
+- **Model knowledge — verify:** label unsourced synthesis and mark conduct-changing
+  doses, physiologic targets, dimensions, hardware specifics, or outcome numbers
+  `⚠ verify`.
 
-- **RAG-grounded** — supported by a retrieved source card. Cite the source inline (textbook chapter/page or PMID) exactly as before.
-- **Model knowledge — verified** — not in the retrieved RAG, but a confirming source was located during gap-fill. Cite that source.
-- **Model knowledge — verify** — not in retrieved RAG and no source located. Label it inline as model knowledge, and flag high-stakes specifics with a `⚠` so the reader verifies before relying on them: drug doses, MAP/CPP/PaCO2 or other physiologic thresholds, resection-extent measurements, hardware sizes, and quantitative outcomes/percentages.
+Never attach a citation to unsupported model content. Provenance labels do not
+excuse thin rationale, rescue, or complication logic. Name attending/site
+variation and preserve the universal principle rather than asserting a local
+preference as standard.
 
-Hard rules:
+## Revision
 
-- **Never attach a textbook or PMID citation to model-knowledge content.** False provenance is a synthesis failure, not a stylistic choice — it makes unverified content indistinguishable from sourced content, which is exactly the trust the reader relies on.
-- Tier per claim, not per section. A paragraph may mix a grounded fact and a labelled model-knowledge specific; use a compact inline tag (e.g., a leading "(model knowledge — verify)" clause or a section-level label when an entire block is model knowledge). Do not bloat the prose to label it.
-- Tiering does **not** reduce depth. Step-rationale chains, mechanism-linked pitfalls, and executable bail-outs remain mandatory; the tier labels the provenance of that same content. Labelling a section "model knowledge — verify" is never an excuse to make it thin.
-- Set `internal_knowledge_used: true|false` in the bottom YAML and include a one-line `provenance:` summary mirroring the coverage ledger.
-
-## Writing Rules
-
-- No H1 title; the filename is the title.
-- No top YAML. YAML metadata belongs at the bottom.
-- Keep workflow status, citation registries, and scaffolding commentary out of the guide body.
-- Use verified wikilinks only.
-- Do not include Anki deck-routing metadata in the guide body.
-- Write like an operative reference, not a generic explanation.
-- Avoid false precision. If a step varies by attending or institution, name the variation and the principle that remains fixed.
-
-## Wikilinks
-
-Use `.agents/shared/commands/intraoperative-guide-crosslinks.md`.
-
-Weave verified wikilinks into the prose at the point where a related vault note prevents duplication or deepens a concept. Also include `## Related in This Vault` with a short relationship note for each selected link. Do not invent wikilinks from memory.
-
-## Revision Mode
-
-When revising after expert review:
-
-- Address every blocking gap explicitly.
-- Update the operative knowledge map first if the gap reflects a missing concept, relationship, or failure mode rather than only weak wording — then return through map-review before re-drafting.
-- Prefer targeted additions in the relevant section over appending a catch-all paragraph.
-- Remove generic filler discovered by the reviewer.
-- Preserve the guide as a coherent reference rather than a stitched sequence of answers.
-- If a gap cannot be resolved from available sources, add best expert synthesis with appropriate uncertainty and flag the source limitation in the final user summary, not as an excuse inside the guide.
+After expert review, repair each named gap in its natural section. Revise and
+rereview the knowledge map first when the gap is conceptual, relational, or a
+missing failure mode. Prefer targeted integration over a catch-all appendix;
+remove filler and keep the guide coherent. If support remains unavailable,
+preserve the explicit uncertainty and route final status through the incomplete
+artifact policy rather than implying completion.

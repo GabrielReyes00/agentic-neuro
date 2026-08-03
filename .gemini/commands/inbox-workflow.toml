@@ -1,13 +1,11 @@
-description = "Agentic email triage — fetch, categorize, action items, draft with approval gate"
+description = "Triage email and draft replies with approval before any external mutation."
 
 prompt = """
-ACTIVE COMMAND: /inbox-workflow — Exchange inbox triage.
+ACTIVE COMMAND: /inbox-workflow
+User input: {{args}}
 
-HARD CONSTRAINT: No email sent without explicit user approval. Cannot be overridden. Raw bodies stay in sub-task; structured JSON only in main context.
+Read `.agents/shared/workflow-registry.json`, then read and follow the canonical
+contract below. Do not infer behavioral policy from this adapter.
 
-User's request: {{args}}
-
----
-
-@{.gemini/commands/inbox-workflow.md}
+@{.agents/shared/commands/inbox-workflow.md}
 """

@@ -66,16 +66,18 @@ presentation. Do not preload both mode modules.
 Final outputs:
 
 ```text
-/Users/gabrielreyes/Desktop/<Title>.pptx
+/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Presentations/Decks/Cases/<Title>.pptx
+/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Presentations/Decks/Articles/<Title>.pptx
 /Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Presentations/Cases/<Title>.md
 /Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Presentations/Articles/<Title>.md
 data/Sessions/grand_rounds_<slug>_manifest.json
 ```
 
-Use the confirmed title without dates, workflow prefixes, or version suffixes.
+Produce one deck path and one note path according to mode. Use the confirmed title without dates, workflow prefixes, or version suffixes.
 For an existing validated Journal Club dossier, its short title is already
-confirmed; do not stop for a three-title gate unless the user requests a renamed
-talk. For new case presentations, propose three titles after intake.
+confirmed. In case mode, use a supplied title or infer one under
+`grand-rounds-case.md`; offer alternatives only when naming is genuinely
+ambiguous.
 
 Default to 15 minutes when duration is absent and no surrounding assignment
 implies another length. Record the assumption rather than blocking.

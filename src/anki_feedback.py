@@ -341,13 +341,18 @@ def _chroma_metadata_for_card(card: dict[str, Any], chroma_collection: Any | Non
     return {}
 
 
+# Historical live Anki decks retain this name. It is a read-compatibility
+# boundary, not current workflow/product language; do not use it for new cards.
+LEGACY_SHIFT_DEBRIEF_DECK_FRAGMENT = "brain dumps"
+
+
 def _resolve_source_workflow(tags: list[str], deck_name: str) -> str:
     lower = {tag.lower() for tag in tags}
-    for value in ("brain-dump", "study-review", "consult", "intraoperative-guide"):
+    for value in ("shift-debrief", "study-review", "consult", "intraoperative-guide"):
         if value in lower:
             return value
-    if "brain dumps" in deck_name.lower():
-        return "brain-dump"
+    if LEGACY_SHIFT_DEBRIEF_DECK_FRAGMENT in deck_name.lower():
+        return "shift-debrief"
     return "live_anki"
 
 
@@ -838,7 +843,7 @@ def _semantic_hit_in_scope(
 def _is_service_local(card: dict[str, Any]) -> bool:
     deck = str(card.get("deckName", "")).lower()
     lower_tags = {tag.lower() for tag in _tags(card)}
-    if "service" in deck and "brain dumps" not in deck:
+    if "service" in deck and LEGACY_SHIFT_DEBRIEF_DECK_FRAGMENT not in deck:
         return True
     return any(
         tag.startswith(("service/", "site/"))
@@ -847,10 +852,14 @@ def _is_service_local(card: dict[str, Any]) -> bool:
     )
 
 
-def _is_brain_dump(card: dict[str, Any], mapping: CardMapping) -> bool:
+def _is_shift_debrief(card: dict[str, Any], mapping: CardMapping) -> bool:
     deck = str(card.get("deckName", "")).lower()
     lower_tags = {tag.lower() for tag in _tags(card)}
-    return "brain dumps" in deck or mapping.source_workflow == "brain-dump" or "brain-dump" in lower_tags
+    return (
+        LEGACY_SHIFT_DEBRIEF_DECK_FRAGMENT in deck
+        or mapping.source_workflow == "shift-debrief"
+        or "shift-debrief" in lower_tags
+    )
 
 
 def _allowed_by_profile(card: dict[str, Any], mapping: CardMapping, profile: str) -> bool:
@@ -859,7 +868,7 @@ def _allowed_by_profile(card: dict[str, Any], mapping: CardMapping, profile: str
         return _is_service_local(card)
     if _is_service_local(card):
         return False
-    if normalized == "doc" and _is_brain_dump(card, mapping):
+    if normalized == "doc" and _is_shift_debrief(card, mapping):
         return False
     return True
 

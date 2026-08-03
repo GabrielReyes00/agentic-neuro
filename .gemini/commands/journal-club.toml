@@ -1,20 +1,11 @@
-description = "Analyze a neurosurgery article PDF into an intern-accessible, source-traceable journal-club mastery dossier with optional faculty-defense review"
+description = "Analyze an article into a validated, source-faithful journal-club dossier without slides."
 
 prompt = """
-ACTIVE COMMAND: /journal-club — deep neurosurgery article analysis and mastery preparation without slide creation.
+ACTIVE COMMAND: /journal-club
+User input: {{args}}
 
-You MUST read and follow `.agents/shared/commands/journal-club.md` end-to-end. Read its focused analysis and artifact modules only when their phases begin. The shared workflow owns source-package inspection, intern-level teaching, result reconstruction, methodological triage, vault installation, guard validation, and optional mastery.
+Read `.agents/shared/workflow-registry.json`, then read and follow the canonical
+contract below. Do not infer behavioral policy from this adapter.
 
-Gemini guardrails:
-- Inspect the entire PDF visually and textually; abstract-only work is preliminary.
-- Keep appraisal design-aware but subordinate to neurosurgical meaning.
-- Do not infer learner mastery or create Anki cards during passive dossier generation.
-- Install only through `src/journal_club_guard.py`.
-- Do not create a slide deck.
-
-User's input: {{args}}
-
----
-
-@{.gemini/commands/journal-club.md}
+@{.agents/shared/commands/journal-club.md}
 """

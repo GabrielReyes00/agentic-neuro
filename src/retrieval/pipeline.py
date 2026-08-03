@@ -6,7 +6,10 @@ Pipeline: BGE-M3 encode → Dense search + FTS → RRF fusion → MiniLM-L6 rera
           → Adaptive Context Distillation (axis decomposition + budgeting) → Output
 
 CLI:
+    python3 src/lance_retriever.py mini "named scale or table" --json
+    python3 src/lance_retriever.py mini-batch --query "lookup 1" --query "lookup 2" --card-json
     python3 src/lance_retriever.py compare "query" --stdout [--no-frontier]
+    python3 src/lance_retriever.py batch --query "topic 1" --query "topic 2" --card-json
     python3 src/lance_retriever.py list_textbooks
     python3 src/lance_retriever.py search "query" [--json]
 """
@@ -77,8 +80,25 @@ RERANKER_DOWNLOAD_FILES = (
 # Retrieval parameters
 DEFAULT_MIN_SIMILARITY = 0.35
 DEFAULT_N_RESULTS = 35
-PRE_RERANK_MAX_CANDIDATES = 55
+PRE_RERANK_MAX_CANDIDATES = max(
+    0,
+    int(os.environ.get("NEURO_PRE_RERANK_MAX_CANDIDATES", "55")),
+)
 RERANKER_SCORE_FLOOR = float(os.environ.get("NEURO_RERANKER_SCORE_FLOOR", "0.15"))
+EMBED_BATCH_SIZE = max(2, int(os.environ.get("NEURO_EMBED_BATCH_SIZE", "16")))
+RERANK_BATCH_SIZE = max(1, int(os.environ.get("NEURO_RERANK_BATCH_SIZE", "32")))
+ENTITY_SEMANTIC_MAX_CANDIDATES = max(
+    0,
+    int(os.environ.get("NEURO_ENTITY_SEMANTIC_MAX_CANDIDATES", "4")),
+)
+FTS_COLUMNS = tuple(
+    column.strip()
+    for column in os.environ.get(
+        "NEURO_FTS_COLUMNS",
+        "child_text,heading,section_path,table_markdown,caption_text",
+    ).split(",")
+    if column.strip()
+)
 
 # Context limits
 CONTEXT_MAX_PASSAGES = int(os.environ.get("NEURO_CONTEXT_MAX_PASSAGES", "8"))
@@ -127,6 +147,8 @@ _LANCE_DB = None
 _LANCE_TABLE = None
 _EMBEDDING_MODEL = None
 _RERANKER_CACHE: Dict[str, Any] = {}
+_EMBEDDING_MODEL_LOCK = threading.RLock()
+_RERANKER_CACHE_LOCK = threading.RLock()
 
 
 class RetrievalPreflightError(RuntimeError):
@@ -398,13 +420,27 @@ def _get_lance_table(lance_dir: str = "", table_name: str = ""):
 def _get_embedding_model():
     """Load BGE-M3 for query encoding (dense + sparse)."""
     global _EMBEDDING_MODEL
-    if _EMBEDDING_MODEL is None:
-        if MODEL_LOAD_LOCAL_ONLY:
-            _require_bge_cache_ready()
-        from FlagEmbedding import BGEM3FlagModel
-        with _model_cache_lock():
+    if _EMBEDDING_MODEL is not None:
+        return _EMBEDDING_MODEL
+    with _EMBEDDING_MODEL_LOCK:
+        if _EMBEDDING_MODEL is None:
+            model_source = BGE_M3_MODEL_ID
+            if MODEL_LOAD_LOCAL_ONLY:
+                _require_bge_cache_ready()
+                snapshot = _find_cached_snapshot(
+                    BGE_M3_MODEL_ID,
+                    cache_dir=MODEL_CACHE_DIR,
+                )
+                if snapshot is None:
+                    raise RetrievalPreflightError(
+                        f"No local BGE-M3 snapshot found under {MODEL_CACHE_DIR}"
+                    )
+                # Passing the resolved local snapshot prevents Transformers from
+                # performing network metadata probes despite a healthy cache.
+                model_source = str(snapshot)
+            from FlagEmbedding import BGEM3FlagModel
             _EMBEDDING_MODEL = BGEM3FlagModel(
-                BGE_M3_MODEL_ID,
+                model_source,
                 use_fp16=True,
                 cache_dir=str(MODEL_CACHE_DIR),
             )
@@ -416,27 +452,36 @@ def _get_reranker(model_key: str = DEFAULT_RERANKER):
     if model_key in _RERANKER_CACHE:
         return _RERANKER_CACHE[model_key], model_key
 
-    model_id = RERANKER_MODELS.get(model_key, model_key)
-    try:
-        ce = _ClonedCrossEncoder(model_id)
-        ce.predict([["warmup", "warmup"]], batch_size=1)
-        _RERANKER_CACHE[model_key] = ce
-        return ce, model_key
-    except Exception as cloned_exc:
-        cloned_error = cloned_exc
+    with _RERANKER_CACHE_LOCK:
+        if model_key in _RERANKER_CACHE:
+            return _RERANKER_CACHE[model_key], model_key
 
-    try:
-        from sentence_transformers import CrossEncoder
-        import torch
-        device = "mps" if torch.backends.mps.is_available() else "cpu"
-        ce = CrossEncoder(model_id, device=device, cache_folder=str(MODEL_CACHE_DIR))
-        ce.predict([["warmup", "warmup"]])
-        _RERANKER_CACHE[model_key] = ce
-        return ce, model_key
-    except Exception as e:
-        print(f"[WARN] Failed to load reranker '{model_id}': {e}; cloned loader also failed: {cloned_error}")
-        _RERANKER_CACHE[model_key] = None
-        return None, model_key
+        model_id = RERANKER_MODELS.get(model_key, model_key)
+        try:
+            ce = _ClonedCrossEncoder(model_id)
+            ce.predict([["warmup", "warmup"]], batch_size=1)
+            _RERANKER_CACHE[model_key] = ce
+            return ce, model_key
+        except Exception as cloned_exc:
+            cloned_error = cloned_exc
+
+        try:
+            from sentence_transformers import CrossEncoder
+            import torch
+            device = "mps" if torch.backends.mps.is_available() else "cpu"
+            ce = CrossEncoder(
+                model_id,
+                device=device,
+                cache_folder=str(MODEL_CACHE_DIR),
+                local_files_only=MODEL_LOAD_LOCAL_ONLY,
+            )
+            ce.predict([["warmup", "warmup"]])
+            _RERANKER_CACHE[model_key] = ce
+            return ce, model_key
+        except Exception as e:
+            print(f"[WARN] Failed to load reranker '{model_id}': {e}; cloned loader also failed: {cloned_error}")
+            _RERANKER_CACHE[model_key] = None
+            return None, model_key
 
 
 # ── Utility functions ────────────────────────────────────────────────────────
@@ -452,6 +497,18 @@ def _approx_tokens(text: str) -> int:
 
 def _content_hash(text: str) -> str:
     return (text or "").strip().lower()[:220]
+
+
+def _hit_key(hit: dict) -> str:
+    """Return a stable fusion/deduplication key for a retrieval hit."""
+    child_id = str(hit.get("child_id") or "").strip()
+    if child_id:
+        # child_id is only source-local in older ingests, so source/parent are
+        # required to avoid collapsing unrelated passages from different books.
+        source_key = str(hit.get("source_key") or "").strip()
+        parent_id = str(hit.get("parent_id") or "").strip()
+        return f"id:{source_key}:{parent_id}:{child_id}"
+    return f"text:{_content_hash(hit.get('text', ''))}"
 
 
 def _reference_signal_counts(text: str) -> dict:
@@ -997,7 +1054,9 @@ def _compute_heading_entity_similarity(hits: list, entity_phrase: str) -> list:
         model = _get_embedding_model()
         all_texts = [entity_phrase] + heading_strings
         out = model.encode(
-            all_texts, batch_size=len(all_texts), max_length=128,
+            all_texts,
+            batch_size=max(EMBED_BATCH_SIZE, min(len(all_texts) + 1, 64)),
+            max_length=128,
             return_dense=True, return_sparse=False,
         )
         vecs = out["dense_vecs"]  # shape: (1+N, 1024)
@@ -1025,6 +1084,180 @@ def _compute_heading_entity_similarity(hits: list, entity_phrase: str) -> list:
     return hits
 
 
+def _compute_heading_entity_similarity_many(
+    groups: List[tuple[list, str]],
+) -> tuple[List[list], float]:
+    """Batch semantic heading disambiguation across independent queries."""
+    t0 = time.perf_counter()
+    if not groups:
+        return [], 0.0
+
+    unique_texts: list[str] = []
+    text_index: dict[str, int] = {}
+
+    def _index(text: str) -> int:
+        key = text.strip() or "unknown section"
+        if key not in text_index:
+            text_index[key] = len(unique_texts)
+            unique_texts.append(key)
+        return text_index[key]
+
+    mappings: list[tuple[int, list[tuple[int, int]]]] = []
+    copied_groups: list[list] = []
+    for hits, entity_phrase in groups:
+        copied = [dict(hit) for hit in hits]
+        copied_groups.append(copied)
+        entity_idx = _index(entity_phrase)
+        heading_map: list[tuple[int, int]] = []
+        for hit_idx, hit in enumerate(copied):
+            meta = hit.get("metadata", {})
+            heading = meta.get("heading") or ""
+            chapter = meta.get("chapter_title") or ""
+            combined = f"{heading} — {chapter}".strip(" —")
+            heading_map.append((hit_idx, _index(combined)))
+        mappings.append((entity_idx, heading_map))
+
+    try:
+        model = _get_embedding_model()
+        out = model.encode(
+            unique_texts,
+            batch_size=max(EMBED_BATCH_SIZE, min(len(unique_texts) + 1, 64)),
+            max_length=128,
+            return_dense=True,
+            return_sparse=False,
+        )
+        vectors = out["dense_vecs"]
+        norms = np.linalg.norm(vectors, axis=1)
+        for group_idx, (entity_idx, heading_map) in enumerate(mappings):
+            entity_norm = norms[entity_idx]
+            if entity_norm == 0:
+                continue
+            for hit_idx, heading_idx in heading_map:
+                heading_norm = norms[heading_idx]
+                similarity = 0.0
+                if heading_norm != 0:
+                    similarity = float(
+                        np.dot(vectors[entity_idx], vectors[heading_idx])
+                        / (entity_norm * heading_norm)
+                    )
+                copied_groups[group_idx][hit_idx]["heading_entity_sim"] = round(
+                    similarity,
+                    4,
+                )
+    except Exception:
+        pass
+
+    elapsed_ms = round((time.perf_counter() - t0) * 1000, 2)
+    return copied_groups, elapsed_ms
+
+
+def _prepare_entity_aware_filtering(
+    reranked: list,
+    query: str,
+    entities: List[str],
+) -> tuple[list, str]:
+    """Attach cheap lexical entity signals before semantic heading scoring."""
+    entity_phrase = max(entities, key=len)
+    drug_disease = _classify_drug_disease_context(entities, query)
+    prepared = []
+    for hit in reranked:
+        enriched = dict(hit)
+        enriched["_kw_heading_match"] = _heading_matches_entity(hit, entities)
+        entity_ratio = _entity_match_ratio(hit.get("text", ""), entities)
+        enriched["_entity_ratio"] = entity_ratio
+        enriched["_kw_text_match"] = entity_ratio >= 0.5
+        if drug_disease and enriched["_kw_text_match"]:
+            text_lower = hit.get("text", "").lower()
+            has_drug = any(d in text_lower for d in drug_disease["drugs"])
+            has_disease = _entity_present_in_text(
+                hit.get("text", ""),
+                drug_disease["diseases"],
+            )
+            if has_drug and not has_disease:
+                enriched["_kw_text_match"] = False
+                enriched["_drug_no_disease"] = True
+        prepared.append(enriched)
+    return prepared, entity_phrase
+
+
+def _finalize_entity_aware_filtering(reranked: list) -> list:
+    """Apply semantic/lexical entity penalties and remove internal fields."""
+    adjusted = []
+    for hit in reranked:
+        enriched = dict(hit)
+        heading_sim = hit.get("heading_entity_sim", 1.0)
+        kw_heading = hit.get("_kw_heading_match", True)
+        kw_text = hit.get("_kw_text_match", True)
+        entity_ratio = hit.get("_entity_ratio", 1.0)
+
+        penalty = None
+        multiplier = 1.0
+        is_drug_no_disease = hit.get("_drug_no_disease", False)
+
+        if is_drug_no_disease:
+            penalty = "drug_without_disease"
+            multiplier = 0.1
+        elif heading_sim < 0.40:
+            if not kw_text:
+                penalty = "heading_very_distant+text_miss"
+                multiplier = 0.0
+            else:
+                penalty = "heading_very_distant"
+                multiplier = 0.15 * entity_ratio
+        elif heading_sim < 0.55:
+            if not kw_text:
+                penalty = "heading_distant+text_miss"
+                multiplier = 0.1
+            else:
+                penalty = "heading_distant"
+                multiplier = 0.25 * entity_ratio
+        elif heading_sim < 0.70:
+            if not kw_heading and not kw_text:
+                penalty = "moderate_heading+kw_miss"
+                multiplier = 0.3
+            elif not kw_heading:
+                penalty = "moderate_heading_miss"
+                multiplier = 0.65 * entity_ratio
+            elif entity_ratio < 0.5:
+                penalty = "low_entity_ratio"
+                multiplier = 0.4 * (0.5 + entity_ratio)
+        else:
+            if not kw_text:
+                penalty = "text_miss_only"
+                multiplier = 0.8
+            elif entity_ratio < 0.5:
+                penalty = "low_entity_ratio_close_heading"
+                multiplier = 0.5 + (entity_ratio * 0.5)
+
+        if penalty:
+            enriched["entity_penalty"] = penalty
+            enriched["entity_multiplier"] = round(multiplier, 2)
+            enriched["rank_score"] = round(
+                hit.get("rank_score", 0.0) * multiplier,
+                4,
+            )
+        adjusted.append(enriched)
+
+    filtered = [
+        hit
+        for hit in adjusted
+        if hit.get("entity_multiplier", 1.0) > 0.0
+    ]
+    filtered.sort(
+        key=lambda item: (
+            item.get("rank_score", 0.0),
+            item.get("similarity", 0.0),
+        ),
+        reverse=True,
+    )
+    for hit in filtered:
+        hit.pop("_kw_heading_match", None)
+        hit.pop("_kw_text_match", None)
+        hit.pop("_entity_ratio", None)
+        hit.pop("_drug_no_disease", None)
+    return filtered
+
+
 def _apply_entity_aware_filtering(
     reranked: list,
     query: str,
@@ -1050,118 +1283,16 @@ def _apply_entity_aware_filtering(
     if not entities:
         return reranked
 
-    # Build the entity phrase for semantic comparison
-    entity_phrase = max(entities, key=len)
-
-    # Detect drug-disease pairs for context-aware filtering
-    drug_disease = _classify_drug_disease_context(entities, query)
-
-    # Layer 1: Keyword-based heading/text match + co-occurrence ratio
-    for i, hit in enumerate(reranked):
-        reranked[i] = dict(hit)
-        reranked[i]["_kw_heading_match"] = _heading_matches_entity(hit, entities)
-        entity_ratio = _entity_match_ratio(hit.get("text", ""), entities)
-        reranked[i]["_entity_ratio"] = entity_ratio
-        reranked[i]["_kw_text_match"] = entity_ratio >= 0.5
-        # Drug-disease context: passages mentioning the drug must also mention the disease
-        if drug_disease and reranked[i]["_kw_text_match"]:
-            text_lower = hit.get("text", "").lower()
-            has_drug = any(d in text_lower for d in drug_disease["drugs"])
-            has_disease = _entity_present_in_text(hit.get("text", ""), drug_disease["diseases"])
-            if has_drug and not has_disease:
-                reranked[i]["_kw_text_match"] = False
-                reranked[i]["_drug_no_disease"] = True
+    reranked, entity_phrase = _prepare_entity_aware_filtering(
+        reranked,
+        query,
+        entities,
+    )
 
     # Layer 2: Semantic heading-entity similarity via BGE-M3 embedding
     reranked = _compute_heading_entity_similarity(reranked, entity_phrase)
 
-    # Combine signals and apply penalties
-    # The entity co-occurrence ratio modulates penalties: low ratio (e.g., 0.33 = 1/3
-    # entity words matched) gets harsher treatment than high ratio (0.67 = 2/3 words).
-    # This prevents "hydrocephalus"-only passages from passing the filter for
-    # "normal pressure hydrocephalus" queries, while still allowing partial matches
-    # with proportional penalties.
-    adjusted = []
-    for hit in reranked:
-        enriched = dict(hit)
-        heading_sim = hit.get("heading_entity_sim", 1.0)
-        kw_heading = hit.get("_kw_heading_match", True)
-        kw_text = hit.get("_kw_text_match", True)
-        entity_ratio = hit.get("_entity_ratio", 1.0)
-
-        penalty = None
-        multiplier = 1.0
-        is_drug_no_disease = hit.get("_drug_no_disease", False)
-
-        # Drug-disease override: passage mentions drug but not the disease context
-        # Heavy penalty regardless of heading similarity (e.g., nimodipine for VS surgery)
-        if is_drug_no_disease:
-            penalty = "drug_without_disease"
-            multiplier = 0.1
-        elif heading_sim < 0.40:
-            # Very distant heading — high confidence mismatch
-            if not kw_text:
-                penalty = "heading_very_distant+text_miss"
-                multiplier = 0.0
-            else:
-                penalty = "heading_very_distant"
-                multiplier = 0.15 * entity_ratio
-        elif heading_sim < 0.55:
-            # Distant heading — strong penalty
-            if not kw_text:
-                penalty = "heading_distant+text_miss"
-                multiplier = 0.1
-            else:
-                penalty = "heading_distant"
-                multiplier = 0.25 * entity_ratio
-        elif heading_sim < 0.70:
-            # Moderately related heading
-            if not kw_heading and not kw_text:
-                penalty = "moderate_heading+kw_miss"
-                multiplier = 0.3
-            elif not kw_heading:
-                penalty = "moderate_heading_miss"
-                multiplier = 0.65 * entity_ratio
-            elif entity_ratio < 0.5:
-                # Heading matches but text has low entity word overlap
-                penalty = "low_entity_ratio"
-                multiplier = 0.4 * (0.5 + entity_ratio)
-        else:
-            # Close heading — normally pass through, but penalize low entity ratio
-            if not kw_text:
-                penalty = "text_miss_only"
-                multiplier = 0.8
-            elif entity_ratio < 0.5:
-                # High heading similarity but low word overlap — partial penalty
-                penalty = "low_entity_ratio_close_heading"
-                multiplier = 0.5 + (entity_ratio * 0.5)
-
-        if penalty:
-            enriched["entity_penalty"] = penalty
-            enriched["entity_multiplier"] = round(multiplier, 2)
-            enriched["rank_score"] = round(
-                hit.get("rank_score", 0.0) * multiplier, 4
-            )
-
-        adjusted.append(enriched)
-
-    # Remove hits marked for dropping
-    filtered = [h for h in adjusted if h.get("entity_multiplier", 1.0) > 0.0]
-
-    # Re-sort by adjusted rank_score
-    filtered.sort(
-        key=lambda x: (x.get("rank_score", 0.0), x.get("similarity", 0.0)),
-        reverse=True,
-    )
-
-    # Clean up internal keys
-    for hit in filtered:
-        hit.pop("_kw_heading_match", None)
-        hit.pop("_kw_text_match", None)
-        hit.pop("_entity_ratio", None)
-        hit.pop("_drug_no_disease", None)
-
-    return filtered
+    return _finalize_entity_aware_filtering(reranked)
 
 
 def _format_citation(row: dict) -> str:
@@ -1182,14 +1313,35 @@ def _format_citation(row: dict) -> str:
 
 # ── Core retrieval ───────────────────────────────────────────────────────────
 
-def _encode_query(query: str) -> List[float]:
-    """Encode query with BGE-M3 → dense_vec. Sparse channel uses LanceDB FTS."""
+def _encode_queries(queries: List[str]) -> tuple[List[List[float]], float]:
+    """Encode multiple queries in one BGE-M3 forward pass.
+
+    Batching amortizes tokenizer/model overhead and is the primary acceleration
+    path for multi-topic retrieval.  The batch size stays above one for a
+    single query as well, which suppresses FlagEmbedding's progress-bar noise.
+    """
+    if not queries:
+        return [], 0.0
     model = _get_embedding_model()
+    t0 = time.perf_counter()
     out = model.encode(
-        [query], batch_size=1, max_length=512,
+        queries,
+        batch_size=max(EMBED_BATCH_SIZE, min(len(queries) + 1, 64)),
+        max_length=512,
         return_dense=True, return_sparse=False,
     )
-    return out["dense_vecs"][0].astype(np.float32).tolist()
+    vectors = [
+        vector.astype(np.float32).tolist()
+        for vector in out["dense_vecs"]
+    ]
+    ms = round((time.perf_counter() - t0) * 1000, 2)
+    return vectors, ms
+
+
+def _encode_query(query: str) -> List[float]:
+    """Encode one query with BGE-M3 → dense_vec."""
+    vectors, _ = _encode_queries([query])
+    return vectors[0]
 
 
 def _dense_search(table, query_vec: List[float], n_results: int = DEFAULT_N_RESULTS):
@@ -1212,12 +1364,25 @@ def _dense_search(table, query_vec: List[float], n_results: int = DEFAULT_N_RESU
 
 
 def _sparse_search_fts(table, query_text: str, n_results: int = DEFAULT_N_RESULTS):
-    """Full-text search on child_text column as the sparse retrieval channel."""
+    """Multi-field full-text retrieval over content and structural metadata."""
     t0 = time.perf_counter()
     try:
-        results = table.search(query_text, query_type="fts").limit(n_results).to_list()
+        results = (
+            table.search(
+                query_text,
+                query_type="fts",
+                fts_columns=list(FTS_COLUMNS),
+            )
+            .limit(n_results)
+            .to_list()
+        )
     except Exception:
-        return [], round((time.perf_counter() - t0) * 1000, 2)
+        # Preserve compatibility with older LanceDB tables/APIs that only
+        # expose the child_text index.
+        try:
+            results = table.search(query_text, query_type="fts").limit(n_results).to_list()
+        except Exception:
+            return [], round((time.perf_counter() - t0) * 1000, 2)
 
     ms = round((time.perf_counter() - t0) * 1000, 2)
     hits = []
@@ -1226,7 +1391,9 @@ def _sparse_search_fts(table, query_text: str, n_results: int = DEFAULT_N_RESULT
         # Normalize BM25 scores to [0,1] using sigmoid-like mapping
         # fts_score=2 → 0.67, fts_score=5 → 0.83, fts_score=10 → 0.91
         similarity = fts_score / (fts_score + 1.0) if fts_score > 0 else 0.0
-        hits.append(_row_to_hit(row, similarity))
+        hit = _row_to_hit(row, similarity)
+        hit["fts_score"] = round(fts_score, 4)
+        hits.append(hit)
     return hits, ms
 
 
@@ -1269,12 +1436,12 @@ def _apply_rrf(vector_hits: list, fts_hits: list, k: int = 60) -> list:
     hit_map = {}
 
     for rank, hit in enumerate(vector_hits, start=1):
-        key = _content_hash(hit["text"])
+        key = _hit_key(hit)
         scores[key] += 1.0 / (k + rank)
         hit_map[key] = hit
 
     for rank, hit in enumerate(fts_hits, start=1):
-        key = _content_hash(hit["text"])
+        key = _hit_key(hit)
         scores[key] += 1.0 / (k + rank)
         if key not in hit_map:
             hit_map[key] = hit
@@ -1288,26 +1455,8 @@ def _apply_rrf(vector_hits: list, fts_hits: list, k: int = 60) -> list:
     return fused
 
 
-def _rerank_hits(query: str, hits: list, reranker_key: str = DEFAULT_RERANKER):
-    """Cross-encoder reranking. Returns (reranked_hits, latency_ms)."""
-    if not hits:
-        return hits, 0.0
-
-    ce, model_key = _get_reranker(reranker_key)
-    if ce is None:
-        return _rerank_hits_lexical(query, hits), 0.0
-
-    t0 = time.perf_counter()
-    try:
-        doc_texts = [hit.get("text", "")[:2200] for hit in hits]
-        pairs = [[query, doc] for doc in doc_texts]
-        raw_scores = ce.predict(pairs, batch_size=32)
-        scores = [float(s) for s in raw_scores]
-    except Exception:
-        return _rerank_hits_lexical(query, hits), 0.0
-
-    ms = round((time.perf_counter() - t0) * 1000, 2)
-
+def _apply_rerank_scores(hits: list, scores: List[float]) -> list:
+    """Attach cross-encoder scores to one query's candidate hits."""
     max_score = max(scores) if scores else 0
     min_score = min(scores) if scores else 0
     scores_are_sigmoid = (0 <= min_score and max_score <= 1.0)
@@ -1332,7 +1481,29 @@ def _rerank_hits(query: str, hits: list, reranker_key: str = DEFAULT_RERANKER):
 
     reranked.sort(key=lambda x: (x.get("rank_score", 0.0), x.get("similarity", 0.0)), reverse=True)
     reranked = [h for h in reranked if h.get("sigmoid_ce", 1.0) >= RERANKER_SCORE_FLOOR]
-    return reranked, ms
+    return reranked
+
+
+def _rerank_hits(query: str, hits: list, reranker_key: str = DEFAULT_RERANKER):
+    """Cross-encoder reranking. Returns (reranked_hits, latency_ms)."""
+    if not hits:
+        return hits, 0.0
+
+    ce, _ = _get_reranker(reranker_key)
+    if ce is None:
+        return _rerank_hits_lexical(query, hits), 0.0
+
+    t0 = time.perf_counter()
+    try:
+        doc_texts = [hit.get("text", "")[:2200] for hit in hits]
+        pairs = [[query, doc] for doc in doc_texts]
+        raw_scores = ce.predict(pairs, batch_size=RERANK_BATCH_SIZE)
+        scores = [float(s) for s in raw_scores]
+    except Exception:
+        return _rerank_hits_lexical(query, hits), 0.0
+
+    ms = round((time.perf_counter() - t0) * 1000, 2)
+    return _apply_rerank_scores(hits, scores), ms
 
 
 def _rerank_hits_lexical(query: str, hits: list) -> list:
@@ -1450,13 +1621,13 @@ def _mmr_select(
 
 def _expand_with_parent_text(hits: list, query: str = "") -> list:
     """Use stored parent_text instead of re-fetching adjacent chunks."""
-    parent_groups: Dict[str, list] = defaultdict(list)
+    parent_groups: Dict[tuple[str, str], list] = defaultdict(list)
     orphans = []
 
     for hit in hits:
         pid = hit.get("parent_id", "")
         if pid:
-            parent_groups[pid].append(hit)
+            parent_groups[(hit.get("source_key", ""), str(pid))].append(hit)
         else:
             orphans.append(hit)
 
@@ -1513,13 +1684,13 @@ def _expand_with_parent_text(hits: list, query: str = "") -> list:
     finalized = []
     selected_keys = set()
     for hit in selected:
-        selected_keys.add(hit.get("child_id") or _content_hash(hit.get("text", "")))
+        selected_keys.add(_hit_key(hit))
         if not _is_low_value_retrieval_hit(hit):
             finalized.append(hit)
 
     if len(finalized) < CONTEXT_MAX_PASSAGES:
         for hit in expanded:
-            key = hit.get("child_id") or _content_hash(hit.get("text", ""))
+            key = _hit_key(hit)
             if key in selected_keys:
                 continue
             candidate = dict(hit)
@@ -1767,6 +1938,59 @@ def _score_passages_by_axis(
         hit["primary_axis"] = max(axis_scores, key=axis_scores.get)
 
     return hits
+
+
+def _score_passage_groups_by_axis(
+    groups: List[tuple[List[str], list]],
+    reranker,
+) -> tuple[List[list], float]:
+    """Score every query/axis/passage group in one cross-encoder invocation."""
+    t0 = time.perf_counter()
+    copied_groups: List[list] = []
+    pair_ranges: list[tuple[int, int, List[str]]] = []
+    pairs: list[list[str]] = []
+    for axes, hits in groups:
+        copied = [dict(hit) for hit in hits]
+        copied_groups.append(copied)
+        start = len(pairs)
+        for hit in copied:
+            child_text = (
+                hit.get("text_original")
+                or hit.get("text", "")
+            )[:2200]
+            for axis in axes:
+                pairs.append([axis, child_text])
+        pair_ranges.append((start, len(pairs), axes))
+
+    if not pairs:
+        return copied_groups, 0.0
+
+    try:
+        raw_scores = reranker.predict(pairs, batch_size=max(RERANK_BATCH_SIZE, 32))
+        scores = [float(score) for score in raw_scores]
+    except Exception:
+        for group_idx, (_, _, axes) in enumerate(pair_ranges):
+            for hit in copied_groups[group_idx]:
+                hit["axis_scores"] = {axis: 0.5 for axis in axes}
+                hit["primary_axis"] = axes[0]
+        return copied_groups, round((time.perf_counter() - t0) * 1000, 2)
+
+    for group_idx, (start, _, axes) in enumerate(pair_ranges):
+        n_axes = len(axes)
+        for hit_idx, hit in enumerate(copied_groups[group_idx]):
+            axis_scores = {}
+            for axis_idx, axis in enumerate(axes):
+                raw = scores[start + hit_idx * n_axes + axis_idx]
+                sigmoid = (
+                    raw
+                    if 0 <= raw <= 1.0
+                    else 1.0 / (1.0 + math.exp(-raw))
+                )
+                axis_scores[axis] = round(sigmoid, 4)
+            hit["axis_scores"] = axis_scores
+            hit["primary_axis"] = max(axis_scores, key=axis_scores.get)
+
+    return copied_groups, round((time.perf_counter() - t0) * 1000, 2)
 
 
 def _budget_passages(
@@ -2041,13 +2265,13 @@ def _quality_augment(query: str,
     ce_floor = max(ce_abs_floor, mean_base_ce * ce_rel_frac)
     meta["ce_floor"] = round(ce_floor, 4)
 
-    current_ids = {str(h.get("child_id")) for h in current_hits if h.get("child_id") is not None}
+    current_ids = {_hit_key(hit) for hit in current_hits}
     current_hashes = {_content_hash(_aug_hit_text(h)) for h in current_hits}
 
     scored_candidates = []
     for cand in candidate_pool:
         meta["considered"] += 1
-        cid = str(cand.get("child_id"))
+        cid = _hit_key(cand)
         if cid in current_ids or _content_hash(_aug_hit_text(cand)) in current_hashes:
             meta["rejected"]["in_baseline"] += 1
             continue
@@ -2128,6 +2352,43 @@ def _assign_axes_by_keyword(hits: list, axes: List[str]) -> list:
     return hits
 
 
+def _apply_distill_entity_penalties(
+    scored: list,
+    query: str,
+) -> list:
+    """Penalize axis scores when a passage loses the query's entity context."""
+    entities = _extract_primary_entities(query)
+    if not entities:
+        return scored
+
+    drug_disease = _classify_drug_disease_context(entities, query)
+    for hit in scored:
+        text = hit.get("text_original") or hit.get("text", "")
+        ratio = _entity_match_ratio(text, entities)
+
+        if ratio < 0.5:
+            penalty_mult = max(0.15, ratio)
+            axis_scores = hit.get("axis_scores", {})
+            for axis in axis_scores:
+                axis_scores[axis] = round(axis_scores[axis] * penalty_mult, 4)
+            hit["entity_cooccurrence_penalty"] = True
+            hit["_entity_ratio_distill"] = ratio
+        elif drug_disease:
+            text_lower = text.lower()
+            has_drug = any(drug in text_lower for drug in drug_disease["drugs"])
+            has_disease = _entity_present_in_text(
+                text,
+                drug_disease["diseases"],
+            )
+            if has_drug and not has_disease:
+                axis_scores = hit.get("axis_scores", {})
+                for axis in axis_scores:
+                    axis_scores[axis] = round(axis_scores[axis] * 0.2, 4)
+                hit["entity_cooccurrence_penalty"] = True
+                hit["drug_no_disease_context"] = True
+    return scored
+
+
 def _distill_by_axes(
     query: str,
     hits: list,
@@ -2181,39 +2442,7 @@ def _distill_by_axes(
 
     scored = _score_passages_by_axis(axes, hits, ce)
 
-    # Entity co-occurrence filter using ratio scoring: passages must match a
-    # sufficient fraction of the entity's distinctive words. A passage matching
-    # 1/3 entity words (e.g., "hydrocephalus" only for "normal pressure
-    # hydrocephalus") gets axis scores scaled by the ratio, while full matches
-    # pass through. This prevents generic-category passages from outscoring
-    # entity-specific ones during budget allocation.
-    entities = _extract_primary_entities(query)
-    if entities:
-        drug_disease = _classify_drug_disease_context(entities, query)
-
-        for hit in scored:
-            text = hit.get("text_original") or hit.get("text", "")
-            ratio = _entity_match_ratio(text, entities)
-
-            if ratio < 0.5:
-                # Low co-occurrence — scale axis scores by ratio (harsh for 0.33, mild for 0.49)
-                penalty_mult = max(0.15, ratio)
-                axis_scores = hit.get("axis_scores", {})
-                for ax in axis_scores:
-                    axis_scores[ax] = round(axis_scores[ax] * penalty_mult, 4)
-                hit["entity_cooccurrence_penalty"] = True
-                hit["_entity_ratio_distill"] = ratio
-            elif drug_disease:
-                # Drug-disease check: passage has entity but is it about the right disease?
-                text_lower = text.lower()
-                has_drug = any(d in text_lower for d in drug_disease["drugs"])
-                has_disease = _entity_present_in_text(text, drug_disease["diseases"])
-                if has_drug and not has_disease:
-                    axis_scores = hit.get("axis_scores", {})
-                    for ax in axis_scores:
-                        axis_scores[ax] = round(axis_scores[ax] * 0.2, 4)
-                    hit["entity_cooccurrence_penalty"] = True
-                    hit["drug_no_disease_context"] = True
+    scored = _apply_distill_entity_penalties(scored, query)
 
     budgeted = _budget_passages(scored, axes)
 
@@ -2335,6 +2564,16 @@ def retrieve(
             "source_books": sorted(unique_sources),
         },
     }
+
+
+def retrieve_many(
+    queries,
+    **kwargs,
+) -> list[dict[str, Any]]:
+    """Compatibility facade for batched multi-topic retrieval."""
+    from .batch import retrieve_many as _retrieve_many
+
+    return _retrieve_many(queries, **kwargs)
 
 
 # ── Context building ─────────────────────────────────────────────────────────
@@ -2672,6 +2911,7 @@ def build_source_cards_jsonl(
     if frontier_text and "No external frontier notes provided" not in frontier_text:
         row = {
             "card_id": f"{card_prefix}-{len(rows)+1:02d}",
+            "source_type": "frontier_extract",
             "citation": "Frontier Evidence",
             "page_start": None,
             "takeaways": _compact_sentences(frontier_text, max_items=max_takeaways),
@@ -2698,6 +2938,7 @@ def build_source_cards_jsonl(
         "card_count": len(rows),
         "format": "jsonl",
         "schema": "compact" if compact_schema else "verbose",
+        "source_type": "textbook_rag_full",
     }
     return "\n".join([json.dumps(header, ensure_ascii=False)] + [
         json.dumps(row, ensure_ascii=False) for row in rows

@@ -1,0 +1,160 @@
+{
+  "schema_version": 1,
+  "authority": {
+    "global": "AGENTS.md",
+    "workflows": ".agents/shared/commands/",
+    "artifact_policy": ".agents/shared/commands/review-artifacts.md",
+    "retrieval_policy": ".agents/shared/commands/rag-routing.md",
+    "learner_memory": ".agents/shared/commands/memory-operations.md"
+  },
+  "artifact_defaults": {
+    "frontmatter": "native_top_of_file",
+    "h1": false,
+    "filename": "Title Case without dates, workflow prefixes, or version suffixes",
+    "concept_extraction": "novel_only_0_to_5",
+    "mastery_rule": "Artifact ownership or generation is never assessed learner mastery"
+  },
+  "workflows": {
+    "consult": {
+      "title": "Consult",
+      "description": "Answer a bounded bedside task or immediate clinical decision; durable capture is optional.",
+      "argument_hint": "[clinical-question-or-task]",
+      "contract": ".agents/shared/commands/consult.md",
+      "vault_destination": "Consults/<Topic Title>.md",
+      "reviewable": true,
+      "generation_recall": "evaluated_durable_only",
+      "write_policy": "answer_only_by_default; merge_in_place_when_durable_capture_is_requested",
+      "anki_policy": "evaluated_exchange_only"
+    },
+    "generate-report": {
+      "title": "Generate Report",
+      "description": "Create a source-traced, citation-dense neurosurgical reference report.",
+      "argument_hint": "[topic]",
+      "contract": ".agents/shared/commands/generate-report.md",
+      "vault_destination": "Reports/<Title>.md",
+      "reviewable": true,
+      "generation_recall": "none",
+      "write_policy": "regenerate_in_place_after_reading_existing",
+      "anki_policy": "none_during_generation"
+    },
+    "grand-rounds": {
+      "title": "Grand Rounds",
+      "description": "Build and validate an editable neurosurgery case or article presentation package.",
+      "argument_hint": "--mode <case|article> [source options]",
+      "contract": ".agents/shared/commands/grand-rounds.md",
+      "vault_destination": "Presentations/Cases|Articles/<Title>.md",
+      "binary_destination": "Presentations/Decks/Cases|Articles/<Title>.pptx",
+      "reviewable": true,
+      "generation_recall": "none_during_generation; document_for_rehearsal",
+      "write_policy": "regenerate_package_in_place_after_source_resolution",
+      "anki_policy": "evaluated_rehearsal_only",
+      "codex_note": "Use the installed Presentations skill and its artifact-tool workflow; do not author the deck with python-pptx.",
+      "codex_ui": {
+        "display_name": "Grand Rounds",
+        "short_description": "Build validated neurosurgery PowerPoint presentations",
+        "default_prompt": "Use $grand-rounds to create a professional editable neurosurgery PowerPoint from my case material or validated Journal Club dossier, including source-traced visuals, speaker notes, package validation, and optional rehearsal."
+      }
+    },
+    "inbox-workflow": {
+      "title": "Inbox Workflow",
+      "description": "Triage email and draft replies with approval before any external mutation.",
+      "argument_hint": "[inbox-request]",
+      "contract": ".agents/shared/commands/inbox-workflow.md",
+      "vault_destination": null,
+      "reviewable": false,
+      "write_policy": "external_mutations_require_explicit_approval",
+      "anki_policy": "none"
+    },
+    "intraoperative-guide": {
+      "title": "Intraoperative Guide",
+      "description": "Create and independently review a source-grounded operative rehearsal guide.",
+      "argument_hint": "[procedure]",
+      "contract": ".agents/shared/commands/intraoperative-guide.md",
+      "vault_destination": "Operative Guides/<Title>.md",
+      "reviewable": true,
+      "generation_recall": "optional_topic",
+      "write_policy": "regenerate_in_place_after_reading_existing; incomplete_install_requires_explicit_user_approval",
+      "anki_policy": "evaluated_exchange_only"
+    },
+    "journal-club": {
+      "title": "Journal Club",
+      "description": "Analyze an article into a validated, source-faithful journal-club dossier without slides.",
+      "argument_hint": "--pdf <path> [--supplement <path>] [--focus <angle>]",
+      "contract": ".agents/shared/commands/journal-club.md",
+      "vault_destination": "Journal Club/<Short Article Title>.md",
+      "binary_destination": "Journal Club/Sources/<Short Article Title>.pdf",
+      "reviewable": true,
+      "generation_recall": "none_during_generation; document_for_opted_mastery",
+      "write_policy": "regenerate_in_place_after_reading_existing",
+      "anki_policy": "evaluated_mastery_only",
+      "codex_note": "Use the installed PDF skill for complete text extraction, page rendering, and visual inspection.",
+      "codex_ui": {
+        "display_name": "Journal Club",
+        "short_description": "Master neurosurgery articles for journal club",
+        "default_prompt": "Use $journal-club to analyze this neurosurgery article PDF and prepare me to defend it at journal club."
+      }
+    },
+    "refactor-manual-note": {
+      "title": "Refactor Manual Note",
+      "description": "Refactor a manual Obsidian note in place while preserving its facts and attachments.",
+      "argument_hint": "[note-path]",
+      "contract": ".agents/shared/commands/refactor-manual-note.md",
+      "vault_destination": "existing_source_path",
+      "reviewable": true,
+      "generation_recall": "none",
+      "write_policy": "explicit_in_place_rewrite; preserve_existing_content_and_attachments",
+      "anki_policy": "none"
+    },
+    "service-log": {
+      "title": "Service Log",
+      "description": "Alias a service-rotation debrief to the Shift Debrief workflow.",
+      "argument_hint": "[de-identified-service-lessons]",
+      "contract": ".agents/shared/commands/service-log.md",
+      "alias_for": "shift-debrief",
+      "vault_destination": "Shift Debriefs/<Topic Title>.md",
+      "reviewable": true,
+      "generation_recall": "service_or_topic",
+      "write_policy": "merge_in_place",
+      "anki_policy": "evaluated_socratic_only"
+    },
+    "shift-debrief": {
+      "title": "Shift Debrief",
+      "description": "Turn de-identified service lessons into concise, durable clinical teaching.",
+      "argument_hint": "[de-identified-ward-topics-or-teaching]",
+      "contract": ".agents/shared/commands/shift-debrief.md",
+      "aliases": ["brain dump", "service debrief", "shift teaching"],
+      "vault_destination": "Shift Debriefs/<Topic Title>.md",
+      "reviewable": true,
+      "generation_recall": "service_or_topic",
+      "write_policy": "merge_in_place",
+      "anki_policy": "evaluated_socratic_only"
+    },
+    "study-material": {
+      "title": "Study Material",
+      "description": "Generate validated study material from a source or drill an existing note.",
+      "argument_hint": "[source-file-or-study-request]",
+      "contract": ".agents/shared/commands/study-material.md",
+      "vault_destination": "Study Material/<Title>.md",
+      "binary_destination": "Study Material/Sources/<Title>.<ext>",
+      "reviewable": true,
+      "generation_recall": "optional_topic_then_document_after_install",
+      "write_policy": "regenerate_in_place_after_reading_existing",
+      "anki_policy": "evaluated_drill_only"
+    },
+    "study-review": {
+      "title": "Study Review",
+      "description": "Run memory-enabled Socratic review from a vault document or weak-spot queue.",
+      "argument_hint": "[topic-or-document-or-review-request]",
+      "contract": ".agents/shared/commands/study-review-startup.md",
+      "modules": [
+        ".agents/shared/commands/study-review-turn.md",
+        ".agents/shared/commands/study-review-vault-repair.md",
+        ".agents/shared/commands/study-review-end.md"
+      ],
+      "vault_destination": null,
+      "reviewable": false,
+      "write_policy": "learner_memory_only",
+      "anki_policy": "evaluated_exchange_only"
+    }
+  }
+}

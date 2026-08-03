@@ -11,7 +11,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import yaml
+try:
+    from vault_schema import parse_frontmatter, split_frontmatter
+except ModuleNotFoundError:  # pragma: no cover - package import in tests
+    from .vault_schema import parse_frontmatter, split_frontmatter
 
 
 DEFAULT_VAULT_ROOT = Path("/Users/gabrielreyes/Documents/Obsidian/agentic-neuro")
@@ -95,33 +98,9 @@ def _target_path(vault_root: Path, title: str) -> Path:
     return vault_root / CONCEPT_DIRNAME / f"{_safe_title(title)}.md"
 
 
-def _bottom_yaml(text: str) -> str | None:
-    lines = text.splitlines()
-    while lines and not lines[-1].strip():
-        lines.pop()
-    if not lines or lines[-1].strip() != "---":
-        return None
-    close = len(lines) - 1
-    open_idx = next((idx for idx in range(close - 1, -1, -1) if lines[idx].strip() == "---"), None)
-    if open_idx is None:
-        return None
-    return "\n".join(lines[open_idx + 1 : close])
-
-
-def _parse_bottom_yaml(text: str) -> dict[str, Any]:
-    yaml_text = _bottom_yaml(text)
-    if yaml_text is None:
-        return {}
-    try:
-        parsed = yaml.safe_load(yaml_text)
-    except yaml.YAMLError:
-        return {}
-    return parsed if isinstance(parsed, dict) else {}
-
-
 def _section_body(text: str, heading: str) -> str | None:
     match = re.search(
-        rf"^## {re.escape(heading)}\s*$([\s\S]*?)(?=^## |\n---\n|\Z)",
+        rf"^## {re.escape(heading)}\s*$([\s\S]*?)(?=^## |\Z)",
         text,
         flags=re.M,
     )
@@ -144,59 +123,59 @@ def _domain_tokens(value: Any) -> set[str]:
 
 def validate_text(text: str, *, path: Path) -> ValidationResult:
     errors: list[str] = []
-    stripped = text.lstrip()
-    if stripped.startswith("# "):
+    body, parsed_meta = split_frontmatter(text)
+    meta = parsed_meta or {}
+    if body.lstrip().startswith("# "):
         errors.append("concept note must not start with an H1 heading")
-    if stripped.startswith("---\n"):
-        errors.append("concept metadata belongs in bottom YAML")
-    if not re.search(r"^\*\*[^*\n]+?\*\*:\s+\S", text, flags=re.M):
+    if not re.search(r"^\*\*[^*\n]+?\*\*:\s+\S", body, flags=re.M):
         errors.append("concept note must open with a bold concept definition line")
 
     for heading in REQUIRED_HEADINGS:
-        if not re.search(rf"^## {re.escape(heading)}\s*$", text, flags=re.M):
+        if not re.search(rf"^## {re.escape(heading)}\s*$", body, flags=re.M):
             errors.append(f"missing required heading: ## {heading}")
     archetype_count = sum(
-        1 for heading in ARCHETYPE_HEADINGS if re.search(rf"^## {re.escape(heading)}\s*$", text, flags=re.M)
+        1 for heading in ARCHETYPE_HEADINGS if re.search(rf"^## {re.escape(heading)}\s*$", body, flags=re.M)
     )
     if archetype_count < 1:
         errors.append("concept note must include one archetype-specific execution section")
 
     quick_ref = _section_body(text, "Quick Reference")
-    if quick_ref and len(re.findall(r"^\s*[-*]\s+\S", quick_ref, flags=re.M)) < 2:
-        errors.append("Quick Reference must include at least 2 concise bullets")
+    if quick_ref is not None and not re.search(r"^\s*[-*]\s+\S", quick_ref, flags=re.M):
+        errors.append("Quick Reference must include concise bullets")
 
     clinical_use = _section_body(text, "Clinical Use")
-    if clinical_use and len(re.findall(r"\w+", clinical_use)) < 20:
+    if clinical_use is not None and not clinical_use.strip():
         errors.append("Clinical Use must explain the management, diagnostic, operative, or prognostic consequence")
 
     mental_model = _section_body(text, "Durable Mental Model")
-    if mental_model and len(re.findall(r"\w+", mental_model)) < 12:
+    if mental_model is not None and not mental_model.strip():
         errors.append("Durable Mental Model must contain a memorable mechanism, analogy, or decision rule")
 
     discriminators = _section_body(text, "Critical Discriminators")
-    if discriminators and len(re.findall(r"^\s*[-*]\s+\S", discriminators, flags=re.M)) < 2:
-        errors.append("Critical Discriminators must include at least 2 bullets")
+    if discriminators is not None and not re.search(r"^\s*[-*]\s+\S", discriminators, flags=re.M):
+        errors.append("Critical Discriminators must include clinically meaningful contrast bullets")
 
     execution = _section_body(text, "Execution Check")
-    if execution and len(re.findall(r"^\s*[-*]\s+\S", execution, flags=re.M)) < 2:
-        errors.append("Execution Check must include at least 2 action-oriented bullets")
+    if execution is not None and not re.search(r"^\s*[-*]\s+\S", execution, flags=re.M):
+        errors.append("Execution Check must include action-oriented bullets")
 
     related = _section_body(text, "Related In This Vault")
-    if related and not WIKILINK_RE.search(related):
-        errors.append("Related In This Vault must include at least one wikilink")
+    if related is not None and not (
+        WIKILINK_RE.search(related)
+        or re.search(r"no\s+(?:verified\s+)?related\s+(?:vault\s+)?(?:note|artifact|link)", related, flags=re.I)
+    ):
+        errors.append("Related In This Vault requires verified wikilinks or an explicit no-related-note statement")
 
     references = _section_body(text, "References")
-    if NUMERIC_OR_EVIDENCE_RE.search(text) and (not references or not REFERENCE_LINK_RE.search(references)):
+    if NUMERIC_OR_EVIDENCE_RE.search(body) and (not references or not REFERENCE_LINK_RE.search(references)):
         errors.append("trial, guideline, numeric, or classification claims require linked References")
 
-    yaml_text = _bottom_yaml(text)
-    if yaml_text is None:
-        errors.append("missing bottom YAML metadata block")
-    meta = _parse_bottom_yaml(text)
+    if not meta:
+        errors.append("missing or invalid native YAML frontmatter")
     if meta:
         missing = REQUIRED_METADATA_KEYS - set(meta)
         for key in sorted(missing):
-            errors.append(f"bottom YAML missing key: {key}")
+            errors.append(f"frontmatter missing key: {key}")
         tags = meta.get("tags")
         tag_values: set[str] = set()
         if isinstance(tags, (list, tuple)):
@@ -204,15 +183,15 @@ def validate_text(text: str, *, path: Path) -> ValidationResult:
         elif isinstance(tags, str):
             tag_values.update(token.strip() for token in re.split(r"[,\s]+", tags) if token.strip())
         if "type/concept" not in tag_values:
-            errors.append("bottom YAML tags must include type/concept")
+            errors.append("frontmatter tags must include type/concept")
         if "source/agent" not in tag_values:
-            errors.append("bottom YAML tags must include source/agent")
+            errors.append("frontmatter tags must include source/agent")
         domains = _domain_tokens(meta.get("domain"))
         if not domains & CANONICAL_DOMAINS:
-            errors.append("bottom YAML domain must include a canonical domain slug")
+            errors.append("frontmatter domain must include a canonical domain slug")
         summary = meta.get("summary")
         if not isinstance(summary, str) or len(summary.split()) < 5:
-            errors.append("bottom YAML summary must be a useful one-line index summary")
+            errors.append("frontmatter summary must be a useful one-line index summary")
 
     return ValidationResult(str(path), errors)
 
@@ -245,11 +224,17 @@ def install_draft(
     *,
     vault_root: Path = DEFAULT_VAULT_ROOT,
     allow_protected: bool = False,
+    allow_existing: bool = False,
 ) -> ValidationResult:
     safe_title = _safe_title(title)
     target = _target_path(vault_root, safe_title)
     if target.name in PROTECTED_FILENAMES and not allow_protected:
         return ValidationResult(str(target), ["protected concept note requires explicit allow_protected"])
+    if target.exists() and not allow_existing:
+        return ValidationResult(
+            str(target),
+            ["concept note already exists; read and merge it, then pass allow_existing"],
+        )
 
     source_result = validate_file(draft)
     if not source_result.ok:
@@ -276,6 +261,7 @@ def main() -> None:
     install_parser.add_argument("--draft", required=True)
     install_parser.add_argument("--title", required=True)
     install_parser.add_argument("--allow-protected", action="store_true")
+    install_parser.add_argument("--allow-existing", action="store_true")
 
     args = parser.parse_args()
     vault_root = Path(args.vault_root)
@@ -287,6 +273,7 @@ def main() -> None:
             args.title,
             vault_root=vault_root,
             allow_protected=args.allow_protected,
+            allow_existing=args.allow_existing,
         )
 
     print(_json_dumps(result.to_dict()))

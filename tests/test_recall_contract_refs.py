@@ -1,12 +1,33 @@
 from pathlib import Path
+import json
+import re
 import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def _normalized(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip()
+
+
 class RecallContractReferenceTests(unittest.TestCase):
     def test_cross_agent_study_review_adapters_require_startup_recall(self) -> None:
+        registry = json.loads(
+            (ROOT / ".agents/shared/workflow-registry.json").read_text()
+        )["workflows"]["study-review"]
+        self.assertEqual(
+            registry["contract"],
+            ".agents/shared/commands/study-review-startup.md",
+        )
+        self.assertEqual(
+            registry["modules"],
+            [
+                ".agents/shared/commands/study-review-turn.md",
+                ".agents/shared/commands/study-review-vault-repair.md",
+                ".agents/shared/commands/study-review-end.md",
+            ],
+        )
         paths = (
             ".agents/codex/skills/study-review/SKILL.md",
             ".claude/commands/study-review.md",
@@ -17,12 +38,8 @@ class RecallContractReferenceTests(unittest.TestCase):
             with self.subTest(path=relative_path):
                 text = (ROOT / relative_path).read_text()
                 self.assertIn(".agents/shared/commands/study-review-startup.md", text)
-                self.assertIn(".agents/shared/commands/study-review-turn.md", text)
-                self.assertIn(".agents/shared/commands/study-review-end.md", text)
                 self.assertNotIn("Read and follow `.agents/shared/commands/study-review.md`", text)
-                self.assertIn("startup-recall", text)
-                self.assertIn("planning_brief", text)
-                self.assertNotIn("vault intelligence", text.lower())
+                self.assertLessEqual(len(text.split()), 120)
 
     def test_shared_learning_startup_contract_uses_orchestrated_recall(self) -> None:
         paths = (
@@ -114,21 +131,26 @@ class RecallContractReferenceTests(unittest.TestCase):
 
     def test_study_review_startup_stays_quiet_and_fast(self) -> None:
         study_review = (ROOT / ".agents/shared/commands/study-review-startup.md").read_text()
+        normalized_startup = _normalized(study_review)
         root = (ROOT / "AGENTS.md").read_text()
-        self.assertIn("Startup is silent", study_review)
-        self.assertIn("Do not narrate contract loading", study_review)
-        self.assertIn("Do not load Anki card-quality", study_review)
-        self.assertIn("do not run audit expansion before the first question", study_review)
-        self.assertIn("Ask one question and stop", study_review)
-        self.assertIn("Use `handoff.next_action` privately", study_review)
-        self.assertIn("Do not quote `handoff.summary`", study_review)
+        normalized_root = _normalized(root)
+        for invariant in (
+            "Startup is silent",
+            "Do not narrate contract loading",
+            "Do not load Anki card-quality",
+            "do not run audit expansion before the first question",
+            "ask one clinical question and stop",
+            "Use `handoff.next_action` privately",
+            "Do not quote `handoff.summary`",
+        ):
+            self.assertIn(invariant, normalized_startup)
         self.assertNotIn("open with a one-sentence recap", study_review)
         self.assertNotIn("brief returning-session recap", study_review)
         self.assertNotIn("recap/question pattern", study_review)
-        self.assertIn("For `study-review` startup", root)
-        self.assertIn("Do not announce the workflow or send progress updates during this pre-question phase unless blocked", root)
-        self.assertIn("one clinical question", root)
-        self.assertIn("Do not narrate `handoff.summary`", root)
+        self.assertIn("For `study-review` startup", normalized_root)
+        self.assertIn("do not announce the workflow or send progress updates during this pre-question phase unless blocked", normalized_root)
+        self.assertIn("one clinical question", normalized_root)
+        self.assertIn("Do not narrate `handoff.summary`", normalized_root)
         self.assertNotIn("vault-intelligence.md", study_review)
         self.assertNotIn("vault_retriever.py", study_review)
         self.assertNotIn("weak-spot-review", study_review)
@@ -142,14 +164,10 @@ class RecallContractReferenceTests(unittest.TestCase):
         ):
             with self.subTest(adapter=relative_path):
                 adapter_text = (ROOT / relative_path).read_text()
-                adapter = adapter_text.lower()
-                self.assertIn("Startup is silent", adapter_text)
-                self.assertIn("Do not", adapter_text)
-                self.assertIn("intermediary progress updates", adapter_text)
-                self.assertIn("one clinical question", adapter_text)
-                self.assertIn("Do not narrate `handoff.summary`", adapter_text)
-                self.assertNotIn("recap/calibration question", adapter_text)
-                self.assertNotIn("vault intelligence", adapter)
+                self.assertIn("study-review-startup.md", adapter_text)
+                self.assertLessEqual(len(adapter_text.split()), 120)
+                self.assertNotIn("Startup is silent", adapter_text)
+                self.assertNotIn("planning_brief", adapter_text)
 
         retrieval = (ROOT / ".agents/shared/commands/memory-retrieval.md").read_text()
         self.assertIn("no pre-question audit command", retrieval)
@@ -201,8 +219,30 @@ class RecallContractReferenceTests(unittest.TestCase):
         for relative_path in ("AGENTS.md", "CLAUDE.md", "GEMINI.md"):
             with self.subTest(path=relative_path):
                 text = (ROOT / relative_path).read_text()
-                self.assertIn("startup-recall", text)
-                self.assertIn("Raw `summary`", text)
+                normalized = _normalized(text).lower()
+                self.assertIn("startup-recall", normalized)
+                self.assertIn("raw `summary`", normalized)
+
+    def test_root_clinical_answer_doctrine_separates_broad_teaching_from_urgent_consult(self) -> None:
+        root = _normalized((ROOT / "AGENTS.md").read_text()).lower()
+        for fragment in (
+            "## clinical answer doctrine",
+            "broad disease-management question",
+            "chief-resident/attending-level teaching",
+            "concrete patient, task, or immediate decision",
+            "compact operational bottom line",
+            "how each variable changes the branch",
+            "missed variable → changed decision branch → clinical consequence → future recognition cue",
+            "hard guideline/standard",
+            "institution- or attending-dependent practice",
+            "unknown unknowns",
+            "do not route it to a workflow solely because it asks about management",
+        ):
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, root)
+
+        self.assertFalse((ROOT / ".agents/shared/commands/clinical-answer.md").exists())
+        self.assertFalse((ROOT / ".agents/codex/skills/clinical-answer").exists())
 
     def test_service_log_adapters_point_to_shared_contract(self) -> None:
         paths = (
@@ -219,8 +259,6 @@ class RecallContractReferenceTests(unittest.TestCase):
 
     def test_service_log_adapters_are_clean_current_product_language(self) -> None:
         paths = (
-            "AGENTS.md",
-            ".agents/shared/commands/service-log.md",
             ".agents/codex/skills/service-log/SKILL.md",
             ".claude/commands/service-log.md",
             ".gemini/commands/service-log.md",
@@ -238,11 +276,11 @@ class RecallContractReferenceTests(unittest.TestCase):
             text = (ROOT / relative_path).read_text()
             with self.subTest(path=relative_path):
                 self.assertIn("service", text.lower())
-                self.assertIn("brain-dump", text)
+                self.assertIn(".agents/shared/commands/service-log.md", text)
                 for fragment in stale_fragments:
                     self.assertNotIn(fragment, text)
 
-    def test_service_log_contract_routes_through_brain_dump_with_service_memory(self) -> None:
+    def test_service_log_contract_routes_through_shift_debrief_with_service_memory(self) -> None:
         contract = (ROOT / ".agents/shared/commands/service-log.md").read_text()
         implementation = (ROOT / "src/study_memory.py").read_text()
         for command in (
@@ -258,27 +296,27 @@ class RecallContractReferenceTests(unittest.TestCase):
                 self.assertIn(flag, contract)
                 self.assertIn(flag, implementation)
         self.assertIn("service-debrief entry point", contract)
-        self.assertIn(".agents/shared/commands/brain-dump.md", contract)
+        self.assertIn(".agents/shared/commands/shift-debrief.md", contract)
         self.assertIn("service", implementation)
 
-    def test_brain_dump_contract_owns_service_memory_and_candidates(self) -> None:
-        contract = (ROOT / ".agents/shared/commands/brain-dump.md").read_text()
+    def test_shift_debrief_contract_owns_service_memory_and_candidates(self) -> None:
+        contract = (ROOT / ".agents/shared/commands/shift-debrief.md").read_text()
         for fragment in (
-            "brain-dump-candidate-add",
-            "--brain-dump-candidate-id",
+            "shift-debrief-candidate-add",
+            "--shift-debrief-candidate-id",
             "startup-recall --lens service",
             "Neurosurgery::Service Learning",
-            "Do you want to complete a quick Socratic lesson on these items?",
+            "canned closing sentence",
         ):
             with self.subTest(contract_fragment=fragment):
                 self.assertIn(fragment, contract)
 
-    def test_root_agent_instructions_route_service_log_through_brain_dump(self) -> None:
+    def test_root_agent_instructions_route_service_log_through_shift_debrief(self) -> None:
         for relative_path in ("AGENTS.md", "CLAUDE.md", "GEMINI.md"):
             with self.subTest(path=relative_path):
                 text = (ROOT / relative_path).read_text()
                 self.assertIn("service-log", text)
-                self.assertIn("brain-dump", text)
+                self.assertIn("shift-debrief", text)
 
     def test_vault_intelligence_contract_preserves_knowledge_boundary(self) -> None:
         contract = (ROOT / ".agents/shared/commands/vault-intelligence.md").read_text()
@@ -407,10 +445,7 @@ class RecallContractReferenceTests(unittest.TestCase):
             ".agents/shared/commands/generate-report.md",
             ".agents/shared/commands/intraoperative-guide.md",
             ".agents/shared/commands/grand-rounds.md",
-            ".agents/shared/commands/brain-dump.md",
-            "plugins/agentic-neuro/commands/consult.md",
-            "plugins/agentic-neuro/commands/intraoperative-guide.md",
-            "plugins/agentic-neuro/commands/study-material.md",
+            ".agents/shared/commands/shift-debrief.md",
         )
         for relative_path in paths:
             with self.subTest(path=relative_path):
@@ -422,7 +457,7 @@ class RecallContractReferenceTests(unittest.TestCase):
             ".agents/shared/commands/generate-report.md",
             ".agents/shared/commands/intraoperative-guide.md",
             ".agents/shared/commands/grand-rounds.md",
-            ".agents/shared/commands/brain-dump.md",
+            ".agents/shared/commands/shift-debrief.md",
         ):
             with self.subTest(tool_path=relative_path):
                 self.assertIn("vault_retriever.py", (ROOT / relative_path).read_text())
@@ -432,7 +467,7 @@ class RecallContractReferenceTests(unittest.TestCase):
             ".agents/shared/commands/generate-report.md",
             ".agents/shared/commands/intraoperative-guide.md",
             ".agents/shared/commands/grand-rounds.md",
-            ".agents/shared/commands/brain-dump.md",
+            ".agents/shared/commands/shift-debrief.md",
         ):
             with self.subTest(recall_tool_path=relative_path):
                 self.assertIn("vault_retriever.py recall", (ROOT / relative_path).read_text())
@@ -476,7 +511,7 @@ class RecallContractReferenceTests(unittest.TestCase):
         self.assertIn(".agents/shared/commands/adaptive-teaching-doctrine.md", contract)
         self.assertIn("Tutor voice, teaching modes", contract)
         self.assertIn("field-to-teaching-move mapping", contract)
-        self.assertIn("tutor voice, teaching modes", root)
+        self.assertIn("tutor voice, teaching modes", _normalized(root))
         self.assertIn("repetition avoidance", root)
 
     def test_session_synthesis_is_not_logged_as_claim_state(self) -> None:
@@ -502,7 +537,10 @@ class RecallContractReferenceTests(unittest.TestCase):
         root = (ROOT / "AGENTS.md").read_text()
         self.assertIn("Postures are subordinate to the deterministic policy", doctrine)
         self.assertIn("the user picks the posture, the policy picks the phase", doctrine)
-        self.assertIn("posture subordinate to the deterministic teaching policy", root)
+        self.assertIn(
+            "posture subordinate to the deterministic teaching policy",
+            _normalized(root),
+        )
 
     def test_signal_precedence_order_is_defined_once(self) -> None:
         doctrine = (ROOT / ".agents/shared/commands/adaptive-teaching-doctrine.md").read_text()
@@ -560,13 +598,16 @@ class RecallContractReferenceTests(unittest.TestCase):
         self.assertIn("--stats-json", end)
         self.assertIn("--stats-json", memory_ops)
 
-    def test_gemini_adapter_runs_full_session_end_in_order(self) -> None:
+    def test_shared_session_end_owns_order_and_gemini_adapter_stays_thin(self) -> None:
         gemini = (ROOT / ".gemini/commands/study-review.md").read_text()
-        self.assertIn("end-session", gemini)
-        self.assertIn("Synthesis challenge", gemini)
-        self.assertIn("memory-curation.md", gemini)
+        end = (ROOT / ".agents/shared/commands/study-review-end.md").read_text()
+        self.assertIn("end-session", end)
+        self.assertIn("Synthesis", end)
+        self.assertIn("memory-curation.md", end)
         # end-session must come before the Anki queue work.
-        self.assertLess(gemini.index("end-session"), gemini.index("anki_queue.py review"))
+        self.assertLess(end.index("end-session"), end.index("anki_queue.py review"))
+        self.assertIn("study-review-startup.md", gemini)
+        self.assertLessEqual(len(gemini.split()), 120)
         # The TOML wrapper must not preload the orchestration index at startup.
         toml = (ROOT / ".gemini/commands/study-review.toml").read_text()
         self.assertNotIn("@{.agents/shared/commands/learning-session-contract.md}", toml)

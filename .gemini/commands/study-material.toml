@@ -1,17 +1,11 @@
-description = "Generate study material from PDF/PPTX and run interactive drill with KG logging"
+description = "Generate validated study material from a source or drill an existing note."
 
 prompt = """
-ACTIVE COMMAND: /study-material — two-phase: generate study material, then run an interactive drill.
+ACTIVE COMMAND: /study-material
+User input: {{args}}
 
-You MUST read and follow `.agents/shared/commands/study-material.md` end-to-end; it owns the generation gates, document-profile drill modes, memory hooks, and validation. Invisible bookkeeping: do not print shell commands or raw outputs for these hooks.
+Read `.agents/shared/workflow-registry.json`, then read and follow the canonical
+contract below. Do not infer behavioral policy from this adapter.
 
-Gemini guardrails (do not let these slip):
-- ATOMIC EXTRACTION: never make questions from slide titles. Enumerate substantive chunks, then AF-### atomic facts, then map questions to TU-XX/AF-### — one slide -> one topic -> one question is a failed generation.
-- Validate the real vault file through src/study_material_guard.py before claiming success or drilling; never use the repo-local Documents/Obsidian shadow path as the vault.
-
-User's request: {{args}}
-
----
-
-@{.gemini/commands/study-material.md}
+@{.agents/shared/commands/study-material.md}
 """

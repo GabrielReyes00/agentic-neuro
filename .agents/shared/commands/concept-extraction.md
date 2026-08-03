@@ -8,7 +8,8 @@ Run this only after a real vault artifact write for workflows that create durabl
 
 ## Target
 
-Write 2-5 atomic concepts worth future wikilinking to:
+Write 0-5 atomic concepts worth future wikilinking to. Zero is the correct
+result when the source adds no genuinely new reusable concept:
 
 ```text
 /Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Concepts/<Concept Name>.md
@@ -16,7 +17,14 @@ Write 2-5 atomic concepts worth future wikilinking to:
 
 Select concepts that are likely to recur across reports, guides, consults, study sessions, presentations, or Anki cards. Prefer concepts with clinical leverage: anatomy that changes exposure, a trial that changes selection, a sign that changes escalation, a classification that changes strategy, or a threshold that changes management.
 
-Protected notes require explicit user approval before overwrite:
+Before drafting, search `Concepts/`, the vault index, and aliases for the same
+memory trace. If a concept already exists, read it completely and merge only
+nonduplicative source-supported material into a complete revised draft. Never
+overwrite an existing concept without that review. Pass `--allow-existing` only
+after the merge has been performed.
+
+These especially sensitive notes also require explicit user approval and
+`--allow-protected` before any update:
 
 - `Neurosurgery Consult Workflow.md`
 - `Neurosurgery Consult Checklists by Pathology.md`
@@ -73,7 +81,7 @@ Keep the card compact. A concept card is deeper than a glossary entry but shorte
 
 ## Metadata
 
-Every concept card closes with bottom YAML:
+Every concept card begins with native Obsidian frontmatter:
 
 ```markdown
 ---
@@ -103,10 +111,13 @@ python3 src/concept_guard.py validate \
 
 Parse guard JSON silently. Surface only pass/fail, installed path, and actionable structure errors.
 
+For a reviewed merge, add `--allow-existing`. For a protected-note merge, add
+both `--allow-existing --allow-protected` only after explicit user approval.
+
 After writing concept cards, regenerate the domain-grouped index:
 
 ```bash
 python3 src/index_builder.py Concepts
 ```
 
-The builder groups by bottom YAML `domain:` or `domain/<slug>` tags and uses `summary:` for the index detail line.
+The builder groups by frontmatter `domain:` or `domain/<slug>` tags and uses `summary:` for the index detail line.

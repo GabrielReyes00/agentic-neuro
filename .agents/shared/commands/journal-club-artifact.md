@@ -12,7 +12,7 @@ Write only through `src/journal_club_guard.py`:
 ```
 
 Use a Title Case article title without author names, dates, skill prefixes, or
-version suffixes. Do not use an H1. Put YAML only at the bottom.
+version suffixes. Do not use an H1. Put YAML only in native top-of-file frontmatter.
 
 ## Required Dossier Structure
 
@@ -52,8 +52,8 @@ rescue treatment meaningful. Avoid repeating `Start Here` in expanded prose.
 ### `## Essential Concepts for This Paper`
 
 Explain only the scales, devices, classifications, methods, and effect measures
-needed to understand this article. Use at least two complete translation triplets
-when the paper contains unfamiliar technical concepts:
+needed to understand this article. Use a complete translation triplet whenever
+an unfamiliar technical concept materially needs one; impose no quota:
 
 ```markdown
 **Technical concept:** ...
@@ -188,7 +188,7 @@ Include the assigned article first, followed by directly used external sources.
 Use linked DOI, PubMed, PMC, guideline, registry, or publisher pages. Do not include
 sources that support no claim in the dossier.
 
-## Bottom YAML
+## Native Obsidian Frontmatter
 
 Required fields:
 
@@ -197,13 +197,13 @@ aliases: []
 article_title: "<full article title>"
 authors: "<author list or compact citation authors>"
 journal: "<journal>"
-year: 2026
+year: <publication year>
 doi: "<DOI or empty string>"
 source_pdf: "Journal Club/Sources/<Short Article Title>.pdf"
 source_package_status: complete
 domain: functional
 summary: "<one-line article-specific summary>"
-generated: 2026-06-22
+generated: YYYY-MM-DD
 skill: journal-club
 tags: [skill/journal-club, type/article, domain/functional, source/article]
 ```
@@ -214,54 +214,38 @@ protocol or supplement exists.
 
 ## Quality Gate
 
-Before installation, verify:
+Before installation, verify these outcome groups:
 
-1. Article identity and source-package status are accurate.
-2. The full available PDF was inspected textually and visually.
-3. The foundation precedes complex methods and results.
-4. Technical terminology is preserved and translated where needed.
-5. Every decisive result includes denominator, magnitude, uncertainty when
-   available, and an exact locator.
-6. Reported and calculated values are distinguishable.
-7. Abstract, body, tables, figures, and supplements were reconciled.
-8. Statistical significance is not substituted for clinical meaning.
-9. Limitations are consequence-framed and do not drift into checklist audit.
-10. Authors' conclusion, defensible conclusion, and overclaim are distinct.
-11. Publication-era and current contexts are separated.
-12. Practice verdict names the applicable population and evidentiary boundary.
-13. Faculty questions are article-specific and answerable from the dossier.
-14. References support claims actually made.
-15. No learner mastery is inferred from artifact generation.
-16. The resident foundation links syndrome, anatomy, pathophysiology, diagnostic
-    concordance, treatment selection, operative target, and decision consequence
-    wherever applicable.
-17. Technical vocabulary is precise enough for a neurosurgical audience and is
-    translated rather than diluted.
-18. The literature lineage states what preceded, motivated, replicated,
-    contradicted, refined, or superseded the article.
-19. The dossier explains the article's specific durable contribution rather than
-    relying on labels such as landmark or practice-changing.
-20. A final adversarial read asks: could a resident use this dossier to explain
-    the clinical problem, defend the methods and numbers, localize the operative
-    consequence, and answer why the paper matters to neurosurgeons today? Repair
-    every unsupported or missing link before installation.
-21. `Clinical Foundation` has a genuinely faster orientation layer and a deeper
-    resident model; neither merely repeats `Start Here` or the other.
-22. The paper's teaching archetype is preserved: strategy trials foreground
-    treatment trajectory, failure-map series foreground operative failure points,
-    and other designs use their corresponding decision logic.
-23. Figures and tables are prioritized by presentation job and projection value,
-    including operative/anatomic teaching when it is central.
-24. The dossier's opening and Presentation Core prioritize thesis-determining and
-    decision-relevant content even when the reference body is comprehensive.
+- **Source fidelity:** identity/status are accurate; every available page was
+  inspected textually and visually; abstract, body, tables, figures, and
+  supplements were reconciled; reported and calculated values stay distinct.
+- **Teaching order:** Rapid Orientation is truly fast, Resident Deep Model is
+  causal and nonduplicative, terminology is preserved/translated, and the
+  design archetype controls the reasoning sequence.
+- **Results:** decisive findings carry denominator, effect magnitude,
+  uncertainty when available, and exact locator; clinical meaning is not
+  replaced by statistical significance.
+- **Interpretation:** conclusions and overclaim are distinct; limitations name
+  consequence/bias direction; applicability and practice verdict are bounded.
+- **Context:** publication-era and current evidence remain separate; literature
+  lineage states what sources contributed, contested, refined, or superseded.
+- **Presentation readiness:** figures/tables have a projection job, Presentation
+  Core prioritizes thesis/decision evidence, and faculty questions are
+  article-specific and answerable.
+- **Provenance and learning:** every reference supports a real claim; artifact
+  generation creates no mastery evidence.
+
+Finish with an adversarial read: can a resident explain the clinical problem,
+defend methods and numbers, localize the operative consequence, and state why
+the paper matters today? Repair unsupported or missing links.
 
 Then run the guard. A structural pass does not excuse weak reasoning; read the
 installed dossier end to end and repair content failures before completion.
 
 ## Optional Mastery Modes
 
-Artifact generation ends before learner-memory startup. If Gabriel opts in, set one
-`SESSION_TS` and run:
+Artifact generation ends before learner-memory startup. If Gabriel opts in, set
+one `SESSION_TS`, read the entire dossier, and run:
 
 ```bash
 python3 src/study_memory.py startup-recall \
@@ -274,37 +258,15 @@ python3 src/study_memory.py startup-recall \
 Read the full dossier; Mastery Objectives are a coverage checksum, not a substitute
 for the body.
 
-### Guided Mastery
+Guided Mastery proceeds clinical problem → need → architecture → decisive results →
+interpretation-changing limitations → consequence. Faculty Defense compresses
+scaffolding and tests thesis, denominator-aware numbers, causal limits, strongest
+limitation/direction, applicability, and practice effect. Combined Preparation
+builds the model before adversarial defense.
 
-Build the paper in dependency order:
-
-1. Clinical problem and treatment landscape
-2. Why the paper was needed
-3. Study architecture
-4. Decisive results
-5. Interpretation-changing limitations
-6. Neurosurgical consequence
-
-Ask one question at a time and stop. Start with a clinical decision or conceptual
-thesis, not statistical vocabulary. After each answer, grade briefly, teach the
-next needed layer, and ask a deeper follow-up.
-
-### Faculty Defense
-
-Use compressed, adversarial but fair questioning. Require the learner to state:
-
-- The thesis without notes
-- Decisive numbers with denominators
-- Why the design can or cannot support the claim
-- The strongest limitation and its direction
-- The applicable patient population
-- Whether and how practice should change
-
-### Combined Preparation
-
-Run Guided Mastery to stable conceptual understanding, then Faculty Defense with
-reduced scaffolding. Do not start adversarial defense before the foundational model
-is coherent.
+Ask one question and stop. Grade after commitment, then reveal only the next
+needed layer. Do not lead with statistical vocabulary when the clinical model is
+not yet coherent.
 
 For every assessed answer, follow `memory-operations.md` with
 `--skill "journal-club"` and the document path. Create Anki cards only from

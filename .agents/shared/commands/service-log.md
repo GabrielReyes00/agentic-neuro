@@ -1,32 +1,32 @@
 # Service Log
 
-`/service-log` is the service-debrief entry point for clinical experience capture. It uses the `/brain-dump` artifact workflow and preserves service/site memory primitives for local conventions, operational habits, and rotation-specific learning.
+`/service-log` is the service-debrief entry point to
+`.agents/shared/commands/shift-debrief.md`. Follow that artifact workflow while
+preserving site/service provenance for rotations, local conventions, and
+operational habits.
 
-If `/service-log` is invoked, follow `.agents/shared/commands/brain-dump.md` and apply these service-memory rules:
+## Service Context
 
-- De-identify before retrieval, teaching, memory writes, Anki, or vault persistence.
-- Use the Brain Dump workflow's artifact write and atomic review-candidate logging.
-- For local service/site knowledge, resolve or start the rotation, then log candidates and evaluated Socratic answers with `--origin service`, `--rotation <id>`, and `--convention` when the teaching is a site-local habit, order set, workflow, or preference.
-- For portable clinical knowledge, use `--origin assessed` so general topic review can surface it.
-- Service-specific recall still uses `startup-recall --lens service --service "<service>" --site "<site>"`.
-- Do not create Anki cards during capture; create cards only after evaluated Socratic answers.
-
-## Backend Primitives Kept
-
-The service-memory backend remains active and is used by `/brain-dump` when needed:
+De-identify first. Resolve the active rotation:
 
 ```bash
 python3 src/study_memory.py rotation-current
 python3 src/study_memory.py rotation-start --service "<service>" --site "<site>" [--pgy <n>] [--block "<label>"]
 ```
 
-Use `rotation-start` only when no active rotation exists or the dictation names a different service/site. Capture `rotation_id` when returned; `log-answer --origin service` may otherwise use the active rotation.
+Use `rotation-start` only when there is no active rotation or the debrief names a
+different service/site. Preserve the returned rotation identifier.
 
-Retrieve service memory using the service-specific `startup-recall` command from `memory-operations.md`.
+- Portable clinical teaching uses `--origin assessed`.
+- A site/service habit, order set, workflow, or preference uses `--origin
+  service`, the rotation identifier, and `--convention` when applicable.
+- Service-specific context uses `startup-recall --lens service --service
+  "<service>" --site "<site>"`.
+- `service_gaps` leads the queue; `conventions` are locally confirmable reminders;
+  `formal_secondary` is capped supporting evidence; `rubric_open` may steer
+  competency targets. Honor `weighting_policy: service_primary_formal_capped`.
 
-Interpret the payload as:
-- `service_gaps`: primary queue.
-- `conventions`: site-local reminders, not universal teaching.
-- `formal_secondary`: capped formal support available when Gabriel explicitly asks to compare local practice against formal knowledge.
-- `rubric_open`: competency targets worth steering toward.
-- `weighting_policy: service_primary_formal_capped`: lead with service gaps; formal material can inform, not dominate.
+Use Shift Debrief installation and `shift-debrief-candidate-add` semantics.
+Initial capture creates no Anki cards or mastery. If Gabriel accepts Socratic
+review, evaluated local answers retain `--origin service` and local provenance;
+evaluated portable knowledge retains the assessed namespace.

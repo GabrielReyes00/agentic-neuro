@@ -195,7 +195,7 @@ def _batch_duplicate_details(
 # ── enqueue ─────────────────────────────────────────────────────────
 
 _DECK_RE = re.compile(r"^Neurosurgery::.+::.+$")
-BRAIN_DUMP_DECK = "Neurosurgery::Brain Dumps"
+SHIFT_DEBRIEF_DECK = "Neurosurgery::Shift Debriefs"
 
 
 def _metadata_slug(text: object) -> str:
@@ -243,14 +243,14 @@ def _validate_enqueue(
     if len(text.split()) < 4:
         problems.append(f"Card text too short ({len(text.split())} words, min 4)")
     parsed_tags = {tag.strip() for tag in tags.split(",") if tag.strip()}
-    if deck != BRAIN_DUMP_DECK and not _DECK_RE.match(deck):
+    if deck != SHIFT_DEBRIEF_DECK and not _DECK_RE.match(deck):
         problems.append(
-            f"Deck must be Neurosurgery::<Domain>::<Topic> or {BRAIN_DUMP_DECK}, got: '{deck}'"
+            f"Deck must be Neurosurgery::<Domain>::<Topic> or {SHIFT_DEBRIEF_DECK}, got: '{deck}'"
         )
-    if deck == BRAIN_DUMP_DECK and "brain-dump" not in parsed_tags:
-        problems.append("Cards in Neurosurgery::Brain Dumps must include the brain-dump tag")
-    if "brain-dump" in parsed_tags and deck != BRAIN_DUMP_DECK:
-        problems.append("Cards tagged brain-dump must use the Neurosurgery::Brain Dumps deck")
+    if deck == SHIFT_DEBRIEF_DECK and "shift-debrief" not in parsed_tags:
+        problems.append("Cards in Neurosurgery::Shift Debriefs must include the shift-debrief tag")
+    if "shift-debrief" in parsed_tags and deck != SHIFT_DEBRIEF_DECK:
+        problems.append("Cards tagged shift-debrief must use the Neurosurgery::Shift Debriefs deck")
     if card_type == "cloze" and "{{c1::" not in text:
         problems.append("Cloze card missing {{c1::...}} blank")
     return problems

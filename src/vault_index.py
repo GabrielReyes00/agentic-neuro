@@ -23,7 +23,10 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
-import yaml
+try:
+    from vault_schema import parse_frontmatter, split_frontmatter
+except ModuleNotFoundError:  # pragma: no cover - package import in tests
+    from .vault_schema import parse_frontmatter, split_frontmatter
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -40,12 +43,13 @@ INDEX_FOLDERS = (
     "Reports",
     "Study Material",
     "Operative Guides",
-    "Brain Dumps",
+    "Shift Debriefs",
     "Concepts",
     "Consults",
     "Journal Club",
     "Reference",
     "Presentations",
+    "Residency",
 )
 
 SECTION_ALIASES: dict[str, str] = {
@@ -103,6 +107,13 @@ TASK_SECTION_POLICY: dict[str, tuple[str, ...]] = {
         "durable_mental_model",
         "execution_check",
         "quick_reference",
+        "clinical_synthesis",
+        "related",
+    ),
+    "study-material-generation": (
+        "quick_reference",
+        "critical_discriminators",
+        "durable_mental_model",
         "clinical_synthesis",
         "related",
     ),
@@ -171,10 +182,21 @@ TASK_SECTION_POLICY: dict[str, tuple[str, ...]] = {
         "references",
         "related",
     ),
+    "presentation-generation": (
+        "quick_reference",
+        "clinical_synthesis",
+        "evidence_card",
+        "critical_discriminators",
+        "surgical_coordinates",
+        "imaging_read",
+        "local_clarifications",
+        "related",
+        "references",
+    ),
 }
 
 LOCAL_SECTION_TYPES = {"local_clarifications"}
-SERVICE_FOLDERS = {"Brain Dumps"}
+SERVICE_FOLDERS = {"Shift Debriefs"}
 WIKILINK_RE = re.compile(r"\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|[^\]]+)?\]\]")
 REFERENCE_LINK_RE = re.compile(r"\[([^\]]+)\]\((https?://[^)]+)\)")
 HEADING_RE = re.compile(r"^##\s+(.+?)\s*$", flags=re.M)
@@ -200,6 +222,8 @@ class VaultNote:
     title: str
     folder: str
     note_type: str
+    artifact_type: str
+    status: str
     domain: tuple[str, ...]
     aliases: tuple[str, ...]
     tags: tuple[str, ...]
@@ -208,6 +232,10 @@ class VaultNote:
     created: str
     generated: str
     provenance: str
+    institution: str
+    service: str
+    rotation: str
+    conference: str
     internal_knowledge_used: bool | None
     content_hash: str
     modified_ns: int
@@ -283,57 +311,18 @@ def _normalize_domain(value: Any, tags: Iterable[str]) -> tuple[str, ...]:
     return tuple(out)
 
 
-def _bottom_yaml_bounds(text: str) -> tuple[int, int] | None:
-    lines = text.splitlines()
-    while lines and not lines[-1].strip():
-        lines.pop()
-    if not lines or lines[-1].strip() != "---":
-        return None
-    close_line = len(lines) - 1
-    open_line = next((idx for idx in range(close_line - 1, -1, -1) if lines[idx].strip() == "---"), None)
-    if open_line is None:
-        return None
-    offsets = []
-    pos = 0
-    for line in text.splitlines(keepends=True):
-        offsets.append(pos)
-        pos += len(line)
-    open_offset = offsets[open_line]
-    close_offset = offsets[close_line] + len(lines[close_line])
-    return open_offset, close_offset
-
-
-def parse_bottom_yaml(text: str) -> dict[str, Any]:
-    bounds = _bottom_yaml_bounds(text)
-    if bounds is None:
-        return {}
-    open_offset, close_offset = bounds
-    inner = text[open_offset:close_offset].splitlines()[1:-1]
-    try:
-        parsed = yaml.safe_load("\n".join(inner))
-    except yaml.YAMLError:
-        return {}
-    return parsed if isinstance(parsed, dict) else {}
-
-
-def _body_without_bottom_yaml(text: str) -> str:
-    bounds = _bottom_yaml_bounds(text)
-    if bounds is None:
-        return text.rstrip()
-    return text[: bounds[0]].rstrip()
-
-
 def _note_type(folder: str, tags: tuple[str, ...]) -> str:
     by_folder = {
         "Reports": "report",
         "Study Material": "study_material",
         "Operative Guides": "operative_guide",
-        "Brain Dumps": "brain_dump",
+        "Shift Debriefs": "shift_debrief",
         "Concepts": "concept",
         "Consults": "consult",
         "Journal Club": "journal_club",
         "Reference": "reference",
         "Presentations": "presentation",
+        "Residency": "residency_context",
     }
     for tag in tags:
         if tag.startswith("type/"):
@@ -352,6 +341,41 @@ def _wikilinks(text: str) -> tuple[str, ...]:
         target = match.group(1).strip()
         if target and target not in found:
             found.append(target)
+    return tuple(found)
+
+
+def _link_property(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    match = WIKILINK_RE.search(value)
+    return (match.group(1) if match else value).strip()
+
+
+def _metadata_wikilinks(meta: dict[str, Any]) -> tuple[str, ...]:
+    found: list[str] = []
+    for key in (
+        "institution",
+        "service",
+        "rotation",
+        "conference",
+        "source_file",
+        "source_note",
+        "presentation",
+        "deck_file",
+        "related",
+    ):
+        value = meta.get(key)
+        values = value if isinstance(value, list) else [value]
+        for item in values:
+            if not isinstance(item, str):
+                continue
+            targets = _wikilinks(item)
+            if not targets:
+                target = _link_property(item)
+                targets = (target,) if target else ()
+            for target in targets:
+                if target not in found:
+                    found.append(target)
     return tuple(found)
 
 
@@ -383,8 +407,8 @@ def _token_estimate(text: str) -> int:
 
 def parse_note(path: Path, vault_root: Path) -> tuple[VaultNote, list[VaultSection]]:
     text = path.read_text(encoding="utf-8")
-    body = _body_without_bottom_yaml(text)
-    meta = parse_bottom_yaml(text)
+    body, parsed_meta = split_frontmatter(text)
+    meta = parsed_meta or {}
     rel = path.relative_to(vault_root)
     parts = rel.parts
     folder = parts[0] if parts else ""
@@ -396,6 +420,8 @@ def parse_note(path: Path, vault_root: Path) -> tuple[VaultNote, list[VaultSecti
         title=path.stem,
         folder=folder,
         note_type=_note_type(folder, tags),
+        artifact_type=str(meta.get("artifact_type") or _note_type(folder, tags)).strip(),
+        status=str(meta.get("status") or "current").strip(),
         domain=domain,
         aliases=aliases,
         tags=tags,
@@ -404,6 +430,10 @@ def parse_note(path: Path, vault_root: Path) -> tuple[VaultNote, list[VaultSecti
         created=str(meta.get("created") or meta.get("date") or "").strip(),
         generated=str(meta.get("generated") or "").strip(),
         provenance=str(meta.get("provenance") or meta.get("extracted_from") or "").strip(),
+        institution=_link_property(meta.get("institution")),
+        service=_link_property(meta.get("service")),
+        rotation=_link_property(meta.get("rotation")),
+        conference=_link_property(meta.get("conference")),
         internal_knowledge_used=(
             bool(meta["internal_knowledge_used"]) if "internal_knowledge_used" in meta else None
         ),
@@ -460,7 +490,9 @@ def _build_section(
         text=section_text,
         text_hash=_sha256(section_text),
         token_estimate=_token_estimate(section_text),
-        wikilinks=_wikilinks(section_text),
+        wikilinks=tuple(
+            dict.fromkeys((*_wikilinks(section_text), *_metadata_wikilinks(meta)))
+        ),
         references=_references(section_text),
         provenance_tier=_provenance_tier(note.folder, section_type, section_text, meta),
     )
@@ -482,6 +514,8 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             title TEXT NOT NULL,
             folder TEXT NOT NULL,
             note_type TEXT NOT NULL,
+            artifact_type TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'current',
             domain_json TEXT NOT NULL DEFAULT '[]',
             aliases_json TEXT NOT NULL DEFAULT '[]',
             tags_json TEXT NOT NULL DEFAULT '[]',
@@ -490,6 +524,10 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             created TEXT NOT NULL DEFAULT '',
             generated TEXT NOT NULL DEFAULT '',
             provenance TEXT NOT NULL DEFAULT '',
+            institution TEXT NOT NULL DEFAULT '',
+            service TEXT NOT NULL DEFAULT '',
+            rotation TEXT NOT NULL DEFAULT '',
+            conference TEXT NOT NULL DEFAULT '',
             internal_knowledge_used INTEGER,
             content_hash TEXT NOT NULL,
             modified_ns INTEGER NOT NULL,
@@ -533,6 +571,19 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         USING fts5(section_id UNINDEXED, note_path, title, section_heading, section_type, text)
         """
     )
+    existing_columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(vault_notes)")
+    }
+    for column, declaration in (
+        ("artifact_type", "TEXT NOT NULL DEFAULT ''"),
+        ("status", "TEXT NOT NULL DEFAULT 'current'"),
+        ("institution", "TEXT NOT NULL DEFAULT ''"),
+        ("service", "TEXT NOT NULL DEFAULT ''"),
+        ("rotation", "TEXT NOT NULL DEFAULT ''"),
+        ("conference", "TEXT NOT NULL DEFAULT ''"),
+    ):
+        if column not in existing_columns:
+            conn.execute(f"ALTER TABLE vault_notes ADD COLUMN {column} {declaration}")
     conn.commit()
 
 
@@ -542,7 +593,7 @@ def _iter_note_paths(vault_root: Path, folders: Iterable[str] = INDEX_FOLDERS) -
         folder = vault_root / folder_name
         if not folder.exists():
             continue
-        glob = folder.rglob("*.md") if folder_name == "Presentations" else folder.glob("*.md")
+        glob = folder.rglob("*.md") if folder_name in {"Presentations", "Residency"} else folder.glob("*.md")
         paths.extend(p for p in glob if p.name != "INDEX.md")
     return sorted(paths)
 
@@ -575,15 +626,19 @@ def sync_vault(
             for note in notes:
                 conn.execute(
                     """INSERT INTO vault_notes
-                       (note_path, title, folder, note_type, domain_json, aliases_json,
+                       (note_path, title, folder, note_type, artifact_type, status,
+                        domain_json, aliases_json,
                         tags_json, summary, display, created, generated, provenance,
+                        institution, service, rotation, conference,
                         internal_knowledge_used, content_hash, modified_ns, indexed_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         note.note_path,
                         note.title,
                         note.folder,
                         note.note_type,
+                        note.artifact_type,
+                        note.status,
                         json.dumps(note.domain),
                         json.dumps(note.aliases),
                         json.dumps(note.tags),
@@ -592,6 +647,10 @@ def sync_vault(
                         note.created,
                         note.generated,
                         note.provenance,
+                        note.institution,
+                        note.service,
+                        note.rotation,
+                        note.conference,
                         None if note.internal_knowledge_used is None else int(note.internal_knowledge_used),
                         note.content_hash,
                         note.modified_ns,
@@ -705,7 +764,7 @@ def _json_tuple(value: str) -> tuple[Any, ...]:
 
 
 def _row_to_section(row: sqlite3.Row, *, score: float) -> dict[str, object]:
-    return {
+    payload = {
         "section_id": row["section_id"],
         "note_path": row["note_path"],
         "title": row["title"],
@@ -725,6 +784,10 @@ def _row_to_section(row: sqlite3.Row, *, score: float) -> dict[str, object]:
         "source_role": row["source_role"],
         "score": round(score, 4),
     }
+    keys = set(row.keys())
+    for key in ("artifact_type", "status", "institution", "service", "rotation", "conference"):
+        payload[key] = row[key] if key in keys else ""
+    return payload
 
 
 def _scope_clause(
@@ -733,6 +796,11 @@ def _scope_clause(
     domains: tuple[str, ...] = (),
     section_types: tuple[str, ...] = (),
     note_types: tuple[str, ...] = (),
+    statuses: tuple[str, ...] = (),
+    institutions: tuple[str, ...] = (),
+    services: tuple[str, ...] = (),
+    rotations: tuple[str, ...] = (),
+    conferences: tuple[str, ...] = (),
     include_local: bool = True,
 ) -> tuple[str, list[object]]:
     where: list[str] = []
@@ -746,6 +814,16 @@ def _scope_clause(
     if note_types:
         where.append("s.note_type IN (%s)" % ",".join("?" for _ in note_types))
         params.extend(note_types)
+    for column, values in (
+        ("status", statuses),
+        ("institution", institutions),
+        ("service", services),
+        ("rotation", rotations),
+        ("conference", conferences),
+    ):
+        if values:
+            where.append(f"n.{column} IN (%s)" % ",".join("?" for _ in values))
+            params.extend(values)
     if domains:
         domain_filters = []
         for domain in domains:
@@ -783,6 +861,11 @@ def search_sections(
     domains: tuple[str, ...] = (),
     section_types: tuple[str, ...] = (),
     note_types: tuple[str, ...] = (),
+    statuses: tuple[str, ...] = (),
+    institutions: tuple[str, ...] = (),
+    services: tuple[str, ...] = (),
+    rotations: tuple[str, ...] = (),
+    conferences: tuple[str, ...] = (),
     include_local: bool = True,
     strict_fields: bool = False,
     limit: int = 5,
@@ -794,6 +877,11 @@ def search_sections(
         domains=domains,
         section_types=effective_section_types,
         note_types=note_types,
+        statuses=statuses,
+        institutions=institutions,
+        services=services,
+        rotations=rotations,
+        conferences=conferences,
         include_local=include_local,
     )
     fts = _fts_query(query)
@@ -801,9 +889,12 @@ def search_sections(
     with _connect(db_path) as conn:
         if fts:
             try:
-                sql = f"""SELECT s.*, bm25(vault_sections_fts) AS bm25_score
+                sql = f"""SELECT s.*, n.artifact_type, n.status, n.institution,
+                                 n.service, n.rotation, n.conference,
+                                 bm25(vault_sections_fts) AS bm25_score
                           FROM vault_sections_fts
                           JOIN vault_sections s ON s.section_id = vault_sections_fts.section_id
+                          JOIN vault_notes n ON n.note_path = s.note_path
                           WHERE vault_sections_fts MATCH ? {scope_sql}
                           ORDER BY bm25_score
                           LIMIT ?"""
@@ -813,8 +904,10 @@ def search_sections(
             except sqlite3.OperationalError:
                 rows = []
         if not rows:
-            sql = f"""SELECT s.*
+            sql = f"""SELECT s.*, n.artifact_type, n.status, n.institution,
+                             n.service, n.rotation, n.conference
                       FROM vault_sections s
+                      JOIN vault_notes n ON n.note_path = s.note_path
                       WHERE 1=1 {scope_sql}
                       LIMIT ?"""
             tokens = _tokens(query)
@@ -849,7 +942,7 @@ DEFAULT_CATALOG_PATH = DATA_DIR / "acgme_curriculum.json"
 CONTRAST_TOKENS = frozenset({"versus", "vs", "differential", "mimic", "mimics", "contrast"})
 # Folder roles drive light edge typing. Concepts are atomic part-of nodes;
 # Reports/Operative Guides/Study Material are composite artifacts a concept is
-# part-of; Brain Dumps/Consults are associated experiential context.
+# part-of; Shift Debriefs/Consults are associated experiential context.
 PART_OF_FOLDERS = frozenset({"Reports", "Operative Guides", "Study Material", "Journal Club"})
 
 
@@ -1429,6 +1522,11 @@ def recall_packet(
     domains: tuple[str, ...] = (),
     section_types: tuple[str, ...] = (),
     note_types: tuple[str, ...] = (),
+    statuses: tuple[str, ...] = (),
+    institutions: tuple[str, ...] = (),
+    services: tuple[str, ...] = (),
+    rotations: tuple[str, ...] = (),
+    conferences: tuple[str, ...] = (),
     include_local: bool = True,
     strict_fields: bool = False,
     sqlite_limit: int = 6,
@@ -1445,6 +1543,11 @@ def recall_packet(
         domains=domains,
         section_types=section_types,
         note_types=note_types,
+        statuses=statuses,
+        institutions=institutions,
+        services=services,
+        rotations=rotations,
+        conferences=conferences,
         include_local=include_local,
         strict_fields=strict_fields,
         limit=sqlite_limit,
@@ -1548,6 +1651,11 @@ def main() -> None:
     search_parser.add_argument("--domain", default="")
     search_parser.add_argument("--section-type", default="")
     search_parser.add_argument("--note-type", default="")
+    search_parser.add_argument("--status", default="")
+    search_parser.add_argument("--institution", default="")
+    search_parser.add_argument("--service", default="")
+    search_parser.add_argument("--rotation", default="")
+    search_parser.add_argument("--conference", default="")
     search_parser.add_argument("--limit", type=int, default=5)
     search_parser.add_argument("--strict-fields", action="store_true")
     search_parser.add_argument("--exclude-local", action="store_true")
@@ -1560,6 +1668,11 @@ def main() -> None:
     recall_parser.add_argument("--domain", default="")
     recall_parser.add_argument("--section-type", default="")
     recall_parser.add_argument("--note-type", default="")
+    recall_parser.add_argument("--status", default="")
+    recall_parser.add_argument("--institution", default="")
+    recall_parser.add_argument("--service", default="")
+    recall_parser.add_argument("--rotation", default="")
+    recall_parser.add_argument("--conference", default="")
     recall_parser.add_argument("--limit", type=int, default=8)
     recall_parser.add_argument("--sqlite-limit", type=int, default=6)
     recall_parser.add_argument("--vector-limit", type=int, default=6)
@@ -1621,6 +1734,11 @@ def main() -> None:
             domains=_split_arg(args.domain),
             section_types=_split_arg(args.section_type),
             note_types=_split_arg(args.note_type),
+            statuses=_split_arg(args.status),
+            institutions=_split_arg(args.institution),
+            services=_split_arg(args.service),
+            rotations=_split_arg(args.rotation),
+            conferences=_split_arg(args.conference),
             include_local=not args.exclude_local,
             strict_fields=args.strict_fields,
             limit=args.limit,
@@ -1636,6 +1754,11 @@ def main() -> None:
             domains=_split_arg(args.domain),
             section_types=_split_arg(args.section_type),
             note_types=_split_arg(args.note_type),
+            statuses=_split_arg(args.status),
+            institutions=_split_arg(args.institution),
+            services=_split_arg(args.service),
+            rotations=_split_arg(args.rotation),
+            conferences=_split_arg(args.conference),
             include_local=not args.exclude_local,
             strict_fields=args.strict_fields,
             sqlite_limit=args.sqlite_limit,

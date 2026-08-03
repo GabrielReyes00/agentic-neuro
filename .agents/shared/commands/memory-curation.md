@@ -28,7 +28,7 @@ When curation is triggered (due to `curation.recommended=true` or to escalate re
    ```bash
    python3 src/study_memory.py curate-candidates --mode compact --recent-sessions 5 --limit 40
    ```
-   Use `--topic "<slug>"` to narrow when recent sessions cluster on one topic. Use `--mode detailed` only if compact evidence is insufficient. The packet carries a `maintenance` block with `identity_audit` and `telemetry_audit` results, so topic-identity redundancy and telemetry integrity are reviewed in the same pass.
+   Use `--topic "<slug>"` to narrow when recent sessions cluster on one topic. Compact claim rows preserve learner claim, demonstrated edge, explicit misconception, and missing edge; detailed mode adds the corrected rule, consequence, retest shape, and prior intervention. `candidate_relationship_hints` are non-assertive and appear only for an explicit cross-reference in misconception/correction evidence or repeated co-miss across at least two sessions; still validate the relationship clinically. The packet also carries identity and telemetry maintenance audits.
 
 2. Author an apply payload that obeys the doctrine below. Mark resolved summaries as superseded and author replacement summaries containing explicit escalation directives for future sessions. Stamp the packet's `built_at_version` into the payload unchanged.
 

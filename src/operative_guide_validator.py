@@ -4,9 +4,9 @@ Validator for Operative Guides/*.md structural compliance.
 
 This guard checks that the guide contains the required first-principle
 operative knowledge blocks, metadata placement, clean formatting, testable
-Mastery Objectives, a verdict-chain audit trail, and a complexity-tiered
-depth floor. It does not enforce arbitrary counts for steps, instruments,
-or citations — content discipline is the reviewer's job, not the validator's.
+Mastery Objectives, and a verdict-chain audit trail. It does not enforce length
+or count proxies for clinical depth; the Coverage Matrix and independent review
+own semantic readiness.
 
 Exit code: 0 if all checked guides pass, 1 if any fail.
 
@@ -23,6 +23,11 @@ import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+
+try:
+    from vault_schema import split_frontmatter
+except ModuleNotFoundError:  # pragma: no cover - package import in tests
+    from .vault_schema import split_frontmatter
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SESSIONS_DIR = REPO_ROOT / "data" / "Sessions"
@@ -90,22 +95,6 @@ def _build_source_cite_re(keys: list[str]) -> re.Pattern[str]:
 CITATION_KEYS = _load_citation_keys()
 SOURCE_CITE_RE = _build_source_cite_re(CITATION_KEYS)
 WIKILINK_RE = re.compile(r"\[\[([^\]]+)\]\]")
-YAML_COMPLEXITY_RE = re.compile(r"^\s*complexity\s*:\s*([a-zA-Z_-]+)\s*$", re.MULTILINE)
-
-# Complexity-tiered body floors. Reflect the 85% resident-mastery depth target.
-MIN_BODY_CHARS_BY_COMPLEXITY = {
-    "simple": 5000,
-    "intermediate": 12000,
-    "complex": 20000,
-}
-MIN_BODY_CHARS_DEFAULT = 7000  # fallback when complexity is not declared in YAML
-MIN_SECTION_CHARS_BY_COMPLEXITY = {
-    "simple": 80,
-    "intermediate": 160,
-    "complex": 220,
-}
-MIN_SECTION_CHARS_DEFAULT = 180
-
 
 @dataclass(frozen=True)
 class Domain:
@@ -213,41 +202,25 @@ REQUIRED_DOMAINS = [
 ]
 
 
-def _bottom_yaml_start_line(text: str) -> int | None:
-    lines = text.splitlines()
-    if not lines or lines[-1].strip() != "---":
-        return None
-    for idx in range(len(lines) - 2, -1, -1):
-        if lines[idx].strip() == "---":
-            return idx + 1
-    return None
+def _current_evidence_source_present(research_data: dict) -> bool:
+    """Read the decision-sensitive current-source gate with legacy fallbacks."""
+    if "current_evidence_source_present" in research_data:
+        return bool(research_data["current_evidence_source_present"])
+    if "current_outcomes_source_present" in research_data:
+        return bool(research_data["current_outcomes_source_present"])
+    return bool(research_data.get("frontier_outcomes_query_present", False))
 
 
-def _bottom_yaml_block(text: str) -> str:
-    lines = text.splitlines()
-    start = _bottom_yaml_start_line(text)
-    if start is None:
-        return ""
-    return "\n".join(lines[start - 1 :])
+def _current_outcomes_source_present(research_data: dict) -> bool:
+    """Compatibility alias for verdicts and callers using the former name."""
+    return _current_evidence_source_present(research_data)
 
 
-def _declared_complexity(text: str) -> str | None:
-    block = _bottom_yaml_block(text)
-    if not block:
-        return None
-    match = YAML_COMPLEXITY_RE.search(block)
-    if not match:
-        return None
-    val = match.group(1).strip().lower().replace("_", "-")
-    if val in {"simple", "intermediate", "complex"}:
-        return val
-    if "complex" in val:
-        return "complex"
-    if "intermediate" in val:
-        return "intermediate"
-    if "simple" in val or "bedside" in val:
-        return "simple"
-    return None
+def _current_evidence_required(research_data: dict) -> bool:
+    """Use the decision-sensitive gate; retain strict legacy behavior."""
+    if "current_evidence_required" in research_data:
+        return bool(research_data["current_evidence_required"])
+    return research_data.get("complexity") in {"intermediate", "complex"}
 
 
 def _strip_objective_markup(text: str) -> str:
@@ -307,6 +280,21 @@ def _domain_explicit_absence(domain: Domain, text: str) -> bool:
     return any(p.search(text) for p in domain.absence_phrase)
 
 
+def _domain_named_as_unresolved(
+    domain: Domain, sections: list[tuple[str, str]]
+) -> bool:
+    """Allow an explicitly incomplete guide to name, rather than hide, a block."""
+    unresolved = next(
+        (
+            body
+            for heading, body in sections
+            if heading.strip().lower() == "unresolved or weak areas"
+        ),
+        "",
+    )
+    return bool(unresolved) and _domain_addressed_in_body(domain, unresolved)
+
+
 def _derive_title_from_path(path: Path) -> str:
     """Map a guide/dry-run path to its workflow title for verdict-chain lookup."""
     stem = path.stem
@@ -315,7 +303,7 @@ def _derive_title_from_path(path: Path) -> str:
     return stem
 
 
-def _verdict_chain_check(path: Path) -> list[str]:
+def _verdict_chain_check(path: Path, *, allow_incomplete: bool = False) -> list[str]:
     """Verify the machine-readable verdict chain is present and approving.
 
     Required files under data/Sessions/<Title>/verdicts/:
@@ -354,11 +342,15 @@ def _verdict_chain_check(path: Path) -> list[str]:
     else:
         try:
             data = json.loads(research.read_text())
-            if not data.get("minimum_floor_met", False):
+            coverage_gate_met = data.get(
+                "coverage_gate_met",
+                data.get("minimum_floor_met", False),
+            )
+            if not coverage_gate_met:
                 shortfalls = data.get("blocks_covered_by_internal_knowledge_only", [])
                 if not shortfalls:
                     failures.append(
-                        "verdict chain: research.json minimum_floor_met=false and no internal-knowledge justifications recorded"
+                        "verdict chain: research.json coverage_gate_met=false and no internal-knowledge justifications recorded"
                     )
         except Exception as exc:
             failures.append(f"verdict chain: research.json malformed ({exc})")
@@ -379,34 +371,91 @@ def _verdict_chain_check(path: Path) -> list[str]:
             failures.append(f"verdict chain: {latest.name} malformed ({exc})")
 
     expert_reviews = sorted(verdict_dir.glob("expert-review-cycle-*.json"))
+    latest_expert_data: dict = {}
     if not expert_reviews:
         failures.append("verdict chain: no expert-review-cycle-*.json verdict found")
     else:
         latest = expert_reviews[-1]
         try:
             data = json.loads(latest.read_text())
-            if data.get("verdict") != "APPROVED":
+            latest_expert_data = data
+            expert_verdict = data.get("verdict")
+            incomplete_revision = (
+                allow_incomplete and expert_verdict == "REVISION REQUIRED"
+            )
+            if expert_verdict != "APPROVED" and not incomplete_revision:
                 failures.append(
                     f"verdict chain: latest expert-review ({latest.name}) verdict is "
                     f"{data.get('verdict')!r}, must be 'APPROVED'"
                 )
-            # Enforce frontier-outcomes gate for intermediate/complex via research.json,
-            # but only call it out here if expert-review approved without it.
+            # Enforce current evidence when the procedure's decisions require it.
             try:
                 research_data = json.loads((verdict_dir / "research.json").read_text())
                 complexity = research_data.get("complexity", "")
-                if complexity in {"intermediate", "complex"} and not research_data.get(
-                    "frontier_outcomes_query_present", False
+                current_source = _current_evidence_source_present(research_data)
+                if (
+                    _current_evidence_required(research_data)
+                    and not current_source
+                    and not incomplete_revision
                 ):
                     failures.append(
-                        "verdict chain: research.json frontier_outcomes_query_present=false "
-                        f"for {complexity} procedure; at least one outcomes query must omit --no-frontier"
+                        "verdict chain: research.json current_evidence_source_present=false "
+                        f"for {complexity or 'this'} procedure with current_evidence_required=true; "
+                        "verify a decision-relevant current source"
                     )
             except Exception:
                 # research.json issues already reported above
                 pass
         except Exception as exc:
             failures.append(f"verdict chain: {latest.name} malformed ({exc})")
+
+    if allow_incomplete:
+        authorization = verdict_dir / "incomplete-authorization.json"
+        if not authorization.exists():
+            failures.append(
+                "verdict chain: incomplete-authorization.json missing for incomplete install"
+            )
+        else:
+            try:
+                auth = json.loads(authorization.read_text())
+                if auth.get("authorized") is not True or auth.get("authorized_by") != "user":
+                    failures.append(
+                        "verdict chain: incomplete authorization must record authorized=true and authorized_by='user'"
+                    )
+                accepted = {
+                    str(item).strip()
+                    for item in auth.get("unresolved_gap_ids", [])
+                    if str(item).strip()
+                }
+                blocking = latest_expert_data.get("blocking_gaps", [])
+                required = {
+                    str(
+                        gap.get("coverage_matrix_block")
+                        or gap.get("rubric_block")
+                        or ""
+                    ).strip()
+                    for gap in blocking
+                    if isinstance(gap, dict)
+                }
+                required.discard("")
+                missing = sorted(required - accepted)
+                if not accepted:
+                    failures.append(
+                        "verdict chain: incomplete authorization requires unresolved_gap_ids"
+                    )
+                elif missing:
+                    failures.append(
+                        "verdict chain: incomplete authorization does not cover expert gaps: "
+                        + ", ".join(missing)
+                    )
+                if not str(auth.get("authorization_context") or "").strip():
+                    failures.append(
+                        "verdict chain: incomplete authorization requires authorization_context"
+                    )
+            except Exception as exc:
+                failures.append(
+                    f"verdict chain: incomplete-authorization.json malformed ({exc})"
+                )
 
     # If any expert-review cycle returned REVISION REQUIRED, a matching gap-repair
     # verdict must exist.
@@ -430,18 +479,14 @@ def _verdict_chain_check(path: Path) -> list[str]:
 
 def _mastery_objectives(text: str, lines: list[str], failures: list[str]) -> None:
     h2_positions = [(m.group(1).strip(), text.count("\n", 0, m.start()) + 1) for m in H2_RE.finditer(text)]
-    bottom_yaml_line = _bottom_yaml_start_line(text)
     mastery_positions = [(name, ln) for name, ln in h2_positions if name == "Mastery Objectives"]
     if not mastery_positions:
         failures.append("missing required H2 `## Mastery Objectives`")
         return
 
     _, mastery_line = mastery_positions[0]
-    if bottom_yaml_line is not None and mastery_line >= bottom_yaml_line:
-        failures.append(f"line {mastery_line}: `## Mastery Objectives` must appear before bottom YAML metadata")
-
     next_mastery_h2 = next((ln for _, ln in h2_positions if ln > mastery_line), len(lines) + 1)
-    section_end = min(next_mastery_h2, bottom_yaml_line or len(lines) + 1)
+    section_end = next_mastery_h2
     section_lines = lines[mastery_line : section_end - 1]
     objectives: list[tuple[int, str]] = []
     for offset, line in enumerate(section_lines, mastery_line + 1):
@@ -451,10 +496,9 @@ def _mastery_objectives(text: str, lines: list[str], failures: list[str]) -> Non
             if objective:
                 objectives.append((offset, objective))
 
-    if len(objectives) < 5 or len(objectives) > 10:
+    if not objectives:
         failures.append(
-            f"line {mastery_line}: `## Mastery Objectives` must contain 5-10 objective list items "
-            f"(found {len(objectives)})"
+            f"line {mastery_line}: `## Mastery Objectives` must contain testable list items"
         )
 
     for ln, objective in objectives:
@@ -464,8 +508,15 @@ def _mastery_objectives(text: str, lines: list[str], failures: list[str]) -> Non
             )
 
 
-def validate(path: Path, require_verdict_chain: bool = True) -> list[str]:
-    text = path.read_text()
+def validate(
+    path: Path,
+    require_verdict_chain: bool = True,
+    *,
+    allow_incomplete: bool = False,
+) -> list[str]:
+    raw_text = path.read_text()
+    text, parsed_meta = split_frontmatter(raw_text)
+    meta = parsed_meta or {}
     lines = text.splitlines()
     failures: list[str] = []
 
@@ -474,8 +525,32 @@ def validate(path: Path, require_verdict_chain: bool = True) -> list[str]:
             failures.append(f"line {i}: H1 heading is not allowed (filename is the title)")
             break
 
-    if lines and lines[0].strip() == "---":
-        failures.append("line 1: YAML front matter at top is not allowed (YAML belongs at bottom)")
+    if not meta:
+        failures.append("missing or invalid native YAML frontmatter")
+    else:
+        for key in ("domain", "summary", "provenance", "complexity"):
+            if not str(meta.get(key) or "").strip():
+                failures.append(f"frontmatter `{key}` is required for operative guides")
+        if not isinstance(meta.get("internal_knowledge_used"), bool):
+            failures.append("frontmatter `internal_knowledge_used` must be true or false")
+
+    status = str(meta.get("status") or "current").strip().lower()
+    if status not in {"current", "incomplete"}:
+        failures.append("frontmatter status must be current or incomplete")
+    complexity = str(meta.get("complexity") or "").strip().lower()
+    if complexity and complexity not in {"simple", "intermediate", "complex"}:
+        failures.append("frontmatter complexity must be simple, intermediate, or complex")
+    if status == "incomplete":
+        if not allow_incomplete:
+            failures.append(
+                "incomplete guide requires explicit --allow-incomplete validation"
+            )
+        if not re.search(r"^## Unresolved Or Weak Areas\s*$", text, flags=re.M):
+            failures.append(
+                "incomplete guide requires `## Unresolved Or Weak Areas`"
+            )
+    elif allow_incomplete:
+        failures.append("--allow-incomplete requires frontmatter status: incomplete")
 
     if WORKFLOW_MODE_MARKER_RE.search(text):
         failures.append("workflow mode markers belong outside the final guide body")
@@ -492,24 +567,10 @@ def validate(path: Path, require_verdict_chain: bool = True) -> list[str]:
     if ANY_RAG_CALLOUT_HINT_RE.search(text) and not RAG_CALLOUT_RE.search(text):
         failures.append("RAG callout present but malformed: use exactly `> [!info] RAG Supplemented`")
 
-    bottom_yaml_line = _bottom_yaml_start_line(text)
-    if bottom_yaml_line is None:
-        failures.append("missing bottom YAML metadata block ending at EOF")
-
-    complexity = _declared_complexity(text)
-    body_floor = MIN_BODY_CHARS_BY_COMPLEXITY.get(complexity, MIN_BODY_CHARS_DEFAULT)
-    section_floor = MIN_SECTION_CHARS_BY_COMPLEXITY.get(complexity, MIN_SECTION_CHARS_DEFAULT)
-
-    if len(re.sub(r"\s+", "", text)) < body_floor:
-        tier = complexity or "unspecified"
-        failures.append(
-            f"guide body is too sparse for the {tier} complexity tier "
-            f"(non-whitespace characters below {body_floor}); declare `complexity: simple|intermediate|complex` "
-            f"in bottom YAML if a different tier applies"
-        )
-
     sections = _heading_sections(text)
     for domain in REQUIRED_DOMAINS:
+        if domain.label == "pre-scrub mental rehearsal" and complexity == "simple":
+            continue
         section = _domain_section(domain, sections)
         if section is None:
             # Allow domain to be addressed in body prose under a different heading
@@ -517,21 +578,18 @@ def validate(path: Path, require_verdict_chain: bool = True) -> list[str]:
             # explicitly disclaimed for domains that permit "not applicable."
             if _domain_explicit_absence(domain, text):
                 continue
+            if allow_incomplete and _domain_named_as_unresolved(domain, sections):
+                continue
             if domain.label in {"patient-specific modifiers", "outcomes and evidence"} and _domain_addressed_in_body(domain, text):
                 continue
             failures.append(f"missing operative domain: {domain.label}")
             continue
-        heading, body = section
-        if domain.label not in {"related in this vault"} and len(re.sub(r"\s+", "", body)) < section_floor:
-            failures.append(
-                f"operative domain `{domain.label}` is present but too thin under heading `{heading}` "
-                f"(below {section_floor} non-whitespace chars for {complexity or 'default'} tier)"
-            )
+        _heading, _body = section
 
-    if RAG_CALLOUT_RE.search(text) and len(SOURCE_CITE_RE.findall(text)) < 3:
+    if RAG_CALLOUT_RE.search(text) and not SOURCE_CITE_RE.search(text):
         failures.append(
-            "RAG callout is present but source citation density is too low; "
-            "cite retrieved textbook or literature sources at the relevant claims"
+            "RAG callout is present but no recognized source citation appears; "
+            "cite retrieved sources at the claims they support"
         )
 
     wikilinks = [_wikilink_target(match.group(1)) for match in WIKILINK_RE.finditer(text)]
@@ -548,7 +606,9 @@ def validate(path: Path, require_verdict_chain: bool = True) -> list[str]:
     _mastery_objectives(text, lines, failures)
 
     if require_verdict_chain:
-        failures.extend(_verdict_chain_check(path))
+        failures.extend(
+            _verdict_chain_check(path, allow_incomplete=allow_incomplete)
+        )
 
     return failures
 
@@ -565,6 +625,7 @@ def main(argv: list[str]) -> int:
     args = [a for a in argv[1:] if not a.startswith("--")]
     flags = {a for a in argv[1:] if a.startswith("--")}
     require_verdict_chain = "--no-verdict-chain" not in flags
+    allow_incomplete = "--allow-incomplete" in flags
 
     paths = _candidate_paths(args)
     if not paths:
@@ -577,7 +638,11 @@ def main(argv: list[str]) -> int:
             print(f"FAIL {path}: file does not exist")
             had_failure = True
             continue
-        failures = validate(path, require_verdict_chain=require_verdict_chain)
+        failures = validate(
+            path,
+            require_verdict_chain=require_verdict_chain,
+            allow_incomplete=allow_incomplete,
+        )
         if failures:
             had_failure = True
             print(f"FAIL {path}")

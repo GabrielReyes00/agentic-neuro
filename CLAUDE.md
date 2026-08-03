@@ -1,33 +1,22 @@
-# Neuro-Agent: Claude Profile
+# Claude Runtime Profile
 
-**Arch**: Claude Code + LanceDB RAG + MCP (Gmail, GCal) + Skills
+Read `AGENTS.md` first. It owns user posture, routing, safety, system boundaries,
+and the `service-log` → `shift-debrief` route. This file contains only
+Claude-specific execution notes.
 
-## §1 Shared Rules & Context
+- Start learning sessions with `startup-recall`; raw `summary` is for dashboards
+  and audits only.
+- Use `.agents/shared/commands/vault-intelligence.md` for supplemental Obsidian
+  context and `.agents/shared/commands/rag-routing.md` for every textbook
+  retrieval. Do not redefine either policy here.
+- Shared contracts decide when independent review is required. Use a separate
+  subagent when available; pass compact named artifacts rather than the full
+  conversation. Model choice should fit the task and current runtime—do not
+  preserve a stale hard-coded model table.
+- Primary Obsidian vault: `agentic-neuro`. Treat `Peripheral Nerve` and
+  `Personal Reflections` as read-only unless Gabriel explicitly asks otherwise.
+- At 12 or more Socratic turns, offer a digest before context compression.
 
-This profile is intentionally not self-contained. Before acting in this repo, read `AGENTS.md`; this file only adds Claude-specific runtime notes.
-All agents share the startup recall contract (`startup-recall`; Raw `summary` is for dashboard/audits only) and the `service-log` debrief route through `brain-dump` defined in `AGENTS.md`.
-All agents also share the vault intelligence contract in `.agents/shared/commands/vault-intelligence.md` for supplemental Obsidian context; it enriches learner-memory recall and does not replace `study_memory.py`.
-
-Please read and follow `AGENTS.md` for:
-- User Profile & Learner Posture (cognitive friction, progressive reveal)
-- Universal Directives & Shared Workflow Authority (canonical contracts)
-- Memory Contract & Capability Router (Tiers/Routes)
-- Vault Targets & skill write rules
-- Session-End Protocol & Data Locations
-- Shared Protocols (Naming Conventions, Cross-Reference Discovery, INDEX.md Indexes)
-
-## §2 Claude-Specific Environment & Subagents
-
-### Subagent Model Routing
-
-Always specify `model:`, never default to Opus:
-| Task | Model |
-|---|---|
-| RAG transform, research, concept chunking, card drafting, email drafting, voice calibration, procedure synthesis, weakness lecture | **sonnet** |
-| Email categorization, claim extraction, image enrichment | **haiku** |
-
-### Environment Setup
-
-- **Obsidian CLI**: `/Applications/Obsidian.app/Contents/MacOS/obsidian` (alias: `OBS`)
-- **Vaults**: `agentic-neuro` (primary) | `Peripheral Nerve` (read-only) | `Personal Reflections` (read-only, never write without request)
-- **Context compression**: At 12+ turns in Socratic study sessions, notify the user and offer a digest before continuing. Never compress silently.
+Slash-command files under `.claude/commands/` are generated adapters. Repair
+policy in the shared contract or registry, then run
+`python3 src/sync_agent_adapters.py`; do not hand-maintain wrapper behavior.

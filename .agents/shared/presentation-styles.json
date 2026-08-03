@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "default_article_style": "baylor_minimal_academic",
+  "styles": {
+    "baylor_minimal_academic": {
+      "description": "Restrained Baylor journal-club surface with open evidence layouts.",
+      "reference_deck": "/Users/gabrielreyes/Documents/Residency/Journal Clubs/SPORT Lumbar Disk Herniation Trial.pptx",
+      "palette": {
+        "canvas": "#FFFFFF",
+        "ink": "#111827",
+        "primary": "#1F4E79",
+        "secondary": "#4B5563",
+        "rule": "#E5E7EB",
+        "signal": "#B71C3A"
+      },
+      "font_floors_pt": {
+        "title": 28,
+        "body": 13.5,
+        "citation": 7.5
+      },
+      "constraints": {
+        "white_backgrounds_only": true,
+        "primary_accent_count_max": 1,
+        "signal_color_count_max": 1,
+        "filled_content_containers_max_per_slide": 0,
+        "rounded_content_containers": "none",
+        "recurring_page_furniture": [
+          "short navy title rule",
+          "neutral footer rule"
+        ],
+        "chart_palette": "navy plus neutral gray",
+        "color_use": "data and essential warnings only",
+        "interpretive_band_policy": "only when it adds a nonredundant clinical or validity consequence",
+        "chart_legend_policy": "native compact legend with labels matched to the estimand",
+        "summary_duplication": "none"
+      },
+      "adopted_patterns": [
+        "white canvas",
+        "open evidence layouts",
+        "navy plus gray charts"
+      ],
+      "known_weaknesses_to_reject": [
+        "watermarked assets",
+        "text fragmentation",
+        "pasted legends",
+        "missing citations"
+      ]
+    }
+  }
+}

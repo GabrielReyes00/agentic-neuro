@@ -460,7 +460,7 @@ def consolidate_bound_concepts(conn: sqlite3.Connection) -> dict:
     stats = {"groups": len(groups), "rows_merged": 0, "claim_state_collisions": 0,
              "alias_collisions": 0, "relationships_dropped": 0}
     plain_tables = ("claim_results", "exchanges", "memory_summaries",
-                    "shadow_rule_bindings", "brain_dump_review_candidates")
+                    "shadow_rule_bindings", "shift_debrief_review_candidates")
     for g in groups:
         canonical = int(g["canonical"])
         topic_id = g["topic_id"]

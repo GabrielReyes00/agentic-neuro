@@ -1,14 +1,11 @@
-description = "Socratic review from an existing vault document (Reports/, Study Material/, or Brain Dumps/) — memory-enabled, doc-anchored, no vault artifact"
+description = "Run memory-enabled Socratic review from a vault document or weak-spot queue."
 
 prompt = """
 ACTIVE COMMAND: /study-review
+User input: {{args}}
 
-Use `.agents/shared/commands/study-review-startup.md` as the source of truth. Apply `.gemini/commands/study-review.md` only for Gemini-specific runtime constraints. Load later phase files (`study-review-turn.md`, `study-review-vault-repair.md`, `study-review-end.md`) only when that phase is reached; do not preload the orchestration index at startup.
-
-User request: {{args}}
-
----
+Read `.agents/shared/workflow-registry.json`, then read and follow the canonical
+contract below. Do not infer behavioral policy from this adapter.
 
 @{.agents/shared/commands/study-review-startup.md}
-@{.gemini/commands/study-review.md}
 """

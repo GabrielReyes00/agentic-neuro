@@ -15,6 +15,7 @@ Read only the modules that apply to the current phase. Do not preload later-phas
 | `.agents/shared/commands/memory-operations.md` | Session start, logging, end-session, and integrity checks |
 | `.agents/shared/commands/memory-retrieval.md` | Interpreting cards, graph signals, model surfaces, and truncation |
 | `.agents/shared/commands/vault-intelligence.md` | Optional point-of-need Obsidian section retrieval |
+| `.agents/shared/commands/rag-routing.md` | Point-of-need textbook retrieval tier, batching, evidence, and serialization |
 | `.agents/shared/commands/adaptive-teaching-doctrine.md` | Tutor voice, teaching modes, field-to-teaching-move mapping, and Socratic voice |
 | `.agents/shared/commands/anki-session-workflow.md` | Per-answer card decisions and queue flushing |
 | `.agents/shared/commands/anki-card-quality.md` | Card quality, clozes, taxonomy, and duplicate checks |
@@ -30,7 +31,7 @@ Read only the modules that apply to the current phase. Do not preload later-phas
 2. **Teaching Loop**:
    - Load `study-review-turn.md` and `adaptive-teaching-doctrine.md`.
    - Log to `study_memory.py log-answer` and apply `anki-session-workflow.md`/`anki-card-quality.md`.
-   - If needed, load `vault-intelligence.md` / `study-review-vault-repair.md` after the first question.
+   - If needed, load `vault-intelligence.md`, `study-review-vault-repair.md`, or `rag-routing.md` after the first question.
 3. **Session End**:
    - Load `study-review-end.md` and `memory-operations.md` to run the synthesis challenge and duplicate checks.
    - Metacognitive synthesis prompts shape the session handoff rather than tracked claim state.
@@ -40,7 +41,7 @@ Read only the modules that apply to the current phase. Do not preload later-phas
 
 - `study-review` startup uses `.agents/shared/commands/study-review-startup.md` and `startup-recall`.
 - `consult`, `study-material`, and research/report workflows may retrieve vault context before synthesis when requested.
-- `brain-dump` captures de-identified teaching. It does not become learner state until Socratic review/testing is logged.
+- `shift-debrief` captures de-identified teaching. It does not become learner state until Socratic review/testing is logged.
 
 ## Conflict Resolution
 

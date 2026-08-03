@@ -15,6 +15,11 @@ import sys
 from dataclasses import dataclass, asdict
 from pathlib import Path
 
+try:
+    from vault_schema import split_frontmatter
+except ModuleNotFoundError:  # pragma: no cover - package import in tests
+    from .vault_schema import split_frontmatter
+
 
 DEFAULT_VAULT_ROOT = Path("/Users/gabrielreyes/Documents/Obsidian/agentic-neuro")
 STUDY_DIRNAME = "Study Material"
@@ -111,10 +116,6 @@ def _validate_path(path: Path, vault_root: Path) -> list[str]:
 def validate_content(
     text: str,
     *,
-    min_questions: int = 25,
-    min_questions_per_chunk: int = 2,
-    min_facts_per_chunk: int = 2,
-    min_fact_coverage: float = 0.70,
     require_chunks: bool = True,
     require_atomic_facts: bool = True,
     require_question_metadata: bool = True,
@@ -122,13 +123,20 @@ def validate_content(
     errors: list[str] = []
     warnings: list[str] = []
 
-    stripped = text.lstrip()
+    body, meta = split_frontmatter(text)
+    if not meta:
+        errors.append("missing or invalid native YAML frontmatter")
+    else:
+        for key in ("artifact_type", "status", "domain", "summary", "generated", "tags"):
+            if key not in meta:
+                errors.append(f"frontmatter missing key: {key}")
+        if meta.get("artifact_type") != "study-material":
+            errors.append("frontmatter artifact_type must be study-material")
+    stripped = body.lstrip()
     if stripped.startswith("# "):
         errors.append("vault note must not start with an H1 heading")
-    if stripped.startswith("---"):
-        errors.append("vault metadata must not be at the top; use bottom YAML only")
 
-    lowered = text.lower()
+    lowered = body.lower()
     if "## concept summary" not in lowered:
         errors.append("missing required section: ## Concept Summary")
     if require_atomic_facts and "## source chunk inventory" not in lowered:
@@ -142,18 +150,32 @@ def validate_content(
     question_count = len(blocks)
     answer_count = len(DETAILS_RE.findall(text))
     declared_total = _declared_total(text)
-    tu_ids = set(TU_RE.findall(text))
+    inventory = _section(text, "Source Chunk Inventory")
+    inventory_tu_ids = set(TU_RE.findall(inventory))
     complexities = {m.group(1).lower() for m in CLASS_RE.finditer(text)}
     chunks = _chunk_status(text)
     fact_ledger = _section(text, "Atomic Fact Ledger")
     atomic_facts = set(AF_RE.findall(fact_ledger))
+    fact_tu_ids = {
+        tu
+        for line in fact_ledger.splitlines()
+        if AF_RE.search(line)
+        for tu in TU_RE.findall(line)
+    }
     question_fact_refs = set()
-    for block in blocks:
-        question_fact_refs.update(AF_RE.findall(block))
+    question_tu_refs = set()
+    overbroad_fact_questions: list[int] = []
+    for idx, block in enumerate(blocks, start=1):
+        header = block.splitlines()[0] if block.splitlines() else ""
+        block_fact_refs = set(AF_RE.findall(header))
+        question_fact_refs.update(block_fact_refs)
+        question_tu_refs.update(TU_RE.findall(header))
+        if len(block_fact_refs) > 4:
+            overbroad_fact_questions.append(idx)
     fact_coverage_ratio = (len(question_fact_refs & atomic_facts) / len(atomic_facts)) if atomic_facts else 0.0
 
-    if question_count < min_questions:
-        errors.append(f"too few questions: found {question_count}, require at least {min_questions}")
+    if question_count == 0:
+        errors.append("question bank must contain at least one mapped question")
     if answer_count < question_count:
         errors.append(f"not every question has a <details> answer: {answer_count}/{question_count}")
     if declared_total is None:
@@ -161,9 +183,9 @@ def validate_content(
     elif declared_total != question_count:
         errors.append(f"Total Questions metadata ({declared_total}) does not match parsed count ({question_count})")
 
-    if len(complexities) < 3:
-        errors.append("complexity mix is too narrow; require at least 3 question types")
-    if not ({"mechanism", "discrimination", "integration", "clinical"} & complexities):
+    if question_count >= 2 and not (
+        {"mechanism", "discrimination", "integration", "clinical"} & complexities
+    ):
         errors.append("must include mechanism/discrimination/integration/clinical questions, not recall-only review")
 
     if require_chunks:
@@ -171,31 +193,20 @@ def validate_content(
             errors.append("missing Chunks Processed: N / N metadata")
         elif chunks[0] != chunks[1]:
             errors.append(f"chunk coverage incomplete: {chunks[0]} / {chunks[1]}")
-        else:
-            required_by_chunk = chunks[1] * min_questions_per_chunk
-            if question_count < required_by_chunk:
-                errors.append(
-                    "question density too low for source coverage: "
-                    f"{question_count} questions for {chunks[1]} chunks; require at least "
-                    f"{required_by_chunk} ({min_questions_per_chunk}/chunk)"
-                )
-            if require_atomic_facts:
-                required_facts = chunks[1] * min_facts_per_chunk
-                if len(atomic_facts) < required_facts:
-                    errors.append(
-                        "atomic fact extraction too shallow: "
-                        f"{len(atomic_facts)} facts for {chunks[1]} chunks; require at least "
-                        f"{required_facts} ({min_facts_per_chunk}/chunk)"
-                    )
 
     if require_atomic_facts:
         if not atomic_facts:
             errors.append("missing AF-### entries in ## Atomic Fact Ledger")
-        elif fact_coverage_ratio < min_fact_coverage:
+        elif fact_coverage_ratio < 1.0:
             errors.append(
-                "question bank covers too few atomic facts: "
+                "question bank does not cover the complete atomic fact ledger: "
                 f"{len(question_fact_refs & atomic_facts)}/{len(atomic_facts)} "
-                f"({fact_coverage_ratio:.0%}); require at least {min_fact_coverage:.0%}"
+                f"({fact_coverage_ratio:.0%})"
+            )
+        missing_fact_tus = sorted(inventory_tu_ids - fact_tu_ids)
+        if missing_fact_tus:
+            errors.append(
+                "teaching units missing atomic facts: " + ", ".join(missing_fact_tus)
             )
 
     if require_question_metadata and blocks:
@@ -221,17 +232,26 @@ def validate_content(
             errors.append(f"questions missing source reference in header: {bad_source[:8]}")
         if bad_fact_ref:
             errors.append(f"questions missing atomic fact references in header: {bad_fact_ref[:8]}")
+        if overbroad_fact_questions:
+            errors.append(
+                "questions reference more than 4 atomic facts: "
+                f"{overbroad_fact_questions[:8]}"
+            )
 
-    if question_count and len(tu_ids) and question_count < len(tu_ids):
-        errors.append(f"1:1 TU-to-question mapping broken: {question_count} questions for {len(tu_ids)} TUs")
-    elif question_count and not tu_ids:
+    missing_question_tus = sorted(inventory_tu_ids - question_tu_refs)
+    if question_count and missing_question_tus:
+        errors.append(
+            "teaching units missing a mapped question: "
+            + ", ".join(missing_question_tus)
+        )
+    elif question_count and not inventory_tu_ids:
         warnings.append("no TU ids found; generation may not be chunk mapped")
 
     metrics = {
         "question_count": question_count,
         "answer_count": answer_count,
         "declared_total": declared_total,
-        "teaching_unit_count": len(tu_ids),
+        "teaching_unit_count": len(inventory_tu_ids),
         "atomic_fact_count": len(atomic_facts),
         "fact_coverage_count": len(question_fact_refs & atomic_facts),
         "fact_coverage_ratio": fact_coverage_ratio,
@@ -245,10 +265,6 @@ def validate_file(
     path: Path,
     *,
     vault_root: Path = DEFAULT_VAULT_ROOT,
-    min_questions: int = 25,
-    min_questions_per_chunk: int = 2,
-    min_facts_per_chunk: int = 2,
-    min_fact_coverage: float = 0.70,
     require_chunks: bool = True,
     require_atomic_facts: bool = True,
     require_question_metadata: bool = True,
@@ -274,10 +290,6 @@ def validate_file(
         text = path.read_text(encoding="utf-8")
         content_errors, content_warnings, metrics = validate_content(
             text,
-            min_questions=min_questions,
-            min_questions_per_chunk=min_questions_per_chunk,
-            min_facts_per_chunk=min_facts_per_chunk,
-            min_fact_coverage=min_fact_coverage,
             require_chunks=require_chunks,
             require_atomic_facts=require_atomic_facts,
             require_question_metadata=require_question_metadata,
@@ -330,10 +342,6 @@ def install_draft(
     title: str,
     *,
     vault_root: Path = DEFAULT_VAULT_ROOT,
-    min_questions: int = 25,
-    min_questions_per_chunk: int = 2,
-    min_facts_per_chunk: int = 2,
-    min_fact_coverage: float = 0.70,
     require_chunks: bool = True,
     require_atomic_facts: bool = True,
     require_question_metadata: bool = True,
@@ -341,10 +349,6 @@ def install_draft(
     text = draft_path.read_text(encoding="utf-8")
     errors, warnings, _metrics = validate_content(
         text,
-        min_questions=min_questions,
-        min_questions_per_chunk=min_questions_per_chunk,
-        min_facts_per_chunk=min_facts_per_chunk,
-        min_fact_coverage=min_fact_coverage,
         require_chunks=require_chunks,
         require_atomic_facts=require_atomic_facts,
         require_question_metadata=require_question_metadata,
@@ -374,10 +378,6 @@ def install_draft(
     return validate_file(
         target,
         vault_root=vault_root,
-        min_questions=min_questions,
-        min_questions_per_chunk=min_questions_per_chunk,
-        min_facts_per_chunk=min_facts_per_chunk,
-        min_fact_coverage=min_fact_coverage,
         require_chunks=require_chunks,
         require_atomic_facts=require_atomic_facts,
         require_question_metadata=require_question_metadata,
@@ -404,10 +404,6 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Validate/install generated Study Material vault notes")
     parser.set_defaults(
         vault_root=str(DEFAULT_VAULT_ROOT),
-        min_questions=25,
-        min_questions_per_chunk=2,
-        min_facts_per_chunk=2,
-        min_fact_coverage=0.70,
         json=False,
         no_require_chunks=False,
         no_require_atomic_facts=False,
@@ -416,10 +412,6 @@ def main() -> int:
 
     def add_common_options(p: argparse.ArgumentParser) -> None:
         p.add_argument("--vault-root", default=argparse.SUPPRESS)
-        p.add_argument("--min-questions", type=int, default=argparse.SUPPRESS)
-        p.add_argument("--min-questions-per-chunk", type=int, default=argparse.SUPPRESS)
-        p.add_argument("--min-facts-per-chunk", type=int, default=argparse.SUPPRESS)
-        p.add_argument("--min-fact-coverage", type=float, default=argparse.SUPPRESS)
         p.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
         p.add_argument("--no-require-chunks", action="store_true", default=argparse.SUPPRESS)
         p.add_argument("--no-require-atomic-facts", action="store_true", default=argparse.SUPPRESS)
@@ -441,10 +433,6 @@ def main() -> int:
     vault_root = Path(args.vault_root)
     common = {
         "vault_root": vault_root,
-        "min_questions": args.min_questions,
-        "min_questions_per_chunk": args.min_questions_per_chunk,
-        "min_facts_per_chunk": args.min_facts_per_chunk,
-        "min_fact_coverage": args.min_fact_coverage,
         "require_chunks": not args.no_require_chunks,
         "require_atomic_facts": not args.no_require_atomic_facts,
         "require_question_metadata": not args.no_require_question_metadata,

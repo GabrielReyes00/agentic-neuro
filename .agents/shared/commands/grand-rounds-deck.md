@@ -23,11 +23,14 @@ extracted assets, previews, layout data, and QA ledgers outside the repository
 when the runtime requires external scratch. Persist only the compact recovery
 manifest in `data/Sessions/`.
 
-Final PowerPoint:
+Final PowerPoint, stored with its durable vault lineage:
 
 ```text
-/Users/gabrielreyes/Desktop/<Title>.pptx
+/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Presentations/Decks/Cases/<Title>.pptx
+/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Presentations/Decks/Articles/<Title>.pptx
 ```
+
+Use the `Cases` path for case mode and the `Articles` path for article mode.
 
 For Codex, use `@oai/artifact-tool` from a plain JavaScript ES module. Do not
 author with `python-pptx`.
@@ -198,75 +201,23 @@ After every meaningful revision:
 The first render is a draft. A delivery candidate requires at least one explicit
 find-fix-rerender cycle.
 
-Record `visual_qa.json` with:
+Generate the canonical ledger shape instead of copying a prose schema:
 
-```json
-{
-  "schema": "grand_rounds_visual_qa_v2",
-  "status": "pass",
-  "inspected_slide_count": 16,
-  "full_size_slide_count": 16,
-  "contact_sheet_inspected": true,
-  "repair_cycle_count": 2,
-  "design_brief_match": true,
-  "meaningful_visual_main_slide_count": 13,
-  "layout_family_counts": {
-    "figure_first": 4,
-    "chart_first": 3,
-    "editorial_split": 2,
-    "synthesis_field": 2,
-    "process_flow": 1,
-    "open_comparison": 1
-  },
-  "min_title_font_size_pt": 28,
-  "min_body_font_size_pt": 13.5,
-  "citation_font_size_pt": 7.5,
-  "overflow_slides": [],
-  "overlap_slides": [],
-  "clipped_slides": [],
-  "title_wrap_slides": [],
-  "unresolved_placeholders": [],
-  "illegible_asset_slides": [],
-  "figure_scale_failures": [],
-  "citation_failures": [],
-  "chart_label_failures": [],
-  "alignment_failures": [],
-  "misleading_quantitative_encoding_slides": [],
-  "color_overuse_slides": [],
-  "filled_container_overuse_slides": [],
-  "rounded_container_slides": [],
-  "decorative_line_overuse_slides": [],
-  "dark_background_drift_slides": [],
-  "textbox_fit_failures": [],
-  "bullet_wall_slides": [],
-  "weak_visual_anchor_slides": [],
-  "repetitive_layout_slides": [],
-  "decorative_chrome_slides": [],
-  "ui_panel_slides": [],
-  "palette_drift_slides": [],
-  "typography_inconsistency_slides": [],
-  "spacing_inconsistency_slides": [],
-  "redundant_slides": [],
-  "orphan_context_slides": [],
-  "title_slide_interpretive_copy_slides": [],
-  "slogan_or_tagline_slides": [],
-  "rhetorical_or_adversarial_copy_slides": [],
-  "low_information_annotation_slides": [],
-  "narrative_prose_slides": [],
-  "unsupported_interpretation_slides": [],
-  "word_fragmentation_slides": [],
-  "numeric_token_split_slides": [],
-  "semantic_legend_failures": [],
-  "pasted_chart_legend_slides": [],
-  "watermarked_asset_slides": [],
-  "redundant_interpretive_band_slides": [],
-  "summary_duplication_slides": [],
-  "cross_platform_render_failures": [],
-  "notes": ["All slides were inspected full size after the final export."]
-}
+```bash
+python3 src/grand_rounds_guard.py visual-qa-template --slide-count <n>
 ```
 
-Do not mark `pass` until this inspection was actually performed.
+Populate every field from the final render. All failure lists—including
+`chart_label_failures`, `alignment_failures`,
+`misleading_quantitative_encoding_slides`, `color_overuse_slides`,
+`filled_container_overuse_slides`, `rounded_container_slides`,
+`decorative_line_overuse_slides`, `textbox_fit_failures`, `redundant_slides`,
+`semantic_legend_failures`, `watermarked_asset_slides`,
+`redundant_interpretive_band_slides`, and
+`cross_platform_render_failures`—must be empty before `status: pass`.
+`repair_cycle_count` must reflect at least one real repair, and
+`meaningful_visual_main_slide_count` must match the plan. Never mark a planned
+inspection as completed.
 
 ## Deterministic Package Guard
 
@@ -274,7 +225,7 @@ Run:
 
 ```bash
 python3 src/grand_rounds_guard.py validate \
-  --deck "/Users/gabrielreyes/Desktop/<Title>.pptx" \
+  --deck "/Users/gabrielreyes/Documents/Obsidian/agentic-neuro/Presentations/Decks/<Cases-or-Articles>/<Title>.pptx" \
   --plan "<scratch>/deck_plan.json" \
   --assets "<scratch>/asset_manifest.json" \
   --visual-qa "<scratch>/visual_qa.json" \
@@ -287,8 +238,11 @@ Repair every failure before the vault write.
 ## Vault Write
 
 Use `src/grand_rounds_writer.py` with `--require-quality-gate` and the source,
-duration, package-manifest, slide count, and QA status arguments. The note is a
-durable delivery and rehearsal surface, not a duplicate report.
+duration, package-manifest, slide count, and QA status arguments. When the target
+already exists, read it completely, preserve durable rehearsal/user additions in
+the regenerated draft, and pass `--overwrite`; never work around the safety gate
+with a versioned duplicate. The note is a delivery/rehearsal surface, not a
+duplicate report.
 
 ## Completion Audit
 

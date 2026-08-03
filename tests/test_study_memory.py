@@ -110,25 +110,25 @@ class StudyMemoryTests(unittest.TestCase):
         finally:
             conn.close()
 
-    def test_brain_dump_is_artifact_anchor_until_later_review_tests_learning(self) -> None:
+    def test_shift_debrief_is_artifact_anchor_until_later_review_tests_learning(self) -> None:
         conn = self._memory_conn()
         try:
             study_memory.log_answer(
                 conn,
-                session_id="brain-dump-1",
+                session_id="shift-debrief-1",
                 topic="evd transport management",
                 concept="brain dump artifact anchor",
                 question="What service teaching was captured for EVD transport management?",
                 answer="Captured a de-identified service lesson about drain management during transport.",
                 correct=2,
-                skill="brain-dump",
-                doc_path="Brain Dumps/EVD Transport Management.md",
+                skill="shift-debrief",
+                doc_path="Shift Debriefs/EVD Transport Management.md",
             )
             anchor_result = study_memory.end_session(
                 conn,
-                session_id="brain-dump-1",
+                session_id="shift-debrief-1",
                 summary="De-identified EVD transport brain dump written.",
-                next_strategy="Use study-review on Brain Dumps/EVD Transport Management.md to test pressure-gradient reasoning.",
+                next_strategy="Use study-review on Shift Debriefs/EVD Transport Management.md to test pressure-gradient reasoning.",
             )
 
             self.assertTrue(anchor_result["artifact_anchor"])
@@ -139,7 +139,7 @@ class StudyMemoryTests(unittest.TestCase):
 
             study_memory.log_answer(
                 conn,
-                session_id="review-brain-dump-1",
+                session_id="review-shift-debrief-1",
                 topic="evd transport management",
                 concept="pressure gradient transport risk",
                 question="What mechanism makes uncontrolled CSF drainage hazardous during transport?",
@@ -148,7 +148,7 @@ class StudyMemoryTests(unittest.TestCase):
                 correction="Rapid compartment pressure shifts can worsen tissue displacement risk.",
                 error_type="reasoning_gap",
                 skill="study-review",
-                doc_path="Brain Dumps/EVD Transport Management.md",
+                doc_path="Shift Debriefs/EVD Transport Management.md",
                 tested_claim="Uncontrolled CSF drainage can create harmful pressure shifts during transport.",
                 learner_claim="Could not explain the mechanism.",
                 missing_edge="pressure gradient mechanism",
@@ -158,15 +158,15 @@ class StudyMemoryTests(unittest.TestCase):
         finally:
             conn.close()
 
-    def test_brain_dump_candidates_surface_for_general_review_without_claim_state(self) -> None:
+    def test_shift_debrief_candidates_surface_for_general_review_without_claim_state(self) -> None:
         conn = self._memory_conn()
         try:
-            study_memory.add_brain_dump_candidate(
+            study_memory.add_shift_debrief_candidate(
                 conn,
-                session_id="brain-dump-candidates",
+                session_id="shift-debrief-candidates",
                 topic="spine stability",
                 concept="three column instability",
-                doc_path="Brain Dumps/Spine Stability Teaching.md",
+                doc_path="Shift Debriefs/Spine Stability Teaching.md",
                 prompt="What makes a thoracolumbar injury mechanically unstable?",
                 claim_text="Three-column thoracolumbar injury patterns should trigger concern for mechanical instability.",
                 provenance_tier="Source-grounded",
@@ -191,16 +191,16 @@ class StudyMemoryTests(unittest.TestCase):
                     lens="general",
                 )
             )
-            self.assertNotIn("brain_dump_review_candidates", formal)
-            candidates = general["brain_dump_review_candidates"]
+            self.assertNotIn("shift_debrief_review_candidates", formal)
+            candidates = general["shift_debrief_review_candidates"]
             self.assertEqual(len(candidates), 1)
             self.assertEqual(candidates[0]["concept"], "three column instability")
-            self.assertIn("brain_dump_review_candidate", general["counts"])
-            self.assertTrue(any(item["type"] == "brain_dump_review_candidate" for item in general["shadow_queue"]))
+            self.assertIn("shift_debrief_review_candidate", general["counts"])
+            self.assertTrue(any(item["type"] == "shift_debrief_review_candidate" for item in general["shadow_queue"]))
         finally:
             conn.close()
 
-    def test_brain_dump_candidate_review_reuses_existing_assessed_claim(self) -> None:
+    def test_shift_debrief_candidate_review_reuses_existing_assessed_claim(self) -> None:
         conn = self._memory_conn()
         try:
             claim = "Mannitol lowers intracranial pressure by creating an osmotic gradient and requires attention to hemodynamics and serum osmolality."
@@ -218,30 +218,30 @@ class StudyMemoryTests(unittest.TestCase):
                 expected_answer_edge="osmotic gradient; hemodynamics; serum osmolality",
             )
             original = conn.execute("SELECT id FROM claim_state").fetchone()
-            candidate_id = study_memory.add_brain_dump_candidate(
+            candidate_id = study_memory.add_shift_debrief_candidate(
                 conn,
-                session_id="brain-dump-mannitol",
+                session_id="shift-debrief-mannitol",
                 topic="brain edema management",
                 concept="mannitol osmotic therapy",
-                doc_path="Brain Dumps/Brain Edema Wards.md",
+                doc_path="Shift Debriefs/Brain Edema Wards.md",
                 prompt="Why did the senior prefer mannitol in this edema scenario?",
                 claim_text=claim,
                 provenance_tier="Source-grounded",
             )
             study_memory.log_answer(
                 conn,
-                session_id="brain-dump-socratic-mannitol",
+                session_id="shift-debrief-socratic-mannitol",
                 topic="brain edema management",
                 concept="mannitol osmotic therapy",
                 question="In this ward scenario, what is mannitol doing and what must you monitor?",
                 answer="It makes an osmotic gradient; watch pressure and osmolality.",
                 correct=2,
                 skill="study-review",
-                doc_path="Brain Dumps/Brain Edema Wards.md",
+                doc_path="Shift Debriefs/Brain Edema Wards.md",
                 tested_claim=claim,
                 corrected_rule=claim,
                 expected_answer_edge="osmotic gradient; hemodynamics; serum osmolality",
-                brain_dump_candidate_id=candidate_id,
+                shift_debrief_candidate_id=candidate_id,
             )
 
             states = conn.execute("SELECT id, origin FROM claim_state").fetchall()
@@ -249,7 +249,7 @@ class StudyMemoryTests(unittest.TestCase):
             self.assertEqual(int(states[0]["id"]), int(original["id"]))
             self.assertEqual(states[0]["origin"], "assessed")
             candidate = conn.execute(
-                "SELECT status, reviewed_claim_state_id FROM brain_dump_review_candidates WHERE id = ?",
+                "SELECT status, reviewed_claim_state_id FROM shift_debrief_review_candidates WHERE id = ?",
                 (candidate_id,),
             ).fetchone()
             self.assertEqual(candidate["status"], "reviewed")
@@ -901,6 +901,46 @@ class StudyMemoryTests(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_identity_audit_distinguishes_atomic_claims_from_true_near_duplicates(self) -> None:
+        conn = self._memory_conn()
+        try:
+            common = {
+                "topic": "evd management",
+                "concept": "evd drainage mechanics",
+                "question": "How does drain height change diversion?",
+                "answer": "I am not sure.",
+                "correct": 0,
+                "error_type": "reasoning_gap",
+                "missing_edge": "drain height direction",
+                "force_new_claim": True,
+            }
+            study_memory.log_answer(
+                conn,
+                session_id="identity-one",
+                tested_claim="Lowering drain height increases CSF diversion.",
+                **common,
+            )
+            study_memory.log_answer(
+                conn,
+                session_id="identity-two",
+                tested_claim="Lowering the EVD drain height increases CSF diversion.",
+                **common,
+            )
+            study_memory.log_answer(
+                conn,
+                session_id="identity-three",
+                tested_claim="A flat EVD waveform makes the displayed ICP unreliable.",
+                **common,
+            )
+
+            audit = study_memory.identity_audit(conn)
+            candidates = audit["duplicate_claim_state_candidates"]
+            self.assertEqual(len(candidates), 1)
+            self.assertEqual(len(candidates[0]["claim_state_ids"]), 2)
+            self.assertNotIn("flat EVD waveform", " ".join(candidates[0]["claims"]))
+        finally:
+            conn.close()
+
     def test_topic_merge_refuses_same_slug_concept_collision(self) -> None:
         conn = self._memory_conn()
         try:
@@ -987,6 +1027,47 @@ class StudyMemoryTests(unittest.TestCase):
             self.assertIsInstance(ctx.exception, ValueError)
             # None of the rejected calls may have written a row.
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM exchanges").fetchone()[0], 0)
+        finally:
+            conn.close()
+
+    def test_strict_partial_requires_and_persists_demonstrated_edge(self) -> None:
+        conn = self._memory_conn()
+        try:
+            kwargs = {
+                "session_id": "strict-partial",
+                "topic": "evd management",
+                "concept": "evd clamp trial",
+                "question": "What makes a clamp trial fail?",
+                "answer": "The exam worsens, but I would wait for ICP to rise.",
+                "correct": 1,
+                "tested_claim": "Clinical worsening can fail a clamp trial despite stable ICP.",
+                "learner_claim": "Recognized that the examination worsened.",
+                "error_type": "conceptual_confusion",
+                "misconception": "Stable ICP means the clamp trial can continue.",
+                "missing_edge": "Symptoms can precede a sustained ICP rise.",
+                "corrected_rule": "Clinical decline or ventriculomegaly can fail the trial despite stable ICP.",
+                "clinical_consequence": "Waiting for an ICP spike delays treatment of hydrocephalus.",
+                "retest_prompt_shape": "Changed-frame clamp trial with stable ICP and worsening exam.",
+                "answer_mode": "unaided",
+                "confidence_observed": "medium",
+                "teaching_move": "contrastive_drill",
+                "strict_telemetry": True,
+            }
+            with self.assertRaisesRegex(ValueError, "demonstrated_edge"):
+                study_memory.log_answer(conn, **kwargs)
+
+            study_memory.log_answer(
+                conn,
+                demonstrated_edge="Correctly used the neurologic examination as an outcome signal.",
+                teaching_intervention="Contrasted pressure failure with clinical hydrocephalus failure.",
+                **kwargs,
+            )
+            row = conn.execute(
+                "SELECT demonstrated_edge, misconception_text, teaching_intervention FROM claim_results"
+            ).fetchone()
+            self.assertIn("neurologic examination", row["demonstrated_edge"])
+            self.assertIn("Stable ICP", row["misconception_text"])
+            self.assertIn("Contrasted pressure", row["teaching_intervention"])
         finally:
             conn.close()
 
@@ -1452,11 +1533,10 @@ class StudyMemoryTests(unittest.TestCase):
 
             self.assertEqual(card["repair_velocity"]["failures"], 1)
             self.assertEqual(card["repair_velocity"]["repairs"], 0)
-            self.assertEqual(len(card["historical_misconceptions"]), 1)
-            misconception = card["historical_misconceptions"][0]
-            self.assertLessEqual(len(misconception["verbatim"]), 183)
-            self.assertLessEqual(len(misconception["misconception"]), 143)
-            self.assertIn("wrong threshold", misconception["verbatim"])
+            trace = card["memory_trace"]
+            self.assertLessEqual(len(trace["learner_answer"]), 223)
+            self.assertLessEqual(len(trace["missing_edge"]), 183)
+            self.assertIn("wrong threshold", trace["learner_answer"])
         finally:
             conn.close()
 
@@ -1589,6 +1669,39 @@ class StudyMemoryTests(unittest.TestCase):
             self.assertEqual(family["status"], "available")
             self.assertEqual(family["cache_status"], "family_match_unverified")
             self.assertEqual(family["match_type"], "doc_family")
+        finally:
+            conn.close()
+
+    def test_artifact_overlay_honors_claim_level_inventory_binding(self) -> None:
+        conn = self._memory_conn()
+        try:
+            study_memory.log_answer(
+                conn,
+                session_id="claim-bound-overlay",
+                topic="evd management",
+                concept="evd setup and complications",
+                question="What complication follows excessive diversion?",
+                answer="Subdural collection from overdrainage.",
+                correct=2,
+                tested_claim="Excessive CSF diversion can cause subdural collections.",
+                inventory_concept_id="ncc.monitoring.csf-diversion-overdrainage",
+            )
+            concept_id = int(conn.execute("SELECT id FROM concepts").fetchone()[0])
+            conn.execute(
+                "UPDATE concepts SET inventory_concept_id = ? WHERE id = ?",
+                ("ncc.monitoring.evd-management", concept_id),
+            )
+            conn.commit()
+
+            evd = study_memory._learner_overlay_for_inventory_id(
+                conn, "ncc.monitoring.evd-management"
+            )
+            overdrainage = study_memory._learner_overlay_for_inventory_id(
+                conn, "ncc.monitoring.csf-diversion-overdrainage"
+            )
+            self.assertEqual(evd["attempts_count"], 0)
+            self.assertEqual(overdrainage["attempts_count"], 1)
+            self.assertEqual(overdrainage["knowledge_state"], "passed")
         finally:
             conn.close()
 
@@ -1797,6 +1910,91 @@ class StudyMemoryTests(unittest.TestCase):
             self.assertTrue(payload["planning_brief"]["resolution_candidates"])
             self.assertEqual(payload["startup_recall"]["anki_feedback_status"]["status"], "skipped")
             self.assertNotIn("anki_overlay", payload["planning_brief"])
+        finally:
+            conn.close()
+
+    def test_startup_recall_orients_inventory_grounded_new_topic_despite_weak_neighbors(self) -> None:
+        conn = self._memory_conn()
+        try:
+            payload = json.loads(
+                study_memory.startup_recall(
+                    conn,
+                    topic="novel molecular biology of diffuse midline glioma",
+                    profile="memory",
+                )
+            )
+            startup = payload["startup_recall"]
+            orientation = payload["planning_brief"]["new_topic_orientation"]
+            self.assertFalse(startup["routing_required"])
+            self.assertTrue(startup["ready_to_teach"])
+            self.assertEqual(orientation["status"], "new_topic_no_learner_history")
+            self.assertTrue(orientation["inventory_grounded"])
+            self.assertTrue(payload["planning_brief"]["knowledge_map"])
+        finally:
+            conn.close()
+
+    def test_startup_inventory_projection_uses_callers_database(self) -> None:
+        conn = self._memory_conn()
+        try:
+            study_memory.log_answer(
+                conn,
+                session_id="isolated-projection",
+                topic="subarachnoid hemorrhage",
+                concept="hunt hess grading",
+                question="What is Hunt-Hess based on?",
+                answer="The clinical examination.",
+                correct=2,
+                tested_claim="Hunt-Hess is a clinical grading scale.",
+                inventory_concept_id="vasc.sah.hunt-hess",
+            )
+            payload = json.loads(
+                study_memory.startup_recall(
+                    conn,
+                    topic="subarachnoid hemorrhage",
+                    profile="audit",
+                )
+            )
+            node = next(
+                item for item in payload["planning_brief"]["knowledge_map"]
+                if item.get("concept_id") == "vasc.sah.hunt-hess"
+            )
+            self.assertEqual(node["attempts_count"], 1)
+            self.assertEqual(node["knowledge_state"], "passed")
+        finally:
+            conn.close()
+
+    def test_startup_without_session_id_is_read_only_for_policy_events(self) -> None:
+        conn = self._memory_conn()
+        try:
+            study_memory.log_answer(
+                conn,
+                session_id="seed-policy-read",
+                topic="subarachnoid hemorrhage",
+                concept="hunt hess grading",
+                question="What is the scale based on?",
+                answer="The clinical examination.",
+                correct=2,
+                tested_claim="Hunt-Hess is a clinical grading scale.",
+                inventory_concept_id="vasc.sah.hunt-hess",
+            )
+            before = int(conn.execute("SELECT COUNT(*) FROM policy_events").fetchone()[0])
+            study_memory.startup_recall(
+                conn,
+                topic="subarachnoid hemorrhage",
+                profile="memory",
+                session_id="",
+            )
+            after_read = int(conn.execute("SELECT COUNT(*) FROM policy_events").fetchone()[0])
+            self.assertEqual(after_read, before)
+
+            study_memory.startup_recall(
+                conn,
+                topic="subarachnoid hemorrhage",
+                profile="memory",
+                session_id="startup-policy-session",
+            )
+            after_session = int(conn.execute("SELECT COUNT(*) FROM policy_events").fetchone()[0])
+            self.assertEqual(after_session, before + 1)
         finally:
             conn.close()
 
@@ -2117,6 +2315,84 @@ class CurationLayerTests(unittest.TestCase):
             packet = build_curation_candidates(conn, mode="detailed")
             self.assertTrue(packet["recent_claim_results"])
             self.assertIn("corrected_rule", packet["recent_claim_results"][0])
+        finally:
+            conn.close()
+
+    def test_relationship_hints_require_explicit_cross_reference_or_recurrence(self) -> None:
+        from memory_operations import build_curation_candidates
+
+        conn = self._conn()
+        try:
+            def miss(session: str, concept: str, claim: str) -> None:
+                study_memory.log_answer(
+                    conn,
+                    session_id=session,
+                    topic="benchmark graph",
+                    concept=concept,
+                    question=f"Probe {concept}?",
+                    answer="I am not sure.",
+                    correct=0,
+                    tested_claim=claim,
+                    error_type="omission",
+                    missing_edge=claim,
+                    corrected_rule=claim,
+                )
+
+            miss("pair-one", "cranial compliance", "Compliance shapes the ICP waveform.")
+            miss("pair-one", "cerebral perfusion", "CPP equals MAP minus ICP.")
+            first = build_curation_candidates(conn, mode="compact")
+            self.assertEqual(first["candidate_relationship_hints"], [])
+
+            miss("pair-two", "cranial compliance", "Compliance shapes the ICP waveform.")
+            miss("pair-two", "cerebral perfusion", "CPP equals MAP minus ICP.")
+            repeated = build_curation_candidates(conn, mode="compact")
+            self.assertEqual(len(repeated["candidate_relationship_hints"]), 1)
+            self.assertEqual(
+                repeated["candidate_relationship_hints"][0]["hint_type"],
+                "repeated_co_miss",
+            )
+            self.assertTrue(
+                repeated["candidate_relationship_hints"][0]["agent_validation_required"]
+            )
+        finally:
+            conn.close()
+
+    def test_relationship_hint_surfaces_explicit_concept_cross_contamination(self) -> None:
+        from memory_operations import build_curation_candidates
+
+        conn = self._conn()
+        try:
+            study_memory.log_answer(
+                conn,
+                session_id="explicit-cross-reference",
+                topic="sitting craniotomy",
+                concept="tension pneumocephalus",
+                question="What explains the deterioration?",
+                answer="It is venous air embolism.",
+                correct=0,
+                tested_claim="Tension pneumocephalus produces postoperative mass effect.",
+                error_type="cross_contamination",
+                misconception="Tension pneumocephalus is the same process as venous air embolism.",
+                missing_edge="Intracranial air mass effect is distinct from intravascular air entrainment.",
+                corrected_rule="Separate tension pneumocephalus from venous air embolism.",
+            )
+            study_memory.log_answer(
+                conn,
+                session_id="explicit-cross-reference",
+                topic="sitting craniotomy",
+                concept="venous air embolism",
+                question="What is the mechanism?",
+                answer="I am not sure.",
+                correct=0,
+                tested_claim="Venous air embolism is intravascular air entrainment.",
+                error_type="omission",
+                missing_edge="Open venous channels above the right atrium entrain air.",
+                corrected_rule="Venous air embolism is intravascular air entrainment.",
+            )
+            packet = build_curation_candidates(conn, mode="compact")
+            hint = packet["candidate_relationship_hints"][0]
+            self.assertEqual(hint["hint_type"], "explicit_cross_reference")
+            self.assertIn("venous", hint["matched_concept_terms"])
         finally:
             conn.close()
 
@@ -2934,9 +3210,15 @@ class CurationLayerTests(unittest.TestCase):
             self.assertEqual(c2_refined["anki_reviews_count"], 5)
             self.assertEqual(c2_refined["anki_success_rate"], 1.0)
 
-            # Both are now deep, phase should transition to phase_3_force_connections
+            # Anki can strengthen exposure/retrievability, but repeated fact recall
+            # does not demonstrate causal or transfer depth. Keep both nodes in
+            # DEEPEN until an assessed higher-order probe succeeds.
             refined_plan = brief_refined["sequential_teaching_plan"]
-            self.assertEqual(refined_plan["current_phase"], "phase_3_force_connections")
+            self.assertEqual(refined_plan["current_phase"], "phase_2_recalibrate_gaps")
+            self.assertEqual(
+                {item["concept"] for item in refined_plan["depth_gap_targets"]},
+                {"Concept One", "Concept Two"},
+            )
         finally:
             conn.close()
 

@@ -25,11 +25,10 @@ Use task-specific variants only when the phase requires them, such as `service-l
 
 Read `retrieval_status` first.
 
-- `ready`: use one targeted discriminator, mental model, execution check, evidence anchor, or local clarification.
+- `complete`: use one targeted discriminator, mental model, execution check, evidence anchor, or local clarification.
 - `partial`: use only clearly relevant fields; rely on native knowledge for the rest.
 - `failed`: do not pretend vault context exists; teach from native knowledge and formal sources when needed.
 
 After using vault context, ask a near-transfer retest. Do not turn a miss into a broad vault-note lecture unless Gabriel asks for a full reveal.
 
 Preserve provenance. Local or experiential notes never silently override formal evidence.
-

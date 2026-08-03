@@ -61,9 +61,16 @@ class KnowledgeMapProvenanceTests(unittest.TestCase):
                 out = study_memory.startup_recall(
                     conn, topic="subarachnoid hemorrhage", lens="general", profile="memory",
                 )
-                brief = json.loads(out).get("planning_brief", {})
-                # unresolved -> routing warning present, but the inventory map is populated
-                self.assertTrue(brief.get("resolution_warning"))
+                payload = json.loads(out)
+                brief = payload.get("planning_brief", {})
+                # A coherent inventory map with no strong historical collision is
+                # a teachable new-topic ORIENT state, not an unresolved dead end.
+                self.assertEqual(
+                    brief.get("new_topic_orientation", {}).get("status"),
+                    "new_topic_no_learner_history",
+                )
+                self.assertFalse(payload["startup_recall"]["routing_required"])
+                self.assertTrue(payload["startup_recall"]["ready_to_teach"])
                 self.assertGreater(len(brief.get("knowledge_map", [])), 0)
                 self.assertEqual(brief.get("knowledge_map_provenance"), "inventory")
                 conn.close()

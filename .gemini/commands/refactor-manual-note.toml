@@ -1,22 +1,11 @@
-description = "Refactor a raw, manual study note into a polished, active-recall-friendly Obsidian note using selective visual curation and discrimination matrices"
+description = "Refactor a manual Obsidian note in place while preserving its facts and attachments."
 
 prompt = """
-ACTIVE COMMAND: /refactor-manual-note — Refactor a raw, manual study note into a polished, active-recall-friendly Obsidian note.
+ACTIVE COMMAND: /refactor-manual-note
+User input: {{args}}
 
-You MUST read and follow `.agents/shared/commands/refactor-manual-note.md` end-to-end. Do not improvise; it owns the structure, selective visual curation rules, rendering guardrails (using colons instead of list-triggering prefixes in Mermaid), shortest-path wikilink rules, and bottom YAML metadata.
+Read `.agents/shared/workflow-registry.json`, then read and follow the canonical
+contract below. Do not infer behavioral policy from this adapter.
 
-Gemini guardrails (do not let these slip):
-- IN-PLACE: refactor the note AT ITS EXISTING PATH and overwrite that file. Never create a second file, never add a "(Refactored)" or date suffix, never rename — the filename is the note title. If the input is pasted text with no path, ask for the destination before writing.
-- PRESERVE, DON'T INVENT: this reorganizes and formats Gabriel's own raw notes. Restructure and add curated visuals, but never fabricate clinical facts, silently drop content, or discard an embedded image reference.
-- MERMAID RENDER: never prefix a node label with a number-and-period or number-and-paren — the list engine breaks the box. BAD: `Tegmen["1. Tegmen Tympani"]` / `Tegmen["1) Tegmen Tympani"]`. GOOD: `Tegmen["1: Tegmen Tympani"]`. Wrap any label with spaces or special characters in double quotes.
-- SHORTEST-PATH WIKILINKS: embed images as `![[Image Name.png]]`, never with a subfolder prefix. BAD: `![[z_Images/Image Name.png]]`. GOOD: `![[Image Name.png]]`.
-- NO H1 TITLE: never open the note with a `# Title` line; the filename is the title. Bottom YAML only, closed by a final `---`.
-- SELECTIVE VISUALS: do not diagram or tabulate every fact. Tables are reserved for true comparative pairings and spatial cross-sections; Mermaid for genuine sequences. Prose stays prose.
-- INCREMENTAL RE-REFACTOR: if told the note is already refactored and only new material is being added, treat the existing polished content as a fixed placement guide — do NOT re-refactor, reword, or restructure it. Refactor and merge ONLY the new content into the section it fits, preserve existing diagrams/tables/callouts/images verbatim, never duplicate an existing point, and re-anchor the bottom YAML to the true end.
-
-User's input: {{args}}
-
----
-
-@{.gemini/commands/refactor-manual-note.md}
+@{.agents/shared/commands/refactor-manual-note.md}
 """

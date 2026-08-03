@@ -24,6 +24,47 @@ class MasteryIntelligenceTests(unittest.TestCase):
             "quantification",
         )
 
+    def test_ambiguous_probe_defaults_to_recall_not_transfer(self) -> None:
+        self.assertEqual(
+            cognitive_ops.classify_cognitive_op(
+                concept="Lumbar disc herniation",
+                question="Name the most common level.",
+            ),
+            "recall",
+        )
+        self.assertEqual(
+            cognitive_ops.classify_cognitive_op(
+                concept="Lumbar disc herniation",
+                question="How would the same principle apply in a different setting?",
+            ),
+            "transfer",
+        )
+
+    def test_mastery_depth_separates_facts_from_causal_and_transfer_evidence(self) -> None:
+        self.assertEqual(cognitive_ops.mastery_depth_from_operations(["recall", "quantification"]), "factual")
+        self.assertEqual(cognitive_ops.mastery_depth_from_operations(["discrimination"]), "relational")
+        self.assertEqual(cognitive_ops.mastery_depth_from_operations(["mechanism"]), "causal")
+        self.assertEqual(cognitive_ops.mastery_depth_from_operations(["mechanism", "transfer"]), "transfer_ready")
+
+    def test_legacy_operation_without_source_metadata_is_not_trusted(self) -> None:
+        self.assertEqual(
+            cognitive_ops.trusted_operation_from_signal(
+                operation="transfer",
+                agent_signal_json="{}",
+            ),
+            "",
+        )
+        self.assertEqual(
+            cognitive_ops.trusted_operation_from_signal(
+                operation="recall",
+                agent_signal_json=json.dumps({
+                    "cognitive_op": "recall",
+                    "cognitive_op_source": "inferred",
+                }),
+            ),
+            "recall",
+        )
+
     def test_probe_feedback_on_miss(self) -> None:
         feedback = cognitive_ops.probe_feedback(
             cognitive_op="sequencing",
@@ -100,6 +141,27 @@ class MasteryIntelligenceTests(unittest.TestCase):
         )
         self.assertEqual(plan["current_phase"], "phase_2_recalibrate_gaps")
         self.assertTrue(plan.get("orient_skip", {}).get("skipped"))
+
+    def test_factual_only_success_remains_a_deepen_target(self) -> None:
+        knowledge_map = [{
+            "concept_id": "spi.ldh",
+            "concept": "Lumbar disc herniation",
+            "role": "entry",
+            "exposure_status": "exposed_deep",
+            "knowledge_state": "passed",
+            "successful_operations": ["recall", "quantification"],
+            "mastery_depth": "factual",
+        }]
+        plan = study_memory._compute_teaching_policy(knowledge_map)
+        self.assertEqual(plan["current_phase"], "phase_2_recalibrate_gaps")
+        self.assertEqual(plan["depth_gap_targets"][0]["concept_id"], "spi.ldh")
+        self.assertTrue(any("structure/biomechanics/physiology" in item for item in plan["pedagogical_directives"]))
+
+        knowledge_map[0]["successful_operations"].append("mechanism")
+        knowledge_map[0]["mastery_depth"] = "causal"
+        advanced = study_memory._compute_teaching_policy(knowledge_map)
+        self.assertEqual(advanced["current_phase"], "phase_3_force_connections")
+        self.assertEqual(advanced["depth_gap_targets"], [])
 
     def test_escalate_interrupt_emitted(self) -> None:
         stuck = [{

@@ -9,7 +9,7 @@ Load this after Gabriel answers an assessed clinical question. It governs gradin
 3. If wrong or partial, repair the exact missing edge, false rule, discriminator, threshold, mechanism, or sequence.
 4. Choose the next question from the deterministic policy. `log-answer` recomputes it from the updated learner state and prints a self-sufficient `policy=...` line carrying `mode`, `phase`, `interrupts`, `target_concepts`, `pedagogical_directives`, and `socratic_choice_directives` (see Memory Logging below). Obey it — never pick the phase yourself. Each turn's policy line supersedes the startup plan; you do not need to retain the startup brief to follow it.
    - **ORIENT** (`phase_1_clear_fog`): keep questions superficial; present a "lay of the land" menu at boundaries.
-   - **DEEPEN** (`phase_2_recalibrate_gaps`): deepen with Socratic drills on active gaps, prerequisites, and discriminators.
+   - **DEEPEN** (`phase_2_recalibrate_gaps`): deepen with Socratic drills on active gaps, prerequisites, discriminators, and `depth_gap_targets`. For a factual-only depth gap, elicit a causal/relational chain or changed-frame application before advancing.
    - **CONNECT** (`phase_3_force_connections`): ask multi-concept transfer cases across already-seen concepts; encourage boards-style defense.
    - **Interrupts**: if `interrupts.remediate` is non-empty, re-teach the flagged misconception and retest with a changed frame before new material; if `interrupts.consolidate` is non-empty, interleave a brief spaced-retrieval probe of a due claim. Interrupts overlay the current phase. When both fire, remediate comes first; the full tie-break order is "Signal Precedence" in `adaptive-teaching-doctrine.md`.
    - **Socratic Choice**: proactively offer Gabriel choices at boundaries per `socratic_choice_directives`.
@@ -20,6 +20,15 @@ Use high-friction Socratic questioning before commitment; use clarity and depth 
 ## Point-Of-Need Vault
 
 Load `.agents/shared/commands/study-review-vault-repair.md` only when a miss, partial answer, shallow safety-critical edge, explicit request, local/service issue, or adjacent-note comparison would benefit from targeted Obsidian context. Vault recall is not routine between turns.
+
+## Point-Of-Need RAG
+
+After Gabriel commits to an answer, load `.agents/shared/commands/rag-routing.md`
+when a missed or partial scale, score, classification, staging system,
+threshold, or compact textbook discriminator needs source confirmation. Never
+run retrieval before the answer or place its evidence in the prompt. Teach only
+the next useful repair from the returned source packet; if the packet
+escalates, use the larger evidence workflow the claim requires.
 
 ## Memory Logging
 
@@ -33,6 +42,7 @@ python3 src/study_memory.py log-answer \
   --doc "<folder>/<file>.md" --skill "study-review" \
   --tested-claim "<tested rule/threshold/discriminator>" \
   --learner-claim "<committed answer summary>" \
+  [--demonstrated-edge "<what was correct in a partial answer>"] \
   --answer-mode "<unaided|prompted|after_hint|after_teaching|self_corrected>" \
   --confidence-observed "<low|medium|high|hesitant|fluent>" \
   --teaching-move "<initial_probe|contrastive_drill|mechanism_first|order_set|premortem|visual_probe|changed_frame_retest|other>" \
@@ -40,13 +50,14 @@ python3 src/study_memory.py log-answer \
   [--correction "<right rule>"] [--error-type "<type>"] [--misconception "<wrong belief>"] \
   [--missing-edge "<missing edge>"] [--corrected-rule "<replacement rule>"] \
   [--clinical-consequence "<why it matters>"] [--retest-prompt-shape "<future probe>"] \
+  [--teaching-intervention "<repair/contrast/scaffold actually delivered>"] \
   [--learning-operation "<recall|discrimination|quantification|sequencing|mechanism|transfer>"] \
   [--teaching-intent "<new_material|retest_open_gap|repair_after_miss|transfer_check|retention_check|synthesis>"] \
   [--expected-answer-edge "<edge needed for full credit>"] [--coverage-role "<primary_doc|related_topic_probe|repair_probe|memory_probe>"] \
   [--source-section "<heading>"] [--source-anchor "<anchor>"] [--curriculum-unit "<unit>"] \
   [--priority "<urgent|high|medium|low>"] \
   [--match-claim-state-id <id>] [--new-claim] [--repairs-claim-state-ids "<id,id,...>"] \
-  [--brain-dump-candidate-id <id>] \
+  [--shift-debrief-candidate-id <id>] \
   [--inventory-concept-id "<inventory.concept_id>"]
 ```
 
@@ -59,7 +70,7 @@ A log entry has four layers, each with one job. Keep them separate:
 - **Identity** (`--inventory-concept-id`, topic, claim-state ids): the canonical key. Matching, sequencing, and calibration run on this layer only. Resolve the probed concept to its inventory id; never let a prose label stand in as identity.
 - **Categorical** (`--cognitive-op`, `--error-type`, `--answer-mode`, `--confidence-observed`, `--teaching-move`, `--coverage-role`, `--priority`, `--correct`): controlled-vocabulary signal that drives calibration.
 - **Numerical** (attempts, successes, stability — managed by the engine): pure counts and scheduler state.
-- **Subjective** (`--tested-claim`, `--learner-claim`, `--misconception`, `--corrected-rule`, `--clinical-consequence`, `--retest-prompt-shape`): verbatim judgment the next agent *reads* to design a probe. Put all specifics here — thresholds, trial names, the exact discrimination — not in the concept label.
+- **Subjective** (`--tested-claim`, `--learner-claim`, `--demonstrated-edge`, `--misconception`, `--missing-edge`, `--corrected-rule`, `--clinical-consequence`, `--retest-prompt-shape`, `--teaching-intervention`): the exact evidence a future agent reads. For partial credit, store both the preserved edge and the missing edge. Keep an explicit false belief separate from an omission, and record the intervention actually used so a failed repair is not repeated blindly.
 
 `--concept` must be a short, atomic, canonical concept name (ideally the inventory node's name). Do not conflate two concepts (`"X and Y"`), name both sides of a comparison (`"X vs Y"`), or embed evidence/trial detail in it — those belong in `--tested-claim`. `log-answer` prints `WARN atomicity ...` advisories when a label violates this; treat them as a prompt to relabel, not noise.
 
@@ -72,7 +83,7 @@ After an assessed `study-review` exchange, `log-answer` prints a `binding={...}`
 
 Parse `binding=` silently. A persistent `unresolved`/low-score `inferred` on a central concept is a signal the inventory is missing a node, not a reason to stop.
 
-`log-answer` prints `OK exchange_id=N` followed by a `policy={...}` line with the recomputed `mode`, `phase`, `interrupts` (`remediate`, `consolidate`, `escalate`), `target_concepts` (capped, with `target_concepts_omitted` when truncated), `pedagogical_directives`, `socratic_choice_directives`, optional doc fields (`teaching_priority`, `artifact_native_targets`, `map_context_targets`), `decision_inputs` (including lean `weak_operations` and `binding_quality`), optional `probe_feedback` after misses/partials (`cognitive_op` + `retest_hint`), optional `orient_skip`, and during ORIENT an `orient_menu` of inventory nodes. An optional compact `session_progress={...}` line may include `probe_quality`. Parse both silently. Policy is computed from the live session knowledge map (patched incrementally each turn). In doc review, keep artifact-native targets primary and use map-context targets only as prerequisite/repair/transfer bridges. Pass `--inventory-concept-id` whenever the probed concept is on the session map — required for assessed `study-review` exchanges when resolvable. Pass `--cognitive-op` when the failed operation is obvious; otherwise the classifier infers it from the tested claim. Legacy concepts without IDs are lexically matched when possible; unmatched rows retry on future surfacing.
+`log-answer` prints `OK exchange_id=N` followed by a `policy={...}` line with the recomputed `mode`, `phase`, `interrupts` (`remediate`, `consolidate`, `escalate`), `target_concepts` (capped, with `target_concepts_omitted` when truncated), `depth_gap_targets`, `pedagogical_directives`, `socratic_choice_directives`, optional doc fields (`teaching_priority`, `artifact_native_targets`, `map_context_targets`), `decision_inputs` (including lean `weak_operations` and `binding_quality`), optional `probe_feedback` after misses/partials (`cognitive_op` + `retest_hint`), optional `orient_skip`, and during ORIENT an `orient_menu` of inventory nodes. An optional compact `session_progress={...}` line may include `probe_quality`. Parse both silently. Policy is computed from the live session knowledge map (patched incrementally each turn). In doc review, keep artifact-native targets primary and use map-context targets only as prerequisite/repair/transfer bridges. Pass `--inventory-concept-id` whenever the probed concept is on the session map — required for assessed `study-review` exchanges when resolvable. Pass `--cognitive-op` whenever you know the operation; otherwise the classifier infers it conservatively from the tested claim and defaults ambiguous prompts to recall, never transfer. Legacy concepts without IDs are lexically matched when possible; unmatched rows retry on future surfacing.
 
 Before probing a map node whose `learner_surface` is absent or thin, run point-of-need drilldown:
 

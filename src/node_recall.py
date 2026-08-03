@@ -17,9 +17,9 @@ def learner_surface_for_concept(conn: sqlite3.Connection, learner_concept_id: in
         OPEN_GAP_STATES,
         _active_prereq_gaps,
         _claim_state_repair_stats,
+        _claim_memory_trace,
         _compact_text,
         _concept_relations,
-        _verbatim_misconceptions,
     )
 
     row = conn.execute(
@@ -49,10 +49,13 @@ def learner_surface_for_concept(conn: sqlite3.Connection, learner_concept_id: in
         if s["state"] in OPEN_GAP_STATES
     ][:LEARNER_SURFACE_CLAIM_CAP]
     top_gap = open_claims[0]["claim_text"] if open_claims else ""
-    misconceptions = _verbatim_misconceptions(conn, learner_concept_id, limit=1)
-    last_misc = ""
-    if misconceptions:
-        last_misc = misconceptions[0].get("misconception") or misconceptions[0].get("verbatim", "")
+    primary_state_id = int(open_claims[0]["claim_state_id"]) if open_claims else None
+    memory_trace = (
+        _claim_memory_trace(conn, primary_state_id, history_limit=5)
+        if primary_state_id is not None
+        else {}
+    )
+    last_misc = str(memory_trace.get("misconception") or "")
     relations = _concept_relations(conn, learner_concept_id)
     repair_stats = (
         _claim_state_repair_stats(conn, int(open_claims[0]["claim_state_id"]))
@@ -66,6 +69,7 @@ def learner_surface_for_concept(conn: sqlite3.Connection, learner_concept_id: in
         "open_claims": len(open_claims),
         "top_gap": _compact_text(top_gap, 100),
         "last_misconception_verbatim": _compact_text(last_misc, 120),
+        "memory_trace": memory_trace,
         "prerequisites": (relations.get("prerequisites") or [])[:3],
         "active_prerequisite_gaps": _active_prereq_gaps(conn, learner_concept_id)[:2],
         "semantic_competitors": (relations.get("semantic_competitors") or [])[:2],

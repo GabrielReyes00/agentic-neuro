@@ -22,13 +22,15 @@ unnecessary identifiers before any workflow artifact. Use relative timing.
 Use field-aware vault recall and focused textbook RAG only when it improves the
 teaching thesis, anatomy, management alternatives, evidence, or anticipated
 faculty questions. The supplied case remains primary. Never invent missing case
-facts.
+facts. When textbook retrieval is useful, load
+`.agents/shared/commands/rag-routing.md` and use its smallest sufficient tier.
 
 ## Title And Gap Probe
 
-After intake, propose exactly three titles unless the user already supplied a final
-title. Ask one grouped gap probe for missing must-haves. A second probe is allowed
-only after meaningful new material; never exceed two.
+Use a supplied title. Otherwise infer one concise, professional, PHI-free title
+and proceed; offer alternatives only when naming is genuinely ambiguous. Ask one
+grouped gap probe for missing must-haves. A second probe is allowed only after
+meaningful new material; never exceed two.
 
 ## Required Case Content
 

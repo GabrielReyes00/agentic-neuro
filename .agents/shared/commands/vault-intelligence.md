@@ -14,10 +14,17 @@ Absence from the vault means only "not yet captured in Gabriel's notes." It neve
 ## Storage Boundary
 
 - `data/study_memory.db` remains the learner-state database: exchanges, claim results, claim state, review candidates, curated summaries, graph signals, and service memory.
-- `data/vault_index.db` is the compiled Obsidian section index: note metadata, headings, section text, section hashes, wikilinks, references, provenance tier, and field type.
+- `data/vault_index.db` is the compiled Obsidian library index. `vault_notes` and `vault_sections` carry note metadata, context properties, headings, section text, section hashes, wikilinks, references, provenance tier, and field type. `vault_files` and `vault_files_fts` carry managed PDF/PowerPoint hashes, integrity state, extracted text, dimensions, and note backlinks.
 - LanceDB table `vault_notes` is a dedicated vault vector table. It stores embedded section payloads from the vault and stays separate from the textbook table `neurosurgery_v4`.
 
 Do not copy full vault content into learner memory. Link learner-state needs to vault sections at runtime.
+
+The vault and learner model answer different questions:
+
+- vault: what artifacts and source files exist, where they came from, and how they connect;
+- learner model: what was tested, retained, missed, repaired, or remains weak.
+
+Owning or generating an artifact is not evidence of mastery.
 
 ## Sync And Recall Tools
 
@@ -45,6 +52,30 @@ Use exact section retrieval when the note and field are known:
 python3 src/vault_retriever.py get --note "Concepts/ENRICH Trial.md" --section-type evidence_card --pretty
 ```
 
+Context filters are first-class. The SQLite search and recall entry points accept
+`--institution`, `--service`, `--rotation`, `--conference`, and `--status`.
+Values are the canonical link targets stored in frontmatter, for example:
+
+```bash
+python3 src/vault_retriever.py search "sagittal balance" \
+  --institution "Residency/Institutions/VA" \
+  --conference "Residency/Conferences/Journal Club"
+```
+
+Refresh and audit the managed PDF/PowerPoint catalog after importing or moving
+durable files:
+
+```bash
+python3 src/vault_library.py refresh
+python3 src/vault_library.py audit
+python3 src/vault_library.py search "cubital nerve transposition"
+```
+
+`vault_library.py search` searches extracted article, slide, and speaker-note
+text and returns the exact vault-relative file plus its linked notes. An
+integrity failure is a loud repair item; never claim a deck or article package
+is durable when its catalog check fails.
+
 The lower-level SQLite and Lance search subcommands are inspection tools for audits and debugging. Teaching workflows should start with `recall` so the agent receives one compact packet with lexical, field-aware, and semantic evidence already merged.
 
 Parse JSON silently. Read `retrieval_status`:
@@ -62,10 +93,10 @@ Prefer exact field retrieval before broad note retrieval.
 | Field | Use |
 |---|---|
 | `quick_reference` | Fast orientation, pre-round refresh, concise answer framing |
-| `clinical_focus` | Brain-dump topic inventory and scope recognition |
+| `clinical_focus` | Shift Debrief topic inventory and scope recognition |
 | `priority_takeaways` | Next-shift consequence and short retention hooks |
 | `clinical_use` | Why the concept changes management, diagnosis, prognosis, or operative conduct |
-| `clinical_synthesis` | Integrated explanatory content from reports, consults, and brain dumps |
+| `clinical_synthesis` | Integrated explanatory content from reports, consults, and Shift Debriefs |
 | `durable_mental_model` | Repair after misses, retention hooks, analogies, and mechanism reframing |
 | `operational_mental_model` | Service/operative practical models and decision trees |
 | `critical_discriminators` | High-friction distractors, oral-board contrasts, confusable entities |
@@ -85,6 +116,9 @@ Prefer exact field retrieval before broad note retrieval.
 Use these task names with `--task`:
 
 - `doc-review`: Retrieve mastery objectives, discriminators, mental models, execution checks, quick references, synthesis, and related links around a requested document. The requested document remains primary.
+- `study-material-generation`: Retrieve quick references, discriminators, mental
+  models, synthesis, and related links that may improve transformation of a
+  supplied source. The supplied source remains primary.
 - `weak-spot-review`: Retrieve discriminators, mental models, execution checks, evidence cards, bedside rules, and clinical-use fields for learner-memory targets.
 - `concept-repair`: Retrieve the durable mental model, discriminators, execution check, and clinical use for a missed or unstable concept.
 - `consult`: Retrieve quick reference, bedside rule, evidence card, clinical use, and references for a bedside procedure or protocolized task.
@@ -97,6 +131,10 @@ Use these task names with `--task`:
   evidence cards, discriminators, clinical use, execution checks, references, and
   related links that help explain or contextualize an assigned article. The
   assigned article remains primary.
+- `presentation-generation`: Retrieve quick references, synthesis, evidence cards,
+  discriminators, operative or imaging context, local clarifications, related
+  artifacts, and references that may support a case or article presentation. The
+  case record, Journal Club dossier, and source article remain primary.
 
 ## Teaching Use
 
@@ -106,7 +144,7 @@ Vault retrieval should make teaching more personalized, not narrower:
 - Use `durable_mental_model` after a miss or shallow answer to repair memory with Gabriel's existing cognitive hook.
 - Use `execution_check` to turn knowledge into an action-oriented oral-board or next-shift prompt.
 - Use `evidence_card` to anchor trials, guidelines, and thresholds.
-- Use `local_clarifications` only when the user asks about a service/site/local practice or when preserving provenance in a Brain Dump review.
+- Use `local_clarifications` only when the user asks about a service/site/local practice or when preserving provenance in a Shift Debrief review.
 - Use `references` when the answer contains high-stakes numbers, drug/dose details, operative strategy claims, or evolving evidence.
 
 During `study-review`, vault recall is not a startup step. The requested document plus SQLite `startup-recall` plus Anki overlay form the startup context. Use vault recall only at point of need: after Gabriel misses, gives a partially correct answer, shows a recurring false rule, needs a different explanatory frame, asks for local/service context, or asks to compare against an adjacent note. Then run:

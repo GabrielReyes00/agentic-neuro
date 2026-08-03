@@ -1,13 +1,11 @@
 ---
-description: Analyze a neurosurgery article PDF into a validated, intern-accessible journal-club mastery dossier with optional review.
-argument-hint: --pdf <path> [--supplement <path>] [--assignment <prompt>] [--focus <angle>]
+description: Analyze an article into a validated, source-faithful journal-club dossier without slides.
+argument-hint: --pdf <path> [--supplement <path>] [--focus <angle>]
 ---
 
 # Journal Club
 
 The user invoked `/journal-club` with: $ARGUMENTS
 
-Read and follow `.agents/shared/commands/journal-club.md`.
-
-Do not create slides. Install the final dossier only through
-`src/journal_club_guard.py`.
+Read `.agents/shared/workflow-registry.json`, then read and follow
+`.agents/shared/commands/journal-club.md`. The shared contract is the behavioral authority.

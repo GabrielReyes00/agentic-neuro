@@ -1,169 +1,100 @@
-# Intraoperative Guide Map-Completeness Review Module
+# Intraoperative Guide Map Review
 
-Use this module after the operative knowledge map is built and before any prose drafting begins.
+Run after `knowledge_map.json` is built and before prose synthesis. This is an
+independent adversarial review of the operative model, not a rewrite.
 
-This is a **separate adversarial review checkpoint**, distinct from the post-draft expert completeness review. Iterating on the map is cheaper than iterating on prose, so map gaps must be closed before the synthesis module runs.
+## Reviewer Independence
 
-## Mandatory Subagent Separation
+Intermediate and complex procedures use a reviewer independent from the writer:
+a separate subagent when available, otherwise a fresh-context reviewer pass
+that receives only the structured handoff. Record one of:
 
-The map-completeness review **must** be performed by a different subagent instance than the writer that constructed the map. The writer's priors leak when self-reviewing; this is the cheap point to break that loop.
+- `map_reviewer_subagent`
+- `independent_fresh_context`
+- `self_review_simple_only`
 
-- For intermediate or complex procedures, this subagent is required. If no subagent is available, the workflow halts and surfaces the limitation to the user — do not silently fall back to self-review.
-- For simple bedside procedures, a single self-review pass against this rubric is acceptable, but the verdict JSON must still be produced.
+Simple procedures may use the last option with a justification. Ordinary
+same-context self-editing is not an independent review.
 
-The map reviewer should receive:
+Provide the reviewer:
 
-- Procedure title, complexity, and decomposition (including the Coverage Matrix).
-- The structured operative knowledge map (`knowledge_map.json` preferred; markdown debug view only if JSON is unavailable).
-- `coverage_ledger.json`.
-- `source_cards.jsonl` rows referenced by weak, disputed, or high-risk blocks; do not pass every source card if the ledger already shows coverage.
-- A short verdict-chain summary when this is cycle 2 or later.
-- This module.
+- title, complexity, decomposition, and Coverage Matrix;
+- `knowledge_map.json`;
+- `coverage_ledger.json`;
+- only source-card rows supporting weak, disputed, quantitative, or high-risk
+  blocks; and
+- the prior compact verdict summary on later cycles.
 
-The reviewer should not receive any draft prose or raw RAG dumps by default. The reviewer's job is to test the *plan*, not to write the guide. If a source dispute matters, request the exact raw retrieval passage needed rather than asking for the whole retrieval file.
+Do not provide draft prose or bulk raw retrieval. The reviewer tests the plan.
 
-## Role
+## Approval Standard
 
-You are a senior neurosurgical attending stress-testing the procedure model a fellow has built before they begin writing. Your standard: if a resident studied only from this map and then walked into the OR, would they have the conceptual scaffolding to perform, recognize danger, recover, and defend the operation?
+Approve only when every applicable Coverage Matrix block gives the resident the
+mental structure needed to act, recognize danger, recover, and defend the plan.
+Test:
 
-You are explicitly adversarial. Approval is the exception, not the default, on cycle 1.
+- pathology, natural history, indication, timing, contraindications, and
+  alternatives;
+- imaging and workup findings with the conduct change each produces;
+- positioning, room, equipment, anesthesia, physiology, and monitoring;
+- phase-by-phase goals, landmarks, step rationale, danger anatomy, hemostasis,
+  endpoint criteria, and novice-versus-expert behavior;
+- executable bail-outs, conversion/abort criteria, and equipment or exposure
+  failure;
+- patient modifiers, anatomy variants, prior surgery, and alternate approaches;
+- postoperative surveillance, imaging, complications, and operative causality;
+- outcomes/current evidence when those claims change selection or conduct; and
+- source coverage, limitations, and explicit internal-only blocks.
 
-## Approval Rubric
+Use the attending bank only as an applicability-filtered cross-check. Select
+questions that probe the highest-risk assumptions for this procedure and record
+their stable IDs. Generate independent questions when needed to test an angle
+not already represented. Do not pull every “universal” question and do not
+manufacture a minimum number of questions or gaps.
 
-Approve only if every block below is true. Each block reflects a first-principle knowledge target that all neurosurgical procedures share.
+A blocking gap is one that could cause mis-selection, mis-execution, missed
+danger, failed rescue, or indefensible reasoning. Record polish separately.
+Approval is appropriate whenever no blocking gap remains—even on cycle one.
 
-### Pathology and Indication
-- The map explains the disease mechanism, biomechanics or pathophysiology, and natural history relevant to the operative decision.
-- The map specifies when natural history flips management toward surgery.
-- The map distinguishes the surgical indication from the procedure itself (why operate, why now, why this operation).
+## Verdict
 
-### Workup and Decision-Making
-- The map specifies the imaging sequences/planes/findings that change conduct, with decision thresholds where applicable.
-- The map specifies the role of adjunct studies (EMG/NCV, CTA/DSA, CT myelogram, flexion-extension, neuropsych, perfusion, fMRI/tractography) when relevant.
-- The map specifies what determines surgical timing.
+Write:
 
-### Anatomy with Neurophysiologic Consequence
-- Every named structure-at-risk is paired with function, supply or drainage, plane or corridor, injury syndrome, avoidance maneuver, and rescue option.
-- Anatomy entries are not lists; they connect to operative conduct.
-
-### Anesthetic and Physiologic Plan
-- Anesthetic targets relevant to this operation are explicit (MAP/CPP, ventilation, paralytic, burst suppression, hypothermia, brain relaxation, cuff pressure, IV access, vasoactive readiness).
-- The map specifies how the surgeon communicates physiologic needs at critical moments.
-
-### Neuromonitoring Strategy (when applicable)
-- Modalities chosen are specified (SSEP, MEP, EMG, BAER, EEG, EcoG, cranial nerve monitoring) with rationale.
-- The map specifies signal-change thresholds and the surgical response to each loss pattern.
-- If neuromonitoring is intentionally not used, the map states why.
-
-### Hemostasis Strategy
-- The map names the predictable bleeding sources by phase.
-- It specifies proximal/distal control points obtained before risky steps.
-- It specifies tools and sequences (bipolar settings, hemostatic agents, packing, clip-trap-repair logic, transfusion thresholds).
-
-### Operative Sequence with Step Rationale
-- Every operative phase has: objective, landmark, action, structure-at-risk, decision point, novice error, expert behavior, recovery move, **and an explicit step-rationale chain (mechanical/anatomic goal → why this technique → consequence if skipped → downstream step it enables)**.
-- Pre-OR phases (workup, plan, consent, setup arrival) and post-OR phases (extubation, 24h, 30d, follow-up) receive the same treatment when they change conduct.
-
-### Critical Moments and Bail-Outs
-- The highest-risk maneuvers are isolated with expert-vs-novice behavior and the consequence of failure.
-- Bail-outs are executable, not exhortative ("call for help" alone is not a bail-out).
-
-### Endpoint / Completion Criteria
-- The map names what must be true before closure: decompression endpoint, resection threshold, clipping/coiling confirmation, hardware position, hemostasis, intraoperative imaging or doppler, neuromonitoring stability.
-- The map specifies what intraoperative tools confirm completion (ICG, indocyanine, intraop angio, intraoperative MRI/CT, neuromonitoring, doppler, fluoroscopy).
-
-### Outcomes and Evidence
-- The map captures contemporary outcomes, comparative evidence, effect sizes where decision-relevant, and known controversies.
-- It identifies practice-changing trials or guidelines worth citing.
-
-### Patient-Specific Modifiers
-- Host factors (bone biology, age, comorbidities, anticoagulation, prior radiation, pregnancy, pediatric vs adult).
-- Anatomic variants (vascular loops, accessory drainage, anomalous innervation, transitional vertebrae).
-- Prior-surgery variants (scarred plane, hardware in situ, prior approach).
-
-### Closure, Postoperative Surveillance, and Causality
-- The map ties postoperative checks and complications back to the operative step that caused them.
-- The map specifies expected postoperative imaging findings vs alarms.
-- The map specifies follow-up cadence and recurrence/failure surveillance.
-
-### OR Team Choreography (when conduct-relevant)
-- The map names the closed-loop communication points: time-out, vascular control announcement, neuromonitoring change, transfusion call, conversion announcement, abort criteria call.
-
-### Attending Defense Coverage
-- Attending defense questions written during decomposition are answered by the map.
-- The reviewer must also generate **at least three fresh attending questions** independent of the writer's list, and confirm the map answers them. Fresh questions must be recorded in the verdict.
-- Cross-check the map against the curated bank in `.agents/shared/commands/intraoperative-guide-attending-bank.md`: pull all universal questions plus at least 4 of the primary-family questions. The map (not yet the prose) must contain the mental scaffolding to answer each pulled question. Skip-with-reason is allowed for conditional-tag questions.
-
-## Adversarial Discipline
-
-On cycle 1, the reviewer must surface at least three candidate gaps before declaring `MAP_APPROVED`. If the reviewer cannot generate three plausible gap candidates, the review is too shallow — re-read the map and try again.
-
-A gap is "blocking" if a resident reading only this map would mis-execute, mis-recognize danger, fail to rescue, or fail attending defense. Non-blocking gaps are recorded but do not prevent map approval.
-
-## Verdict JSON
-
-Write a verdict file to:
-
-```text
-data/Sessions/<Title>/verdicts/map-review-cycle-<N>.json
-```
-
-Format:
+`data/Sessions/<Title>/verdicts/map-review-cycle-<N>.json`
 
 ```json
 {
   "checkpoint": "map_review",
   "cycle": 1,
-  "verdict": "MAP_APPROVED" | "MAP_GAPS",
+  "verdict": "MAP_APPROVED | MAP_GAPS",
   "procedure_title": "<Title>",
-  "complexity": "simple" | "intermediate" | "complex",
-  "reviewer_role": "map_reviewer_subagent" | "self_review_simple_only",
-  "bank_question_ids_checked": ["U01", "U02", "S03"],
-  "fresh_attending_questions": ["<question 1>", "<question 2>", "<question 3>"],
-  "candidate_gaps_surfaced": <integer, ≥3 on cycle 1>,
+  "complexity": "simple | intermediate | complex",
+  "reviewer_role": "map_reviewer_subagent | independent_fresh_context | self_review_simple_only",
+  "self_review_justification": null,
+  "bank_question_ids_checked": [],
+  "fresh_attending_questions": [],
+  "coverage_matrix_blocks_satisfied": 0,
+  "coverage_matrix_blocks_total": 0,
   "blocking_gaps": [
     {
-      "gap": "...",
-      "rubric_block": "anatomy / anesthesia / hemostasis / ...",
-      "repair_path": "internal knowledge | RAG | PubMed | knowledge_map_revision",
-      "suggested_query": "..."
+      "gap": "<specific missing relationship or action>",
+      "rubric_block": "<block>",
+      "coverage_matrix_block": "<stable block id>",
+      "repair_path": "existing_context | internal_knowledge | RAG | PubMed | knowledge_map_revision",
+      "suggested_query": null
     }
   ],
-  "nonblocking_notes": ["..."],
-  "coverage_ledger_updates": [
-    {"block_id": "hemostasis_strategy", "review_status": "gap", "note": "..."}
-  ],
-  "rationale": "<2-4 sentences on why approved or what must improve>",
+  "nonblocking_notes": [],
+  "coverage_ledger_updates": [],
+  "rationale": "<why the map is or is not ready>",
   "timestamp": "<ISO-8601>"
 }
 ```
 
-The verdict JSON is a workflow artifact. It must exist before the synthesis module runs. The finalize module verifies the chain. To control token use, the reviewer should return only the compact delta summary to the orchestrator after writing the JSON: verdict, blocking gaps, repair paths, fresh questions, affected coverage block IDs, and rationale. Do not echo the full bank pull or full JSON unless explicitly requested. Store attending-bank question IDs, not full bank-question text; the bank file is canonical.
+After writing the JSON, return only verdict, blocking gaps, repair paths,
+affected block IDs, questions actually used, and rationale. Store bank IDs, not
+copied bank text.
 
-## Gap Report Format (when MAP_GAPS)
-
-In addition to the verdict JSON, return a markdown gap table to the orchestrator:
-
-```markdown
-## Verdict
-MAP_GAPS
-
-## Blocking Map Gaps
-| Gap | Rubric block | Why it matters intraoperatively | Repair path | Suggested query |
-|---|---|---|---|---|
-| ... | ... | ... | internal / RAG / PubMed / knowledge_map_revision | ... |
-
-## Fresh Attending Questions Used
-- ...
-- ...
-- ...
-
-## Non-blocking Notes
-- ...
-```
-
-Keep this returned table delta-focused. The full JSON on disk is the audit trail; the chat/handoff is the working summary.
-
-## Termination
-
-If three map-review cycles still fail to approve on intermediate procedures (five on complex), escalate to the user with the unresolved gaps. Do not begin drafting prose from an unapproved map.
+If the verdict is `MAP_GAPS`, repair the structured map and rerun this review.
+Do not draft prose from an unapproved map. When the cycle budget is exhausted,
+surface the unresolved gaps and attempted repairs to the user.
