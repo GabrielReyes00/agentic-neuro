@@ -1,0 +1,112 @@
+{
+  "anki_policy": "none",
+  "binary_destination": "z_Images/<Descriptive Visual Name>.<ext>",
+  "canonical_workflow": "refactor-manual-note",
+  "contract": ".agents/shared/commands/refactor-manual-note.md",
+  "execution": {
+    "entry": "intake",
+    "mode": "direct",
+    "nodes": [
+      {
+        "context": "conversation",
+        "edges": [
+          {
+            "to": "augment",
+            "when": "augmentation_selected"
+          },
+          {
+            "to": "rewrite",
+            "when": "refactor_only"
+          }
+        ],
+        "id": "intake",
+        "kind": "intake",
+        "load": [
+          ".agents/shared/commands/refactor-manual-note.md"
+        ]
+      },
+      {
+        "context": "conversation",
+        "edges": [
+          {
+            "to": "rewrite",
+            "when": "integrated"
+          }
+        ],
+        "id": "augment",
+        "kind": "reason",
+        "load": [
+          ".agents/shared/commands/refactor-manual-note-augmentation.md",
+          ".agents/shared/commands/rag-routing.md"
+        ]
+      },
+      {
+        "context": "conversation",
+        "edges": [
+          {
+            "to": "visualize",
+            "when": "visual_requested"
+          },
+          {
+            "to": "validate",
+            "when": "rewritten"
+          }
+        ],
+        "id": "rewrite",
+        "kind": "write",
+        "load": [
+          ".agents/shared/commands/refactor-manual-note.md"
+        ]
+      },
+      {
+        "context": "conversation",
+        "edges": [
+          {
+            "to": "validate",
+            "when": "integrated"
+          }
+        ],
+        "id": "visualize",
+        "kind": "write",
+        "load": [
+          ".agents/shared/commands/refactor-manual-note-visualize.md"
+        ]
+      },
+      {
+        "context": "conversation",
+        "edges": [
+          {
+            "loop": true,
+            "to": "rewrite",
+            "when": "revision_needed"
+          },
+          {
+            "to": "done",
+            "when": "passed"
+          }
+        ],
+        "id": "validate",
+        "kind": "validate",
+        "load": [
+          ".agents/shared/commands/refactor-manual-note.md"
+        ]
+      },
+      {
+        "context": "conversation",
+        "edges": [],
+        "id": "done",
+        "kind": "terminal",
+        "load": []
+      }
+    ],
+    "run_state": "none"
+  },
+  "generated_from": ".agents/shared/workflow-registry.json",
+  "generation_recall": "none",
+  "invoked_as": "refactor-manual-note",
+  "reviewable": true,
+  "runtime_contract": ".agents/shared/commands/workflow-runtime.md",
+  "schema_version": 1,
+  "vault_destination": "existing_source_path",
+  "write_policy": "explicit_in_place_rewrite; preserve_existing_content_and_attachments"
+}

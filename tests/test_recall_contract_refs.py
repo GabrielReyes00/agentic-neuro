@@ -41,23 +41,15 @@ class RecallContractReferenceTests(unittest.TestCase):
                 self.assertNotIn("Read and follow `.agents/shared/commands/study-review.md`", text)
                 self.assertLessEqual(len(text.split()), 120)
 
-    def test_shared_learning_startup_contract_uses_orchestrated_recall(self) -> None:
-        paths = (
-            ".agents/shared/commands/learning-session-contract.md",
-            ".agents/shared/commands/memory-operations.md",
-            ".agents/shared/commands/memory-retrieval.md",
-            ".agents/shared/commands/study-review-startup.md",
-        )
-        stale_startup_fragments = (
-            'summary --topic "<doc topic>" --limit 8 --scaffold-limit 2 --include-curated --include-model --brief-only',
-            "summary --limit 12 --scaffold-limit 0 --include-curated --include-model --brief-only",
-        )
-        for relative_path in paths:
-            with self.subTest(path=relative_path):
-                text = (ROOT / relative_path).read_text()
-                self.assertIn("startup-recall", text)
-                for fragment in stale_startup_fragments:
-                    self.assertNotIn(fragment, text)
+    def test_shared_learning_startup_uses_typed_entry_and_bounded_state(self) -> None:
+        startup = (ROOT / ".agents/shared/commands/study-review-startup.md").read_text()
+        tutor = (ROOT / ".agents/shared/commands/tutor-state.md").read_text()
+        self.assertIn("start-session --stdin", startup)
+        self.assertIn("tutor_state", startup)
+        self.assertIn("tutor_state_v1", tutor)
+        self.assertIn("node-recall", tutor)
+        self.assertIn("never preload the whole map", tutor)
+        self.assertNotIn("summary --topic", startup)
 
     def test_startup_recall_contract_does_not_use_json_flag(self) -> None:
         memory_ops = (ROOT / ".agents/shared/commands/memory-operations.md").read_text()
@@ -98,17 +90,14 @@ class RecallContractReferenceTests(unittest.TestCase):
             with self.subTest(retrieval_overlay_fragment=fragment):
                 self.assertIn(fragment.lower(), retrieval.lower())
 
-        for fragment in (
-            "planning_brief.anki_overlay",
-            "Anki never clears SQLite misconceptions",
-            "avoid fresh-card direct quizzes",
-        ):
-            with self.subTest(startup_fragment=fragment):
-                self.assertIn(fragment, startup)
+        # Startup consumes only the compact advisory pointer.  Detailed overlay
+        # semantics remain in the memory interpretation contract.
+        self.assertIn("Anki", startup)
+        self.assertNotIn("planning_brief.anki_overlay", startup)
 
         for fragment in (
-            "Use --match-claim-state-id",
-            "Anki Enqueue",
+            "match_claim_state_id",
+            "Card Follow-Through",
         ):
             with self.subTest(turn_fragment=fragment):
                 self.assertIn(fragment, turn.replace('`',''))
@@ -136,14 +125,12 @@ class RecallContractReferenceTests(unittest.TestCase):
         normalized_root = _normalized(root)
         for invariant in (
             "Startup is silent",
-            "Do not narrate contract loading",
-            "Do not load Anki card-quality",
-            "do not run audit expansion before the first question",
-            "ask one clinical question and stop",
-            "Use `handoff.next_action` privately",
-            "Do not quote `handoff.summary`",
+            "ask one answerable clinical question and stop",
+            "Do not narrate memory",
+            "never preload the whole map",
+            "profile=audit",
         ):
-            self.assertIn(invariant, normalized_startup)
+            self.assertIn(invariant, normalized_startup + " " + (ROOT / ".agents/shared/commands/tutor-state.md").read_text())
         self.assertNotIn("open with a one-sentence recap", study_review)
         self.assertNotIn("brief returning-session recap", study_review)
         self.assertNotIn("recap/question pattern", study_review)
@@ -169,15 +156,8 @@ class RecallContractReferenceTests(unittest.TestCase):
                 self.assertNotIn("Startup is silent", adapter_text)
                 self.assertNotIn("planning_brief", adapter_text)
 
-        retrieval = (ROOT / ".agents/shared/commands/memory-retrieval.md").read_text()
-        self.assertIn("no pre-question audit command", retrieval)
-        self.assertIn("deferred_high_signal_counts", retrieval)
-        self.assertIn("compacted-evidence counts retained for awareness", retrieval)
-        self.assertIn("fallback.audit_profile_available", retrieval)
-        self.assertIn("Use `handoff.next_action` as private question-design input", retrieval)
-        self.assertIn("Treat `handoff.summary` as audit/debug context only", retrieval)
-        self.assertIn("narrate `handoff.summary`", retrieval)
-        self.assertNotIn("fallback.full_evidence_command", retrieval)
+        self.assertLessEqual(len(study_review.split()), 700)
+        self.assertIn("start-session --stdin", study_review)
 
     def test_learning_contract_defers_later_phase_modules_until_needed(self) -> None:
         contract = (ROOT / ".agents/shared/commands/learning-session-contract.md").read_text()
@@ -209,11 +189,11 @@ class RecallContractReferenceTests(unittest.TestCase):
         vault = (ROOT / ".agents/shared/commands/study-review-vault-repair.md").read_text()
         end = (ROOT / ".agents/shared/commands/study-review-end.md").read_text()
         self.assertIn("study-review-turn.md", startup)
-        self.assertIn("study-review-vault-repair.md", turn)
         self.assertIn("study-review-end.md", turn)
+        self.assertIn("study-review-vault-repair.md", turn)
         self.assertIn("vault_retriever.py recall", vault)
-        self.assertIn("end-session", end)
-        self.assertIn("anki_queue.py flush", end)
+        self.assertIn("close-session --stdin", end)
+        self.assertIn("anki-session-workflow.md", end)
 
     def test_root_agent_instructions_share_startup_recall_invariant(self) -> None:
         for relative_path in ("AGENTS.md", "CLAUDE.md", "GEMINI.md"):
@@ -282,7 +262,10 @@ class RecallContractReferenceTests(unittest.TestCase):
 
     def test_service_log_contract_routes_through_shift_debrief_with_service_memory(self) -> None:
         contract = (ROOT / ".agents/shared/commands/service-log.md").read_text()
-        implementation = (ROOT / "src/study_memory.py").read_text()
+        implementation = (
+            (ROOT / "src/study_memory.py").read_text()
+            + (ROOT / "src/study_memory_cli.py").read_text()
+        )
         for command in (
             "rotation-current",
             "rotation-start",
@@ -365,43 +348,30 @@ class RecallContractReferenceTests(unittest.TestCase):
         self.assertIn("after the first question", contract)
         self.assertIn("`startup-recall` itself is SQLite learner-state plus optional Anki overlay, not Obsidian vault search", retrieval)
         self.assertIn("do not query the vault at startup for the same document", retrieval)
-        self.assertIn("Do not query vault intelligence at startup", startup)
+        self.assertIn("do not preload semantic vault recall", (ROOT / ".agents/shared/commands/study-review-turn.md").read_text())
         # The approved startup map pass is the deterministic concept-inventory
         # projection, distinct from banned semantic vault recall. Guard both: it
         # must be present and must not reintroduce semantic recall at startup.
-        self.assertIn("startup-recall", startup)
-        self.assertIn("--session", startup)
-        self.assertIn("knowledge_map", startup)
+        self.assertIn("start-session", startup)
+        self.assertIn("tutor_state", startup)
+        self.assertIn("Artifact Map Gate", startup)
         self.assertNotIn("vault_retriever.py", startup)
 
-    def test_study_review_contracts_carry_deterministic_policy_invariant(self) -> None:
+    def test_study_review_contracts_carry_phase_controller_invariant(self) -> None:
         startup = (ROOT / ".agents/shared/commands/study-review-startup.md").read_text()
         turn = (ROOT / ".agents/shared/commands/study-review-turn.md").read_text()
+        tutor = (ROOT / ".agents/shared/commands/tutor-state.md").read_text()
         doctrine = (ROOT / ".agents/shared/commands/adaptive-teaching-doctrine.md").read_text()
-        # The mode/phase is deterministic and the five named modes plus the two
-        # interrupts must be addressable from the contracts.
-        for fragment in ("knowledge_map", "sequential_teaching_plan",
-                         "ORIENT", "DEEPEN", "CONNECT", "interrupts.remediate", "interrupts.consolidate"):
-            with self.subTest(startup_fragment=fragment):
-                self.assertIn(fragment, startup)
-        self.assertIn("policy=", turn)
-        self.assertIn("inventory-concept-id", turn)
-        for fragment in ("ORIENT", "DEEPEN", "CONNECT", "REMEDIATE", "CONSOLIDATE",
-                         "never pick the macro phase yourself", "interrupts"):
+        for fragment in ("ORIENT", "DEEPEN", "CONNECT", "REMEDIATE", "CONSOLIDATE"):
             with self.subTest(doctrine_fragment=fragment):
                 self.assertIn(fragment, doctrine)
-        for fragment in ("substantial_deepenable_core", "artifact_native_targets", "map_context_targets"):
-            with self.subTest(policy_fragment=fragment):
-                self.assertIn(fragment, startup + turn + doctrine)
-        # The graph-leads/model-completes principle (brief 4b) must be instructed.
-        self.assertIn("skeleton, not a ceiling", doctrine.lower())
-        self.assertIn("model_proposed", doctrine)
-        # The interpretation contract must document the new planning_brief surfaces.
-        retrieval = (ROOT / ".agents/shared/commands/memory-retrieval.md").read_text()
-        for fragment in ("knowledge_map", "sequential_teaching_plan",
-                         "interrupts.remediate", "interrupts.consolidate", "exposure_status"):
-            with self.subTest(retrieval_policy_fragment=fragment):
-                self.assertIn(fragment, retrieval)
+        combined = startup + turn + tutor + doctrine
+        for fragment in ("phase_controller", "active_target", "learner_evidence", "knowledge_map", "nearby_nodes"):
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, combined)
+        self.assertIn("deterministic recommendation", turn)
+        self.assertIn("phase_override", turn)
+        self.assertIn("Hard constraints are binding", turn)
 
     def test_doc_artifact_alignment_contract_is_named_and_operational(self) -> None:
         root = (ROOT / "AGENTS.md").read_text()
@@ -521,8 +491,8 @@ class RecallContractReferenceTests(unittest.TestCase):
         learning_contract = (ROOT / ".agents/shared/commands/learning-session-contract.md").read_text()
         curation = (ROOT / ".agents/shared/commands/memory-curation.md").read_text()
 
-        self.assertIn("Never log a tracked claim for a synthesis/self-assessment prompt", study_review_turn)
-        self.assertIn("This is not a tracked claim", study_review_end)
+        self.assertIn("pending_adjudication", study_review_turn)
+        self.assertIn("not a tracked clinical claim", study_review_end)
         self.assertIn("Never log a tracked concept for a session-synthesis", memory_ops)
         self.assertIn("Metacognitive synthesis prompts shape the session handoff rather than tracked claim state", learning_contract)
         self.assertNotIn("session synthesis self-assessment", study_review_turn)
@@ -532,11 +502,11 @@ class RecallContractReferenceTests(unittest.TestCase):
     def test_legacy_study_review_contract_is_absent(self) -> None:
         self.assertFalse((ROOT / ".agents/shared/commands/study-review.md").exists())
 
-    def test_postures_are_subordinate_to_deterministic_policy(self) -> None:
+    def test_postures_are_subordinate_to_phase_controller(self) -> None:
         doctrine = (ROOT / ".agents/shared/commands/adaptive-teaching-doctrine.md").read_text()
         root = (ROOT / "AGENTS.md").read_text()
-        self.assertIn("Postures are subordinate to the deterministic policy", doctrine)
-        self.assertIn("the user picks the posture, the policy picks the phase", doctrine)
+        self.assertIn("Postures are subordinate to the phase controller", doctrine)
+        self.assertIn("The user\npicks the posture", doctrine)
         self.assertIn(
             "posture subordinate to the deterministic teaching policy",
             _normalized(root),
@@ -553,59 +523,56 @@ class RecallContractReferenceTests(unittest.TestCase):
         phase_pos = doctrine.index("Phase work", consolidate_pos)
         handoff_pos = doctrine.index("`handoff.next_action`", phase_pos)
         self.assertTrue(remediate_pos < consolidate_pos < phase_pos < handoff_pos)
-        # Startup and turn defer to the doctrine's precedence section.
-        self.assertIn("Signal Precedence", startup)
-        self.assertIn("Signal Precedence", turn)
-        self.assertIn("the plan and interrupts win", startup)
+        # Phase contracts carry only the actionable controller, not a duplicate
+        # copy of the precedence doctrine.
+        tutor = (ROOT / ".agents/shared/commands/tutor-state.md").read_text()
+        self.assertIn("phase_controller", startup + turn + tutor)
+        self.assertNotIn("## Signal Precedence", startup)
+        self.assertNotIn("## Signal Precedence", turn)
 
     def test_empty_plan_rule_is_deterministic(self) -> None:
         doctrine = (ROOT / ".agents/shared/commands/adaptive-teaching-doctrine.md").read_text()
         startup = (ROOT / ".agents/shared/commands/study-review-startup.md").read_text()
         retrieval = (ROOT / ".agents/shared/commands/memory-retrieval.md").read_text()
-        for text, label in ((doctrine, "doctrine"), (startup, "startup"), (retrieval, "retrieval")):
-            with self.subTest(contract=label):
-                self.assertIn("empty_no_inventory_scope", text)
-        self.assertIn("ORIENT by definition", doctrine)
-        self.assertIn("ORIENT by definition", startup)
+        self.assertIn("empty_no_inventory_scope", doctrine)
+        self.assertIn("map is empty", startup)
+        self.assertIn("empty_no_inventory_scope", retrieval)
+        self.assertIn("begin ORIENT", doctrine)
+        self.assertIn("begin ORIENT", startup)
 
-    def test_doc_profile_field_names_match_emitter(self) -> None:
+    def test_tutor_profile_field_names_match_emitter(self) -> None:
         startup = (ROOT / ".agents/shared/commands/study-review-startup.md").read_text()
-        retrieval = (ROOT / ".agents/shared/commands/memory-retrieval.md").read_text()
-        implementation = (ROOT / "src/study_memory.py").read_text()
-        # Doc-mode startup must name the compact brief's real field.
-        self.assertIn("teaching_priorities", startup)
-        self.assertIn("there is no separate `open_first` list in doc mode", startup)
-        for field in ("teaching_priorities", "knowledge_map_status", "knowledge_map_omitted",
-                      "target_concepts_omitted", "socratic_choice_directives"):
+        tutor_contract = (ROOT / ".agents/shared/commands/tutor-state.md").read_text()
+        implementation = (ROOT / "src/tutor_state.py").read_text()
+        for field in ("phase_controller", "active_target", "learner_evidence",
+                      "knowledge_map", "context_expansion", "artifact_alignment"):
             with self.subTest(field=field):
-                self.assertIn(field, retrieval)
+                self.assertIn(field, tutor_contract + startup)
                 self.assertIn(field, implementation)
-        # memory-retrieval.md owns the planning_brief schema.
-        self.assertIn("canonical owner of the `planning_brief` JSON schema", retrieval)
-        self.assertNotIn("carried verbatim (no cap, no truncation)", retrieval)
+        self.assertIn("tutor_state_v1", implementation)
+        self.assertIn("ACTIVE_NODE_CAP", implementation)
 
     def test_turn_policy_line_is_self_sufficient(self) -> None:
         turn = (ROOT / ".agents/shared/commands/study-review-turn.md").read_text()
-        for fragment in ("target_concepts", "pedagogical_directives", "socratic_choice_directives",
-                         "policy_status", "keep the current phase"):
+        for fragment in ("policy", "Hard constraints", "phase_override", "active misconception"):
             with self.subTest(fragment=fragment):
                 self.assertIn(fragment, turn)
-        self.assertIn("never invent a phase change yourself", turn)
+        self.assertIn("deterministic recommendation", turn)
 
-    def test_end_session_recipes_agree_on_stats_json(self) -> None:
+    def test_end_session_uses_typed_close_payload(self) -> None:
         end = (ROOT / ".agents/shared/commands/study-review-end.md").read_text()
-        memory_ops = (ROOT / ".agents/shared/commands/memory-operations.md").read_text()
-        self.assertIn("--stats-json", end)
-        self.assertIn("--stats-json", memory_ops)
+        self.assertIn("close-session --stdin", end)
+        self.assertIn('"stats"', end)
+        self.assertIn("priority_inventory_ids", end)
 
     def test_shared_session_end_owns_order_and_gemini_adapter_stays_thin(self) -> None:
         gemini = (ROOT / ".gemini/commands/study-review.md").read_text()
         end = (ROOT / ".agents/shared/commands/study-review-end.md").read_text()
-        self.assertIn("end-session", end)
+        self.assertIn("close-session", end)
         self.assertIn("Synthesis", end)
         self.assertIn("memory-curation.md", end)
-        # end-session must come before the Anki queue work.
-        self.assertLess(end.index("end-session"), end.index("anki_queue.py review"))
+        # The durable close must precede post-close Anki handling.
+        self.assertLess(end.index("close-session"), end.index("After close"))
         self.assertIn("study-review-startup.md", gemini)
         self.assertLessEqual(len(gemini.split()), 120)
         # The TOML wrapper must not preload the orchestration index at startup.
@@ -616,10 +583,9 @@ class RecallContractReferenceTests(unittest.TestCase):
         startup = (ROOT / ".agents/shared/commands/study-review-startup.md").read_text()
         root = (ROOT / "AGENTS.md").read_text()
         # Startup must run the deterministic inventory projection and read its surfaces.
-        for fragment in ("startup-recall", "knowledge_map",
-                         "sequential_teaching_plan", "skeleton, not a ceiling"):
+        for fragment in ("start-session", "tutor_state", "active target"):
             with self.subTest(startup_fragment=fragment):
-                self.assertIn(fragment, startup)
+                self.assertIn(fragment.lower(), startup.lower())
         # The old vault landscape pass must be gone from startup.
         self.assertNotIn("vault_index.py landscape", startup)
         # Root must register the inventory as a separate datastore and its role.
@@ -649,14 +615,8 @@ class RecallContractReferenceTests(unittest.TestCase):
         retrieval = (ROOT / ".agents/shared/commands/memory-retrieval.md").read_text()
         doctrine = (ROOT / ".agents/shared/commands/adaptive-teaching-doctrine.md").read_text()
         impl = (ROOT / "src/study_memory.py").read_text()
-        for fragment in (
-            "probe_feedback",
-            "cognitive-op",
-            "escalate",
-            "orient_skip",
-            "weak_operations",
-            "binding_quality",
-        ):
+        for fragment in ("reasoning_depth", "operation_demonstrated", "independence",
+                         "changed-frame", "DEEPEN", "CONNECT"):
             with self.subTest(turn_fragment=fragment):
                 self.assertIn(fragment, turn)
         for fragment in (
@@ -678,22 +638,13 @@ class RecallContractReferenceTests(unittest.TestCase):
         retrieval = (ROOT / ".agents/shared/commands/memory-retrieval.md").read_text()
         curation = (ROOT / ".agents/shared/commands/memory-curation.md").read_text()
         impl = (ROOT / "src/study_memory.py").read_text()
-        for fragment in (
-            "node-recall",
-            "orient_menu",
-            "learner_surface",
-            "inventory_edges",
-            "shadow_rules",
-        ):
-            with self.subTest(turn_fragment=fragment):
-                self.assertIn(fragment, turn)
-        for fragment in (
-            "handoff_skeleton",
-            "priority_inventory_ids",
-            "improved_inventory_ids",
-        ):
+        tutor = (ROOT / ".agents/shared/commands/tutor-state.md").read_text()
+        for fragment in ("node-recall", "active_nodes", "learner_evidence", "nearby_nodes"):
+            with self.subTest(tutor_fragment=fragment):
+                self.assertIn(fragment, tutor)
+        for fragment in ("handoff skeleton", "priority inventory IDs", "improved IDs"):
             with self.subTest(end_fragment=fragment):
-                self.assertIn(fragment, end)
+                self.assertIn(fragment.lower(), end.lower())
         self.assertIn("learner_surface", retrieval)
         self.assertIn("inventory_concept_id", curation)
         self.assertIn("node-recall", impl)

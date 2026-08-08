@@ -94,7 +94,11 @@ def test_all_agent_command_surfaces_stay_thin_and_reach_shared_workflows():
         text = _read(relative_path)
         assert shared in text
         assert len(text.split()) <= 120
-        assert ".agents/shared/workflow-registry.json" in text
+        workflow = Path(relative_path).stem
+        if workflow == "SKILL":
+            workflow = Path(relative_path).parent.name
+        assert f".agents/shared/runtime/{workflow}.json" in text
+        assert ".agents/shared/workflow-registry.json" not in text
 
 
 def test_stale_serial_rag_rules_are_removed():

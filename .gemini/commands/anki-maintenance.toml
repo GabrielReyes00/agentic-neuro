@@ -1,0 +1,13 @@
+description = "Audit or reorganize the live neurosurgery Anki deck with approval before mutation."
+
+prompt = """
+ACTIVE COMMAND: /anki-maintenance
+User input: {{args}}
+
+Read the generated selected-workflow spec below, then
+`.agents/shared/commands/workflow-runtime.md`, then the entry contracts:
+`.agents/shared/commands/anki-deck-maintenance.md`. Load later contracts only after a declared
+transition. Do not infer behavioral policy from this adapter.
+
+@{.agents/shared/runtime/anki-maintenance.json}
+"""

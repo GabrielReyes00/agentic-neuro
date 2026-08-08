@@ -18,8 +18,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+try:
+    from runtime_paths import ANKI_CACHE_DB, FASTEMBED_CACHE_DIR
+except ModuleNotFoundError:  # pragma: no cover - package import in tests
+    from .runtime_paths import ANKI_CACHE_DB, FASTEMBED_CACHE_DIR
+
 ANKI_URL = "http://localhost:8765"
-CHROMADB_PATH = "data/anki_vector_cache.db"
+CHROMADB_PATH = str(ANKI_CACHE_DB)
 COLLECTION_NAME = "anki_claim_memory"
 
 RECENT_REVIEW_DAYS = 7
@@ -570,6 +575,37 @@ def _reviews_for_cards(card_ids: list[int]) -> dict[str, list[dict[str, Any]]]:
     }
 
 
+def _cards_and_reviews(
+    card_ids: list[int],
+) -> tuple[list[dict[str, Any]], dict[str, list[dict[str, Any]]]]:
+    """Fetch card metadata and review history in one AnkiConnect round trip."""
+    if not card_ids:
+        return [], {}
+    actions = [
+        {"action": "cardsInfo", "params": {"cards": card_ids}},
+        {"action": "getReviewsOfCards", "params": {"cards": card_ids}},
+    ]
+    try:
+        results = invoke("multi", actions=actions)
+    except ConnectionError:
+        raise
+    except Exception:
+        return _cards_info(card_ids), _reviews_for_cards(card_ids)
+
+    if not isinstance(results, list) or len(results) != 2:
+        return _cards_info(card_ids), _reviews_for_cards(card_ids)
+    raw_cards, raw_reviews = results
+    if not isinstance(raw_cards, list) or not isinstance(raw_reviews, dict):
+        return _cards_info(card_ids), _reviews_for_cards(card_ids)
+    cards = [card for card in raw_cards if isinstance(card, dict)]
+    reviews = {
+        str(key): [review for review in value if isinstance(review, dict)]
+        for key, value in raw_reviews.items()
+        if isinstance(value, list)
+    }
+    return cards, reviews
+
+
 def _profile_terms(
     topic: str,
     resolved_topic: str,
@@ -707,7 +743,10 @@ def _semantic_candidate_hits(chroma_collection: Any | None, terms: list[str], *,
             q_emb = list(np.frombuffer(row[0], dtype=np.float32))
         else:
             from fastembed import TextEmbedding  # type: ignore
-            embedder = TextEmbedding(model_name="BAAI/bge-small-en-v1.5", cache_dir="data/Sessions/fastembed_cache")
+            embedder = TextEmbedding(
+                model_name="BAAI/bge-small-en-v1.5",
+                cache_dir=str(FASTEMBED_CACHE_DIR),
+            )
             q_emb = list(embedder.embed([query]))[0]
             vec_bytes = np.array(q_emb, dtype=np.float32).tobytes()
             cursor.execute("""
@@ -727,7 +766,7 @@ def _semantic_candidate_hits(chroma_collection: Any | None, terms: list[str], *,
         vectors = []
         metas = []
         for cid, vec_bytes, meta_str in rows:
-            cids.append(int(cid))
+            cids.append(_safe_int(cid, 0))
             vectors.append(np.frombuffer(vec_bytes, dtype=np.float32))
             metas.append(json.loads(meta_str))
 
@@ -763,7 +802,7 @@ def _semantic_candidate_hits(chroma_collection: Any | None, terms: list[str], *,
             }
             remember(cid, hit)
             note_id = _safe_int(meta.get("note_id"), 0)
-            if note_id:
+            if not cid and note_id:
                 note_hits[note_id] = hit
 
         if note_hits:
@@ -1224,8 +1263,7 @@ def _build_global_profile(now_ms: int) -> dict[str, Any]:
             "cards_examined": 0,
             "message": f"No Anki reviews found in the last {RECENT_REVIEW_DAYS} days.",
         }
-    cards = _cards_info(card_ids[:300])
-    reviews = _reviews_for_cards([_safe_int(card.get("cardId")) for card in cards])
+    cards, reviews = _cards_and_reviews(card_ids[:300])
     chroma = _load_chroma_collection()
     prefetch_map = _prefetch_chroma_metadata(cards, chroma)
     topics: dict[str, dict[str, Any]] = {}
@@ -1309,8 +1347,7 @@ def build_session_anki_profile(
         if not candidate_ids:
             return {"status": "no_cards", "scope": "topic", "cards_examined": 0, "macro_counts": {}}
 
-        cards = _cards_info(sorted(candidate_ids)[:400])
-        reviews = _reviews_for_cards([_safe_int(card.get("cardId")) for card in cards])
+        cards, reviews = _cards_and_reviews(sorted(candidate_ids)[:400])
         scoped_cards: list[dict[str, Any]] = []
         mappings: dict[int, CardMapping] = {}
 
@@ -1356,8 +1393,7 @@ def get_recent_reviews(days: int = 7) -> list[dict[str, Any]]:
     card_ids = _find_cards(f"rated:{days}")
     if not card_ids:
         return []
-    cards = _cards_info(card_ids)
-    reviews_dict = _reviews_for_cards(card_ids)
+    cards, reviews_dict = _cards_and_reviews(card_ids)
     limit_ms = (_now_ms() - (days * 86_400_000))
     results = []
     for card in cards:

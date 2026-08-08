@@ -5,5 +5,7 @@ description: Turn de-identified service lessons into concise, durable clinical t
 
 # Shift Debrief
 
-Read `.agents/shared/workflow-registry.json`, then read and follow
-`.agents/shared/commands/shift-debrief.md`. The shared contract is the behavioral authority.
+Read `.agents/shared/runtime/shift-debrief.json` and
+`.agents/shared/commands/workflow-runtime.md`, then the entry contracts:
+`.agents/shared/commands/shift-debrief.md`. Load later contracts only after a declared
+transition. Shared contracts remain the behavioral authority.

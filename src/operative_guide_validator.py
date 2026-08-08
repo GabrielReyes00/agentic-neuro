@@ -28,9 +28,13 @@ try:
     from vault_schema import split_frontmatter
 except ModuleNotFoundError:  # pragma: no cover - package import in tests
     from .vault_schema import split_frontmatter
+try:
+    from runtime_paths import RUNTIME_DIR
+except ModuleNotFoundError:  # pragma: no cover - package import in tests
+    from .runtime_paths import RUNTIME_DIR
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SESSIONS_DIR = REPO_ROOT / "data" / "Sessions"
+SESSIONS_DIR = RUNTIME_DIR
 VAULT = Path("/Users/gabrielreyes/Documents/Obsidian/agentic-neuro")
 GUIDES_DIR = VAULT / "Operative Guides"
 LINK_DIRS = (

@@ -1,0 +1,125 @@
+{
+  "anki_policy": "evaluated_exchange_only",
+  "binary_destination": null,
+  "canonical_workflow": "consult",
+  "contract": ".agents/shared/commands/consult.md",
+  "execution": {
+    "entry": "scope",
+    "mode": "direct",
+    "nodes": [
+      {
+        "context": "conversation",
+        "edges": [
+          {
+            "to": "retrieve",
+            "when": "evidence_needed"
+          },
+          {
+            "to": "answer",
+            "when": "answer_ready"
+          }
+        ],
+        "id": "scope",
+        "kind": "intake",
+        "load": [
+          ".agents/shared/commands/consult.md"
+        ]
+      },
+      {
+        "context": "conversation",
+        "edges": [
+          {
+            "to": "answer",
+            "when": "evidence_ready"
+          }
+        ],
+        "id": "retrieve",
+        "kind": "retrieve",
+        "load": [
+          ".agents/shared/commands/rag-routing.md",
+          ".agents/shared/commands/vault-intelligence.md"
+        ]
+      },
+      {
+        "context": "conversation",
+        "edges": [
+          {
+            "to": "capture",
+            "when": "capture_requested"
+          },
+          {
+            "to": "review",
+            "when": "review_accepted"
+          },
+          {
+            "to": "done",
+            "when": "answered"
+          }
+        ],
+        "id": "answer",
+        "kind": "reason",
+        "load": [
+          ".agents/shared/commands/consult.md"
+        ]
+      },
+      {
+        "context": "conversation",
+        "edges": [
+          {
+            "to": "review",
+            "when": "review_accepted"
+          },
+          {
+            "to": "done",
+            "when": "persisted"
+          }
+        ],
+        "id": "capture",
+        "kind": "write",
+        "load": [
+          ".agents/shared/commands/review-artifacts.md",
+          ".agents/shared/commands/concept-extraction.md"
+        ]
+      },
+      {
+        "context": "conversation",
+        "edges": [
+          {
+            "loop": true,
+            "to": "review",
+            "when": "continue"
+          },
+          {
+            "to": "done",
+            "when": "closed"
+          }
+        ],
+        "id": "review",
+        "kind": "loop",
+        "load": [
+          ".agents/shared/commands/learning-session-contract.md",
+          ".agents/shared/commands/memory-operations.md",
+          ".agents/shared/commands/adaptive-teaching-doctrine.md",
+          ".agents/shared/commands/anki-session-workflow.md",
+          ".agents/shared/commands/anki-card-quality.md"
+        ]
+      },
+      {
+        "context": "conversation",
+        "edges": [],
+        "id": "done",
+        "kind": "terminal",
+        "load": []
+      }
+    ],
+    "run_state": "none"
+  },
+  "generated_from": ".agents/shared/workflow-registry.json",
+  "generation_recall": "evaluated_durable_only",
+  "invoked_as": "consult",
+  "reviewable": true,
+  "runtime_contract": ".agents/shared/commands/workflow-runtime.md",
+  "schema_version": 1,
+  "vault_destination": "Consults/<Topic Title>.md",
+  "write_policy": "answer_only_by_default; merge_in_place_when_durable_capture_is_requested"
+}

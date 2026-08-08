@@ -362,7 +362,7 @@ def main(argv: list[str] | None = None) -> int:
             queries = _load_batch_queries(args.query, args.query_file)
             if not queries:
                 parser.error("batch requires --query and/or --query-file")
-            results = pipeline.retrieve_many(
+            results = batch_pipeline.retrieve_many(
                 queries,
                 n_results=args.n_results,
                 reranker_key=args.reranker,

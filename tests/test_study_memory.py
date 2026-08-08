@@ -76,6 +76,45 @@ class StudyMemoryTests(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_anki_card_decision_is_explicit_and_auditable(self) -> None:
+        conn = self._memory_conn()
+        try:
+            exchange_id = study_memory.log_answer(
+                conn,
+                session_id="decision-session",
+                topic="intracranial pressure",
+                concept="cerebral perfusion pressure",
+                question="How is CPP calculated?",
+                answer="MAP minus ICP",
+                correct=2,
+                tested_claim="CPP equals MAP minus ICP.",
+            )
+            with self.assertRaisesRegex(ValueError, "requires a rationale"):
+                study_memory.record_anki_card_decision(
+                    conn,
+                    session_id="decision-session",
+                    exchange_id=exchange_id,
+                    decision="skip_routine_correct",
+                )
+            recorded = study_memory.record_anki_card_decision(
+                conn,
+                session_id="decision-session",
+                exchange_id=exchange_id,
+                decision="skip_routine_correct",
+                rationale="Stable routine recall with no new teaching edge.",
+            )
+            self.assertEqual(recorded["decision"], "skip_routine_correct")
+        finally:
+            conn.close()
+
+        audit = study_memory.anki_card_decision_audit(
+            "decision-session",
+            path=self.memory_path,
+        )
+        self.assertEqual(len(audit), 1)
+        self.assertEqual(audit[0]["minimum_score"], 2)
+        self.assertEqual(audit[0]["decision"], "skip_routine_correct")
+
     def test_artifact_anchor_logs_discovery_without_claim_state_or_curation_count(self) -> None:
         conn = self._memory_conn()
         try:
@@ -489,6 +528,7 @@ class StudyMemoryTests(unittest.TestCase):
             study_memory.log_answer(
                 conn,
                 session_id="session-repair",
+                ts="2026-01-01T00:00:00+00:00",
                 topic="hypertension management",
                 concept="sah norepi units",
                 question="Units?",
@@ -501,6 +541,7 @@ class StudyMemoryTests(unittest.TestCase):
             study_memory.log_answer(
                 conn,
                 session_id="session-repair",
+                ts="2026-01-01T00:10:00+00:00",
                 topic="hypertension management",
                 concept="sah norepi units",
                 question="Try again.",
@@ -513,6 +554,7 @@ class StudyMemoryTests(unittest.TestCase):
             study_memory.log_answer(
                 conn,
                 session_id="session-retention",
+                ts="2026-01-03T00:00:00+00:00",
                 topic="hypertension management",
                 concept="sah norepi units",
                 question="Delayed check: units?",
@@ -530,6 +572,58 @@ class StudyMemoryTests(unittest.TestCase):
             card_types = [card["type"] for card in summary["cards"]]
             self.assertIn("scaffold", card_types)
             self.assertNotIn("recent_repair", card_types)
+        finally:
+            conn.close()
+
+    def test_premature_retention_check_stays_repaired(self) -> None:
+        conn = self._memory_conn()
+        try:
+            claim = "A flat EVD waveform makes the displayed ICP unreliable."
+            study_memory.log_answer(
+                conn,
+                session_id="repair-now",
+                ts="2026-01-01T00:00:00+00:00",
+                topic="evd management",
+                concept="evd waveform reliability",
+                question="Can you trust a flat waveform?",
+                answer="Yes.",
+                correct=0,
+                tested_claim=claim,
+                corrected_rule="A flat waveform makes the displayed ICP unreliable.",
+            )
+            state_id = int(conn.execute("SELECT id FROM claim_state").fetchone()["id"])
+            study_memory.log_answer(
+                conn,
+                session_id="repair-now",
+                ts="2026-01-01T00:10:00+00:00",
+                topic="evd management",
+                concept="evd waveform reliability",
+                question="Repair?",
+                answer="No; troubleshoot the waveform.",
+                correct=2,
+                tested_claim=claim,
+                match_claim_state_id=state_id,
+            )
+            study_memory.log_answer(
+                conn,
+                session_id="retention-too-soon",
+                ts="2026-01-01T01:00:00+00:00",
+                topic="evd management",
+                concept="evd waveform reliability",
+                question="Retention check?",
+                answer="No; the number is unreliable.",
+                correct=2,
+                tested_claim=claim,
+                teaching_intent="retention_check",
+                match_claim_state_id=state_id,
+            )
+            state = conn.execute("SELECT state FROM claim_state WHERE id = ?", (state_id,)).fetchone()
+            self.assertEqual(state["state"], "repaired_same_session")
+            events = [
+                row["event_type"]
+                for row in conn.execute("SELECT event_type FROM state_events ORDER BY id")
+            ]
+            self.assertEqual(events[-1], "retention_not_due")
         finally:
             conn.close()
 
@@ -1077,6 +1171,7 @@ class StudyMemoryTests(unittest.TestCase):
             study_memory.log_answer(
                 conn,
                 session_id="repair-episode",
+                ts="2026-01-01T00:00:00+00:00",
                 topic="evd management",
                 concept="evd troubleshooting order",
                 question="EVD stops draining. What do you check first?",
@@ -1095,6 +1190,7 @@ class StudyMemoryTests(unittest.TestCase):
             study_memory.log_answer(
                 conn,
                 session_id="repair-episode",
+                ts="2026-01-01T00:10:00+00:00",
                 topic="evd management",
                 concept="evd troubleshooting order",
                 question="Changed bedside sequence?",
@@ -1110,6 +1206,7 @@ class StudyMemoryTests(unittest.TestCase):
             study_memory.log_answer(
                 conn,
                 session_id="repair-retention",
+                ts="2026-01-03T00:00:00+00:00",
                 topic="evd management",
                 concept="evd troubleshooting order",
                 question="Delayed transfer: a transported patient has stopped draining. First checks?",
@@ -1660,13 +1757,14 @@ class StudyMemoryTests(unittest.TestCase):
             self.assertEqual(exact["match_type"], "exact")
 
             stale = study_memory.artifact_map_get(conn, doc_path=doc, current_hash="hash-v2")
+            self.assertEqual(stale["status"], "stale")
             self.assertEqual(stale["cache_status"], "stale")
 
             family = study_memory.artifact_map_get(
                 conn,
                 doc_path="Reports/SAH Vasospasm Review_v2.md",
             )
-            self.assertEqual(family["status"], "available")
+            self.assertEqual(family["status"], "unverified")
             self.assertEqual(family["cache_status"], "family_match_unverified")
             self.assertEqual(family["match_type"], "doc_family")
         finally:
@@ -1743,6 +1841,7 @@ class StudyMemoryTests(unittest.TestCase):
                 conn,
                 doc_path=doc,
                 topic=topic,
+                content_hash="test-hash",
                 payload={
                     "artifact_title": "SAH Vasospasm Review",
                     "concepts": [
@@ -1778,7 +1877,9 @@ class StudyMemoryTests(unittest.TestCase):
                 },
             )
 
-            with patch.object(study_memory, "DB_PATH", self.memory_path):
+            with patch.object(study_memory, "DB_PATH", self.memory_path), patch.object(
+                study_memory, "_artifact_content_hash", return_value="test-hash"
+            ):
                 payload = json.loads(
                     study_memory.startup_recall(
                         conn,

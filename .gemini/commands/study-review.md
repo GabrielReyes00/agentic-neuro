@@ -5,5 +5,7 @@ description: Run memory-enabled Socratic review from a vault document or weak-sp
 
 # Study Review
 
-Read `.agents/shared/workflow-registry.json`, then read and follow
-`.agents/shared/commands/study-review-startup.md`. This adapter adds no workflow policy.
+Read `.agents/shared/runtime/study-review.json` and
+`.agents/shared/commands/workflow-runtime.md`, then the entry contracts:
+`.agents/shared/commands/study-review-startup.md`, `.agents/shared/commands/tutor-state.md`. Load later contracts only after a declared
+transition. This adapter adds no workflow policy.

@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agentic-neuro/workflow-schema-v2",
+  "title": "Agentic Neuro Workflow Registry",
+  "type": "object",
+  "required": ["schema_version", "workflows"],
+  "properties": {
+    "schema_version": {"const": 2},
+    "workflows": {
+      "type": "object",
+      "additionalProperties": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": ["alias_for"],
+            "properties": {"alias_for": {"type": "string"}}
+          },
+          {
+            "type": "object",
+            "required": ["execution"],
+            "properties": {
+              "execution": {
+                "type": "object",
+                "required": ["mode", "run_state", "entry", "nodes"],
+                "properties": {
+                  "mode": {
+                    "enum": ["direct", "artifact_graph", "conversation_loop", "approval_gate"]
+                  },
+                  "run_state": {"enum": ["none", "manifest", "learner_memory"]},
+                  "entry": {"type": "string"},
+                  "nodes": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": ["id", "kind", "context", "load", "edges"],
+                      "properties": {
+                        "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]*$"},
+                        "kind": {
+                          "enum": ["intake", "reason", "retrieve", "write", "validate", "approval", "loop", "terminal"]
+                        },
+                        "context": {"enum": ["conversation", "run_scoped", "isolated"]},
+                        "load": {"type": "array", "items": {"type": "string"}},
+                        "edges": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "required": ["to", "when"],
+                            "properties": {
+                              "to": {"type": "string"},
+                              "when": {"type": "string"},
+                              "loop": {"type": "boolean"},
+                              "terminal_status": {
+                                "enum": ["completed", "abandoned", "failed"]
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

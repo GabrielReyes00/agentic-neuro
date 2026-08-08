@@ -1,0 +1,138 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "id": "silent-opening",
+      "stage": "precommitment",
+      "prompt": "Start a document review of EVD Management. No prior answer has been given.",
+      "context": "TutorState recommends ORIENT and names EVD leveling as the active target.",
+      "expected": {
+        "question_count": 1,
+        "reveals_answer": false,
+        "phase": "orient",
+        "source_action": "none",
+        "persistence_status": "none",
+        "claims_count": 0,
+        "nearby_nodes_max": 0,
+        "max_hops": 0,
+        "pgy_calibration": "pgy1",
+        "required_repair_elements": [],
+        "forbidden_repair_elements": ["answer_before_commitment"]
+      }
+    },
+    {
+      "id": "partial-accessible-edge",
+      "stage": "after_commitment",
+      "prompt": "The learner correctly says an EVD is leveled to the tragus but omits why a bed-position change invalidates the pressure reading.",
+      "context": "The omitted mechanism may be accessible because the learner independently named the correct reference point.",
+      "expected": {
+        "question_count": 1,
+        "reveals_answer": false,
+        "phase": "deepen",
+        "source_action": "none",
+        "persistence_status": "graded_partial",
+        "claims_count": 1,
+        "nearby_nodes_max": 0,
+        "max_hops": 0,
+        "pgy_calibration": "pgy1",
+        "required_repair_elements": ["verdict", "preserved_edge", "missing_edge", "diagnostic_followup"],
+        "forbidden_repair_elements": ["generic_praise"]
+      }
+    },
+    {
+      "id": "wrong-causal-model",
+      "stage": "after_commitment",
+      "prompt": "The learner says lowering an EVD drainage chamber makes less CSF drain because the system is farther from the ventricle.",
+      "context": "This is an explicit false hydrostatic model with an immediate patient-safety consequence.",
+      "expected": {
+        "question_count": 1,
+        "reveals_answer": true,
+        "phase": "remediate",
+        "source_action": "none",
+        "persistence_status": "graded_miss",
+        "claims_count": 1,
+        "nearby_nodes_max": 1,
+        "max_hops": 1,
+        "pgy_calibration": "pgy1",
+        "required_repair_elements": ["verdict", "preserved_edge", "false_edge", "causal_model", "clinical_consequence", "nearest_confuser", "recognition_cue", "near_transfer"],
+        "forbidden_repair_elements": ["bare_correction"]
+      }
+    },
+    {
+      "id": "correct-but-shallow",
+      "stage": "after_commitment",
+      "prompt": "The learner correctly identifies a blown pupil as an urgent herniation sign but gives no localization, mechanism, or action implication.",
+      "context": "The active node is factually exposed but has no causal or transfer evidence.",
+      "expected": {
+        "question_count": 1,
+        "reveals_answer": true,
+        "phase": "deepen",
+        "source_action": "none",
+        "persistence_status": "graded_correct_factual",
+        "claims_count": 1,
+        "nearby_nodes_max": 1,
+        "max_hops": 1,
+        "pgy_calibration": "pgy1",
+        "required_repair_elements": ["verdict", "preserved_edge", "causal_model", "clinical_consequence", "near_transfer"],
+        "forbidden_repair_elements": ["mastery_claim"]
+      }
+    },
+    {
+      "id": "conduct-changing-uncertainty",
+      "stage": "after_commitment",
+      "prompt": "The learner supplies a precise nimodipine dose and hypotension modification, but the tutor cannot verify the current conduct-changing rule.",
+      "context": "No current primary source is available in the run.",
+      "expected": {
+        "question_count": 1,
+        "reveals_answer": true,
+        "phase": "deepen",
+        "source_action": "verify_current_primary",
+        "persistence_status": "pending_adjudication",
+        "claims_count": 1,
+        "nearby_nodes_max": 0,
+        "max_hops": 0,
+        "pgy_calibration": "pgy1",
+        "required_repair_elements": ["uncertainty_boundary", "source_needed"],
+        "forbidden_repair_elements": ["confident_grading", "mastery_update"]
+      }
+    },
+    {
+      "id": "coherent-multi-output",
+      "stage": "after_commitment",
+      "prompt": "In one answer the learner localizes a third-nerve palsy, explains the compressive mechanism, and chooses the next vascular imaging step.",
+      "context": "The DEEPEN prompt intentionally requested three tightly coupled outputs from one clinical model.",
+      "expected": {
+        "question_count": 1,
+        "reveals_answer": true,
+        "phase": "deepen",
+        "source_action": "proportional",
+        "persistence_status": "graded_multi_claim",
+        "claims_count": 3,
+        "nearby_nodes_max": 1,
+        "max_hops": 1,
+        "pgy_calibration": "pgy1",
+        "required_repair_elements": ["independent_claim_grading", "clinical_consequence", "near_transfer"],
+        "forbidden_repair_elements": ["single_overall_score_only"]
+      }
+    },
+    {
+      "id": "nearby-node-boundary",
+      "stage": "after_commitment",
+      "prompt": "The artifact-native concept is stable and one nearby discriminator would improve transfer; two more remote associations are available.",
+      "context": "TutorState names a one-hop confuser, a one-hop consequence, and a two-hop tangential pathology.",
+      "expected": {
+        "question_count": 1,
+        "reveals_answer": true,
+        "phase": "connect",
+        "source_action": "none",
+        "persistence_status": "graded_correct_transfer",
+        "claims_count": 1,
+        "nearby_nodes_max": 1,
+        "max_hops": 1,
+        "pgy_calibration": "pgy1",
+        "required_repair_elements": ["named_bridge", "near_transfer"],
+        "forbidden_repair_elements": ["two_hop_expansion", "topic_dump"]
+      }
+    }
+  ]
+}

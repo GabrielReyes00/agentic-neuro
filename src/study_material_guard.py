@@ -19,6 +19,10 @@ try:
     from vault_schema import split_frontmatter
 except ModuleNotFoundError:  # pragma: no cover - package import in tests
     from .vault_schema import split_frontmatter
+try:
+    from vault_hooks import refresh_vault_intelligence
+except ModuleNotFoundError:  # pragma: no cover - package import in tests
+    from .vault_hooks import refresh_vault_intelligence
 
 
 DEFAULT_VAULT_ROOT = Path("/Users/gabrielreyes/Documents/Obsidian/agentic-neuro")
@@ -329,14 +333,6 @@ def _upsert_index(study_dir: Path) -> None:
     index_builder.write_index(study_dir, vault_root=study_dir.parent)
 
 
-def _refresh_vault_intelligence(vault_root: Path) -> None:
-    try:
-        import vault_index
-    except ModuleNotFoundError:  # imported as part of the `src` package
-        from . import vault_index
-    vault_index.refresh_default_index_after_vault_write(vault_root=vault_root)
-
-
 def install_draft(
     draft_path: Path,
     title: str,
@@ -374,7 +370,7 @@ def install_draft(
     target = study_dir / _title_to_filename(title)
     target.write_text(text.rstrip() + "\n", encoding="utf-8")
     _upsert_index(study_dir)
-    _refresh_vault_intelligence(vault_root)
+    refresh_vault_intelligence(vault_root)
     return validate_file(
         target,
         vault_root=vault_root,

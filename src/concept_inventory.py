@@ -29,9 +29,16 @@ import sqlite3
 import sys
 from pathlib import Path
 
+try:
+    from runtime_paths import CONCEPT_INVENTORY_DB
+    from store_contracts import CONCEPT_INVENTORY_SCHEMA_VERSION
+except ModuleNotFoundError:  # pragma: no cover - package import in tests
+    from .runtime_paths import CONCEPT_INVENTORY_DB
+    from .store_contracts import CONCEPT_INVENTORY_SCHEMA_VERSION
+
 BASE_DIR = Path(__file__).resolve().parents[1]
 INVENTORY_DIR = Path(__import__("os").environ.get("NEURO_CONCEPT_INVENTORY_DIR", BASE_DIR / "data" / "concept_inventory"))
-DB_PATH = Path(__import__("os").environ.get("NEURO_CONCEPT_INVENTORY_DB", BASE_DIR / "data" / "concept_inventory.db"))
+DB_PATH = CONCEPT_INVENTORY_DB
 ACGME_PATH = BASE_DIR / "data" / "acgme_curriculum.json"
 
 VALID_TYPES = frozenset({
@@ -307,8 +314,9 @@ def build_db(inventory_dir: Path = INVENTORY_DIR, db_path: Path = DB_PATH, force
         try:
             conn = sqlite3.connect(str(db_path))
             row = conn.execute("SELECT value FROM meta WHERE key = 'source_hash'").fetchone()
+            version = int(conn.execute("PRAGMA user_version").fetchone()[0])
             conn.close()
-            if row and row[0] == source_hash:
+            if row and row[0] == source_hash and version == CONCEPT_INVENTORY_SCHEMA_VERSION:
                 return {"ok": True, "stage": "build", "status": "up_to_date", "source_hash": source_hash}
         except sqlite3.Error:
             pass
@@ -321,6 +329,7 @@ def build_db(inventory_dir: Path = INVENTORY_DIR, db_path: Path = DB_PATH, force
         tmp_path.unlink()
     conn = sqlite3.connect(str(tmp_path))
     conn.executescript(SCHEMA_SQL)
+    conn.execute("PRAGMA foreign_keys=ON")
 
     concept_ids: set[str] = set()
     for doc in documents:
@@ -352,17 +361,6 @@ def build_db(inventory_dir: Path = INVENTORY_DIR, db_path: Path = DB_PATH, force
             )
             for alias in sorted({str(a).strip().lower() for a in concept.get("aliases", []) or [] if str(a).strip()}):
                 conn.execute("INSERT OR IGNORE INTO aliases (concept_id, alias) VALUES (?, ?)", (cid, alias))
-            for field, edge_type in (("prereqs", "prereq"), ("discriminators", "discriminator"), ("related", "related")):
-                for ref in concept.get(field, []) or []:
-                    ref = str(ref)
-                    if ref in concept_ids and ref != cid:
-                        conn.execute(
-                            "INSERT OR IGNORE INTO edges (src, dst, edge_type) VALUES (?, ?, ?)",
-                            (cid, ref, edge_type),
-                        )
-                        edge_count += 1
-                    else:
-                        dropped_edges.append(f"{cid} -[{edge_type}]-> {ref}")
             for ref in concept.get("acgme", []) or []:
                 match = _match_acgme(str(ref), acgme)
                 if match:
@@ -374,6 +372,27 @@ def build_db(inventory_dir: Path = INVENTORY_DIR, db_path: Path = DB_PATH, force
                 else:
                     unmatched_acgme.append(f"{cid}: {ref}")
 
+    # Cross-domain references can point to concepts in a later source file.
+    # Insert the complete node set before enforcing and writing any edge.
+    for doc in sorted(documents, key=lambda d: d["_file"]):
+        for concept in doc.get("concepts", []):
+            cid = str(concept["id"])
+            for field, edge_type in (
+                ("prereqs", "prereq"),
+                ("discriminators", "discriminator"),
+                ("related", "related"),
+            ):
+                for ref in concept.get(field, []) or []:
+                    ref = str(ref)
+                    if ref in concept_ids and ref != cid:
+                        conn.execute(
+                            "INSERT OR IGNORE INTO edges (src, dst, edge_type) VALUES (?, ?, ?)",
+                            (cid, ref, edge_type),
+                        )
+                        edge_count += 1
+                    else:
+                        dropped_edges.append(f"{cid} -[{edge_type}]-> {ref}")
+
     counts = {
         "domains": conn.execute("SELECT COUNT(*) FROM domains").fetchone()[0],
         "topics": conn.execute("SELECT COUNT(*) FROM topics").fetchone()[0],
@@ -384,6 +403,11 @@ def build_db(inventory_dir: Path = INVENTORY_DIR, db_path: Path = DB_PATH, force
     }
     conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('source_hash', ?)", (source_hash,))
     conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('counts', ?)", (_json_dumps(counts),))
+    conn.execute(
+        "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
+        (str(CONCEPT_INVENTORY_SCHEMA_VERSION),),
+    )
+    conn.execute(f"PRAGMA user_version={CONCEPT_INVENTORY_SCHEMA_VERSION}")
     conn.commit()
     conn.close()
     if db_path.exists():
@@ -414,8 +438,13 @@ def _open_inventory(inventory_dir: Path = INVENTORY_DIR, db_path: Path = DB_PATH
         try:
             probe = sqlite3.connect(str(db_path))
             row = probe.execute("SELECT value FROM meta WHERE key = 'source_hash'").fetchone()
+            version = int(probe.execute("PRAGMA user_version").fetchone()[0])
             probe.close()
-            needs_build = not row or row[0] != _source_hash(inventory_dir)
+            needs_build = (
+                not row
+                or row[0] != _source_hash(inventory_dir)
+                or version != CONCEPT_INVENTORY_SCHEMA_VERSION
+            )
         except sqlite3.Error:
             needs_build = True
     if needs_build:
@@ -716,7 +745,12 @@ def map_learner(
 ) -> dict:
     """Project learner memory onto a scoped inventory subgraph (memory DB opened read-only)."""
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from cognitive_ops import mastery_depth_from_evidence, trusted_operation_from_signal  # noqa: PLC0415
+    from cognitive_ops import (  # noqa: PLC0415
+        add_operation_evidence,
+        mastery_depth_from_evidence,
+        serialize_operation_evidence,
+        trusted_operation_from_signal,
+    )
     from study_memory import (  # noqa: PLC0415 - shared deterministic policy semantics
         TARGET_CONCEPTS_COMPACT_CAP,
         _compute_teaching_policy,
@@ -846,14 +880,12 @@ def map_learner(
                         agent_signal_json=str(cr["agent_signal_json"] or ""),
                     )
                     if operation:
-                        op_evidence = unit_operation_evidence.setdefault((cid, eff_inv), {}).setdefault(
-                            operation,
-                            {"count": 0, "session_ids": set()},
+                        add_operation_evidence(
+                            unit_operation_evidence.setdefault((cid, eff_inv), {}),
+                            operation=operation,
+                            session_id=str(cr["session_id"] or ""),
+                            observed_at=str(cr["created_at"] or ""),
                         )
-                        op_evidence["count"] = int(op_evidence["count"]) + 1
-                        session_ids = op_evidence["session_ids"]
-                        if isinstance(session_ids, set) and cr["session_id"]:
-                            session_ids.add(str(cr["session_id"]))
                 slug_inv[(cid, str(cr["claim_slug"]))] = eff_inv
             unit_states: dict[tuple[int, str], list[dict]] = {}
             for sr in mem.execute(
@@ -878,14 +910,9 @@ def map_learner(
             concepts_with_claims = {cid for (cid, _e) in units}
             for (cid, eff_inv), scored in units.items():
                 meta = concept_meta[cid]
-                operation_evidence = {
-                    operation: {
-                        "count": int(values["count"]),
-                        "session_ids": sorted(values["session_ids"]),
-                        "session_count": len(values["session_ids"]),
-                    }
-                    for operation, values in unit_operation_evidence.get((cid, eff_inv), {}).items()
-                }
+                operation_evidence = serialize_operation_evidence(
+                    unit_operation_evidence.get((cid, eff_inv), {})
+                )
                 learner_concepts.append({
                     "learner_concept_id": cid,
                     "name": meta["name"],
@@ -1006,12 +1033,20 @@ def map_learner(
                 if not isinstance(values, dict):
                     continue
                 bucket = operation_evidence.setdefault(
-                    str(operation), {"count": 0, "session_ids": set()}
+                    str(operation),
+                    {"count": 0, "session_ids": set(), "success_timestamps": set()},
                 )
                 bucket["count"] = int(bucket["count"]) + int(values.get("count", 0) or 0)
                 sessions = bucket["session_ids"]
                 if isinstance(sessions, set):
                     sessions.update(str(item) for item in values.get("session_ids", []) if str(item))
+                timestamps = bucket["success_timestamps"]
+                if isinstance(timestamps, set):
+                    timestamps.update(
+                        str(values[key])
+                        for key in ("first_success_ts", "last_success_ts")
+                        if values.get(key)
+                    )
         all_states = [s for m in mapped for s in m["states"]]
         stabilities = [s["stability"] for s in all_states if s["stability"] is not None]
         avg_stability = sum(stabilities) / len(stabilities) if stabilities else 1.0
@@ -1043,14 +1078,7 @@ def map_learner(
         else:
             exposure = "exposed_deep"
 
-        serialized_operation_evidence = {
-            operation: {
-                "count": int(values["count"]),
-                "session_count": len(values["session_ids"]),
-                "session_ids": sorted(values["session_ids"]),
-            }
-            for operation, values in operation_evidence.items()
-        }
+        serialized_operation_evidence = serialize_operation_evidence(operation_evidence)
         knowledge_map.append({
             "concept_id": node["id"],
             "concept": node["name"],

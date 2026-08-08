@@ -1,0 +1,101 @@
+{
+  "cases": {
+    "capture_schema_fidelity": {
+      "expected": [
+        "demonstrated_edge",
+        "misconception_text",
+        "teaching_intervention"
+      ],
+      "present": [
+        "demonstrated_edge",
+        "misconception_text",
+        "teaching_intervention"
+      ],
+      "score": 1.0
+    },
+    "claim_trace_precision": {
+      "cards": 2,
+      "details": [
+        {
+          "claim_state_id": 2,
+          "exact": true
+        },
+        {
+          "claim_state_id": 1,
+          "exact": true
+        }
+      ],
+      "score": 1.0
+    },
+    "cross_domain_query_coverage": {
+      "anchored_topics": [
+        "spi.sci",
+        "tum.spinal-cord"
+      ],
+      "expected": [
+        "spi.sci.map-goals",
+        "tra.severe-tbi.cpp-targets"
+      ],
+      "present": [
+        "spi.sci.map-goals",
+        "tra.severe-tbi.cpp-targets"
+      ],
+      "score": 1.0
+    },
+    "cross_topic_canonical_recall": {
+      "active_misconception": true,
+      "attempts_recalled": 2,
+      "matched_contexts": 2,
+      "score": 1.0
+    },
+    "identity_audit_precision": {
+      "candidate_count": 1,
+      "distinct_claims_flagged": false,
+      "score": 1.0,
+      "true_duplicate_found": true
+    },
+    "longitudinal_state_machine": {
+      "active_card": "scaffold",
+      "claim_state": "durable",
+      "repair_episode": "transferred",
+      "score": 1.0
+    },
+    "mastery_depth_calibration": {
+      "after_one_transfer": "relational",
+      "after_two_cross_session_transfers": "transfer_ready",
+      "score": 1.0
+    },
+    "new_topic_orientation": {
+      "knowledge_map_nodes": 6,
+      "orientation_status": "new_topic_no_learner_history",
+      "ready_to_teach": true,
+      "routing_required": false,
+      "score": 1.0
+    },
+    "startup_packet_efficiency": {
+      "drilldown_discoverable": true,
+      "median_latency_ms": 173.19,
+      "score": 1.0,
+      "serialized_bytes": 42820,
+      "target_max_bytes": 45000,
+      "target_max_latency_ms": 500
+    }
+  },
+  "live_startup_packet": {
+    "drilldown_discoverable": true,
+    "high_signal_cards": 9,
+    "latency_ms": {
+      "max": 228.61,
+      "median": 173.19,
+      "min": 158.19
+    },
+    "serialized_bytes": 42820,
+    "status": "ok"
+  },
+  "quality": {
+    "case_count": 9,
+    "mean_score": 1.0,
+    "passed": 9
+  },
+  "schema": "memory_benchmark_v1"
+}

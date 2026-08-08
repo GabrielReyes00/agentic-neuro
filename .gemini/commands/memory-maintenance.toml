@@ -1,0 +1,13 @@
+description = "Audit learner-memory identity, telemetry, graph, and database health; apply reviewed repairs only with approval."
+
+prompt = """
+ACTIVE COMMAND: /memory-maintenance
+User input: {{args}}
+
+Read the generated selected-workflow spec below, then
+`.agents/shared/commands/workflow-runtime.md`, then the entry contracts:
+`.agents/shared/commands/memory-maintenance.md`, `.agents/shared/commands/memory-curation.md`. Load later contracts only after a declared
+transition. Do not infer behavioral policy from this adapter.
+
+@{.agents/shared/runtime/memory-maintenance.json}
+"""

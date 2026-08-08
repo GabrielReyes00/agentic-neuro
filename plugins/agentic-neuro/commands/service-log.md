@@ -7,5 +7,9 @@ argument-hint: [de-identified-service-lessons]
 
 The user invoked `/service-log` with: $ARGUMENTS
 
-Read `.agents/shared/workflow-registry.json`, then read and follow
-`.agents/shared/commands/service-log.md`. The shared contract is the behavioral authority.
+Resolve the plugin root from this command file. Read `resources/AGENTS.md`,
+`resources/.agents/shared/runtime/service-log.json`, and
+`resources/.agents/shared/commands/workflow-runtime.md`, then the entry
+contracts: `resources/.agents/shared/commands/service-log.md`, `resources/.agents/shared/commands/shift-debrief.md`. These are generated mirrors of the canonical
+`.agents/shared/commands/` contracts. Load later contracts only after a declared
+transition.

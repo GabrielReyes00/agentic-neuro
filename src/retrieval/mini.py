@@ -35,6 +35,12 @@ from typing import Any
 import numpy as np
 
 from . import pipeline
+try:
+    from store_contracts import MINI_FTS_SCHEMA_VERSION
+    from runtime_paths import FASTEMBED_CACHE_DIR
+except ModuleNotFoundError:  # pragma: no cover - package import in tests
+    from ..store_contracts import MINI_FTS_SCHEMA_VERSION
+    from ..runtime_paths import FASTEMBED_CACHE_DIR
 
 
 MINI_MODEL_ID = os.environ.get(
@@ -44,7 +50,7 @@ MINI_MODEL_ID = os.environ.get(
 MINI_MODEL_CACHE = Path(
     os.environ.get(
         "NEURO_MINI_MODEL_CACHE",
-        pipeline.DATA_DIR / "fastembed_cache",
+        FASTEMBED_CACHE_DIR,
     )
 )
 MINI_LANCE_DIR = Path(
@@ -581,6 +587,7 @@ def build_fts_index() -> dict[str, Any]:
         connection.execute("PRAGMA journal_mode=OFF")
         connection.execute("PRAGMA synchronous=OFF")
         connection.execute("PRAGMA temp_store=MEMORY")
+        connection.execute(f"PRAGMA user_version={MINI_FTS_SCHEMA_VERSION}")
         connection.execute(
             """
             CREATE VIRTUAL TABLE chunks USING fts5(
@@ -934,6 +941,7 @@ def _sqlite_fts_search(
             "fts_score": round(raw_score, 4),
             "citation": " — ".join(citation_parts),
             "source_key": str(row["source_book"] or ""),
+            "source_role": pipeline.provenance.source_role(row["source_book"]),
             "parent_id": str(row["parent_id"] or ""),
             "child_id": str(row["child_id"] or ""),
             "metadata": {
@@ -969,6 +977,7 @@ def _row_to_semantic_hit(row: dict[str, Any]) -> dict[str, Any]:
         "similarity": round(similarity, 4),
         "citation": " — ".join(citation_parts),
         "source_key": str(row.get("source_book") or ""),
+        "source_role": pipeline.provenance.source_role(row.get("source_book")),
         "parent_id": str(row.get("parent_id") or ""),
         "child_id": str(row.get("child_id") or ""),
         "metadata": {
@@ -1387,6 +1396,12 @@ def _finalize_packet(
     max_chars: int,
     forced_escalation: str = "",
 ) -> dict[str, Any]:
+    before_roles = len(hits)
+    hits = [
+        hit for hit in hits
+        if pipeline.provenance.source_allowed_for_query(hit.get("source_key"), query)
+    ]
+    source_role_dropped = before_roles - len(hits)
     confidence = _confidence(query, hits)
     compact = _compact_hits(
         query,
@@ -1411,11 +1426,17 @@ def _finalize_packet(
         "query": query,
         "strategy": strategy,
         "route": routing,
+        "provenance": pipeline.provenance.retrieval_provenance(
+            route="mini",
+            strategy=strategy,
+            embedding_model=(MINI_MODEL_ID if strategy in {"semantic", "hybrid"} else ""),
+        ),
         "confidence": confidence,
         "hits": compact,
         "escalate": escalate,
         "escalation_reason": reason,
         "latency": timing,
+        "metadata": {"source_role_dropped": source_role_dropped},
     }
 
 
@@ -1601,6 +1622,9 @@ def build_source_cards_jsonl(
                 "topic_id": topic_id,
                 "card_id": f"{topic_id}-C{card_index:02d}",
                 "citation": hit.get("citation", "uncited"),
+                "source_role": hit.get("source_role") or pipeline.provenance.source_role(
+                    (hit.get("raw_ref") or {}).get("source_key")
+                ),
                 "page_start": hit.get("page_start"),
                 "takeaways": [
                     sentence[:260]
@@ -1626,6 +1650,11 @@ def build_source_cards_jsonl(
         "format": "jsonl",
         "schema": "compact",
         "source_type": "textbook_rag_mini",
+        "provenance": (
+            packets[0].get("provenance")
+            if packets
+            else pipeline.provenance.retrieval_provenance(route="mini")
+        ),
     }
     rows = [header, *topic_rows, *card_rows]
     return "\n".join(

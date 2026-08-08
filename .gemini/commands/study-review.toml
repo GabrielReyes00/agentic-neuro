@@ -4,8 +4,10 @@ prompt = """
 ACTIVE COMMAND: /study-review
 User input: {{args}}
 
-Read `.agents/shared/workflow-registry.json`, then read and follow the canonical
-contract below. Do not infer behavioral policy from this adapter.
+Read the generated selected-workflow spec below, then
+`.agents/shared/commands/workflow-runtime.md`, then the entry contracts:
+`.agents/shared/commands/study-review-startup.md`, `.agents/shared/commands/tutor-state.md`. Load later contracts only after a declared
+transition. Do not infer behavioral policy from this adapter.
 
-@{.agents/shared/commands/study-review-startup.md}
+@{.agents/shared/runtime/study-review.json}
 """

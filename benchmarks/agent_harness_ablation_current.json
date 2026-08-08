@@ -1,0 +1,244 @@
+{
+  "architecture": {
+    "errors": [],
+    "module_count": 67,
+    "ok": true,
+    "top_level_edge_count": 76
+  },
+  "behavioral_coverage": {
+    "canonical_graphs": 12,
+    "graph_scenarios": 14,
+    "route_cases": 12
+  },
+  "checks": {
+    "behavior_suite": true,
+    "code_architecture": true,
+    "entry_context_budget": true,
+    "minimum_startup_reduction": true,
+    "typed_mutation_detection": true
+  },
+  "compile_latency": {
+    "max_ms": 3.385,
+    "median_ms": 1.739,
+    "min_ms": 1.673,
+    "p95_ms": 3.015,
+    "repeat": 100
+  },
+  "instruction_ablation": {
+    "comparator": "flat registry plus workflow entry contracts",
+    "maximum_selected_tokens": 8368,
+    "median_reduction_pct": 68.4,
+    "minimum_reduction_pct": 43.0,
+    "treatment": "typed runtime projection plus only entry-node loads",
+    "workflow_count": 13,
+    "workflows": {
+      "anki-maintenance": {
+        "entry_node": "export",
+        "full_registry_tokens": 8456,
+        "reduction_pct": 74.4,
+        "reduction_tokens": 6294,
+        "selected_files": [
+          ".agents/shared/runtime/anki-maintenance.json",
+          ".agents/shared/commands/workflow-runtime.md",
+          ".agents/shared/commands/anki-deck-maintenance.md"
+        ],
+        "selected_tokens": 2162
+      },
+      "consult": {
+        "entry_node": "scope",
+        "full_registry_tokens": 8880,
+        "reduction_pct": 70.3,
+        "reduction_tokens": 6240,
+        "selected_files": [
+          ".agents/shared/runtime/consult.json",
+          ".agents/shared/commands/workflow-runtime.md",
+          ".agents/shared/commands/consult.md"
+        ],
+        "selected_tokens": 2640
+      },
+      "generate-report": {
+        "entry_node": "plan",
+        "full_registry_tokens": 14686,
+        "reduction_pct": 43.0,
+        "reduction_tokens": 6318,
+        "selected_files": [
+          ".agents/shared/runtime/generate-report.json",
+          ".agents/shared/commands/workflow-runtime.md",
+          ".agents/shared/commands/generate-report.md",
+          ".agents/shared/commands/generate-report-research-plan.md",
+          ".agents/shared/commands/vault-intelligence.md"
+        ],
+        "selected_tokens": 8368
+      },
+      "grand-rounds": {
+        "entry_node": "intake",
+        "full_registry_tokens": 11496,
+        "reduction_pct": 52.5,
+        "reduction_tokens": 6030,
+        "selected_files": [
+          ".agents/shared/runtime/grand-rounds.json",
+          ".agents/shared/commands/workflow-runtime.md",
+          ".agents/shared/commands/grand-rounds.md",
+          ".agents/shared/commands/vault-intelligence.md"
+        ],
+        "selected_tokens": 5466
+      },
+      "inbox-workflow": {
+        "entry_node": "triage",
+        "full_registry_tokens": 8071,
+        "reduction_pct": 80.2,
+        "reduction_tokens": 6476,
+        "selected_files": [
+          ".agents/shared/runtime/inbox-workflow.json",
+          ".agents/shared/commands/workflow-runtime.md",
+          ".agents/shared/commands/inbox-workflow.md"
+        ],
+        "selected_tokens": 1595
+      },
+      "intraoperative-guide": {
+        "entry_node": "decompose",
+        "full_registry_tokens": 11280,
+        "reduction_pct": 51.7,
+        "reduction_tokens": 5832,
+        "selected_files": [
+          ".agents/shared/runtime/intraoperative-guide.json",
+          ".agents/shared/commands/workflow-runtime.md",
+          ".agents/shared/commands/intraoperative-guide.md",
+          ".agents/shared/commands/intraoperative-guide-decomposition.md"
+        ],
+        "selected_tokens": 5448
+      },
+      "journal-club": {
+        "entry_node": "intake",
+        "full_registry_tokens": 8802,
+        "reduction_pct": 69.6,
+        "reduction_tokens": 6123,
+        "selected_files": [
+          ".agents/shared/runtime/journal-club.json",
+          ".agents/shared/commands/workflow-runtime.md",
+          ".agents/shared/commands/journal-club.md"
+        ],
+        "selected_tokens": 2679
+      },
+      "memory-maintenance": {
+        "entry_node": "audit",
+        "full_registry_tokens": 10309,
+        "reduction_pct": 62.1,
+        "reduction_tokens": 6406,
+        "selected_files": [
+          ".agents/shared/runtime/memory-maintenance.json",
+          ".agents/shared/commands/workflow-runtime.md",
+          ".agents/shared/commands/memory-maintenance.md",
+          ".agents/shared/commands/memory-curation.md"
+        ],
+        "selected_tokens": 3903
+      },
+      "refactor-manual-note": {
+        "entry_node": "intake",
+        "full_registry_tokens": 9145,
+        "reduction_pct": 69.0,
+        "reduction_tokens": 6313,
+        "selected_files": [
+          ".agents/shared/runtime/refactor-manual-note.json",
+          ".agents/shared/commands/workflow-runtime.md",
+          ".agents/shared/commands/refactor-manual-note.md"
+        ],
+        "selected_tokens": 2832
+      },
+      "service-log": {
+        "entry_node": "capture",
+        "full_registry_tokens": 9135,
+        "reduction_pct": 68.4,
+        "reduction_tokens": 6245,
+        "selected_files": [
+          ".agents/shared/runtime/service-log.json",
+          ".agents/shared/commands/workflow-runtime.md",
+          ".agents/shared/commands/shift-debrief.md"
+        ],
+        "selected_tokens": 2890
+      },
+      "shift-debrief": {
+        "entry_node": "capture",
+        "full_registry_tokens": 9135,
+        "reduction_pct": 68.3,
+        "reduction_tokens": 6242,
+        "selected_files": [
+          ".agents/shared/runtime/shift-debrief.json",
+          ".agents/shared/commands/workflow-runtime.md",
+          ".agents/shared/commands/shift-debrief.md"
+        ],
+        "selected_tokens": 2893
+      },
+      "study-material": {
+        "entry_node": "intake",
+        "full_registry_tokens": 9104,
+        "reduction_pct": 68.3,
+        "reduction_tokens": 6222,
+        "selected_files": [
+          ".agents/shared/runtime/study-material.json",
+          ".agents/shared/commands/workflow-runtime.md",
+          ".agents/shared/commands/study-material.md"
+        ],
+        "selected_tokens": 2882
+      },
+      "study-review": {
+        "entry_node": "startup",
+        "full_registry_tokens": 8873,
+        "reduction_pct": 72.1,
+        "reduction_tokens": 6400,
+        "selected_files": [
+          ".agents/shared/runtime/study-review.json",
+          ".agents/shared/commands/workflow-runtime.md",
+          ".agents/shared/commands/study-review-startup.md",
+          ".agents/shared/commands/tutor-state.md"
+        ],
+        "selected_tokens": 2473
+      }
+    }
+  },
+  "ok": true,
+  "schema_version": 1,
+  "validation_ablation": {
+    "cases": [
+      {
+        "error": "consult/scope: edge target 'missing-node' is missing",
+        "json_only_accepts": true,
+        "mutation": "dangling_edge",
+        "typed_validator_detected": true
+      },
+      {
+        "error": "consult/scope: edge outcomes must be unique",
+        "json_only_accepts": true,
+        "mutation": "ambiguous_outcome",
+        "typed_validator_detected": true
+      },
+      {
+        "error": "consult: cycle answer -> scope must declare loop=true",
+        "json_only_accepts": true,
+        "mutation": "undeclared_cycle",
+        "typed_validator_detected": true
+      },
+      {
+        "error": "consult: unreachable nodes: orphan",
+        "json_only_accepts": true,
+        "mutation": "unreachable_node",
+        "typed_validator_detected": true
+      },
+      {
+        "error": "consult/scope: isolated context requires manifest run state",
+        "json_only_accepts": true,
+        "mutation": "invalid_isolated_context",
+        "typed_validator_detected": true
+      },
+      {
+        "error": "consult/scope: missing load reference missing/contract.md",
+        "json_only_accepts": true,
+        "mutation": "missing_load_reference",
+        "typed_validator_detected": true
+      }
+    ],
+    "json_only_detection_rate": 0.0,
+    "mutations": 6,
+    "typed_detection_rate": 1.0
+  }
+}

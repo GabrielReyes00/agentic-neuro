@@ -1,0 +1,35 @@
+{
+  "after": {
+    "actions": {
+      "multi": 10
+    },
+    "connector_calls_median": 2,
+    "connector_ms_median": 64.04,
+    "payload_bytes_median": 1382,
+    "repeat": 5,
+    "total_ms_median": 75.83
+  },
+  "baseline_ref": "bcb67ec",
+  "before": {
+    "actions": {
+      "cardsInfo": 15,
+      "findCards": 10,
+      "getReviewsOfCards": 5,
+      "multi": 5
+    },
+    "connector_calls_median": 7,
+    "connector_ms_median": 161.72,
+    "payload_bytes_median": 1383,
+    "repeat": 5,
+    "total_ms_median": 175.26
+  },
+  "change": {
+    "connector_calls_reduction_pct": 71.4,
+    "connector_time_reduction_pct": 60.4,
+    "payload_bytes_change_pct": -0.1,
+    "total_time_reduction_pct": 56.7
+  },
+  "schema_version": 1,
+  "status": "ok",
+  "topic": "EVD management in ICU"
+}

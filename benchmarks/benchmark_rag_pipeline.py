@@ -2,8 +2,8 @@
 """Reproducible latency, relevance, density, and serialization benchmark for RAG.
 
 The benchmark intentionally uses only local corpus/model state and never calls
-frontier search.  ``serial`` is the compatibility baseline.  ``batch`` uses
-``retrieve_many`` when the pipeline exposes it.
+frontier search. ``serial`` is the scalar compatibility baseline. ``batch``
+uses the dedicated batch orchestrator.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PIPELINE_ROOT = Path(os.environ.get("NEURO_BENCH_PIPELINE_ROOT", ROOT))
 sys.path.insert(0, str(PIPELINE_ROOT / "src"))
 
-from retrieval import pipeline  # noqa: E402
+from retrieval import batch, pipeline  # noqa: E402
 
 
 DEFAULT_CASES = Path(__file__).with_name("rag_queries.json")
@@ -91,10 +91,7 @@ def _prepare_serial(query: str) -> dict[str, Any]:
 
 def _prepare_many(cases: list[dict[str, Any]], mode: str) -> list[dict[str, Any]]:
     if mode == "batch":
-        retrieve_many = getattr(pipeline, "retrieve_many", None)
-        if retrieve_many is None:
-            raise RuntimeError("batch mode requested but retrieve_many is unavailable")
-        return retrieve_many(
+        return batch.retrieve_many(
             [case["query"] for case in cases],
             distill=True,
             augment=True,

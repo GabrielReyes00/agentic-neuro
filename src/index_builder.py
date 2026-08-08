@@ -19,6 +19,11 @@ from pathlib import Path
 from typing import Any
 
 try:
+    from io_utils import atomic_write_text
+except ModuleNotFoundError:  # pragma: no cover - package import in tests
+    from .io_utils import atomic_write_text
+
+try:
     from vault_schema import parse_frontmatter
 except ModuleNotFoundError:  # pragma: no cover - package import in tests
     from .vault_schema import parse_frontmatter
@@ -195,13 +200,6 @@ def render_index(entries: list[dict[str, Any]]) -> str:
     return "\n\n".join(blocks) + "\n" if blocks else ""
 
 
-def _atomic_write(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    tmp.replace(path)
-
-
 def write_index(folder: Path, *, vault_root: Path | None = None, recursive: bool = False) -> Path:
     """Regenerate <folder>/INDEX.md from the notes in that folder."""
     folder = Path(folder)
@@ -211,7 +209,7 @@ def write_index(folder: Path, *, vault_root: Path | None = None, recursive: bool
     files = sorted(p for p in glob if p.name != "INDEX.md")
     entries = [extract_meta(p, vault_root) for p in files]
     index_path = folder / "INDEX.md"
-    _atomic_write(index_path, render_index(entries))
+    atomic_write_text(index_path, render_index(entries))
     return index_path
 
 

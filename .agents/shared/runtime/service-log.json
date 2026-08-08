@@ -1,0 +1,120 @@
+{
+  "anki_policy": "evaluated_socratic_only",
+  "binary_destination": null,
+  "canonical_workflow": "shift-debrief",
+  "contract": ".agents/shared/commands/service-log.md",
+  "execution": {
+    "entry": "capture",
+    "mode": "artifact_graph",
+    "nodes": [
+      {
+        "context": "conversation",
+        "edges": [
+          {
+            "to": "synthesize",
+            "when": "deidentified"
+          }
+        ],
+        "id": "capture",
+        "kind": "intake",
+        "load": [
+          ".agents/shared/commands/shift-debrief.md"
+        ]
+      },
+      {
+        "context": "run_scoped",
+        "edges": [
+          {
+            "to": "validate",
+            "when": "drafted"
+          }
+        ],
+        "id": "synthesize",
+        "kind": "reason",
+        "load": [
+          ".agents/shared/commands/shift-debrief.md",
+          ".agents/shared/commands/rag-routing.md",
+          ".agents/shared/commands/vault-intelligence.md"
+        ]
+      },
+      {
+        "context": "run_scoped",
+        "edges": [
+          {
+            "loop": true,
+            "to": "synthesize",
+            "when": "revision_needed"
+          },
+          {
+            "to": "write",
+            "when": "passed"
+          }
+        ],
+        "id": "validate",
+        "kind": "validate",
+        "load": [
+          ".agents/shared/commands/shift-debrief.md"
+        ]
+      },
+      {
+        "context": "run_scoped",
+        "edges": [
+          {
+            "to": "review",
+            "when": "review_accepted"
+          },
+          {
+            "to": "done",
+            "when": "installed"
+          }
+        ],
+        "id": "write",
+        "kind": "write",
+        "load": [
+          ".agents/shared/commands/review-artifacts.md",
+          ".agents/shared/commands/concept-extraction.md"
+        ]
+      },
+      {
+        "context": "conversation",
+        "edges": [
+          {
+            "loop": true,
+            "to": "review",
+            "when": "continue"
+          },
+          {
+            "to": "done",
+            "when": "closed"
+          }
+        ],
+        "id": "review",
+        "kind": "loop",
+        "load": [
+          ".agents/shared/commands/learning-session-contract.md",
+          ".agents/shared/commands/memory-operations.md",
+          ".agents/shared/commands/memory-retrieval.md",
+          ".agents/shared/commands/adaptive-teaching-doctrine.md",
+          ".agents/shared/commands/anki-session-workflow.md",
+          ".agents/shared/commands/anki-card-quality.md"
+        ]
+      },
+      {
+        "context": "run_scoped",
+        "edges": [],
+        "id": "done",
+        "kind": "terminal",
+        "load": []
+      }
+    ],
+    "run_state": "manifest"
+  },
+  "generated_from": ".agents/shared/workflow-registry.json",
+  "generation_recall": "service_or_topic",
+  "invoked_as": "service-log",
+  "reviewable": true,
+  "runtime_contract": ".agents/shared/commands/workflow-runtime.md",
+  "schema_version": 1,
+  "vault_destination": "Shift Debriefs/<Topic Title>.md",
+  "write_policy": "merge_in_place"
+}

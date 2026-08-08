@@ -1,0 +1,121 @@
+{
+  "anki_policy": "evaluated_drill_only",
+  "binary_destination": "Study Material/Sources/<Title>.<ext>",
+  "canonical_workflow": "study-material",
+  "contract": ".agents/shared/commands/study-material.md",
+  "execution": {
+    "entry": "intake",
+    "mode": "artifact_graph",
+    "nodes": [
+      {
+        "context": "conversation",
+        "edges": [
+          {
+            "to": "generate",
+            "when": "generate"
+          },
+          {
+            "to": "drill",
+            "when": "drill"
+          }
+        ],
+        "id": "intake",
+        "kind": "intake",
+        "load": [
+          ".agents/shared/commands/study-material.md"
+        ]
+      },
+      {
+        "context": "run_scoped",
+        "edges": [
+          {
+            "to": "validate",
+            "when": "drafted"
+          }
+        ],
+        "id": "generate",
+        "kind": "write",
+        "load": [
+          ".agents/shared/commands/study-material.md",
+          ".agents/shared/commands/rag-routing.md",
+          ".agents/shared/commands/vault-intelligence.md"
+        ]
+      },
+      {
+        "context": "run_scoped",
+        "edges": [
+          {
+            "loop": true,
+            "to": "generate",
+            "when": "revision_needed"
+          },
+          {
+            "to": "write",
+            "when": "passed"
+          }
+        ],
+        "id": "validate",
+        "kind": "validate",
+        "load": [
+          ".agents/shared/commands/study-material.md"
+        ]
+      },
+      {
+        "context": "run_scoped",
+        "edges": [
+          {
+            "to": "done",
+            "when": "installed"
+          }
+        ],
+        "id": "write",
+        "kind": "write",
+        "load": [
+          ".agents/shared/commands/review-artifacts.md",
+          ".agents/shared/commands/concept-extraction.md"
+        ]
+      },
+      {
+        "context": "conversation",
+        "edges": [
+          {
+            "loop": true,
+            "to": "drill",
+            "when": "continue"
+          },
+          {
+            "to": "done",
+            "when": "complete"
+          }
+        ],
+        "id": "drill",
+        "kind": "loop",
+        "load": [
+          ".agents/shared/commands/study-material.md",
+          ".agents/shared/commands/learning-session-contract.md",
+          ".agents/shared/commands/memory-operations.md",
+          ".agents/shared/commands/memory-retrieval.md",
+          ".agents/shared/commands/adaptive-teaching-doctrine.md",
+          ".agents/shared/commands/anki-session-workflow.md",
+          ".agents/shared/commands/anki-card-quality.md"
+        ]
+      },
+      {
+        "context": "conversation",
+        "edges": [],
+        "id": "done",
+        "kind": "terminal",
+        "load": []
+      }
+    ],
+    "run_state": "manifest"
+  },
+  "generated_from": ".agents/shared/workflow-registry.json",
+  "generation_recall": "optional_topic_then_document_after_install",
+  "invoked_as": "study-material",
+  "reviewable": true,
+  "runtime_contract": ".agents/shared/commands/workflow-runtime.md",
+  "schema_version": 1,
+  "vault_destination": "Study Material/<Title>.md",
+  "write_policy": "regenerate_in_place_after_reading_existing"
+}

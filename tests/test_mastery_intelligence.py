@@ -46,6 +46,20 @@ class MasteryIntelligenceTests(unittest.TestCase):
         self.assertEqual(cognitive_ops.mastery_depth_from_operations(["mechanism"]), "causal")
         self.assertEqual(cognitive_ops.mastery_depth_from_operations(["mechanism", "transfer"]), "transfer_ready")
 
+    def test_transfer_readiness_requires_delayed_replication(self) -> None:
+        immediate = {
+            "transfer": {"count": 2, "session_count": 2, "span_days": 0.25}
+        }
+        delayed = {
+            "transfer": {"count": 2, "session_count": 2, "span_days": 7.0}
+        }
+        self.assertEqual(cognitive_ops.mastery_depth_from_evidence(immediate), "relational")
+        self.assertEqual(cognitive_ops.mastery_depth_from_evidence(delayed), "transfer_ready")
+        self.assertEqual(
+            cognitive_ops.mastery_depth_from_evidence(delayed, active_gap=True),
+            "relational",
+        )
+
     def test_legacy_operation_without_source_metadata_is_not_trusted(self) -> None:
         self.assertEqual(
             cognitive_ops.trusted_operation_from_signal(
@@ -196,6 +210,8 @@ class MasteryIntelligenceTests(unittest.TestCase):
                         "concept": "Test",
                         "exposure_status": "unexposed",
                         "knowledge_state": "untested",
+                        "attempts_count": 0,
+                        "successes_count": 0,
                         "role": "entry",
                     }],
                     "session_stats": {},

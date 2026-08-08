@@ -5,6 +5,7 @@ description: Use when Gabriel invokes /intraoperative-guide or asks to create an
 
 # Intraoperative Guide
 
-Read `.agents/shared/workflow-registry.json`, then read and follow
-`.agents/shared/commands/intraoperative-guide.md` completely. The registry and shared contract own all
-workflow behavior; do not duplicate or reinterpret it here.
+Read `.agents/shared/runtime/intraoperative-guide.json` and
+`.agents/shared/commands/workflow-runtime.md` completely, then the entry
+contracts: `.agents/shared/commands/intraoperative-guide.md`, `.agents/shared/commands/intraoperative-guide-decomposition.md`. Load later contracts only after a
+declared transition. Shared contracts own behavior; do not reinterpret them.

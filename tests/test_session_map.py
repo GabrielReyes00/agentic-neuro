@@ -7,7 +7,7 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import sys
 
@@ -39,6 +39,7 @@ class SessionMapTests(unittest.TestCase):
                     "exposure_status": "unexposed",
                     "knowledge_state": "untested",
                     "attempts_count": 0,
+                    "successes_count": 0,
                     "sqlite_success_rate": 0.0,
                     "role": "entry",
                 }
@@ -80,6 +81,7 @@ class SessionMapTests(unittest.TestCase):
                     "exposure_status": "unexposed",
                     "knowledge_state": "untested",
                     "attempts_count": 0,
+                    "successes_count": 0,
                     "sqlite_success_rate": 0.0,
                     "role": "entry",
                 }
@@ -136,6 +138,7 @@ class SessionMapTests(unittest.TestCase):
             "exposure_status": "exposed_superficial",
             "knowledge_state": "untested",
             "attempts_count": 1,
+            "successes_count": 1,
             "sqlite_success_rate": 1.0,
             "active_misconception": False,
             "role": "entry",
@@ -188,6 +191,23 @@ class SessionMapTests(unittest.TestCase):
         self.assertEqual(entry["attempts_count"], 3)
         self.assertEqual(entry["successes_count"], 1)
         self.assertEqual(entry["sqlite_success_rate"], round(1 / 3, 3))
+
+    def test_projection_without_exact_success_count_is_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "missing successes_count"):
+            session_map.create_from_projection(
+                {
+                    "knowledge_map": [
+                        {
+                            "concept_id": "vas.legacy",
+                            "concept": "Legacy rounded projection",
+                            "attempts_count": 3,
+                            "sqlite_success_rate": 0.667,
+                        }
+                    ]
+                },
+                session_id="legacy-rounded",
+                profile="memory",
+            )
 
     def test_successful_mechanism_probe_upgrades_mastery_depth(self) -> None:
         data = {
@@ -243,6 +263,7 @@ class SessionMapTests(unittest.TestCase):
             correct=2,
             exchange_id=3,
             cognitive_op="transfer",
+            observed_at="2026-01-01T00:00:00+00:00",
         )
         self.assertEqual(data["knowledge_map"][0]["mastery_depth"], "relational")
 
@@ -253,6 +274,7 @@ class SessionMapTests(unittest.TestCase):
             correct=2,
             exchange_id=4,
             cognitive_op="transfer",
+            observed_at="2026-01-01T00:10:00+00:00",
         )
         self.assertEqual(data["knowledge_map"][0]["mastery_depth"], "relational")
 
@@ -264,8 +286,12 @@ class SessionMapTests(unittest.TestCase):
             correct=2,
             exchange_id=5,
             cognitive_op="transfer",
+            observed_at="2026-01-10T00:00:00+00:00",
         )
         self.assertEqual(data["knowledge_map"][0]["mastery_depth"], "transfer_ready")
+        evidence = data["knowledge_map"][0]["successful_operation_evidence"]["transfer"]
+        self.assertEqual(evidence["session_count"], 2)
+        self.assertEqual(evidence["span_days"], 9.0)
 
     def test_prune_stale_session_maps(self) -> None:
         import os
@@ -301,6 +327,30 @@ class SessionMapTests(unittest.TestCase):
         self.assertTrue(session_map.session_map_path("s3").exists())
         self.assertTrue(session_map.delete("s3"))
         self.assertFalse(session_map.session_map_path("s3").exists())
+
+    def test_bootstrap_projects_the_callers_database_not_the_production_default(self) -> None:
+        memory_path = Path(self._tmpdir.name) / "copied-memory.db"
+        conn = study_memory._get_db(memory_path)
+        inventory = MagicMock()
+        try:
+            with patch("concept_inventory._open_inventory", return_value=inventory), patch(
+                "concept_inventory.map_learner",
+                return_value={"ok": False},
+            ) as map_learner:
+                result = session_map.bootstrap_session_map(
+                    conn,
+                    session_id="copied-db-session",
+                    topic="sah vasospasm",
+                    skill="study-review",
+                )
+            self.assertIsNone(result)
+            self.assertEqual(
+                map_learner.call_args.kwargs["memory_db"].resolve(),
+                memory_path.resolve(),
+            )
+        finally:
+            conn.close()
+        inventory.close.assert_called_once()
 
     def test_artifact_priority_annotates_doc_plan(self) -> None:
         knowledge_map = [

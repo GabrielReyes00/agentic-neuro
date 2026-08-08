@@ -1,11 +1,15 @@
 ---
-description: Refactor a manual Obsidian note in place while preserving its facts and attachments.
-argument-hint: [note-path]
+description: Refactor a manual Obsidian note in place with optional answering, expansion, verification, distillation, and visualization.
+argument-hint: [note-path] [answer] [expand] [verify] [distill] [visualize] [audience=...] [depth=...] [focus=...]
 ---
 
 # Refactor Manual Note
 
 The user invoked `/refactor-manual-note` with: $ARGUMENTS
 
-Read `.agents/shared/workflow-registry.json`, then read and follow
-`.agents/shared/commands/refactor-manual-note.md`. The shared contract is the behavioral authority.
+Resolve the plugin root from this command file. Read `resources/AGENTS.md`,
+`resources/.agents/shared/runtime/refactor-manual-note.json`, and
+`resources/.agents/shared/commands/workflow-runtime.md`, then the entry
+contracts: `resources/.agents/shared/commands/refactor-manual-note.md`. These are generated mirrors of the canonical
+`.agents/shared/commands/` contracts. Load later contracts only after a declared
+transition.

@@ -7,5 +7,9 @@ argument-hint: [clinical-question-or-task]
 
 The user invoked `/consult` with: $ARGUMENTS
 
-Read `.agents/shared/workflow-registry.json`, then read and follow
-`.agents/shared/commands/consult.md`. The shared contract is the behavioral authority.
+Resolve the plugin root from this command file. Read `resources/AGENTS.md`,
+`resources/.agents/shared/runtime/consult.json`, and
+`resources/.agents/shared/commands/workflow-runtime.md`, then the entry
+contracts: `resources/.agents/shared/commands/consult.md`. These are generated mirrors of the canonical
+`.agents/shared/commands/` contracts. Load later contracts only after a declared
+transition.

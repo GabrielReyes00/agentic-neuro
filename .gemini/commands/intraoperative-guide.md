@@ -5,5 +5,7 @@ description: Create and independently review a source-grounded operative rehears
 
 # Intraoperative Guide
 
-Read `.agents/shared/workflow-registry.json`, then read and follow
-`.agents/shared/commands/intraoperative-guide.md`. This adapter adds no workflow policy.
+Read `.agents/shared/runtime/intraoperative-guide.json` and
+`.agents/shared/commands/workflow-runtime.md`, then the entry contracts:
+`.agents/shared/commands/intraoperative-guide.md`, `.agents/shared/commands/intraoperative-guide-decomposition.md`. Load later contracts only after a declared
+transition. This adapter adds no workflow policy.

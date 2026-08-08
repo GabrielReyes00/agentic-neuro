@@ -20,13 +20,20 @@ from typing import Any, Iterable
 from xml.etree import ElementTree
 
 try:
+    from runtime_paths import VAULT_INDEX_DB
+    from store_contracts import VAULT_BINARY_COMPONENT, VAULT_INDEX_SCHEMA_VERSION
+except ModuleNotFoundError:  # pragma: no cover - package import in tests
+    from .runtime_paths import VAULT_INDEX_DB
+    from .store_contracts import VAULT_BINARY_COMPONENT, VAULT_INDEX_SCHEMA_VERSION
+
+try:
     from vault_schema import parse_frontmatter
 except ModuleNotFoundError:
     from .vault_schema import parse_frontmatter
 
 
 DEFAULT_VAULT = Path("/Users/gabrielreyes/Documents/Obsidian/agentic-neuro")
-DEFAULT_DB = Path(__file__).resolve().parent.parent / "data" / "vault_index.db"
+DEFAULT_DB = VAULT_INDEX_DB
 MANAGED_ROOTS = {
     ("Journal Club", "Sources"),
     ("Presentations", "Decks"),
@@ -229,6 +236,22 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
         )
         """
     )
+    connection.execute(
+        """CREATE TABLE IF NOT EXISTS store_meta (
+               component TEXT PRIMARY KEY,
+               schema_version INTEGER NOT NULL,
+               updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+           )"""
+    )
+    connection.execute(
+        """INSERT INTO store_meta (component, schema_version, updated_at)
+           VALUES (?, ?, CURRENT_TIMESTAMP)
+           ON CONFLICT(component) DO UPDATE SET
+             schema_version=excluded.schema_version,
+             updated_at=CURRENT_TIMESTAMP""",
+        (VAULT_BINARY_COMPONENT, VAULT_INDEX_SCHEMA_VERSION),
+    )
+    connection.execute(f"PRAGMA user_version={VAULT_INDEX_SCHEMA_VERSION}")
     connection.execute(
         """
         CREATE VIRTUAL TABLE IF NOT EXISTS vault_files_fts

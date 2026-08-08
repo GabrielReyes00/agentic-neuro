@@ -19,8 +19,13 @@ from anki_sync.anki_client import AnkiClient
 from anki_sync.novelty import NoveltyStore
 from anki_sync.schemas import ClaimModel
 
+try:
+    from runtime_paths import ANKI_CACHE_DB
+except ModuleNotFoundError:  # pragma: no cover - package import in tests
+    from .runtime_paths import ANKI_CACHE_DB
+
 ANKI_URL = "http://localhost:8765"
-CHROMADB_PATH = "data/anki_vector_cache.db"
+CHROMADB_PATH = str(ANKI_CACHE_DB)
 COLLECTION_NAME = "anki_claim_memory"
 EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
 DEFAULT_QUERY = "deck:Neurosurgery*"

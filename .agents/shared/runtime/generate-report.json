@@ -1,0 +1,108 @@
+{
+  "anki_policy": "none_during_generation",
+  "binary_destination": null,
+  "canonical_workflow": "generate-report",
+  "contract": ".agents/shared/commands/generate-report.md",
+  "execution": {
+    "entry": "plan",
+    "mode": "artifact_graph",
+    "nodes": [
+      {
+        "context": "run_scoped",
+        "edges": [
+          {
+            "to": "research",
+            "when": "planned"
+          }
+        ],
+        "id": "plan",
+        "kind": "intake",
+        "load": [
+          ".agents/shared/commands/generate-report.md",
+          ".agents/shared/commands/generate-report-research-plan.md",
+          ".agents/shared/commands/vault-intelligence.md"
+        ]
+      },
+      {
+        "context": "run_scoped",
+        "edges": [
+          {
+            "to": "synthesis",
+            "when": "coverage_ready"
+          }
+        ],
+        "id": "research",
+        "kind": "retrieve",
+        "load": [
+          ".agents/shared/commands/generate-report-research.md",
+          ".agents/shared/commands/rag-routing.md"
+        ]
+      },
+      {
+        "context": "run_scoped",
+        "edges": [
+          {
+            "to": "validate",
+            "when": "drafted"
+          }
+        ],
+        "id": "synthesis",
+        "kind": "reason",
+        "load": [
+          ".agents/shared/commands/generate-report-synthesis-map.md"
+        ]
+      },
+      {
+        "context": "run_scoped",
+        "edges": [
+          {
+            "loop": true,
+            "to": "research",
+            "when": "evidence_gap"
+          },
+          {
+            "to": "write",
+            "when": "passed"
+          }
+        ],
+        "id": "validate",
+        "kind": "validate",
+        "load": [
+          ".agents/shared/commands/generate-report-finalize.md",
+          ".agents/shared/commands/review-artifacts.md"
+        ]
+      },
+      {
+        "context": "run_scoped",
+        "edges": [
+          {
+            "to": "done",
+            "when": "installed"
+          }
+        ],
+        "id": "write",
+        "kind": "write",
+        "load": [
+          ".agents/shared/commands/generate-report-finalize.md",
+          ".agents/shared/commands/concept-extraction.md"
+        ]
+      },
+      {
+        "context": "run_scoped",
+        "edges": [],
+        "id": "done",
+        "kind": "terminal",
+        "load": []
+      }
+    ],
+    "run_state": "manifest"
+  },
+  "generated_from": ".agents/shared/workflow-registry.json",
+  "generation_recall": "none",
+  "invoked_as": "generate-report",
+  "reviewable": true,
+  "runtime_contract": ".agents/shared/commands/workflow-runtime.md",
+  "schema_version": 1,
+  "vault_destination": "Reports/<Title>.md",
+  "write_policy": "regenerate_in_place_after_reading_existing"
+}

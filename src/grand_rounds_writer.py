@@ -26,10 +26,20 @@ try:
     from vault_schema import compose_note, split_frontmatter
 except ModuleNotFoundError:  # imported as part of the `src` package
     from .vault_schema import compose_note, split_frontmatter
+try:
+    from runtime_paths import RUNTIME_DIR
+except ModuleNotFoundError:  # imported as part of the `src` package
+    from .runtime_paths import RUNTIME_DIR
+try:
+    from io_utils import atomic_write_text
+    from vault_hooks import refresh_vault_intelligence
+except ModuleNotFoundError:  # imported as part of the `src` package
+    from .io_utils import atomic_write_text
+    from .vault_hooks import refresh_vault_intelligence
 
 
 DEFAULT_VAULT_ROOT = Path("/Users/gabrielreyes/Documents/Obsidian/agentic-neuro")
-DEFAULT_SESSIONS_DIR = Path(__file__).resolve().parent.parent / "data" / "Sessions"
+DEFAULT_SESSIONS_DIR = RUNTIME_DIR
 PRESENTATIONS_DIRNAME = "Presentations"
 CASES_DIRNAME = "Cases"
 ARTICLES_DIRNAME = "Articles"
@@ -120,14 +130,6 @@ def _deck_path_for_title(
         / deck_kind
         / f"{_title_case_slug(title)}.pptx"
     )
-
-
-def _refresh_vault_intelligence(vault_root: Path) -> None:
-    try:
-        import vault_index
-    except ModuleNotFoundError:  # imported as part of the `src` package
-        from . import vault_index
-    vault_index.refresh_default_index_after_vault_write(vault_root=vault_root)
 
 
 def _durable_deck_metadata(deck_path: Path, vault_root: Path) -> tuple[str, str]:
@@ -222,13 +224,6 @@ def _validate_quality_gate(
     return failures
 
 
-def _atomic_write(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    tmp.replace(path)
-
-
 def _ensure_dirs(vault_root: Path) -> None:
     root = vault_root / PRESENTATIONS_DIRNAME
     (root / CASES_DIRNAME).mkdir(parents=True, exist_ok=True)
@@ -286,7 +281,7 @@ def _write_manifest(
         "updated": _utc_iso(),
     }
     path = _manifest_path(title, sessions_dir)
-    _atomic_write(path, json.dumps(manifest, indent=2) + "\n")
+    atomic_write_text(path, json.dumps(manifest, indent=2) + "\n")
     return path
 
 
@@ -459,7 +454,7 @@ def create_presentation(
         meta["deck_file"] = deck_file
 
     content = compose_note(body, meta)
-    _atomic_write(out_path, content)
+    atomic_write_text(out_path, content)
     upsert_index(
         vault_root=vault_root,
         title=clean_title,
@@ -503,7 +498,7 @@ def append_rehearsal_notes(
         body.rstrip() + "\n\n" + "\n".join(section_lines).rstrip(),
         meta,
     )
-    _atomic_write(abs_path, content)
+    atomic_write_text(abs_path, content)
     return abs_path
 
 
@@ -547,7 +542,7 @@ def upsert_index(
             meta["summary"] = summary
         if date:
             meta["presentation_date"] = date
-        _atomic_write(note_path, compose_note(body, meta))
+        atomic_write_text(note_path, compose_note(body, meta))
 
     try:
         import index_builder
@@ -556,7 +551,7 @@ def upsert_index(
     index_path = index_builder.write_index(
         vault_root / PRESENTATIONS_DIRNAME, vault_root=vault_root, recursive=True
     )
-    _refresh_vault_intelligence(vault_root)
+    refresh_vault_intelligence(vault_root)
     return index_path
 
 

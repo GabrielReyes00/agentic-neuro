@@ -19,7 +19,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from retrieval import mini, pipeline  # noqa: E402
+from retrieval import batch, mini, pipeline  # noqa: E402
 
 
 DEFAULT_CASES = Path(__file__).with_name("mini_rag_queries.json")
@@ -190,7 +190,7 @@ def _full_packets(
     limit: int,
     max_chars: int,
 ) -> list[dict[str, Any]]:
-    results = pipeline.retrieve_many(
+    results = batch.retrieve_many(
         [case["query"] for case in cases],
         distill=True,
         augment=True,

@@ -25,18 +25,20 @@ import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 
-# ── Venv & working directory guard ───────────────────────────────────────────
-if __name__ == "__main__":
-    from _env_guard import check_environment
-    check_environment("lance_retriever.py")
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import numpy as np
+from . import provenance
+try:
+    from runtime_paths import RETRIEVAL_RUNTIME_DIR
+except ModuleNotFoundError:  # pragma: no cover - package import in tests
+    from ..runtime_paths import RETRIEVAL_RUNTIME_DIR
+
 BASE_DIR = Path(__file__).resolve().parents[2]
 DATA_DIR = BASE_DIR / "data"
-SESSIONS_DIR = DATA_DIR / "Sessions"
+SESSIONS_DIR = RETRIEVAL_RUNTIME_DIR
 RUNTIME_DIR = DATA_DIR / "runtime"
 
 # ── Configuration ────────────────────────────────────────────────────────────
@@ -1399,7 +1401,7 @@ def _sparse_search_fts(table, query_text: str, n_results: int = DEFAULT_N_RESULT
 
 def _row_to_hit(row: dict, similarity: float) -> dict:
     """Convert a LanceDB row to a standardized hit dict."""
-    return {
+    return provenance.enrich_hit({
         "text": row.get("child_text", ""),
         "parent_text": row.get("parent_text", ""),
         "similarity": round(similarity, 4),
@@ -1425,7 +1427,7 @@ def _row_to_hit(row: dict, similarity: float) -> dict:
         "parent_id": row.get("parent_id", ""),
         "table_markdown": row.get("table_markdown", ""),
         "caption_text": row.get("caption_text", ""),
-    }
+    })
 
 
 # ── Fusion & Reranking ───────────────────────────────────────────────────────
@@ -2488,6 +2490,12 @@ def retrieve(
     pre_ref_count = len(candidates)
     candidates = [h for h in candidates if not _is_low_value_retrieval_hit(h)]
     refs_dropped = pre_ref_count - len(candidates)
+    pre_role_count = len(candidates)
+    candidates = [
+        h for h in candidates
+        if provenance.source_allowed_for_query(h.get("source_key"), query)
+    ]
+    source_role_dropped = pre_role_count - len(candidates)
     candidates_before_cap = len(candidates)
     if PRE_RERANK_MAX_CANDIDATES > 0:
         candidates = candidates[:PRE_RERANK_MAX_CANDIDATES]
@@ -2542,6 +2550,13 @@ def retrieve(
     return {
         "query": query,
         "reranker": reranker_key,
+        "provenance": provenance.retrieval_provenance(
+            route="full",
+            reranker_key=reranker_key,
+            reranker_model=RERANKER_MODELS.get(reranker_key, reranker_key),
+            embedding_model=BGE_M3_MODEL_ID,
+            table=table,
+        ),
         "hits": final_hits,
         "_reranked_pool": reranked_pool_snapshot,
         "latency": {
@@ -2555,6 +2570,7 @@ def retrieve(
             "fused_candidates": len(fused),
             "below_threshold": below_threshold,
             "refs_dropped": refs_dropped,
+            "source_role_dropped": source_role_dropped,
             "pre_rerank_candidates": candidates_before_cap,
             "pre_rerank_cap": PRE_RERANK_MAX_CANDIDATES,
             "pre_rerank_capped": max(0, candidates_before_cap - len(candidates)),
@@ -2564,16 +2580,6 @@ def retrieve(
             "source_books": sorted(unique_sources),
         },
     }
-
-
-def retrieve_many(
-    queries,
-    **kwargs,
-) -> list[dict[str, Any]]:
-    """Compatibility facade for batched multi-topic retrieval."""
-    from .batch import retrieve_many as _retrieve_many
-
-    return _retrieve_many(queries, **kwargs)
 
 
 # ── Context building ─────────────────────────────────────────────────────────
@@ -2887,6 +2893,7 @@ def build_source_cards_jsonl(
         row = {
             "card_id": f"{card_prefix}-{idx:02d}",
             "citation": hit.get("citation", "uncited"),
+            "source_role": hit.get("source_role") or provenance.source_role(hit.get("source_key")),
             "page_start": meta.get("page_start"),
             "takeaways": [s[:260] for s in _compact_sentences(text, max_items=max_takeaways)],
             "numbers_thresholds_effects": _numbers_from_text(text, max_items=5),
@@ -2939,6 +2946,15 @@ def build_source_cards_jsonl(
         "format": "jsonl",
         "schema": "compact" if compact_schema else "verbose",
         "source_type": "textbook_rag_full",
+        "provenance": result.get("provenance") or provenance.retrieval_provenance(
+            route="full",
+            reranker_key=str(result.get("reranker") or DEFAULT_RERANKER),
+            reranker_model=RERANKER_MODELS.get(
+                str(result.get("reranker") or DEFAULT_RERANKER),
+                str(result.get("reranker") or DEFAULT_RERANKER),
+            ),
+            embedding_model=BGE_M3_MODEL_ID,
+        ),
     }
     return "\n".join([json.dumps(header, ensure_ascii=False)] + [
         json.dumps(row, ensure_ascii=False) for row in rows
@@ -3378,107 +3394,5 @@ def list_textbooks(refresh: bool = False):
     print(f"  {total:>5d}  TOTAL ({len(entries)} books)")
 
 
-# ── CLI ──────────────────────────────────────────────────────────────────────
-
-if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(description="LanceDB retrieval engine")
-    subparsers = parser.add_subparsers(dest="command", help="Command to run")
-
-    # compare
-    p_compare = subparsers.add_parser("compare",
-                                      help="Retrieve, rerank, distill, and deliver textbook context")
-    p_compare.add_argument("query", help="Search query")
-    p_compare.add_argument("--stdout", action="store_true",
-                           help="Print context to stdout (agent gets it inline, no file)")
-    p_compare.add_argument("--output", default="", help="Custom output file path")
-    p_compare.add_argument("--visual", action="store_true", help="Extract images from hits")
-    p_compare.add_argument("--no-distill", action="store_true",
-                           help="Bypass adaptive context distillation")
-    p_compare.add_argument("--no-frontier", action="store_true",
-                           help="Skip automatic frontier (PMC) search")
-    p_compare.add_argument("--card-json", action="store_true",
-                           help="Print/write compact JSONL source cards instead of full formatted context")
-    p_compare.add_argument("--card-output", default="",
-                           help="Optional path for JSONL source-card output")
-    p_compare.add_argument("--coverage-block", action="append", default=[],
-                           help="Coverage block label to attach to emitted source cards; repeatable")
-    p_compare.add_argument("--max-passages", type=int, default=0,
-                           help="Limit final passage/card count after retrieval and distillation")
-    p_compare.add_argument("--frontier-max-chars", type=int, default=0,
-                           help="Truncate frontier evidence in output/cards to this many characters")
-    p_compare.add_argument("--card-prefix", default="QCARD",
-                           help="Prefix for emitted source card IDs, e.g. Q1-CARD")
-    p_compare.add_argument("--max-takeaways", type=int, default=4,
-                           help="Maximum extractive takeaways per emitted source card")
-    p_compare.add_argument("--verbose-cards", action="store_true",
-                           help="Include repeated query/coverage metadata on every card row")
-
-    # search (raw retrieval for debugging)
-    p_search = subparsers.add_parser("search", help="Raw retrieval (debug)")
-    p_search.add_argument("query", help="Search query")
-    p_search.add_argument("--json", action="store_true", help="JSON output")
-    p_search.add_argument("--reranker", default=DEFAULT_RERANKER,
-                          choices=list(RERANKER_MODELS.keys()))
-    p_search.add_argument("--n-results", type=int, default=DEFAULT_N_RESULTS)
-
-    # list_textbooks
-    subparsers.add_parser("list_textbooks", help="Show database inventory")
-
-    # warmup: preload embedding/reranker/NER models in-process (one-shot, no daemon)
-    p_warmup = subparsers.add_parser("warmup",
-                                     help="Preload models so HuggingFace cache is verified and ready (one-shot, no daemon)")
-    p_warmup.add_argument("--quiet", action="store_true",
-                          help="Suppress per-stage logging (print final timings only)")
-
-    args = parser.parse_args()
-
-    if args.command == "compare":
-        compare(args.query, output_file=args.output,
-                visual=args.visual, no_distill=args.no_distill,
-                no_frontier=args.no_frontier,
-                stdout=args.stdout,
-                card_json=args.card_json,
-                card_output=args.card_output,
-                coverage_blocks=args.coverage_block,
-                max_passages=args.max_passages,
-                frontier_max_chars=args.frontier_max_chars,
-                card_prefix=args.card_prefix,
-                max_takeaways=args.max_takeaways,
-                verbose_cards=args.verbose_cards)
-
-    elif args.command == "warmup":
-        _warm_models(verbose=not args.quiet)
-
-    elif args.command == "search":
-        result = retrieve(args.query, reranker_key=args.reranker,
-                          n_results=args.n_results)
-        if args.json:
-            output = {
-                "query": result["query"], "reranker": result["reranker"],
-                "latency": result["latency"], "metadata": result["metadata"],
-                "hits": [
-                    {"citation": h.get("citation"), "similarity": h.get("similarity"),
-                     "rank_score": h.get("rank_score"), "sigmoid_ce": h.get("sigmoid_ce"),
-                     "passage_tokens": h.get("passage_tokens"),
-                     "source_key": h.get("source_key"),
-                     "text_preview": h.get("text", "")[:200]}
-                    for h in result["hits"]
-                ],
-            }
-            print(json.dumps(output, separators=(",", ":")))
-        else:
-            lat = result["latency"]
-            meta = result["metadata"]
-            print(f"OK {meta['final_passages']} passages | {meta['unique_sources']} sources | {lat['total_ms']:.0f}ms")
-            for i, hit in enumerate(result["hits"], 1):
-                print(f"  [{i}] {hit.get('citation', 'uncited')}")
-                print(f"      rank={hit.get('rank_score')}, ce={hit.get('sigmoid_ce')}, "
-                      f"tokens={hit.get('passage_tokens', '?')}")
-
-    elif args.command == "list_textbooks":
-        list_textbooks()
-
-    else:
-        parser.print_help()
+# This module is library-only. ``src/lance_retriever.py`` delegates command-line
+# parsing to ``retrieval.cli`` so there is one executable surface.

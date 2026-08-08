@@ -1,0 +1,99 @@
+{
+  "anki_policy": "none",
+  "binary_destination": null,
+  "canonical_workflow": "memory-maintenance",
+  "contract": ".agents/shared/commands/memory-maintenance.md",
+  "execution": {
+    "entry": "audit",
+    "mode": "approval_gate",
+    "nodes": [
+      {
+        "context": "run_scoped",
+        "edges": [
+          {
+            "to": "approval",
+            "when": "repair_proposed"
+          },
+          {
+            "to": "done",
+            "when": "audit_complete"
+          }
+        ],
+        "id": "audit",
+        "kind": "validate",
+        "load": [
+          ".agents/shared/commands/memory-maintenance.md",
+          ".agents/shared/commands/memory-curation.md"
+        ]
+      },
+      {
+        "context": "conversation",
+        "edges": [
+          {
+            "to": "apply",
+            "when": "approved"
+          },
+          {
+            "terminal_status": "abandoned",
+            "to": "done",
+            "when": "declined"
+          }
+        ],
+        "id": "approval",
+        "kind": "approval",
+        "load": [
+          ".agents/shared/commands/memory-maintenance.md"
+        ]
+      },
+      {
+        "context": "run_scoped",
+        "edges": [
+          {
+            "to": "verify",
+            "when": "applied"
+          }
+        ],
+        "id": "apply",
+        "kind": "write",
+        "load": [
+          ".agents/shared/commands/memory-maintenance.md"
+        ]
+      },
+      {
+        "context": "run_scoped",
+        "edges": [
+          {
+            "to": "done",
+            "when": "passed"
+          },
+          {
+            "loop": true,
+            "to": "apply",
+            "when": "revision_needed"
+          }
+        ],
+        "id": "verify",
+        "kind": "validate",
+        "load": [
+          ".agents/shared/commands/memory-maintenance.md"
+        ]
+      },
+      {
+        "context": "run_scoped",
+        "edges": [],
+        "id": "done",
+        "kind": "terminal",
+        "load": []
+      }
+    ],
+    "run_state": "manifest"
+  },
+  "generated_from": ".agents/shared/workflow-registry.json",
+  "generation_recall": "none",
+  "invoked_as": "memory-maintenance",
+  "reviewable": false,
+  "runtime_contract": ".agents/shared/commands/workflow-runtime.md",
+  "schema_version": 1,
+  "vault_destination": null,
+  "write_policy": "audit_only_by_default; learner_memory_mutations_require_explicit_approval"
+}

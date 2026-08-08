@@ -5,5 +5,7 @@ description: Triage email and draft replies with approval before any external mu
 
 # Inbox Workflow
 
-Read `.agents/shared/workflow-registry.json`, then read and follow
-`.agents/shared/commands/inbox-workflow.md`. This adapter adds no workflow policy.
+Read `.agents/shared/runtime/inbox-workflow.json` and
+`.agents/shared/commands/workflow-runtime.md`, then the entry contracts:
+`.agents/shared/commands/inbox-workflow.md`. Load later contracts only after a declared
+transition. This adapter adds no workflow policy.

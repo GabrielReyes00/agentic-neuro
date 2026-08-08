@@ -176,6 +176,66 @@ class ServiceRotationTests(unittest.TestCase):
             self.assertTrue(svc["formal_secondary"])
             self.assertTrue(all(g["origin"] == "assessed" for g in svc["formal_secondary"]))
             self.assertTrue(any("mgmt" in g["concept"].lower() for g in svc["formal_secondary"]))
+            self.assertEqual(svc["rotation"]["rotation_id"], rid)
+            self.assertGreater(svc["rubric_progress"]["total"], 0)
+        finally:
+            conn.close()
+
+    def test_service_lens_surfaces_scoped_candidates_and_counts_unmapped(self) -> None:
+        conn = self._conn()
+        try:
+            rid = study_memory.start_rotation(
+                conn, service="tumor", site="MD Anderson", pgy=1
+            )["rotation_id"]
+            assessed_id = study_memory.add_shift_debrief_candidate(
+                conn,
+                session_id="portable",
+                topic="tumor candidate",
+                concept="portable tumor teaching",
+                doc_path="Shift Debriefs/Portable Tumor Teaching.md",
+                prompt="What is the portable tumor teaching?",
+                claim_text="Portable tumor claim.",
+                provenance_tier="clinical_knowledge",
+            )
+            conn.execute(
+                """UPDATE topics SET domain = 'tumor'
+                    WHERE id = (SELECT topic_id FROM shift_debrief_review_candidates WHERE id = ?)""",
+                (assessed_id,),
+            )
+            local_id = study_memory.add_shift_debrief_candidate(
+                conn,
+                session_id="local",
+                topic="local tumor workflow",
+                concept="local tumor convention",
+                doc_path="Shift Debriefs/Local Tumor Workflow.md",
+                prompt="What local convention must be confirmed?",
+                claim_text="Local tumor convention.",
+                provenance_tier="service_teaching",
+                origin="service",
+                rotation_id=rid,
+                convention=True,
+            )
+            study_memory.add_shift_debrief_candidate(
+                conn,
+                session_id="unmapped",
+                topic="uncategorized pearl",
+                concept="uncategorized pearl",
+                doc_path="Shift Debriefs/Uncategorized Pearl.md",
+                prompt="What is this uncategorized pearl?",
+                claim_text="Do not guess this candidate's service.",
+                provenance_tier="clinical_knowledge",
+            )
+            conn.commit()
+
+            svc = json.loads(
+                study_memory.startup_recall(
+                    conn, lens="service", service="tumor", site="md-anderson"
+                )
+            )
+            ids = {item["candidate_id"] for item in svc["pending_review_candidates"]}
+            self.assertEqual(ids, {assessed_id, local_id})
+            self.assertEqual(svc["counts"]["unmapped_review_candidates"], 1)
+            self.assertTrue(any("excluded" in warning for warning in svc["data_quality_warnings"]))
         finally:
             conn.close()
 

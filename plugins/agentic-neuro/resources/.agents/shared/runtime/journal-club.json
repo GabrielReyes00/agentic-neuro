@@ -1,0 +1,135 @@
+{
+  "anki_policy": "evaluated_mastery_only",
+  "binary_destination": "Journal Club/Sources/<Short Article Title>.pdf",
+  "canonical_workflow": "journal-club",
+  "contract": ".agents/shared/commands/journal-club.md",
+  "execution": {
+    "entry": "intake",
+    "mode": "artifact_graph",
+    "nodes": [
+      {
+        "context": "run_scoped",
+        "edges": [
+          {
+            "to": "analysis",
+            "when": "source_ready"
+          }
+        ],
+        "id": "intake",
+        "kind": "intake",
+        "load": [
+          ".agents/shared/commands/journal-club.md"
+        ]
+      },
+      {
+        "context": "run_scoped",
+        "edges": [
+          {
+            "to": "artifact",
+            "when": "appraised"
+          }
+        ],
+        "id": "analysis",
+        "kind": "reason",
+        "load": [
+          ".agents/shared/commands/journal-club-analysis.md",
+          ".agents/shared/commands/rag-routing.md",
+          ".agents/shared/commands/vault-intelligence.md"
+        ]
+      },
+      {
+        "context": "run_scoped",
+        "edges": [
+          {
+            "to": "validate",
+            "when": "drafted"
+          }
+        ],
+        "id": "artifact",
+        "kind": "write",
+        "load": [
+          ".agents/shared/commands/journal-club-artifact.md"
+        ]
+      },
+      {
+        "context": "run_scoped",
+        "edges": [
+          {
+            "loop": true,
+            "to": "artifact",
+            "when": "revision_needed"
+          },
+          {
+            "to": "write",
+            "when": "passed"
+          }
+        ],
+        "id": "validate",
+        "kind": "validate",
+        "load": [
+          ".agents/shared/commands/journal-club.md"
+        ]
+      },
+      {
+        "context": "run_scoped",
+        "edges": [
+          {
+            "to": "mastery",
+            "when": "mastery_accepted"
+          },
+          {
+            "to": "done",
+            "when": "installed"
+          }
+        ],
+        "id": "write",
+        "kind": "write",
+        "load": [
+          ".agents/shared/commands/review-artifacts.md",
+          ".agents/shared/commands/concept-extraction.md"
+        ]
+      },
+      {
+        "context": "conversation",
+        "edges": [
+          {
+            "loop": true,
+            "to": "mastery",
+            "when": "continue"
+          },
+          {
+            "to": "done",
+            "when": "closed"
+          }
+        ],
+        "id": "mastery",
+        "kind": "loop",
+        "load": [
+          ".agents/shared/commands/journal-club-artifact.md",
+          ".agents/shared/commands/learning-session-contract.md",
+          ".agents/shared/commands/memory-operations.md",
+          ".agents/shared/commands/memory-retrieval.md",
+          ".agents/shared/commands/adaptive-teaching-doctrine.md",
+          ".agents/shared/commands/anki-session-workflow.md",
+          ".agents/shared/commands/anki-card-quality.md"
+        ]
+      },
+      {
+        "context": "run_scoped",
+        "edges": [],
+        "id": "done",
+        "kind": "terminal",
+        "load": []
+      }
+    ],
+    "run_state": "manifest"
+  },
+  "generated_from": ".agents/shared/workflow-registry.json",
+  "generation_recall": "none_during_generation; document_for_opted_mastery",
+  "invoked_as": "journal-club",
+  "reviewable": true,
+  "runtime_contract": ".agents/shared/commands/workflow-runtime.md",
+  "schema_version": 1,
+  "vault_destination": "Journal Club/<Short Article Title>.md",
+  "write_policy": "regenerate_in_place_after_reading_existing"
+}

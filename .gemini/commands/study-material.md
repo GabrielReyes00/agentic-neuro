@@ -5,5 +5,7 @@ description: Generate validated study material from a source or drill an existin
 
 # Study Material
 
-Read `.agents/shared/workflow-registry.json`, then read and follow
-`.agents/shared/commands/study-material.md`. This adapter adds no workflow policy.
+Read `.agents/shared/runtime/study-material.json` and
+`.agents/shared/commands/workflow-runtime.md`, then the entry contracts:
+`.agents/shared/commands/study-material.md`. Load later contracts only after a declared
+transition. This adapter adds no workflow policy.

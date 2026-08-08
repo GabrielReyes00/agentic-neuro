@@ -1,0 +1,193 @@
+{
+  "anki_policy": "evaluated_exchange_only",
+  "binary_destination": null,
+  "canonical_workflow": "intraoperative-guide",
+  "contract": ".agents/shared/commands/intraoperative-guide.md",
+  "execution": {
+    "entry": "decompose",
+    "mode": "artifact_graph",
+    "nodes": [
+      {
+        "context": "run_scoped",
+        "edges": [
+          {
+            "to": "research",
+            "when": "mapped"
+          }
+        ],
+        "id": "decompose",
+        "kind": "intake",
+        "load": [
+          ".agents/shared/commands/intraoperative-guide.md",
+          ".agents/shared/commands/intraoperative-guide-decomposition.md"
+        ]
+      },
+      {
+        "context": "run_scoped",
+        "edges": [
+          {
+            "to": "knowledge-map",
+            "when": "coverage_ready"
+          }
+        ],
+        "id": "research",
+        "kind": "retrieve",
+        "load": [
+          ".agents/shared/commands/intraoperative-guide-research.md",
+          ".agents/shared/commands/rag-routing.md"
+        ]
+      },
+      {
+        "context": "run_scoped",
+        "edges": [
+          {
+            "to": "map-review",
+            "when": "mapped"
+          }
+        ],
+        "id": "knowledge-map",
+        "kind": "reason",
+        "load": [
+          ".agents/shared/commands/intraoperative-guide-knowledge-map.md",
+          ".agents/shared/commands/intraoperative-guide-attending-bank.md"
+        ]
+      },
+      {
+        "context": "isolated",
+        "edges": [
+          {
+            "to": "gap-repair",
+            "when": "gaps"
+          },
+          {
+            "to": "crosslinks",
+            "when": "passed"
+          }
+        ],
+        "id": "map-review",
+        "kind": "validate",
+        "load": [
+          ".agents/shared/commands/intraoperative-guide-map-review.md"
+        ]
+      },
+      {
+        "context": "run_scoped",
+        "edges": [
+          {
+            "loop": true,
+            "to": "map-review",
+            "when": "repaired"
+          }
+        ],
+        "id": "gap-repair",
+        "kind": "retrieve",
+        "load": [
+          ".agents/shared/commands/intraoperative-guide-gap-repair.md"
+        ]
+      },
+      {
+        "context": "run_scoped",
+        "edges": [
+          {
+            "to": "independent-review",
+            "when": "drafted"
+          }
+        ],
+        "id": "crosslinks",
+        "kind": "reason",
+        "load": [
+          ".agents/shared/commands/intraoperative-guide-crosslinks.md",
+          ".agents/shared/commands/intraoperative-guide-synthesis.md",
+          ".agents/shared/commands/vault-intelligence.md"
+        ]
+      },
+      {
+        "context": "isolated",
+        "edges": [
+          {
+            "loop": true,
+            "to": "crosslinks",
+            "when": "revision_needed"
+          },
+          {
+            "to": "finalize",
+            "when": "passed"
+          }
+        ],
+        "id": "independent-review",
+        "kind": "validate",
+        "load": [
+          ".agents/shared/commands/intraoperative-guide-review.md"
+        ]
+      },
+      {
+        "context": "run_scoped",
+        "edges": [
+          {
+            "to": "approval",
+            "when": "incomplete"
+          },
+          {
+            "to": "write",
+            "when": "passed"
+          }
+        ],
+        "id": "finalize",
+        "kind": "validate",
+        "load": [
+          ".agents/shared/commands/intraoperative-guide-finalize.md"
+        ]
+      },
+      {
+        "context": "conversation",
+        "edges": [
+          {
+            "to": "write",
+            "when": "approved"
+          },
+          {
+            "terminal_status": "abandoned",
+            "to": "done",
+            "when": "declined"
+          }
+        ],
+        "id": "approval",
+        "kind": "approval",
+        "load": [
+          ".agents/shared/commands/intraoperative-guide-finalize.md"
+        ]
+      },
+      {
+        "context": "run_scoped",
+        "edges": [
+          {
+            "to": "done",
+            "when": "installed"
+          }
+        ],
+        "id": "write",
+        "kind": "write",
+        "load": [
+          ".agents/shared/commands/review-artifacts.md",
+          ".agents/shared/commands/concept-extraction.md"
+        ]
+      },
+      {
+        "context": "run_scoped",
+        "edges": [],
+        "id": "done",
+        "kind": "terminal",
+        "load": []
+      }
+    ],
+    "run_state": "manifest"
+  },
+  "generated_from": ".agents/shared/workflow-registry.json",
+  "generation_recall": "optional_topic",
+  "invoked_as": "intraoperative-guide",
+  "reviewable": true,
+  "runtime_contract": ".agents/shared/commands/workflow-runtime.md",
+  "schema_version": 1,
+  "vault_destination": "Operative Guides/<Title>.md",
+  "write_policy": "regenerate_in_place_after_reading_existing; incomplete_install_requires_explicit_user_approval"
+}

@@ -1,11 +1,13 @@
-description = "Refactor a manual Obsidian note in place while preserving its facts and attachments."
+description = "Refactor a manual Obsidian note in place with optional answering, expansion, verification, distillation, and visualization."
 
 prompt = """
 ACTIVE COMMAND: /refactor-manual-note
 User input: {{args}}
 
-Read `.agents/shared/workflow-registry.json`, then read and follow the canonical
-contract below. Do not infer behavioral policy from this adapter.
+Read the generated selected-workflow spec below, then
+`.agents/shared/commands/workflow-runtime.md`, then the entry contracts:
+`.agents/shared/commands/refactor-manual-note.md`. Load later contracts only after a declared
+transition. Do not infer behavioral policy from this adapter.
 
-@{.agents/shared/commands/refactor-manual-note.md}
+@{.agents/shared/runtime/refactor-manual-note.json}
 """

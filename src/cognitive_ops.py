@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime, timezone
 
 VALID_COGNITIVE_OPS = frozenset({
     "recall",
@@ -13,6 +14,11 @@ VALID_COGNITIVE_OPS = frozenset({
     "mechanism",
     "transfer",
 })
+
+# Transfer breadth demonstrated twice in one sitting is not delayed transfer.
+# Seven days is a conservative operational calibration boundary, not a fitted
+# learner-specific forgetting model; the raw evidence span remains visible.
+TRANSFER_REPLICATION_MIN_DAYS = 7.0
 
 COGNITIVE_OP_RETEST_HINTS: dict[str, str] = {
     "recall": "Retest the same atomic fact in a clinically meaningful frame, then ask what it changes.",
@@ -123,7 +129,7 @@ def mastery_depth_from_evidence(
     if not isinstance(evidence, dict):
         return "unknown"
 
-    normalized: dict[str, tuple[int, int]] = {}
+    normalized: dict[str, tuple[int, int, float]] = {}
     for raw_op, raw_payload in evidence.items():
         op = _normalize(str(raw_op)).replace(" ", "_").replace("-", "_")
         if op not in VALID_COGNITIVE_OPS:
@@ -133,14 +139,21 @@ def mastery_depth_from_evidence(
             session_count = int(raw_payload.get("session_count", 0) or 0)
             if not session_count and isinstance(raw_payload.get("session_ids"), (list, tuple, set)):
                 session_count = len({str(item) for item in raw_payload["session_ids"] if str(item)})
+            span_days = float(raw_payload.get("span_days", 0.0) or 0.0)
         else:
             count = int(raw_payload or 0)
             session_count = 0
+            span_days = 0.0
         if count > 0:
-            normalized[op] = (count, session_count)
+            normalized[op] = (count, session_count, span_days)
 
-    transfer_count, transfer_sessions = normalized.get("transfer", (0, 0))
-    if transfer_count >= 2 and transfer_sessions >= 2 and not active_gap:
+    transfer_count, transfer_sessions, transfer_span_days = normalized.get("transfer", (0, 0, 0.0))
+    if (
+        transfer_count >= 2
+        and transfer_sessions >= 2
+        and transfer_span_days >= TRANSFER_REPLICATION_MIN_DAYS
+        and not active_gap
+    ):
         return "transfer_ready"
     if "mechanism" in normalized:
         return "causal"
@@ -149,6 +162,75 @@ def mastery_depth_from_evidence(
     if normalized:
         return "factual"
     return "unknown"
+
+
+def _parse_evidence_ts(value: object) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+
+
+def add_operation_evidence(
+    evidence: dict[str, dict[str, object]],
+    *,
+    operation: str,
+    session_id: str = "",
+    observed_at: str = "",
+) -> None:
+    """Accumulate one successful, operation-aware probe without scoring latency."""
+    op = _normalize(operation).replace(" ", "_").replace("-", "_")
+    if op not in VALID_COGNITIVE_OPS:
+        return
+    bucket = evidence.setdefault(op, {"count": 0, "session_ids": set(), "success_timestamps": set()})
+    bucket["count"] = int(bucket.get("count", 0) or 0) + 1
+    sessions = bucket.setdefault("session_ids", set())
+    if not isinstance(sessions, set):
+        sessions = {str(item) for item in sessions if str(item)}
+        bucket["session_ids"] = sessions
+    if session_id:
+        sessions.add(str(session_id))
+    timestamps = bucket.setdefault("success_timestamps", set())
+    if not isinstance(timestamps, set):
+        timestamps = {str(item) for item in timestamps if _parse_evidence_ts(item)}
+        bucket["success_timestamps"] = timestamps
+    if observed_at and _parse_evidence_ts(observed_at):
+        timestamps.add(str(observed_at))
+
+
+def serialize_operation_evidence(
+    evidence: dict[str, dict[str, object]],
+) -> dict[str, dict[str, object]]:
+    """Serialize counted operation evidence with a transparent temporal span."""
+    serialized: dict[str, dict[str, object]] = {}
+    for operation, values in evidence.items():
+        sessions = sorted({str(item) for item in values.get("session_ids", []) if str(item)})
+        raw_timestamps = {
+            str(item) for item in values.get("success_timestamps", []) if _parse_evidence_ts(item)
+        }
+        for key in ("first_success_ts", "last_success_ts"):
+            value = values.get(key)
+            if value and _parse_evidence_ts(value):
+                raw_timestamps.add(str(value))
+        parsed = sorted(
+            ((_parse_evidence_ts(item), item) for item in raw_timestamps),
+            key=lambda item: item[0] or datetime.min.replace(tzinfo=timezone.utc),
+        )
+        span_days = 0.0
+        if len(parsed) >= 2 and parsed[0][0] is not None and parsed[-1][0] is not None:
+            span_days = max(0.0, (parsed[-1][0] - parsed[0][0]).total_seconds() / 86_400.0)
+        payload: dict[str, object] = {
+            "count": int(values.get("count", 0) or 0),
+            "session_count": len(sessions),
+            "session_ids": sessions,
+            "span_days": round(span_days, 3),
+        }
+        if parsed:
+            payload["first_success_ts"] = parsed[0][1]
+            payload["last_success_ts"] = parsed[-1][1]
+        serialized[str(operation)] = payload
+    return serialized
 
 
 def retest_hint_for_op(cognitive_op: str) -> str:

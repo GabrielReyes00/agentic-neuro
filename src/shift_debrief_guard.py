@@ -14,6 +14,10 @@ try:
     from vault_schema import parse_frontmatter
 except ModuleNotFoundError:  # pragma: no cover - package import in tests
     from .vault_schema import parse_frontmatter
+try:
+    from vault_hooks import refresh_vault_intelligence
+except ModuleNotFoundError:  # pragma: no cover - package import in tests
+    from .vault_hooks import refresh_vault_intelligence
 
 DEFAULT_VAULT_ROOT = Path("/Users/gabrielreyes/Documents/Obsidian/agentic-neuro")
 SHIFT_DEBRIEF_DIRNAME = "Shift Debriefs"
@@ -283,14 +287,6 @@ def _update_index(vault_root: Path) -> None:
     index_builder.write_index(vault_root / SHIFT_DEBRIEF_DIRNAME, vault_root=vault_root)
 
 
-def _refresh_vault_intelligence(vault_root: Path) -> None:
-    try:
-        import vault_index
-    except ModuleNotFoundError:  # imported as part of the `src` package
-        from . import vault_index
-    vault_index.refresh_default_index_after_vault_write(vault_root=vault_root)
-
-
 def install_draft(draft: Path, title: str, *, vault_root: Path = DEFAULT_VAULT_ROOT) -> ValidationResult:
     source_result = validate_file(draft)
     if not source_result.ok:
@@ -303,7 +299,7 @@ def install_draft(draft: Path, title: str, *, vault_root: Path = DEFAULT_VAULT_R
     installed_result = validate_file(target)
     if installed_result.ok:
         _update_index(vault_root)
-        _refresh_vault_intelligence(vault_root)
+        refresh_vault_intelligence(vault_root)
     return installed_result
 
 

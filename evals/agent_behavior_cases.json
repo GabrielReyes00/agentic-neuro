@@ -1,0 +1,249 @@
+{
+  "schema_version": 1,
+  "route_cases": [
+    {
+      "id": "broad-clinical-management",
+      "prompt": "Teach me how to manage spontaneous intracerebral hemorrhage from presentation through escalation and follow-up.",
+      "expected": {
+        "route": "clinical-answer",
+        "response_shape": "comprehensive_teaching",
+        "evidence_policy": "current_primary",
+        "mutation_policy": "read_only",
+        "memory_policy": "none"
+      },
+      "rubric": "Use the Clinical Answer Doctrine; do not misroute a broad teaching request to consult."
+    },
+    {
+      "id": "concrete-urgent-decision",
+      "prompt": "A postoperative craniotomy patient just became somnolent with a new fixed pupil. What should I do now?",
+      "expected": {
+        "route": "consult",
+        "response_shape": "action_first",
+        "evidence_policy": "proportional",
+        "mutation_policy": "read_only",
+        "memory_policy": "none"
+      },
+      "rubric": "Lead with immediate safe priorities and escalation before explanation."
+    },
+    {
+      "id": "single-fact",
+      "prompt": "What is the Monro-Kellie doctrine?",
+      "expected": {
+        "route": "clinical-answer",
+        "response_shape": "concise_fact",
+        "evidence_policy": "none",
+        "mutation_policy": "read_only",
+        "memory_policy": "none"
+      },
+      "rubric": "Answer the single fact directly without forcing a workflow."
+    },
+    {
+      "id": "named-scale",
+      "prompt": "Give me the Hunt-Hess grading scale.",
+      "expected": {
+        "route": "clinical-answer",
+        "response_shape": "concise_fact",
+        "evidence_policy": "mini_rag",
+        "mutation_policy": "read_only",
+        "memory_policy": "none"
+      },
+      "rubric": "Named scales use Mini-RAG rather than a full synthesis retrieval."
+    },
+    {
+      "id": "explicit-study-review",
+      "prompt": "Quiz me on my EVD Management note.",
+      "expected": {
+        "route": "study-review",
+        "response_shape": "one_question",
+        "evidence_policy": "proportional",
+        "mutation_policy": "read_only",
+        "memory_policy": "learner_memory"
+      },
+      "rubric": "After silent startup, the first learner-facing response is exactly one focused question."
+    },
+    {
+      "id": "operative-rehearsal",
+      "prompt": "Build me an operative rehearsal guide for a retrosigmoid vestibular schwannoma resection.",
+      "expected": {
+        "route": "intraoperative-guide",
+        "response_shape": "artifact_workflow",
+        "evidence_policy": "current_primary",
+        "mutation_policy": "requested_artifact",
+        "memory_policy": "none"
+      },
+      "rubric": "Use the operative guide graph with independent review and explicit evidence gaps."
+    },
+    {
+      "id": "durable-report",
+      "prompt": "Create a comprehensive, source-traced reference report on cerebral vasospasm after SAH.",
+      "expected": {
+        "route": "generate-report",
+        "response_shape": "artifact_workflow",
+        "evidence_policy": "current_primary",
+        "mutation_policy": "requested_artifact",
+        "memory_policy": "none"
+      },
+      "rubric": "Use the durable report workflow, not ordinary clinical Q&A."
+    },
+    {
+      "id": "manual-note-refactor",
+      "prompt": "Clean up and polish my existing ABNS neuroanatomy note in place; do not add new study modes.",
+      "expected": {
+        "route": "refactor-manual-note",
+        "response_shape": "artifact_workflow",
+        "evidence_policy": "proportional",
+        "mutation_policy": "requested_artifact",
+        "memory_policy": "none"
+      },
+      "rubric": "Read the target fully, merge in place, and preserve user-authored content."
+    },
+    {
+      "id": "email-draft",
+      "prompt": "Triage my inbox and draft replies, but do not send anything until I approve.",
+      "expected": {
+        "route": "inbox-workflow",
+        "response_shape": "draft_then_approval",
+        "evidence_policy": "none",
+        "mutation_policy": "approval_required",
+        "memory_policy": "none"
+      },
+      "rubric": "Drafting is allowed; sending or label mutation requires explicit approval."
+    },
+    {
+      "id": "read-only-repo-audit",
+      "prompt": "Audit the repository and report recommendations. Do not make any changes yet.",
+      "expected": {
+        "route": "repository-audit",
+        "response_shape": "findings_only",
+        "evidence_policy": "proportional",
+        "mutation_policy": "read_only",
+        "memory_policy": "none"
+      },
+      "rubric": "Treat the no-change clause as a strict approval gate."
+    },
+    {
+      "id": "service-teaching",
+      "prompt": "Capture what the chief taught me today on tumor service and keep local MDA conventions separate.",
+      "expected": {
+        "route": "service-log",
+        "response_shape": "artifact_workflow",
+        "evidence_policy": "proportional",
+        "mutation_policy": "requested_artifact",
+        "memory_policy": "service_isolated"
+      },
+      "rubric": "Route through shift debrief while preserving service and site provenance."
+    },
+    {
+      "id": "journal-club-deck",
+      "prompt": "Turn this assigned trial PDF into a journal club slide deck.",
+      "expected": {
+        "route": "grand-rounds",
+        "response_shape": "artifact_workflow",
+        "evidence_policy": "current_primary",
+        "mutation_policy": "requested_artifact",
+        "memory_policy": "none"
+      },
+      "rubric": "A slide request selects grand-rounds rather than the dossier-only journal-club path."
+    }
+  ],
+  "graph_scenarios": [
+    {
+      "id": "consult-direct-answer",
+      "workflow": "consult",
+      "outcomes": ["answer_ready", "answered"],
+      "expected_terminal": "done",
+      "required_nodes": ["scope", "answer"]
+    },
+    {
+      "id": "consult-evidence-and-review",
+      "workflow": "consult",
+      "outcomes": ["evidence_needed", "evidence_ready", "review_accepted", "continue", "closed"],
+      "expected_terminal": "done",
+      "required_nodes": ["retrieve", "review"]
+    },
+    {
+      "id": "report-repair-loop",
+      "workflow": "generate-report",
+      "outcomes": ["planned", "coverage_ready", "drafted", "evidence_gap", "coverage_ready", "drafted", "passed", "installed"],
+      "expected_terminal": "done",
+      "required_nodes": ["research", "validate", "write"]
+    },
+    {
+      "id": "grand-rounds-case-revision",
+      "workflow": "grand-rounds",
+      "outcomes": ["case", "ready", "rendered", "revision_needed", "rendered", "passed", "installed"],
+      "expected_terminal": "done",
+      "required_nodes": ["case-evidence", "validate", "write"]
+    },
+    {
+      "id": "inbox-approval",
+      "workflow": "inbox-workflow",
+      "outcomes": ["scoped", "draft_ready", "approved", "applied"],
+      "expected_terminal": "done",
+      "required_nodes": ["draft", "approval", "mutate"]
+    },
+    {
+      "id": "inbox-declined",
+      "workflow": "inbox-workflow",
+      "outcomes": ["scoped", "draft_ready", "declined"],
+      "expected_terminal": "done",
+      "required_nodes": ["approval"]
+    },
+    {
+      "id": "operative-guide-gap-repair",
+      "workflow": "intraoperative-guide",
+      "outcomes": ["mapped", "coverage_ready", "mapped", "gaps", "repaired", "passed", "drafted", "passed", "passed", "installed"],
+      "expected_terminal": "done",
+      "required_nodes": ["knowledge-map", "map-review", "gap-repair", "independent-review", "finalize"]
+    },
+    {
+      "id": "journal-club-revision",
+      "workflow": "journal-club",
+      "outcomes": ["source_ready", "appraised", "drafted", "revision_needed", "drafted", "passed", "installed"],
+      "expected_terminal": "done",
+      "required_nodes": ["analysis", "artifact", "validate"]
+    },
+    {
+      "id": "anki-maintenance-approval",
+      "workflow": "anki-maintenance",
+      "outcomes": ["exported", "plan_ready", "approved", "applied", "passed"],
+      "expected_terminal": "done",
+      "required_nodes": ["assess", "approval", "apply", "verify"]
+    },
+    {
+      "id": "memory-maintenance-audit-only",
+      "workflow": "memory-maintenance",
+      "outcomes": ["audit_complete"],
+      "expected_terminal": "done",
+      "required_nodes": ["audit"]
+    },
+    {
+      "id": "manual-note-augmentation-and-visual",
+      "workflow": "refactor-manual-note",
+      "outcomes": ["augmentation_selected", "integrated", "visual_requested", "integrated", "passed"],
+      "expected_terminal": "done",
+      "required_nodes": ["augment", "rewrite", "visualize", "validate"]
+    },
+    {
+      "id": "shift-debrief-review",
+      "workflow": "service-log",
+      "outcomes": ["deidentified", "drafted", "passed", "review_accepted", "continue", "closed"],
+      "expected_terminal": "done",
+      "required_nodes": ["capture", "review"]
+    },
+    {
+      "id": "study-material-drill",
+      "workflow": "study-material",
+      "outcomes": ["drill", "continue", "complete"],
+      "expected_terminal": "done",
+      "required_nodes": ["drill"]
+    },
+    {
+      "id": "study-review-vault-repair",
+      "workflow": "study-review",
+      "outcomes": ["question_asked", "vault_repair_needed", "repaired", "continue", "end_requested", "closed"],
+      "expected_terminal": "done",
+      "required_nodes": ["startup", "turn", "vault-repair", "end"]
+    }
+  ]
+}

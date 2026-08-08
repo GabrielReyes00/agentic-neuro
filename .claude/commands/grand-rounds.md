@@ -5,5 +5,7 @@ description: Build and validate an editable neurosurgery case or article present
 
 # Grand Rounds
 
-Read `.agents/shared/workflow-registry.json`, then read and follow
-`.agents/shared/commands/grand-rounds.md`. The shared contract is the behavioral authority.
+Read `.agents/shared/runtime/grand-rounds.json` and
+`.agents/shared/commands/workflow-runtime.md`, then the entry contracts:
+`.agents/shared/commands/grand-rounds.md`, `.agents/shared/commands/vault-intelligence.md`. Load later contracts only after a declared
+transition. Shared contracts remain the behavioral authority.

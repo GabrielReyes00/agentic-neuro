@@ -1,0 +1,41 @@
+name: validate
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  deterministic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install lightweight validation environment
+        run: python -m pip install -e ".[dev]"
+      - name: Check generated adapters
+        run: python src/sync_agent_adapters.py --check
+      - name: Validate typed workflow graphs
+        run: python src/workflow_runtime.py validate
+      - name: Lint active instruction contracts
+        run: python src/instruction_audit.py lint
+      - name: Guard code architecture boundaries
+        run: python src/code_architecture_audit.py
+      - name: Guard repository hygiene and active-store uniqueness
+        run: python src/repository_hygiene.py --check
+      - name: Validate behavioral contracts and workflow paths
+        run: python src/behavioral_eval.py validate
+      - name: Validate study-review transcript rubric
+        run: python src/study_review_eval.py validate
+      - name: Guard harness ablation thresholds
+        run: python benchmarks/benchmark_agent_harness.py --repeat 5 --check
+      - name: Guard bounded study-review startup
+        run: python benchmarks/benchmark_study_review.py --repeat 1 --check
+      - name: Run deterministic suite
+        run: pytest -q

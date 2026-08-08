@@ -7,9 +7,27 @@ import argparse
 import json
 from pathlib import Path
 
+try:
+    from workflow_runtime import runtime_projection
+except ModuleNotFoundError:  # pragma: no cover - package import in tests
+    from .workflow_runtime import runtime_projection
+
 
 ROOT = Path(__file__).resolve().parents[1]
 REGISTRY_PATH = ROOT / ".agents/shared/workflow-registry.json"
+PLUGIN_ROOT = ROOT / "plugins/agentic-neuro"
+PLUGIN_RESOURCES = PLUGIN_ROOT / "resources"
+MANAGED_PATTERNS = (
+    ".agents/shared/runtime/*.json",
+    ".agents/codex/skills/*/SKILL.md",
+    ".agents/codex/skills/*/agents/openai.yaml",
+    ".claude/commands/*.md",
+    ".gemini/commands/*.md",
+    ".gemini/commands/*.toml",
+    "plugins/agentic-neuro/commands/*.md",
+    "plugins/agentic-neuro/skills/*/SKILL.md",
+    "plugins/agentic-neuro/resources/**/*",
+)
 
 
 def _load_registry() -> dict:
@@ -28,7 +46,14 @@ def _load_registry() -> dict:
     return data
 
 
-def _claude(name: str, workflow: dict) -> str:
+def _contract_list(projection: dict) -> str:
+    execution = projection["execution"]
+    entry = next(node for node in execution["nodes"] if node["id"] == execution["entry"])
+    contracts = dict.fromkeys((projection["contract"], *entry["load"]))
+    return ", ".join(f"`{path}`" for path in contracts)
+
+
+def _claude(name: str, workflow: dict, projection: dict) -> str:
     return f"""---
 name: {name}
 description: {workflow['description']}
@@ -36,12 +61,14 @@ description: {workflow['description']}
 
 # {workflow['title']}
 
-Read `.agents/shared/workflow-registry.json`, then read and follow
-`{workflow['contract']}`. The shared contract is the behavioral authority.
+Read `.agents/shared/runtime/{name}.json` and
+`.agents/shared/commands/workflow-runtime.md`, then the entry contracts:
+{_contract_list(projection)}. Load later contracts only after a declared
+transition. Shared contracts remain the behavioral authority.
 """
 
 
-def _gemini_markdown(name: str, workflow: dict) -> str:
+def _gemini_markdown(name: str, workflow: dict, projection: dict) -> str:
     return f"""---
 name: {name}
 description: {workflow['description']}
@@ -49,12 +76,14 @@ description: {workflow['description']}
 
 # {workflow['title']}
 
-Read `.agents/shared/workflow-registry.json`, then read and follow
-`{workflow['contract']}`. This adapter adds no workflow policy.
+Read `.agents/shared/runtime/{name}.json` and
+`.agents/shared/commands/workflow-runtime.md`, then the entry contracts:
+{_contract_list(projection)}. Load later contracts only after a declared
+transition. This adapter adds no workflow policy.
 """
 
 
-def _gemini_toml(name: str, workflow: dict) -> str:
+def _gemini_toml(name: str, workflow: dict, projection: dict) -> str:
     description = workflow["description"].replace('"', '\\"')
     return f'''description = "{description}"
 
@@ -62,15 +91,23 @@ prompt = """
 ACTIVE COMMAND: /{name}
 User input: {{{{args}}}}
 
-Read `.agents/shared/workflow-registry.json`, then read and follow the canonical
-contract below. Do not infer behavioral policy from this adapter.
+Read the generated selected-workflow spec below, then
+`.agents/shared/commands/workflow-runtime.md`, then the entry contracts:
+{_contract_list(projection)}. Load later contracts only after a declared
+transition. Do not infer behavioral policy from this adapter.
 
-@{{{workflow['contract']}}}
+@{{.agents/shared/runtime/{name}.json}}
 """
 '''
 
 
-def _plugin(name: str, workflow: dict) -> str:
+def _plugin(name: str, workflow: dict, projection: dict) -> str:
+    execution = projection["execution"]
+    entry = next(node for node in execution["nodes"] if node["id"] == execution["entry"])
+    contracts = dict.fromkeys((projection["contract"], *entry["load"]))
+    bundled_contracts = ", ".join(
+        f"`resources/{path}`" for path in contracts
+    )
     return f"""---
 description: {workflow['description']}
 argument-hint: {workflow['argument_hint']}
@@ -80,12 +117,38 @@ argument-hint: {workflow['argument_hint']}
 
 The user invoked `/{name}` with: $ARGUMENTS
 
-Read `.agents/shared/workflow-registry.json`, then read and follow
-`{workflow['contract']}`. The shared contract is the behavioral authority.
+Resolve the plugin root from this command file. Read `resources/AGENTS.md`,
+`resources/.agents/shared/runtime/{name}.json`, and
+`resources/.agents/shared/commands/workflow-runtime.md`, then the entry
+contracts: {bundled_contracts}. These are generated mirrors of the canonical
+`.agents/shared/commands/` contracts. Load later contracts only after a declared
+transition.
 """
 
 
-def _codex_skill(name: str, workflow: dict) -> str:
+def _plugin_skill(name: str, workflow: dict, projection: dict) -> str:
+    execution = projection["execution"]
+    entry = next(node for node in execution["nodes"] if node["id"] == execution["entry"])
+    contracts = dict.fromkeys((projection["contract"], *entry["load"]))
+    bundled_contracts = ", ".join(f"`../../resources/{path}`" for path in contracts)
+    description = workflow["description"]
+    return f"""---
+name: {name}
+description: Use when Gabriel invokes /{name} or asks to {description[0].lower() + description[1:]}
+---
+
+# {workflow['title']}
+
+Resolve the plugin root from this skill directory. Read
+`../../resources/AGENTS.md`, `../../resources/.agents/shared/runtime/{name}.json`,
+and `../../resources/.agents/shared/commands/workflow-runtime.md`, then the entry
+contracts: {bundled_contracts}. These generated mirrors preserve the canonical
+`.agents/shared/commands/` behavior. Load later contracts only after a declared
+transition.
+"""
+
+
+def _codex_skill(name: str, workflow: dict, projection: dict) -> str:
     note = workflow.get("codex_note")
     suffix = f"\nCodex runtime note: {note}\n" if note else ""
     description = workflow["description"]
@@ -96,9 +159,10 @@ description: Use when Gabriel invokes /{name} or asks to {description[0].lower()
 
 # {workflow['title']}
 
-Read `.agents/shared/workflow-registry.json`, then read and follow
-`{workflow['contract']}` completely. The registry and shared contract own all
-workflow behavior; do not duplicate or reinterpret it here.
+Read `.agents/shared/runtime/{name}.json` and
+`.agents/shared/commands/workflow-runtime.md` completely, then the entry
+contracts: {_contract_list(projection)}. Load later contracts only after a
+declared transition. Shared contracts own behavior; do not reinterpret them.
 {suffix}"""
 
 
@@ -118,18 +182,24 @@ def _codex_ui(workflow: dict) -> str:
 def expected_files(registry: dict) -> dict[Path, str]:
     expected: dict[Path, str] = {}
     for name, workflow in registry["workflows"].items():
-        expected[ROOT / f".claude/commands/{name}.md"] = _claude(name, workflow)
+        projection = runtime_projection(name, registry=registry)
+        expected[ROOT / f".agents/shared/runtime/{name}.json"] = (
+            json.dumps(projection, indent=2, sort_keys=True) + "\n"
+        )
+        expected[ROOT / f".claude/commands/{name}.md"] = _claude(
+            name, workflow, projection
+        )
         expected[ROOT / f".gemini/commands/{name}.md"] = _gemini_markdown(
-            name, workflow
+            name, workflow, projection
         )
         expected[ROOT / f".gemini/commands/{name}.toml"] = _gemini_toml(
-            name, workflow
+            name, workflow, projection
         )
         expected[ROOT / f"plugins/agentic-neuro/commands/{name}.md"] = _plugin(
-            name, workflow
+            name, workflow, projection
         )
         expected[ROOT / f".agents/codex/skills/{name}/SKILL.md"] = _codex_skill(
-            name, workflow
+            name, workflow, projection
         )
         if workflow.get("codex_ui"):
             expected[
@@ -138,16 +208,72 @@ def expected_files(registry: dict) -> dict[Path, str]:
     return expected
 
 
+def expected_plugin_files(registry: dict) -> dict[Path, str | bytes]:
+    """Return a self-contained generated mirror of plugin instruction assets."""
+    expected: dict[Path, str | bytes] = {
+        PLUGIN_RESOURCES / "AGENTS.md": (ROOT / "AGENTS.md").read_text(encoding="utf-8"),
+    }
+    for name, workflow in registry["workflows"].items():
+        projection = runtime_projection(name, registry=registry)
+        expected[PLUGIN_ROOT / f"skills/{name}/SKILL.md"] = _plugin_skill(
+            name, workflow, projection
+        )
+    shared_root = ROOT / ".agents/shared"
+    for source in (
+        *sorted((shared_root / "commands").glob("*.md")),
+        *sorted((shared_root / "runtime").glob("*.json")),
+        shared_root / "workflow-registry.json",
+        shared_root / "workflow-schema.json",
+        shared_root / "presentation-styles.json",
+    ):
+        relative = source.relative_to(ROOT)
+        expected[PLUGIN_RESOURCES / relative] = source.read_text(encoding="utf-8")
+    assets_root = shared_root / "assets"
+    if assets_root.exists():
+        for source in sorted(path for path in assets_root.rglob("*") if path.is_file()):
+            expected[PLUGIN_RESOURCES / source.relative_to(ROOT)] = source.read_bytes()
+    maintenance_root = ROOT / "docs" / "maintenance"
+    for source in sorted(maintenance_root.glob("*.md")):
+        expected[PLUGIN_RESOURCES / source.relative_to(ROOT)] = source.read_text(
+            encoding="utf-8"
+        )
+    return expected
+
+
+def unexpected_managed_files(expected: dict[Path, str | bytes]) -> list[Path]:
+    """Return stale generated files without deleting them implicitly."""
+    actual: set[Path] = set()
+    for pattern in MANAGED_PATTERNS:
+        actual.update(path for path in ROOT.glob(pattern) if path.is_file())
+    return sorted(actual - set(expected))
+
+
 def sync(*, check: bool) -> list[str]:
     mismatches: list[str] = []
-    for path, content in expected_files(_load_registry()).items():
-        current = path.read_text(encoding="utf-8") if path.exists() else None
+    registry = _load_registry()
+    expected = {**expected_files(registry), **expected_plugin_files(registry)}
+    if check:
+        mismatches.extend(
+            f"unexpected:{path.relative_to(ROOT)}"
+            for path in unexpected_managed_files(expected)
+        )
+    for path, content in expected.items():
+        current = (
+            path.read_bytes()
+            if isinstance(content, bytes) and path.exists()
+            else path.read_text(encoding="utf-8")
+            if path.exists()
+            else None
+        )
         if current == content:
             continue
         mismatches.append(str(path.relative_to(ROOT)))
         if not check:
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(content, encoding="utf-8")
+            if isinstance(content, bytes):
+                path.write_bytes(content)
+            else:
+                path.write_text(content, encoding="utf-8")
     return mismatches
 
 

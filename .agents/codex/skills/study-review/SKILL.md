@@ -5,6 +5,7 @@ description: Use when Gabriel invokes /study-review or asks to run memory-enable
 
 # Study Review
 
-Read `.agents/shared/workflow-registry.json`, then read and follow
-`.agents/shared/commands/study-review-startup.md` completely. The registry and shared contract own all
-workflow behavior; do not duplicate or reinterpret it here.
+Read `.agents/shared/runtime/study-review.json` and
+`.agents/shared/commands/workflow-runtime.md` completely, then the entry
+contracts: `.agents/shared/commands/study-review-startup.md`, `.agents/shared/commands/tutor-state.md`. Load later contracts only after a
+declared transition. Shared contracts own behavior; do not reinterpret them.

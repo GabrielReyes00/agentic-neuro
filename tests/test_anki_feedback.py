@@ -4,6 +4,7 @@ import json
 from unittest import mock
 
 from src.anki_feedback import (
+    _cards_and_reviews,
     build_feedback_summary,
     build_session_anki_profile,
     classify_card_lifecycle,
@@ -42,6 +43,26 @@ def _review(days_ago: int, ease: int, **overrides):
     }
     review.update(overrides)
     return review
+
+
+def test_cards_and_reviews_uses_one_multi_request():
+    card = _card(3, cardId=303)
+    reviews = {"303": [_review(1, 3)]}
+
+    def fake_invoke(action, **params):
+        assert action == "multi"
+        assert [item["action"] for item in params["actions"]] == [
+            "cardsInfo",
+            "getReviewsOfCards",
+        ]
+        return [[card], reviews]
+
+    with mock.patch("src.anki_feedback.invoke", side_effect=fake_invoke) as invoke_mock:
+        cards_result, reviews_result = _cards_and_reviews([303])
+
+    assert cards_result == [card]
+    assert reviews_result == reviews
+    invoke_mock.assert_called_once()
 
 
 def test_classifies_new_card_temporal_zones():

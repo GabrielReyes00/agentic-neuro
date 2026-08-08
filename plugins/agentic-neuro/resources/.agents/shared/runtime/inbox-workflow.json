@@ -1,0 +1,88 @@
+{
+  "anki_policy": "none",
+  "binary_destination": null,
+  "canonical_workflow": "inbox-workflow",
+  "contract": ".agents/shared/commands/inbox-workflow.md",
+  "execution": {
+    "entry": "triage",
+    "mode": "approval_gate",
+    "nodes": [
+      {
+        "context": "conversation",
+        "edges": [
+          {
+            "to": "draft",
+            "when": "scoped"
+          }
+        ],
+        "id": "triage",
+        "kind": "intake",
+        "load": [
+          ".agents/shared/commands/inbox-workflow.md"
+        ]
+      },
+      {
+        "context": "conversation",
+        "edges": [
+          {
+            "to": "approval",
+            "when": "draft_ready"
+          }
+        ],
+        "id": "draft",
+        "kind": "write",
+        "load": [
+          ".agents/shared/commands/inbox-workflow.md"
+        ]
+      },
+      {
+        "context": "conversation",
+        "edges": [
+          {
+            "to": "mutate",
+            "when": "approved"
+          },
+          {
+            "to": "done",
+            "when": "declined"
+          }
+        ],
+        "id": "approval",
+        "kind": "approval",
+        "load": [
+          ".agents/shared/commands/inbox-workflow.md"
+        ]
+      },
+      {
+        "context": "conversation",
+        "edges": [
+          {
+            "to": "done",
+            "when": "applied"
+          }
+        ],
+        "id": "mutate",
+        "kind": "write",
+        "load": [
+          ".agents/shared/commands/inbox-workflow.md"
+        ]
+      },
+      {
+        "context": "conversation",
+        "edges": [],
+        "id": "done",
+        "kind": "terminal",
+        "load": []
+      }
+    ],
+    "run_state": "none"
+  },
+  "generated_from": ".agents/shared/workflow-registry.json",
+  "generation_recall": null,
+  "invoked_as": "inbox-workflow",
+  "reviewable": false,
+  "runtime_contract": ".agents/shared/commands/workflow-runtime.md",
+  "schema_version": 1,
+  "vault_destination": null,
+  "write_policy": "external_mutations_require_explicit_approval"
+}

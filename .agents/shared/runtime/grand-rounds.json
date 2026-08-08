@@ -1,0 +1,151 @@
+{
+  "anki_policy": "evaluated_rehearsal_only",
+  "binary_destination": "Presentations/Decks/Cases|Articles/<Title>.pptx",
+  "canonical_workflow": "grand-rounds",
+  "contract": ".agents/shared/commands/grand-rounds.md",
+  "execution": {
+    "entry": "intake",
+    "mode": "artifact_graph",
+    "nodes": [
+      {
+        "context": "run_scoped",
+        "edges": [
+          {
+            "to": "case-evidence",
+            "when": "case"
+          },
+          {
+            "to": "article-evidence",
+            "when": "article"
+          }
+        ],
+        "id": "intake",
+        "kind": "intake",
+        "load": [
+          ".agents/shared/commands/grand-rounds.md",
+          ".agents/shared/commands/vault-intelligence.md"
+        ]
+      },
+      {
+        "context": "run_scoped",
+        "edges": [
+          {
+            "to": "deck",
+            "when": "ready"
+          }
+        ],
+        "id": "case-evidence",
+        "kind": "reason",
+        "load": [
+          ".agents/shared/commands/grand-rounds-case.md"
+        ]
+      },
+      {
+        "context": "run_scoped",
+        "edges": [
+          {
+            "to": "deck",
+            "when": "ready"
+          }
+        ],
+        "id": "article-evidence",
+        "kind": "reason",
+        "load": [
+          ".agents/shared/commands/grand-rounds-article.md"
+        ]
+      },
+      {
+        "context": "run_scoped",
+        "edges": [
+          {
+            "to": "validate",
+            "when": "rendered"
+          }
+        ],
+        "id": "deck",
+        "kind": "write",
+        "load": [
+          ".agents/shared/commands/grand-rounds-deck.md",
+          ".agents/shared/commands/grand-rounds-visual-design.md"
+        ]
+      },
+      {
+        "context": "run_scoped",
+        "edges": [
+          {
+            "loop": true,
+            "to": "deck",
+            "when": "revision_needed"
+          },
+          {
+            "to": "write",
+            "when": "passed"
+          }
+        ],
+        "id": "validate",
+        "kind": "validate",
+        "load": [
+          ".agents/shared/commands/grand-rounds.md"
+        ]
+      },
+      {
+        "context": "run_scoped",
+        "edges": [
+          {
+            "to": "rehearsal",
+            "when": "rehearsal_accepted"
+          },
+          {
+            "to": "done",
+            "when": "installed"
+          }
+        ],
+        "id": "write",
+        "kind": "write",
+        "load": [
+          ".agents/shared/commands/review-artifacts.md"
+        ]
+      },
+      {
+        "context": "conversation",
+        "edges": [
+          {
+            "loop": true,
+            "to": "rehearsal",
+            "when": "continue"
+          },
+          {
+            "to": "done",
+            "when": "closed"
+          }
+        ],
+        "id": "rehearsal",
+        "kind": "loop",
+        "load": [
+          ".agents/shared/commands/grand-rounds-rehearsal.md",
+          ".agents/shared/commands/memory-operations.md",
+          ".agents/shared/commands/memory-retrieval.md",
+          ".agents/shared/commands/adaptive-teaching-doctrine.md",
+          ".agents/shared/commands/anki-session-workflow.md",
+          ".agents/shared/commands/anki-card-quality.md"
+        ]
+      },
+      {
+        "context": "run_scoped",
+        "edges": [],
+        "id": "done",
+        "kind": "terminal",
+        "load": []
+      }
+    ],
+    "run_state": "manifest"
+  },
+  "generated_from": ".agents/shared/workflow-registry.json",
+  "generation_recall": "none_during_generation; document_for_rehearsal",
+  "invoked_as": "grand-rounds",
+  "reviewable": true,
+  "runtime_contract": ".agents/shared/commands/workflow-runtime.md",
+  "schema_version": 1,
+  "vault_destination": "Presentations/Cases|Articles/<Title>.md",
+  "write_policy": "regenerate_package_in_place_after_source_resolution"
+}

@@ -394,12 +394,18 @@ def _retrieve_unique(
     candidate_groups: list[list] = []
     retrieval_meta: list[dict[str, int]] = []
     rrf_started = time.perf_counter()
-    for dense_fts in searched:
+    for query, dense_fts in zip(queries, searched, strict=True):
         candidates, meta = _candidate_pool(
             dense_fts[0],
             dense_fts[1],
             min_similarity=min_similarity,
         )
+        before_roles = len(candidates)
+        candidates = [
+            hit for hit in candidates
+            if pipeline.provenance.source_allowed_for_query(hit.get("source_key"), query)
+        ]
+        meta["source_role_dropped"] = before_roles - len(candidates)
         candidate_groups.append(candidates)
         retrieval_meta.append(meta)
     rrf_ms = round((time.perf_counter() - rrf_started) * 1000, 2)
@@ -443,6 +449,13 @@ def _retrieve_unique(
         results.append({
             "query": query,
             "reranker": reranker_key,
+            "provenance": pipeline.provenance.retrieval_provenance(
+                route="batch",
+                reranker_key=reranker_key,
+                reranker_model=pipeline.RERANKER_MODELS.get(reranker_key, reranker_key),
+                embedding_model=pipeline.BGE_M3_MODEL_ID,
+                table=table,
+            ),
             "hits": final_hits,
             "_reranked_pool": list(filtered_groups[index]),
             "latency": {
@@ -645,6 +658,14 @@ def build_batch_source_cards_jsonl(
         "format": "jsonl",
         "schema": "compact",
         "source_type": "textbook_rag_full",
+        "provenance": (
+            results[0].get("provenance")
+            if results
+            else pipeline.provenance.retrieval_provenance(
+                route="batch",
+                embedding_model=pipeline.BGE_M3_MODEL_ID,
+            )
+        ),
     }
     rows = [header, *topic_rows, *card_rows]
     return "\n".join(

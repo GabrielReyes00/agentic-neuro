@@ -5,5 +5,7 @@ description: Run memory-enabled Socratic review from a vault document or weak-sp
 
 # Study Review
 
-Read `.agents/shared/workflow-registry.json`, then read and follow
-`.agents/shared/commands/study-review-startup.md`. The shared contract is the behavioral authority.
+Read `.agents/shared/runtime/study-review.json` and
+`.agents/shared/commands/workflow-runtime.md`, then the entry contracts:
+`.agents/shared/commands/study-review-startup.md`, `.agents/shared/commands/tutor-state.md`. Load later contracts only after a declared
+transition. Shared contracts remain the behavioral authority.

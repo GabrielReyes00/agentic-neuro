@@ -4,9 +4,10 @@
 # === LanceDB Databases (user data) ===
 neurosurgery_v4.lance/
 data/mini_rag.lance/
+data/vault_index.lance/
 data/mini_rag_fts.db
 
-# === Databases & Backups (user data, never wipe) ===
+# === Active Databases (user data; exact paths are canonical) ===
 data/concept_inventory.db
 data/concept_inventory.db-wal
 data/concept_inventory.db-shm
@@ -14,20 +15,15 @@ data/concept_inventory.db.building
 data/study_memory.db
 data/study_memory.db-wal
 data/study_memory.db-shm
-data/study_memory.legacy.db
-data/study_memory.legacy.db-wal
-data/study_memory.legacy.db-shm
 data/vault_index.db
 data/chromadb_store_anki_memory/
 data/anki_vector_cache.db
 data/anki_vector_cache.db-wal
 data/anki_vector_cache.db-shm
-data/study_memory_backup_*.db
-data/*.memory_cleanup_backup_*.db
-data/*.pre_stability_backup*
-data/*.bak.db
-data/*.bak.db-shm
-data/*.bak.db-wal
+
+# Persistent repo-local database backups are forbidden by the maintenance
+# policy. Live migrations use external temporary snapshots and remove them
+# after verification.
 
 # === Ephemeral Session Files (regenerated per session) ===
 data/Sessions/
@@ -47,6 +43,7 @@ temp_report.md
 
 # === Python ===
 __pycache__/
+.pytest_cache/
 *.pyc
 *.pyo
 *.egg-info/

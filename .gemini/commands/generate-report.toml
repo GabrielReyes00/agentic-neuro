@@ -4,8 +4,10 @@ prompt = """
 ACTIVE COMMAND: /generate-report
 User input: {{args}}
 
-Read `.agents/shared/workflow-registry.json`, then read and follow the canonical
-contract below. Do not infer behavioral policy from this adapter.
+Read the generated selected-workflow spec below, then
+`.agents/shared/commands/workflow-runtime.md`, then the entry contracts:
+`.agents/shared/commands/generate-report.md`, `.agents/shared/commands/generate-report-research-plan.md`, `.agents/shared/commands/vault-intelligence.md`. Load later contracts only after a declared
+transition. Do not infer behavioral policy from this adapter.
 
-@{.agents/shared/commands/generate-report.md}
+@{.agents/shared/runtime/generate-report.json}
 """

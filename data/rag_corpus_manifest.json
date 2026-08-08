@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "corpus": {
+    "table": "neurosurgery_v4",
+    "table_version": 7,
+    "inventory_path": "data/rag_textbook_sources.json",
+    "inventory_sha256": "eb3c5ef54ed71bf498af514a62db1e2d282d774ea7e42e2cd9102bb49951d4fb",
+    "manifest_sha256": "ac45e678f181a16f052fb30fe12c1e3e81b007fa4cd63c277ad964e07225e671"
+  },
+  "ingestion_pipeline_version": "legacy-unrecorded",
+  "embedding_model": "BAAI/bge-m3",
+  "known_nonclinical_sources": [
+    "Grant Writing for Dummies",
+    "How to Write a Successful NIH Grant Application"
+  ],
+  "adoption_note": "Current corpus adopted into provenance tracking without claiming an unavailable historical ingestion version. Future ingests must replace legacy-unrecorded with the producing pipeline version."
+}

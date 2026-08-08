@@ -57,6 +57,25 @@ class SqlPerformanceTests(unittest.TestCase):
         stat_rows = self.conn.execute("SELECT COUNT(*) FROM sqlite_stat1").fetchone()[0]
         self.assertGreater(stat_rows, 0)
 
+    def test_health_detects_foreign_key_violations_without_mutating(self) -> None:
+        healthy = study_memory.database_health(self.conn)
+        self.assertTrue(healthy["ok"])
+        self.assertEqual(healthy["foreign_key_violations"], [])
+
+        self.conn.commit()
+        self.conn.execute("PRAGMA foreign_keys=OFF")
+        self.conn.execute(
+            "INSERT INTO topic_aliases (topic_id, alias, source, confidence) "
+            "VALUES (999999, 'orphan health fixture', 'test', 1.0)"
+        )
+        self.conn.commit()
+        self.conn.execute("PRAGMA foreign_keys=ON")
+
+        unhealthy = study_memory.database_health(self.conn)
+        self.assertFalse(unhealthy["ok"])
+        self.assertEqual(len(unhealthy["foreign_key_violations"]), 1)
+        self.assertEqual(unhealthy["foreign_key_violations"][0]["table"], "topic_aliases")
+
     def test_hot_queries_use_indexes_not_scans(self) -> None:
         # With stats present, the per-concept and concept+state hot queries must
         # resolve via index (no full-table SCAN, no temp b-tree sort/group).
@@ -110,6 +129,31 @@ class KnowledgeMapTests(unittest.TestCase):
         # log_answer lowercases the stored display_name via _normalize
         weak = {w["concept"].lower() for w in out["weak_spots"]}
         self.assertIn("cerebral vasospasm", weak)
+
+    def test_overview_aggregates_duplicate_topic_envelopes_by_inventory_identity(self) -> None:
+        study_memory.log_answer(
+            self.conn,
+            session_id="second-envelope",
+            topic="delayed cerebral ischemia",
+            concept="Cerebral vasospasm",
+            question="Q2",
+            answer="correct",
+            correct=2,
+            tested_claim="Vasospasm can produce delayed cerebral ischemia.",
+            inventory_concept_id="vasc.sah.vasospasm",
+        )
+        self.conn.commit()
+
+        local_rows = self.conn.execute(
+            "SELECT COUNT(*) FROM concepts WHERE inventory_concept_id='vasc.sah.vasospasm'"
+        ).fetchone()[0]
+        self.assertEqual(local_rows, 2)
+
+        out = study_memory.knowledge_map_overview(self.conn)
+        self.assertEqual(out["bound_concepts"], 1)
+        self.assertEqual(out["bound_local_rows"], 2)
+        self.assertEqual(out["duplicate_envelope_rows"], 1)
+        self.assertEqual(sum(int(row["concepts"]) for row in out["domain_rollup"]), 1)
 
 
 if __name__ == "__main__":

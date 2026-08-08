@@ -31,7 +31,7 @@ Inventory projection now aggregates every assessed claim explicitly bound to an 
 
 ### Conservative mastery
 
-Mastery is derived from counted cognitive-operation evidence and distinct session IDs. One successful transfer probe produces `relational`; `transfer_ready` requires at least two successful transfer probes across at least two sessions and no active gap. The same rule is used during startup projection, SQLite fallback, artifact overlays, and live session-map patching.
+Mastery is derived from counted cognitive-operation evidence, distinct session IDs, and the observed evidence span. One successful transfer probe produces `relational`; `transfer_ready` requires at least two successful transfer probes across at least two sessions spanning seven or more days and no active gap. An asserted `retention_check` only promotes a repaired claim after the scheduled due time in a different session; early checks record `retention_not_due`. Response time is advisory and does not independently create mastery. The same rule is used during startup projection, SQLite fallback, artifact overlays, and live session-map patching.
 
 ### Routing and scope
 

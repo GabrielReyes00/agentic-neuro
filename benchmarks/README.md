@@ -1,5 +1,49 @@
 # RAG Pipeline Benchmark
 
+For the instruction and workflow harness itself, run:
+
+```bash
+source .venv/bin/activate
+python3 benchmarks/benchmark_agent_harness.py \
+  --repeat 100 \
+  --check \
+  --output benchmarks/agent_harness_ablation_current.json
+```
+
+That ablation compares the former flat-registry startup surface with the typed
+per-workflow projection, injects six graph defects to measure validator value,
+times full-registry compilation, and verifies behavioral and architecture
+coverage. CI enforces correctness and context-budget gates; latency is recorded
+but not used as a flaky wall-clock gate.
+
+For study-review specifically, measure both the instruction entry and the
+database-derived TutorState on an ephemeral SQLite backup:
+
+```bash
+python3 benchmarks/benchmark_study_review.py \
+  --repeat 7 --check \
+  --output benchmarks/study_review_current.json
+```
+
+The source learner database is opened read-only and copied into a temporary
+directory before any migration or recall. The benchmark compares routine
+`tutor_state_v1` with the rich audit packet, measures exact `cl100k` tokens and
+median local latency, and enforces the eight-node/one-hop caps.
+
+When AnkiConnect is available, compare the current startup overlay with the
+repository baseline using the same live cards and vector cache:
+
+```bash
+python3 benchmarks/benchmark_anki_startup.py \
+  --baseline-ref bcb67ec \
+  --repeat 5 \
+  --output benchmarks/anki_startup_current.json
+```
+
+The script is intentionally not a CI gate because it depends on the local Anki
+application. It reports `skipped` rather than manufacturing a latency result
+when that dependency is unavailable.
+
 For the small scale/score/classification tier, see
 [`MINI_RAG_FINDINGS.md`](MINI_RAG_FINDINGS.md) and run
 `benchmark_mini_rag.py`. The mini benchmark includes named and paraphrased

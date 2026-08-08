@@ -1,0 +1,44 @@
+{
+  "checks": {
+    "active_node_cap": true,
+    "bounded_top_level": true,
+    "instruction_entry_under_3000": true,
+    "one_hop_cap": true,
+    "startup_state_smaller_than_audit": true
+  },
+  "database_source": "/Users/gabrielreyes/agentic-neuro/data/study_memory.db",
+  "database_was_copied": true,
+  "instruction_entry": {
+    "entry_node": "startup",
+    "full_registry_tokens": 8873,
+    "reduction_pct": 72.1,
+    "reduction_tokens": 6400,
+    "selected_files": [
+      ".agents/shared/runtime/study-review.json",
+      ".agents/shared/commands/workflow-runtime.md",
+      ".agents/shared/commands/study-review-startup.md",
+      ".agents/shared/commands/tutor-state.md"
+    ],
+    "selected_tokens": 2473
+  },
+  "ok": true,
+  "schema_version": 1,
+  "startup_state": {
+    "active_nodes": 8,
+    "audit_median_ms": 193.054,
+    "audit_tokens": 32268,
+    "maximum_hops": 1,
+    "nearby_nodes": 3,
+    "omitted_nodes": 71,
+    "reduction_pct": 90.5,
+    "reduction_tokens": 29212,
+    "top_level_keys": [
+      "retrieval_guidance",
+      "startup_recall",
+      "tutor_state"
+    ],
+    "tutor_median_ms": 150.109,
+    "tutor_tokens": 3056
+  },
+  "topic": "evd-management-icu"
+}

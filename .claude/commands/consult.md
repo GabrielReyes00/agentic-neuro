@@ -5,5 +5,7 @@ description: Answer a bounded bedside task or immediate clinical decision; durab
 
 # Consult
 
-Read `.agents/shared/workflow-registry.json`, then read and follow
-`.agents/shared/commands/consult.md`. The shared contract is the behavioral authority.
+Read `.agents/shared/runtime/consult.json` and
+`.agents/shared/commands/workflow-runtime.md`, then the entry contracts:
+`.agents/shared/commands/consult.md`. Load later contracts only after a declared
+transition. Shared contracts remain the behavioral authority.

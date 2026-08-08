@@ -302,11 +302,16 @@ def service_rubric_view(
                      pgy_target ASC, slug ASC""",
         (service_row["id"],),
     ).fetchall()
+    status_counts: dict[str, int] = {}
+    for target in targets:
+        status = str(target["status"] or "open")
+        status_counts[status] = status_counts.get(status, 0) + 1
     return {
         "service": service_row["slug"],
         "service_display": service_row["display_name"],
         "domain": service_row["domain"],
         "rubric_seeded": seeded,
+        "counts": {"total": len(targets), **status_counts},
         "competency_targets": [
             {
                 "slug": t["slug"], "text": t["text"], "origin": t["origin"],
@@ -315,6 +320,17 @@ def service_rubric_view(
             for t in targets
         ],
     }
+
+
+def mark_competency_developing(
+    conn: sqlite3.Connection, *, service_id: int, target: str
+) -> None:
+    """Advance a touched service rubric target without claiming completion."""
+    conn.execute(
+        """UPDATE competency_targets SET status = 'developing'
+           WHERE service_id = ? AND slug = ? AND status = 'open'""",
+        (service_id, _slug(target)),
+    )
 
 
 def service_recall(
@@ -339,13 +355,33 @@ def service_recall(
             conn.execute("SELECT * FROM sites WHERE slug = ?", (_normalize_site(site),)).fetchone()
             if site else None
         )
+        if service_row is not None:
+            params: list[object] = [int(service_row["id"])]
+            site_clause = ""
+            if site_row is not None:
+                site_clause = "AND site_id = ?"
+                params.append(int(site_row["id"]))
+            rotation = conn.execute(
+                f"""SELECT * FROM rotations
+                      WHERE active = 1 AND service_id = ? {site_clause}
+                      ORDER BY id DESC LIMIT 1""",
+                params,
+            ).fetchone()
     if service_row is None:
         return json.dumps({
             "lens": "service",
             "resolution_warning": f"No service resolved for {service or 'active rotation'!r}. "
                                   "Start a rotation with rotation-start or pass --service.",
+            "rotation": None,
             "service_gaps": [], "conventions": [], "formal_secondary": [], "rubric_open": [],
-            "counts": {"service_gaps": 0, "conventions": 0, "formal_secondary": 0, "rubric_open": 0},
+            "pending_review_candidates": [],
+            "rubric_progress": {"total": 0, "open": 0, "developing": 0, "completed": 0},
+            "data_quality_warnings": [],
+            "counts": {
+                "service_gaps": 0, "conventions": 0, "formal_secondary": 0,
+                "rubric_open": 0, "pending_review_candidates": 0,
+                "unmapped_review_candidates": 0,
+            },
         }, indent=2)
 
     service_id = int(service_row["id"])
@@ -410,12 +446,94 @@ def service_recall(
         (service_id, limit),
     ).fetchall()
 
+    rubric_counts = {
+        str(row["status"] or "open"): int(row["n"])
+        for row in conn.execute(
+            """SELECT status, COUNT(*) AS n
+                 FROM competency_targets
+                WHERE service_id = ?
+                GROUP BY status""",
+            (service_id,),
+        ).fetchall()
+    }
+
+    # Candidates are future assessment opportunities, never mastery evidence.
+    # Service-origin rows must belong to this service; site-local conventions are
+    # further restricted to the selected site. Portable assessed candidates enter
+    # only when their topic has an explicit matching domain. Generic-domain rows
+    # are counted as unmapped instead of being guessed into a rotation.
+    candidate_rows = conn.execute(
+        """SELECT b.id, b.doc_path, b.prompt, b.claim_text, b.provenance_tier,
+                  b.origin, b.rotation_id, b.convention, b.updated_at,
+                  t.canonical_slug AS topic, t.domain AS topic_domain,
+                  c.display_name AS concept
+             FROM shift_debrief_review_candidates b
+             JOIN topics t ON t.id = b.topic_id
+             JOIN concepts c ON c.id = b.concept_id
+             LEFT JOIN rotations candidate_rotation ON candidate_rotation.id = b.rotation_id
+            WHERE b.status = 'pending'
+              AND (
+                    (b.origin = 'assessed' AND t.domain = ?)
+                 OR (b.origin = 'service' AND candidate_rotation.service_id = ?
+                     AND (b.convention = 0 OR candidate_rotation.site_id = ?))
+              )
+            ORDER BY CASE b.origin WHEN 'service' THEN 0 ELSE 1 END,
+                     b.updated_at DESC
+            LIMIT ?""",
+        (domain, service_id, current_site_id, limit),
+    ).fetchall()
+    unmapped_candidate_count = int(
+        conn.execute(
+            """SELECT COUNT(*)
+                 FROM shift_debrief_review_candidates b
+                 JOIN topics t ON t.id = b.topic_id
+                WHERE b.status = 'pending' AND b.origin = 'assessed'
+                  AND COALESCE(NULLIF(t.domain, ''), 'general') = 'general'"""
+        ).fetchone()[0]
+    )
+
     def _gap(row: sqlite3.Row, gap_origin: str) -> dict[str, object]:
         return {
             "claim_state_id": int(row["id"]), "origin": gap_origin,
             "topic": row["topic"], "concept": row["concept"], "claim": row["claim_text"],
             "state": row["state"], "priority": row["priority"],
         }
+
+    def _candidate(row: sqlite3.Row) -> dict[str, object]:
+        return {
+            "candidate_id": int(row["id"]),
+            "topic": row["topic"],
+            "concept": row["concept"],
+            "claim": row["claim_text"] or row["prompt"],
+            "doc": row["doc_path"],
+            "provenance_tier": row["provenance_tier"],
+            "origin": row["origin"],
+            "rotation_id": row["rotation_id"],
+            "convention": bool(row["convention"]),
+            "weight": "low",
+            "next_action": "Offer a Socratic probe before assigning learner state.",
+        }
+
+    rotation_view = _rotation_view(conn, rotation) if rotation is not None else None
+    rubric_progress = {
+        "total": sum(rubric_counts.values()),
+        "open": rubric_counts.get("open", 0),
+        "developing": rubric_counts.get("developing", 0),
+        "completed": sum(
+            count for status, count in rubric_counts.items()
+            if status not in {"open", "developing"}
+        ),
+    }
+    warnings: list[str] = []
+    if rotation_view is None:
+        warnings.append("No active or explicit rotation is attached to this service recall.")
+    if rubric_progress["total"] == 0:
+        warnings.append("No competency rubric is seeded for this service.")
+    if unmapped_candidate_count:
+        warnings.append(
+            f"{unmapped_candidate_count} pending portable review candidates remain in the general domain; "
+            "they are excluded until explicitly classified."
+        )
 
     payload = {
         "lens": "service",
@@ -425,6 +543,7 @@ def service_recall(
         "site": site_row["slug"] if site_row else "",
         "site_display": site_row["display_name"] if site_row else "",
         "rotation_id": int(rotation["id"]) if rotation else None,
+        "rotation": rotation_view,
         "context": context,
         "weighting_policy": "service_primary_formal_capped",
         "service_gaps": [_gap(r, "service") for r in gap_rows],
@@ -435,9 +554,14 @@ def service_recall(
              "priority": r["priority"], "status": r["status"]}
             for r in rubric_rows
         ],
+        "rubric_progress": rubric_progress,
+        "pending_review_candidates": [_candidate(r) for r in candidate_rows],
+        "data_quality_warnings": warnings,
         "counts": {
             "service_gaps": len(gap_rows), "conventions": len(convention_rows),
             "formal_secondary": len(formal_rows), "rubric_open": len(rubric_rows),
+            "pending_review_candidates": len(candidate_rows),
+            "unmapped_review_candidates": unmapped_candidate_count,
         },
     }
     return json.dumps(payload, indent=2)

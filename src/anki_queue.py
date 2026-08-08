@@ -20,8 +20,13 @@ from anki_sync.anki_client import AnkiClient, AnkiDispatchResult
 from anki_sync.novelty import NoveltyStore
 from anki_sync.schemas import CardDraft, ClaimModel
 
-QUEUE_PATH = Path("data/Sessions/anki_queue.jsonl")
-CHROMADB_PATH = "data/anki_vector_cache.db"
+try:
+    from runtime_paths import ANKI_CACHE_DB, ANKI_QUEUE_PATH, STUDY_MEMORY_DB
+except ModuleNotFoundError:  # pragma: no cover - package import in tests
+    from .runtime_paths import ANKI_CACHE_DB, ANKI_QUEUE_PATH, STUDY_MEMORY_DB
+
+QUEUE_PATH = ANKI_QUEUE_PATH
+CHROMADB_PATH = str(ANKI_CACHE_DB)
 ANKI_URL = "http://localhost:8765"
 EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
 NOVELTY_THRESHOLD = 0.70
@@ -398,41 +403,35 @@ def check(
     else:
         to_check = all_entries
 
-    if not to_check:
-        result = {"queue_size": 0, "duplicate_candidates": [], "quality_warnings": []}
-        if emit:
-            print(_json_dumps(result))
-        return result
-
-    claims = []
-    for e in to_check:
-        text = _card_text(e)
-        cid = e.get("claim_id", _claim_id(text))
-        claims.append(ClaimModel(
-            claim_id=cid,
-            topic=e.get("topic", ""),
-            concept=e.get("concept", ""),
-            card_type=e.get("card_type", ""),
-            claim_text=_claim_text_for_entry(e),
-        ))
-
-    store = NoveltyStore(CHROMADB_PATH, COLLECTION_NAME, EMBEDDING_MODEL)
-    _, decisions = store.filter_novel_claims(claims, NOVELTY_THRESHOLD)
-    batch_dup_details = _batch_duplicate_details(to_check, store)
-
     duplicate_candidates = []
-    for d, e in zip(decisions, to_check):
-        if not d.is_novel:
-            duplicate_candidates.append({
-                "source": "anki_chroma_cache",
-                "queued_card": _card_text(e),
-                "matched_existing": d.matched_text,
-                "similarity": round(d.max_similarity, 4),
-                "claim_id": d.claim_id,
-            })
-    for detail in batch_dup_details:
-        detail["source"] = "same_queue_batch"
-        duplicate_candidates.append(detail)
+    if to_check:
+        claims = []
+        for e in to_check:
+            text = _card_text(e)
+            cid = e.get("claim_id", _claim_id(text))
+            claims.append(ClaimModel(
+                claim_id=cid,
+                topic=e.get("topic", ""),
+                concept=e.get("concept", ""),
+                card_type=e.get("card_type", ""),
+                claim_text=_claim_text_for_entry(e),
+            ))
+
+        store = NoveltyStore(CHROMADB_PATH, COLLECTION_NAME, EMBEDDING_MODEL)
+        _, decisions = store.filter_novel_claims(claims, NOVELTY_THRESHOLD)
+        batch_dup_details = _batch_duplicate_details(to_check, store)
+        for d, e in zip(decisions, to_check):
+            if not d.is_novel:
+                duplicate_candidates.append({
+                    "source": "anki_chroma_cache",
+                    "queued_card": _card_text(e),
+                    "matched_existing": d.matched_text,
+                    "similarity": round(d.max_similarity, 4),
+                    "claim_id": d.claim_id,
+                })
+        for detail in batch_dup_details:
+            detail["source"] = "same_queue_batch"
+            duplicate_candidates.append(detail)
 
     quality_warnings = []
     for e in to_check:
@@ -444,41 +443,72 @@ def check(
                 "warnings": warnings,
             })
 
-    # Programmatic check for missed/partial exchanges in SQLite missing from the queue
-    db_path = Path("data/study_memory.db")
-    if db_path.exists() and session:
-        import sqlite3
+    decision_blockers = []
+    decision_counts: dict[str, int] = {}
+    if STUDY_MEMORY_DB.exists() and session:
         try:
-            conn = sqlite3.connect(str(db_path))
-            conn.row_factory = sqlite3.Row
-            rows = conn.execute(
-                """SELECT DISTINCT e.id, c.display_name AS concept
-                   FROM exchanges e
-                   JOIN claim_results cr ON e.id = cr.exchange_id
-                   JOIN concepts c ON e.concept_id = c.id
-                   WHERE e.session_id = ? AND cr.score < 2""",
-                [session],
-            ).fetchall()
+            try:
+                from study_memory import anki_card_decision_audit
+            except ModuleNotFoundError:  # pragma: no cover - package import in tests
+                from .study_memory import anki_card_decision_audit
 
-            enqueued_exchanges = {int(e["exchange_id"]) for e in to_check if e.get("exchange_id") is not None}
-
-            for r in rows:
-                ex_id = int(r["id"])
-                if ex_id not in enqueued_exchanges:
-                    quality_warnings.append({
-                        "claim_id": f"missed_exchange_{ex_id}",
-                        "card": f"Exchange {ex_id} (concept: '{r['concept']}') was logged with score < 2 but has NO enqueued card.",
-                        "warnings": ["uncarded_missed_exchange"],
-                    })
-            conn.close()
+            rows = anki_card_decision_audit(session, path=STUDY_MEMORY_DB)
+            enqueued_exchanges = {
+                int(entry["exchange_id"])
+                for entry in to_check
+                if entry.get("exchange_id") is not None
+            }
+            for row in rows:
+                exchange_id = int(row["exchange_id"])
+                decision = str(row.get("decision") or "")
+                decision_counts[decision or "missing"] = (
+                    decision_counts.get(decision or "missing", 0) + 1
+                )
+                has_card = exchange_id in enqueued_exchanges
+                if not decision:
+                    decision_blockers.append(
+                        {
+                            "exchange_id": exchange_id,
+                            "concept": row["concept"],
+                            "minimum_score": int(row["minimum_score"]),
+                            "reason": "missing_card_decision",
+                        }
+                    )
+                elif decision == "enqueue" and not has_card:
+                    decision_blockers.append(
+                        {
+                            "exchange_id": exchange_id,
+                            "concept": row["concept"],
+                            "minimum_score": int(row["minimum_score"]),
+                            "reason": "enqueue_decision_missing_card",
+                        }
+                    )
+                elif decision != "enqueue" and has_card:
+                    decision_blockers.append(
+                        {
+                            "exchange_id": exchange_id,
+                            "concept": row["concept"],
+                            "minimum_score": int(row["minimum_score"]),
+                            "reason": "skip_decision_has_queued_card",
+                        }
+                    )
         except Exception:
-            pass
+            decision_blockers.append(
+                {
+                    "exchange_id": None,
+                    "concept": "",
+                    "minimum_score": None,
+                    "reason": "card_decision_audit_unavailable",
+                }
+            )
 
     result = {
         "queue_size": len(to_check),
         "duplicate_candidates": duplicate_candidates,
         "duplicates": duplicate_candidates,
         "quality_warnings": quality_warnings,
+        "card_decision_counts": dict(sorted(decision_counts.items())),
+        "card_decision_blockers": decision_blockers,
     }
     if emit:
         print(_json_dumps(result))
@@ -501,9 +531,21 @@ def flush(
         to_flush = all_entries
         remaining = []
 
+    preflight = check(session=session, queue_path=queue_path, emit=False)
+    decision_blockers = preflight.get("card_decision_blockers", [])
+    if decision_blockers:
+        result = {
+            "error": "card_decisions_require_resolution",
+            "queue_size": len(to_flush),
+            "card_decision_blockers": decision_blockers,
+        }
+        print(_json_dumps(result))
+        return result
+
     if not to_flush:
-        print(_json_dumps({"queue_size": 0}))
-        return {"queue_size": 0}
+        result = {"queue_size": 0, "card_decision_counts": preflight.get("card_decision_counts", {})}
+        print(_json_dumps(result))
+        return result
 
     if not dry_run:
         client = AnkiClient(ANKI_URL)
@@ -513,7 +555,6 @@ def flush(
             print(_json_dumps({"error": f"AnkiConnect unavailable: {err}"}))
             return {"error": err}
 
-    preflight = check(session=session, queue_path=queue_path, emit=False)
     duplicate_candidates = preflight.get("duplicate_candidates", [])
     if duplicate_candidates and not allow_duplicate_candidates:
         result = {

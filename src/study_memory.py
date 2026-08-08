@@ -13,7 +13,6 @@ interface for agents:
 
 from __future__ import annotations
 
-import argparse
 import json
 import math
 import os
@@ -23,6 +22,18 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+try:
+    from runtime_paths import STUDY_MEMORY_DB, VAULT_ROOT
+    from store_contracts import STUDY_MEMORY_SCHEMA_VERSION
+except ModuleNotFoundError:  # pragma: no cover - package import in tests
+    from .runtime_paths import STUDY_MEMORY_DB, VAULT_ROOT
+    from .store_contracts import STUDY_MEMORY_SCHEMA_VERSION
+
+try:
+    from card_decisions import card_decision_rows, record_anki_card_decision
+except ModuleNotFoundError:  # pragma: no cover - package import in tests
+    from .card_decisions import card_decision_rows, record_anki_card_decision
 
 from memory_operations import (
     CurationError,
@@ -40,22 +51,27 @@ from reference_graph import (
     load_reference_graph_file,
 )
 from service_memory import (
-    SERVICE_SCHEMA_SQL,
     current_rotation,
     end_rotation,
     list_rotations,
+    mark_competency_developing,
     service_for_rotation as _service_for_rotation,
     service_recall,
     service_rubric_view,
     site_for_rotation as _site_for_rotation,
     start_rotation,
 )
+from study_session_runtime import (
+    learner_profile_get,
+    learner_profile_upsert,
+    session_integrity as study_session_integrity,
+    set_study_runtime as _set_study_runtime,
+)
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
-# NEURO_STUDY_MEMORY_DB lets a session run against a copy of the live memory DB
-# (e.g. the migration working copy) without touching data/study_memory.db.
-DB_PATH = Path(os.environ.get("NEURO_STUDY_MEMORY_DB", DATA_DIR / "study_memory.db"))
+# Runtime configuration may point a session at a safe copy instead of the live DB.
+DB_PATH = STUDY_MEMORY_DB
 # Skills that produce a vault artifact rather than testing the learner. Their
 # log-answer call is a discoverability anchor only: it records that the file
 # exists and when, but must NOT create durable claim_state (the learner has not
@@ -110,478 +126,10 @@ def _json_dumps(payload: object, *, pretty: bool = False) -> str:
     return json.dumps(payload, separators=(",", ":"))
 
 
-SCHEMA_SQL = """
-PRAGMA foreign_keys = ON;
-
-CREATE TABLE IF NOT EXISTS topics (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    canonical_slug TEXT NOT NULL UNIQUE,
-    display_name TEXT NOT NULL,
-    domain TEXT NOT NULL DEFAULT '',
-    parent_topic_id INTEGER,
-    primary_doc_path TEXT DEFAULT '',
-    created_at TEXT NOT NULL DEFAULT '',
-    FOREIGN KEY(parent_topic_id) REFERENCES topics(id)
-);
-
-CREATE TABLE IF NOT EXISTS topic_aliases (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    topic_id INTEGER NOT NULL,
-    alias TEXT NOT NULL UNIQUE,
-    source TEXT NOT NULL DEFAULT 'resolver',
-    confidence REAL NOT NULL DEFAULT 1.0,
-    FOREIGN KEY(topic_id) REFERENCES topics(id)
-);
-CREATE INDEX IF NOT EXISTS idx_memory_topic_aliases_topic ON topic_aliases(topic_id);
-
-CREATE TABLE IF NOT EXISTS topic_redirects (
-    alias_slug TEXT PRIMARY KEY,
-    target_topic_id INTEGER NOT NULL,
-    reason TEXT NOT NULL DEFAULT '',
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY(target_topic_id) REFERENCES topics(id)
-);
-
-CREATE TABLE IF NOT EXISTS concepts (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    topic_id INTEGER NOT NULL,
-    canonical_slug TEXT NOT NULL,
-    display_name TEXT NOT NULL,
-    inventory_concept_id TEXT,
-    binding_match_count INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT '',
-    UNIQUE(topic_id, canonical_slug),
-    FOREIGN KEY(topic_id) REFERENCES topics(id)
-);
-CREATE INDEX IF NOT EXISTS idx_memory_concepts_topic ON concepts(topic_id);
-
-CREATE TABLE IF NOT EXISTS artifact_maps (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    doc_path TEXT NOT NULL UNIQUE,
-    topic_id INTEGER,
-    artifact_title TEXT NOT NULL DEFAULT '',
-    content_hash TEXT NOT NULL DEFAULT '',
-    schema_version TEXT NOT NULL DEFAULT 'artifact_map_v1',
-    map_status TEXT NOT NULL DEFAULT 'complete',
-    created_by TEXT NOT NULL DEFAULT 'agent',
-    notes TEXT NOT NULL DEFAULT '',
-    created_at TEXT NOT NULL DEFAULT '',
-    updated_at TEXT NOT NULL DEFAULT '',
-    FOREIGN KEY(topic_id) REFERENCES topics(id)
-);
-CREATE INDEX IF NOT EXISTS idx_artifact_maps_topic ON artifact_maps(topic_id);
-
-CREATE TABLE IF NOT EXISTS artifact_map_concepts (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    artifact_map_id INTEGER NOT NULL,
-    artifact_concept TEXT NOT NULL,
-    inventory_concept_id TEXT NOT NULL DEFAULT '',
-    mapping_status TEXT NOT NULL DEFAULT 'unresolved',
-    confidence TEXT NOT NULL DEFAULT 'low',
-    role TEXT NOT NULL DEFAULT 'mentioned',
-    evidence_json TEXT NOT NULL DEFAULT '[]',
-    source_sections_json TEXT NOT NULL DEFAULT '[]',
-    source_anchors_json TEXT NOT NULL DEFAULT '[]',
-    unresolved_reason TEXT NOT NULL DEFAULT '',
-    notes TEXT NOT NULL DEFAULT '',
-    ordinal INTEGER NOT NULL DEFAULT 0,
-    FOREIGN KEY(artifact_map_id) REFERENCES artifact_maps(id) ON DELETE CASCADE
-);
-CREATE INDEX IF NOT EXISTS idx_artifact_map_concepts_map ON artifact_map_concepts(artifact_map_id);
-CREATE INDEX IF NOT EXISTS idx_artifact_map_concepts_inventory ON artifact_map_concepts(inventory_concept_id);
-
-CREATE TABLE IF NOT EXISTS concept_aliases (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    concept_id INTEGER NOT NULL,
-    alias TEXT NOT NULL,
-    source TEXT NOT NULL DEFAULT 'agent',
-    confidence REAL NOT NULL DEFAULT 1.0,
-    UNIQUE(concept_id, alias),
-    FOREIGN KEY(concept_id) REFERENCES concepts(id)
-);
-CREATE INDEX IF NOT EXISTS idx_memory_concept_aliases_alias ON concept_aliases(alias);
-
-CREATE TABLE IF NOT EXISTS sessions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id TEXT NOT NULL UNIQUE,
-    started TEXT NOT NULL,
-    ended TEXT DEFAULT '',
-    skill TEXT DEFAULT '',
-    primary_topic_id INTEGER,
-    doc_path TEXT DEFAULT '',
-    summary TEXT DEFAULT '',
-    next_strategy TEXT DEFAULT '',
-    stats_json TEXT DEFAULT '{}',
-    FOREIGN KEY(primary_topic_id) REFERENCES topics(id)
-);
-
-CREATE TABLE IF NOT EXISTS session_topics (
-    session_id TEXT NOT NULL,
-    topic_id INTEGER NOT NULL,
-    PRIMARY KEY(session_id, topic_id),
-    FOREIGN KEY(topic_id) REFERENCES topics(id)
-);
-
-CREATE TABLE IF NOT EXISTS exchanges (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id TEXT NOT NULL,
-    ts TEXT NOT NULL,
-    turn INTEGER NOT NULL,
-    topic_id INTEGER NOT NULL,
-    concept_id INTEGER NOT NULL,
-    raw_question TEXT NOT NULL,
-    raw_answer TEXT NOT NULL,
-    doc_path TEXT DEFAULT '',
-    skill TEXT DEFAULT '',
-    source_json TEXT NOT NULL DEFAULT '{}',
-    origin TEXT NOT NULL DEFAULT 'assessed',
-    rotation_id INTEGER,
-    FOREIGN KEY(topic_id) REFERENCES topics(id),
-    FOREIGN KEY(concept_id) REFERENCES concepts(id)
-);
-CREATE INDEX IF NOT EXISTS idx_memory_exchanges_session ON exchanges(session_id);
-CREATE INDEX IF NOT EXISTS idx_memory_exchanges_topic ON exchanges(topic_id);
-
-CREATE TABLE IF NOT EXISTS claim_results (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    exchange_id INTEGER NOT NULL,
-    topic_id INTEGER NOT NULL,
-    concept_id INTEGER NOT NULL,
-    claim_slug TEXT NOT NULL,
-    claim_text TEXT NOT NULL,
-    score INTEGER NOT NULL CHECK(score IN (0, 1, 2)),
-    gap_type TEXT DEFAULT '',
-    learner_claim TEXT NOT NULL DEFAULT '',
-    demonstrated_edge TEXT NOT NULL DEFAULT '',
-    misconception_text TEXT NOT NULL DEFAULT '',
-    missing_edge TEXT NOT NULL DEFAULT '',
-    corrected_rule TEXT NOT NULL DEFAULT '',
-    clinical_consequence TEXT NOT NULL DEFAULT '',
-    retest_prompt_shape TEXT NOT NULL DEFAULT '',
-    teaching_intervention TEXT NOT NULL DEFAULT '',
-    learning_operation TEXT NOT NULL DEFAULT '',
-    agent_signal_json TEXT NOT NULL DEFAULT '{}',
-    created_at TEXT NOT NULL DEFAULT '',
-    origin TEXT NOT NULL DEFAULT 'assessed',
-    rotation_id INTEGER,
-    inventory_concept_id TEXT,
-    FOREIGN KEY(exchange_id) REFERENCES exchanges(id),
-    FOREIGN KEY(topic_id) REFERENCES topics(id),
-    FOREIGN KEY(concept_id) REFERENCES concepts(id)
-);
-CREATE INDEX IF NOT EXISTS idx_memory_claim_results_exchange ON claim_results(exchange_id);
-CREATE INDEX IF NOT EXISTS idx_memory_claim_results_topic ON claim_results(topic_id);
-CREATE INDEX IF NOT EXISTS idx_memory_claim_results_score ON claim_results(score);
--- concept_id is the most-queried filter after topic (per-concept aggregation,
--- relations, surfaces); without these every WHERE concept_id=? was a full scan.
-CREATE INDEX IF NOT EXISTS idx_memory_claim_results_concept ON claim_results(concept_id);
-CREATE INDEX IF NOT EXISTS idx_memory_claim_results_topic_concept ON claim_results(topic_id, concept_id);
-
-CREATE TABLE IF NOT EXISTS claim_state (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    topic_id INTEGER NOT NULL,
-    concept_id INTEGER NOT NULL,
-    claim_slug TEXT NOT NULL,
-    claim_text TEXT NOT NULL,
-    state TEXT NOT NULL,
-    priority TEXT NOT NULL DEFAULT 'medium',
-    gap_type TEXT DEFAULT '',
-    last_result_id INTEGER,
-    source_result_id INTEGER,
-    last_seen_ts TEXT NOT NULL DEFAULT '',
-    next_due_ts TEXT DEFAULT '',
-    difficulty REAL NOT NULL DEFAULT 0.3,
-    stability REAL NOT NULL DEFAULT 1.0,
-    reason TEXT NOT NULL DEFAULT '',
-    origin TEXT NOT NULL DEFAULT 'assessed',
-    rotation_id INTEGER,
-    UNIQUE(topic_id, concept_id, claim_slug),
-    FOREIGN KEY(topic_id) REFERENCES topics(id),
-    FOREIGN KEY(concept_id) REFERENCES concepts(id),
-    FOREIGN KEY(last_result_id) REFERENCES claim_results(id),
-    FOREIGN KEY(source_result_id) REFERENCES claim_results(id)
-);
-CREATE INDEX IF NOT EXISTS idx_memory_claim_state_state ON claim_state(state);
-CREATE INDEX IF NOT EXISTS idx_memory_claim_state_priority ON claim_state(priority);
-CREATE INDEX IF NOT EXISTS idx_memory_claim_state_topic ON claim_state(topic_id);
--- (concept_id, state) serves WHERE concept_id=? [prefix] and concept+state filters
--- directly instead of scanning the low-selectivity state index. (topic_id,
--- next_due_ts) serves the spaced-retrieval scheduler's due-window range + order.
-CREATE INDEX IF NOT EXISTS idx_memory_claim_state_concept_state ON claim_state(concept_id, state);
-CREATE INDEX IF NOT EXISTS idx_memory_claim_state_due ON claim_state(topic_id, next_due_ts);
-
-CREATE TABLE IF NOT EXISTS state_events (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    claim_state_id INTEGER NOT NULL,
-    event_type TEXT NOT NULL,
-    result_id INTEGER,
-    ts TEXT NOT NULL,
-    detail TEXT NOT NULL DEFAULT '',
-    FOREIGN KEY(claim_state_id) REFERENCES claim_state(id),
-    FOREIGN KEY(result_id) REFERENCES claim_results(id)
-);
-CREATE INDEX IF NOT EXISTS idx_memory_state_events_state ON state_events(claim_state_id);
-
-CREATE TABLE IF NOT EXISTS repair_episodes (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    claim_state_id INTEGER NOT NULL,
-    source_result_id INTEGER NOT NULL,
-    gap_type TEXT NOT NULL DEFAULT '',
-    teaching_move TEXT NOT NULL DEFAULT '',
-    started_ts TEXT NOT NULL,
-    repaired_result_id INTEGER,
-    repaired_ts TEXT NOT NULL DEFAULT '',
-    retention_result_id INTEGER,
-    retention_ts TEXT NOT NULL DEFAULT '',
-    transfer_result_id INTEGER,
-    transfer_ts TEXT NOT NULL DEFAULT '',
-    status TEXT NOT NULL DEFAULT 'active'
-        CHECK(status IN ('active', 'immediate_repair', 'retained', 'transferred', 'regressed')),
-    FOREIGN KEY(claim_state_id) REFERENCES claim_state(id),
-    FOREIGN KEY(source_result_id) REFERENCES claim_results(id),
-    FOREIGN KEY(repaired_result_id) REFERENCES claim_results(id),
-    FOREIGN KEY(retention_result_id) REFERENCES claim_results(id),
-    FOREIGN KEY(transfer_result_id) REFERENCES claim_results(id)
-);
-CREATE INDEX IF NOT EXISTS idx_repair_episodes_claim ON repair_episodes(claim_state_id);
-CREATE INDEX IF NOT EXISTS idx_repair_episodes_move ON repair_episodes(teaching_move);
-CREATE INDEX IF NOT EXISTS idx_repair_episodes_status ON repair_episodes(status);
-
-CREATE TABLE IF NOT EXISTS retrieval_cards (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    topic_id INTEGER NOT NULL,
-    claim_state_id INTEGER,
-    card_type TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'active',
-    priority TEXT NOT NULL DEFAULT 'medium',
-    summary TEXT NOT NULL DEFAULT '',
-    next_action TEXT NOT NULL DEFAULT '',
-    evidence_result_id INTEGER,
-    updated_ts TEXT NOT NULL DEFAULT '',
-    detail_json TEXT NOT NULL DEFAULT '{}',
-    UNIQUE(topic_id, claim_state_id, card_type),
-    FOREIGN KEY(topic_id) REFERENCES topics(id),
-    FOREIGN KEY(claim_state_id) REFERENCES claim_state(id),
-    FOREIGN KEY(evidence_result_id) REFERENCES claim_results(id)
-);
-CREATE INDEX IF NOT EXISTS idx_memory_retrieval_topic ON retrieval_cards(topic_id);
-CREATE INDEX IF NOT EXISTS idx_memory_retrieval_priority ON retrieval_cards(priority);
-CREATE INDEX IF NOT EXISTS idx_memory_retrieval_status ON retrieval_cards(status);
-
-CREATE TABLE IF NOT EXISTS shift_debrief_review_candidates (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id TEXT NOT NULL DEFAULT '',
-    topic_id INTEGER NOT NULL,
-    concept_id INTEGER NOT NULL,
-    doc_path TEXT NOT NULL,
-    candidate_slug TEXT NOT NULL,
-    prompt TEXT NOT NULL DEFAULT '',
-    claim_text TEXT NOT NULL DEFAULT '',
-    provenance_tier TEXT NOT NULL DEFAULT '',
-    origin TEXT NOT NULL DEFAULT 'assessed',
-    rotation_id INTEGER,
-    convention INTEGER NOT NULL DEFAULT 0,
-    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'reviewed', 'dismissed')),
-    reviewed_claim_state_id INTEGER,
-    reviewed_result_id INTEGER,
-    created_at TEXT NOT NULL DEFAULT '',
-    updated_at TEXT NOT NULL DEFAULT '',
-    reviewed_at TEXT NOT NULL DEFAULT '',
-    detail_json TEXT NOT NULL DEFAULT '{}',
-    UNIQUE(doc_path, topic_id, concept_id, candidate_slug),
-    FOREIGN KEY(topic_id) REFERENCES topics(id),
-    FOREIGN KEY(concept_id) REFERENCES concepts(id),
-    FOREIGN KEY(reviewed_claim_state_id) REFERENCES claim_state(id),
-    FOREIGN KEY(reviewed_result_id) REFERENCES claim_results(id)
-);
-CREATE INDEX IF NOT EXISTS idx_shift_debrief_candidates_status ON shift_debrief_review_candidates(status);
-CREATE INDEX IF NOT EXISTS idx_shift_debrief_candidates_topic ON shift_debrief_review_candidates(topic_id);
-CREATE INDEX IF NOT EXISTS idx_shift_debrief_candidates_concept ON shift_debrief_review_candidates(concept_id);
-
-CREATE TABLE IF NOT EXISTS curation_state (
-    id INTEGER PRIMARY KEY CHECK (id = 1),
-    sessions_since_last_curation INTEGER NOT NULL DEFAULT 0,
-    last_curation_ts TEXT NOT NULL DEFAULT '',
-    last_curation_version INTEGER NOT NULL DEFAULT 0
-);
-
-INSERT OR IGNORE INTO curation_state (id) VALUES (1);
-
-CREATE TABLE IF NOT EXISTS curation_counted_sessions (
-    session_id TEXT PRIMARY KEY,
-    counted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY(session_id) REFERENCES sessions(session_id)
-);
-
-CREATE TABLE IF NOT EXISTS memory_summaries (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    client_id TEXT NOT NULL DEFAULT '',
-    summary_type TEXT NOT NULL CHECK(summary_type IN ('thematic', 'proficiency_map')),
-    topic_id INTEGER,
-    concept_id INTEGER,
-    inventory_concept_id TEXT,
-    content TEXT NOT NULL,
-    importance_score REAL NOT NULL DEFAULT 0.5 CHECK(importance_score >= 0 AND importance_score <= 1),
-    generated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    version INTEGER NOT NULL DEFAULT 1,
-    status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'superseded', 'deprecated')),
-    CHECK (
-        (topic_id IS NOT NULL AND concept_id IS NULL) OR
-        (topic_id IS NULL AND concept_id IS NOT NULL) OR
-        (topic_id IS NULL AND concept_id IS NULL)
-    ),
-    FOREIGN KEY(topic_id) REFERENCES topics(id),
-    FOREIGN KEY(concept_id) REFERENCES concepts(id)
-);
-CREATE INDEX IF NOT EXISTS idx_memory_summaries_status ON memory_summaries(status);
-CREATE INDEX IF NOT EXISTS idx_memory_summaries_topic ON memory_summaries(topic_id);
-CREATE INDEX IF NOT EXISTS idx_memory_summaries_concept ON memory_summaries(concept_id);
-CREATE INDEX IF NOT EXISTS idx_memory_summaries_importance ON memory_summaries(importance_score DESC);
-
-CREATE TABLE IF NOT EXISTS memory_summary_evidence (
-    summary_id INTEGER NOT NULL,
-    claim_result_id INTEGER NOT NULL,
-    PRIMARY KEY(summary_id, claim_result_id),
-    FOREIGN KEY(summary_id) REFERENCES memory_summaries(id),
-    FOREIGN KEY(claim_result_id) REFERENCES claim_results(id)
-);
-
-CREATE TABLE IF NOT EXISTS concept_relationships (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    source_concept_id INTEGER NOT NULL,
-    target_concept_id INTEGER NOT NULL,
-    relation_type TEXT NOT NULL CHECK(relation_type IN ('confused_with', 'prerequisite')),
-    strength REAL NOT NULL DEFAULT 0.5 CHECK(strength >= 0 AND strength <= 1),
-    evidence_summary_id INTEGER,
-    origin TEXT NOT NULL DEFAULT 'curated' CHECK(origin IN ('curated', 'model_proposed')),
-    rationale TEXT NOT NULL DEFAULT '',
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    CHECK(source_concept_id != target_concept_id),
-    UNIQUE(source_concept_id, target_concept_id, relation_type),
-    FOREIGN KEY(source_concept_id) REFERENCES concepts(id),
-    FOREIGN KEY(target_concept_id) REFERENCES concepts(id),
-    FOREIGN KEY(evidence_summary_id) REFERENCES memory_summaries(id)
-);
-CREATE INDEX IF NOT EXISTS idx_concept_relationships_source ON concept_relationships(source_concept_id);
-CREATE INDEX IF NOT EXISTS idx_concept_relationships_target ON concept_relationships(target_concept_id);
-CREATE INDEX IF NOT EXISTS idx_concept_relationships_type ON concept_relationships(relation_type);
-
-CREATE TABLE IF NOT EXISTS concept_relationship_evidence (
-    relationship_id INTEGER NOT NULL,
-    claim_result_id INTEGER NOT NULL,
-    PRIMARY KEY(relationship_id, claim_result_id),
-    FOREIGN KEY(relationship_id) REFERENCES concept_relationships(id),
-    FOREIGN KEY(claim_result_id) REFERENCES claim_results(id)
-);
-
-CREATE TABLE IF NOT EXISTS shadow_rules (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    false_rule TEXT NOT NULL,
-    corrected_rule TEXT NOT NULL,
-    clinical_consequence TEXT NOT NULL,
-    probe_shape TEXT NOT NULL,
-    severity TEXT NOT NULL DEFAULT 'medium' CHECK(severity IN ('low', 'medium', 'high', 'urgent')),
-    status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'repaired', 'extinguished', 'regressed')),
-    evidence_summary_id INTEGER,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(false_rule, corrected_rule),
-    FOREIGN KEY(evidence_summary_id) REFERENCES memory_summaries(id)
-);
-CREATE INDEX IF NOT EXISTS idx_shadow_rules_status ON shadow_rules(status);
-CREATE INDEX IF NOT EXISTS idx_shadow_rules_severity ON shadow_rules(severity);
-
-CREATE TABLE IF NOT EXISTS shadow_rule_bindings (
-    shadow_rule_id INTEGER NOT NULL,
-    concept_id INTEGER NOT NULL,
-    binding_type TEXT NOT NULL DEFAULT 'trigger' CHECK(binding_type IN ('trigger', 'contrast', 'context')),
-    PRIMARY KEY(shadow_rule_id, concept_id, binding_type),
-    FOREIGN KEY(shadow_rule_id) REFERENCES shadow_rules(id),
-    FOREIGN KEY(concept_id) REFERENCES concepts(id)
-);
-
-CREATE TABLE IF NOT EXISTS shadow_rule_evidence (
-    shadow_rule_id INTEGER NOT NULL,
-    claim_result_id INTEGER NOT NULL,
-    PRIMARY KEY(shadow_rule_id, claim_result_id),
-    FOREIGN KEY(shadow_rule_id) REFERENCES shadow_rules(id),
-    FOREIGN KEY(claim_result_id) REFERENCES claim_results(id)
-);
-
-CREATE TABLE IF NOT EXISTS shadow_rule_checks (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    shadow_rule_id INTEGER NOT NULL,
-    claim_result_id INTEGER NOT NULL,
-    context_label TEXT NOT NULL,
-    check_type TEXT NOT NULL CHECK(check_type IN ('changed_frame', 'transfer')),
-    outcome TEXT NOT NULL CHECK(outcome IN ('pass', 'fail')),
-    checked_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(shadow_rule_id, claim_result_id, context_label, check_type),
-    FOREIGN KEY(shadow_rule_id) REFERENCES shadow_rules(id),
-    FOREIGN KEY(claim_result_id) REFERENCES claim_results(id)
-);
-CREATE INDEX IF NOT EXISTS idx_shadow_rule_checks_rule ON shadow_rule_checks(shadow_rule_id);
-
-CREATE TABLE IF NOT EXISTS policy_events (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id TEXT NOT NULL DEFAULT '',
-    ts TEXT NOT NULL,
-    event_type TEXT NOT NULL CHECK(event_type IN ('startup', 'turn')),
-    topic_id INTEGER,
-    mode TEXT NOT NULL,
-    phase TEXT NOT NULL,
-    interrupts_json TEXT NOT NULL DEFAULT '{}',
-    inputs_json TEXT NOT NULL DEFAULT '{}',
-    plan_json TEXT NOT NULL DEFAULT '{}',
-    claim_result_id INTEGER,
-    FOREIGN KEY(topic_id) REFERENCES topics(id),
-    FOREIGN KEY(claim_result_id) REFERENCES claim_results(id)
-);
-CREATE INDEX IF NOT EXISTS idx_policy_events_session ON policy_events(session_id);
-CREATE INDEX IF NOT EXISTS idx_policy_events_topic ON policy_events(topic_id);
-
--- Canonical per-concept mastery rollup: ONE definition of "the learner's state
--- for a concept" that every consumer (knowledge-map, ACGME readiness, planning)
--- can read instead of re-deriving it differently. Fan-out-safe (each aggregate is
--- an independent correlated subquery, no join multiplication) and fast now that
--- claim_results/claim_state carry concept_id indexes.
-DROP VIEW IF EXISTS v_concept_mastery;
-CREATE VIEW v_concept_mastery AS
-SELECT
-    c.id AS concept_id,
-    c.topic_id,
-    c.inventory_concept_id,
-    c.display_name,
-    (SELECT MAX(CASE WHEN cs.priority IN ('urgent','high') THEN 1 ELSE 0 END)
-       FROM claim_state cs WHERE cs.concept_id = c.id AND cs.origin = 'assessed') AS safety_critical,
-    (SELECT COUNT(*) FROM claim_results cr
-       WHERE cr.concept_id = c.id AND cr.origin = 'assessed') AS attempts,
-    (SELECT COUNT(*) FROM claim_results cr
-       WHERE cr.concept_id = c.id AND cr.origin = 'assessed' AND cr.score >= 2) AS successes,
-    (SELECT COUNT(*) FROM claim_state cs
-       WHERE cs.concept_id = c.id AND cs.origin = 'assessed'
-         AND cs.state IN ('missed','partially_repaired','regressed')) AS open_gaps,
-    (SELECT MAX(cr.created_at) FROM claim_results cr
-       WHERE cr.concept_id = c.id AND cr.origin = 'assessed') AS last_seen_ts,
-    (SELECT MIN(NULLIF(cs.next_due_ts, '')) FROM claim_state cs
-       WHERE cs.concept_id = c.id AND cs.origin = 'assessed') AS next_due_ts,
-    (SELECT ROUND(AVG(cs.stability), 3) FROM claim_state cs
-       WHERE cs.concept_id = c.id AND cs.origin = 'assessed') AS avg_stability,
-    (SELECT cr.score FROM claim_results cr
-       WHERE cr.concept_id = c.id AND cr.origin = 'assessed'
-       ORDER BY cr.created_at DESC, cr.id DESC LIMIT 1) AS last_score,
-    -- Recency-weighted (decaying-memory) success rate: the success ratio over the
-    -- most recent 3 assessed attempts, so a concept the learner has clearly turned
-    -- around is no longer dragged by stale early failures (the "perma-novice" bug).
-    (SELECT ROUND(CAST(SUM(CASE WHEN w.score >= 2 THEN 1 ELSE 0 END) AS REAL) / COUNT(*), 3)
-       FROM (SELECT cr.score FROM claim_results cr
-              WHERE cr.concept_id = c.id AND cr.origin = 'assessed'
-              ORDER BY cr.created_at DESC, cr.id DESC LIMIT 3) w) AS recent_success_rate
-FROM concepts c;
-
-"""
-SCHEMA_SQL += SERVICE_SCHEMA_SQL
+try:
+    from memory_schema import SCHEMA_SQL
+except ModuleNotFoundError:  # pragma: no cover - package import in tests
+    from .memory_schema import SCHEMA_SQL
 
 
 @dataclass(frozen=True)
@@ -595,11 +143,13 @@ class TopicResolution:
 
 # Bump whenever SCHEMA_SQL or _migrate_schema changes so existing DBs re-run the
 # (idempotent) schema/migration exactly once, then skip it on every later open.
+# v7: every assessed exchange can carry an explicit Anki card decision, so a
+# miss is not forced into a card and a skipped trace remains auditable.
 # v6: claim results preserve the learner's demonstrated edge, explicit false
 # belief, and the compact teaching intervention separately. This prevents a
 # partial answer from being remembered only as a deficit and lets future tutors
 # avoid repeating an explanation that already failed.
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = STUDY_MEMORY_SCHEMA_VERSION
 
 
 def _apply_connection_pragmas(conn: sqlite3.Connection) -> None:
@@ -649,6 +199,25 @@ def maintain_db(conn: sqlite3.Connection, *, vacuum: bool = False) -> dict[str, 
     return result
 
 
+def database_health(conn: sqlite3.Connection) -> dict[str, object]:
+    from memory_health import database_health as inspect_database
+    return inspect_database(conn)
+
+
+def start_session_from_payload(
+    conn: sqlite3.Connection, payload: dict[str, object]
+) -> dict[str, object]:
+    from study_session_runtime import start_session
+    return start_session(conn, payload, startup_recall=startup_recall)
+
+
+def close_session_from_payload(
+    conn: sqlite3.Connection, payload: dict[str, object]
+) -> dict[str, object]:
+    from study_session_runtime import close_session
+    return close_session(conn, payload, end_session=end_session)
+
+
 def _mastery_exposure(
     attempts: int,
     success_rate: float,
@@ -674,30 +243,157 @@ def _mastery_exposure(
     return "exposed_deep"
 
 
+def _canonical_inventory_metadata(
+    inventory_concept_ids: list[str],
+) -> dict[str, dict[str, str]]:
+    """Resolve canonical labels/domains; degrade to local metadata if unavailable."""
+    if not inventory_concept_ids:
+        return {}
+    inv = None
+    try:
+        from concept_inventory import _open_inventory  # noqa: PLC0415
+
+        inv = _open_inventory()
+        placeholders = ",".join("?" for _ in inventory_concept_ids)
+        rows = inv.execute(
+            f"SELECT id, name, domain FROM concepts WHERE id IN ({placeholders})",
+            inventory_concept_ids,
+        ).fetchall()
+        return {
+            str(row["id"]): {"display_name": str(row["name"]), "domain": str(row["domain"])}
+            for row in rows
+        }
+    except Exception:
+        return {}
+    finally:
+        if inv is not None:
+            inv.close()
+
+
+def _canonical_mastery_rows(conn: sqlite3.Connection) -> list[dict[str, object]]:
+    """Aggregate assessed evidence once per canonical curriculum identity.
+
+    Local learner concepts remain provenance envelopes. Claim-level canonical
+    bindings take precedence over concept-level bindings, matching the normal
+    inventory projection path and preventing cross-topic duplicates from
+    inflating mastery or domain counts.
+    """
+    rows = conn.execute(
+        """WITH identity_sources AS (
+                 SELECT c.inventory_concept_id AS inventory_concept_id,
+                        c.display_name AS display_name,
+                        COALESCE(t.domain, 'general') AS local_domain,
+                        c.id AS local_concept_id
+                   FROM concepts c
+                   JOIN topics t ON t.id = c.topic_id
+                  WHERE COALESCE(c.inventory_concept_id, '') != ''
+                 UNION ALL
+                 SELECT cr.inventory_concept_id,
+                        c.display_name,
+                        COALESCE(t.domain, 'general'),
+                        c.id
+                   FROM claim_results cr
+                   JOIN concepts c ON c.id = cr.concept_id
+                   JOIN topics t ON t.id = c.topic_id
+                  WHERE COALESCE(cr.inventory_concept_id, '') != ''
+             ), identities AS (
+                 SELECT inventory_concept_id,
+                        MIN(display_name) AS display_name,
+                        MIN(local_domain) AS local_domain,
+                        COUNT(DISTINCT local_concept_id) AS local_concept_rows
+                   FROM identity_sources
+                  GROUP BY inventory_concept_id
+             ), result_events AS (
+                 SELECT cr.id, cr.created_at, cr.score,
+                        COALESCE(NULLIF(cr.inventory_concept_id, ''),
+                                 NULLIF(c.inventory_concept_id, '')) AS inventory_concept_id
+                   FROM claim_results cr
+                   JOIN concepts c ON c.id = cr.concept_id
+                  WHERE cr.origin = 'assessed'
+             ), ranked_results AS (
+                 SELECT result_events.*,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY inventory_concept_id
+                            ORDER BY created_at DESC, id DESC
+                        ) AS recent_rank
+                   FROM result_events
+                  WHERE COALESCE(inventory_concept_id, '') != ''
+             ), result_rollup AS (
+                 SELECT inventory_concept_id,
+                        COUNT(*) AS attempts,
+                        SUM(CASE WHEN score >= 2 THEN 1 ELSE 0 END) AS successes,
+                        MAX(created_at) AS last_seen_ts
+                   FROM ranked_results
+                  GROUP BY inventory_concept_id
+             ), recent_rollup AS (
+                 SELECT inventory_concept_id,
+                        ROUND(
+                            CAST(SUM(CASE WHEN score >= 2 THEN 1 ELSE 0 END) AS REAL)
+                            / COUNT(*), 3
+                        ) AS recent_success_rate
+                   FROM ranked_results
+                  WHERE recent_rank <= 3
+                  GROUP BY inventory_concept_id
+             ), latest_result AS (
+                 SELECT inventory_concept_id, score AS last_score
+                   FROM ranked_results
+                  WHERE recent_rank = 1
+             ), state_events AS (
+                 SELECT cs.id, cs.priority, cs.state, cs.next_due_ts, cs.stability,
+                        COALESCE(NULLIF(lr.inventory_concept_id, ''),
+                                 NULLIF(c.inventory_concept_id, '')) AS inventory_concept_id
+                   FROM claim_state cs
+                   JOIN concepts c ON c.id = cs.concept_id
+                   LEFT JOIN claim_results lr ON lr.id = cs.last_result_id
+                  WHERE cs.origin = 'assessed'
+             ), state_rollup AS (
+                 SELECT inventory_concept_id,
+                        MAX(CASE WHEN priority IN ('urgent', 'high') THEN 1 ELSE 0 END)
+                            AS safety_critical,
+                        SUM(CASE WHEN state IN ('missed', 'partially_repaired', 'regressed')
+                                 THEN 1 ELSE 0 END) AS open_gaps,
+                        MIN(NULLIF(next_due_ts, '')) AS next_due_ts,
+                        ROUND(AVG(stability), 3) AS avg_stability
+                   FROM state_events
+                  WHERE COALESCE(inventory_concept_id, '') != ''
+                  GROUP BY inventory_concept_id
+             )
+             SELECT i.inventory_concept_id, i.display_name, i.local_domain,
+                    i.local_concept_rows,
+                    COALESCE(rr.attempts, 0) AS attempts,
+                    COALESCE(rr.successes, 0) AS successes,
+                    COALESCE(sr.open_gaps, 0) AS open_gaps,
+                    rr.last_seen_ts, sr.next_due_ts,
+                    COALESCE(sr.avg_stability, 1.0) AS avg_stability,
+                    COALESCE(sr.safety_critical, 0) AS safety_critical,
+                    COALESCE(lr.last_score, 0) AS last_score,
+                    recent.recent_success_rate
+               FROM identities i
+               LEFT JOIN result_rollup rr USING (inventory_concept_id)
+               LEFT JOIN state_rollup sr USING (inventory_concept_id)
+               LEFT JOIN latest_result lr USING (inventory_concept_id)
+               LEFT JOIN recent_rollup recent USING (inventory_concept_id)
+              ORDER BY i.inventory_concept_id"""
+    ).fetchall()
+    result = [dict(row) for row in rows]
+    metadata = _canonical_inventory_metadata(
+        [str(row["inventory_concept_id"]) for row in result]
+    )
+    for row in result:
+        canonical = metadata.get(str(row["inventory_concept_id"]), {})
+        row["display_name"] = canonical.get("display_name", str(row["display_name"]))
+        row["domain"] = canonical.get("domain", str(row.pop("local_domain")))
+        row.pop("local_domain", None)
+    return result
+
+
 def knowledge_map_overview(
     conn: sqlite3.Connection, *, domain: str = "", as_of: str | None = None, limit: int = 20,
 ) -> dict[str, object]:
-    """The learner's mastery across their whole knowledge base, rolled up from the
-    canonical v_concept_mastery view — a fast, queryable map for directing review
-    toward mastery (which domains are weak, what is due, where the open gaps are).
-    """
+    """Return one mastery row per canonical curriculum concept."""
     now = as_of or datetime.now(timezone.utc).isoformat()
-    params: list[object] = []
-    where = "WHERE COALESCE(m.inventory_concept_id, '') != ''"
-    if domain:
-        where += " AND t.domain = ?"
-        params.append(domain)
-    rows = conn.execute(
-        f"""SELECT m.inventory_concept_id, m.display_name, m.attempts, m.successes,
-                   m.open_gaps, m.last_seen_ts, m.next_due_ts, m.avg_stability,
-                   m.safety_critical, COALESCE(t.domain, 'general') AS domain,
-                   COALESCE(m.last_score, 0) AS last_score,
-                   m.recent_success_rate
-              FROM v_concept_mastery m JOIN topics t ON t.id = m.topic_id
-              {where}
-              ORDER BY domain, m.display_name""",
-        params,
-    ).fetchall()
+    all_rows = _canonical_mastery_rows(conn)
+    rows = [row for row in all_rows if not domain or str(row["domain"]) == domain]
 
     domains: dict[str, dict[str, object]] = {}
     due_now: list[dict[str, object]] = []
@@ -734,6 +430,10 @@ def knowledge_map_overview(
     return {
         "ok": True,
         "bound_concepts": len(rows),
+        "bound_local_rows": sum(int(row["local_concept_rows"]) for row in rows),
+        "duplicate_envelope_rows": sum(
+            max(0, int(row["local_concept_rows"]) - 1) for row in rows
+        ),
         "domain": domain or "all",
         "domain_rollup": domain_rollup,
         "due_now": due_now[:limit],
@@ -806,6 +506,25 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE concepts ADD COLUMN binding_match_count INTEGER NOT NULL DEFAULT 0"
         )
+    artifact_concept_cols = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(artifact_map_concepts)")
+    }
+    artifact_json_columns = {
+        "section_hashes_json": "{}",
+        "learning_objectives_json": "[]",
+        "prerequisites_json": "[]",
+        "confusers_json": "[]",
+        "consequences_json": "[]",
+        "transfer_targets_json": "[]",
+        "source_provenance_json": "{}",
+    }
+    for column, default_json in artifact_json_columns.items():
+        if column not in artifact_concept_cols:
+            conn.execute(
+                f"ALTER TABLE artifact_map_concepts ADD COLUMN {column} "
+                f"TEXT NOT NULL DEFAULT '{default_json}'"
+            )
     _backfill_memory_schedule(conn)
     _normalize_session_cards(conn)
 
@@ -1352,7 +1071,7 @@ def _ensure_topic(conn: sqlite3.Connection, resolution: TopicResolution, doc_pat
     return topic_id
 
 
-ARTIFACT_MAP_SCHEMA_VERSION = "artifact_map_v1"
+ARTIFACT_MAP_SCHEMA_VERSION = "artifact_map_v2"
 ARTIFACT_MAP_CONCEPT_CAP = 30
 ARTIFACT_REMAINING_CAP = 12
 MAP_CONTEXT_ONLY_CAP = 12
@@ -1394,75 +1113,9 @@ def _normalize_mapping_status(inventory_concept_id: str, value: object) -> str:
     return "explicit" if inventory_concept_id else "unresolved"
 
 
-def _artifact_map_row_for_doc(conn: sqlite3.Connection, doc_path: str) -> tuple[sqlite3.Row | None, str]:
-    if not doc_path:
-        return None, "none"
-    exact = conn.execute("SELECT * FROM artifact_maps WHERE doc_path = ?", (doc_path,)).fetchone()
-    if exact:
-        return exact, "exact"
-    family = _doc_family_alias(doc_path)
-    if not family:
-        return None, "none"
-    rows = conn.execute("SELECT * FROM artifact_maps ORDER BY updated_at DESC, id DESC").fetchall()
-    for row in rows:
-        if _doc_family_alias(str(row["doc_path"])) == family:
-            return row, "doc_family"
-    return None, "none"
-
-
-def _artifact_map_payload_from_row(
-    conn: sqlite3.Connection,
-    row: sqlite3.Row,
-    *,
-    current_hash: str = "",
-    match_type: str = "exact",
-) -> dict[str, object]:
-    concepts = [
-        {
-            "artifact_concept": item["artifact_concept"],
-            "inventory_concept_id": item["inventory_concept_id"] or "",
-            "mapping_status": item["mapping_status"],
-            "confidence": item["confidence"],
-            "role": item["role"],
-            "evidence": json.loads(item["evidence_json"] or "[]"),
-            "source_sections": json.loads(item["source_sections_json"] or "[]"),
-            "source_anchors": json.loads(item["source_anchors_json"] or "[]"),
-            "unresolved_reason": item["unresolved_reason"] or "",
-            "notes": item["notes"] or "",
-        }
-        for item in conn.execute(
-            """SELECT * FROM artifact_map_concepts
-               WHERE artifact_map_id = ?
-               ORDER BY ordinal, id""",
-            (int(row["id"]),),
-        ).fetchall()
-    ]
-    stored_hash = str(row["content_hash"] or "")
-    if current_hash and stored_hash and current_hash != stored_hash:
-        cache_status = "stale"
-    elif match_type == "doc_family":
-        cache_status = "family_match_unverified"
-    elif stored_hash:
-        cache_status = "available_hash_unchecked" if not current_hash else "available_hash_matched"
-    else:
-        cache_status = "available_hash_missing"
-    return {
-        "status": "available",
-        "cache_status": cache_status,
-        "match_type": match_type,
-        "doc_path": row["doc_path"],
-        "artifact_title": row["artifact_title"],
-        "content_hash": stored_hash,
-        "schema_version": row["schema_version"],
-        "map_status": row["map_status"],
-        "updated_at": row["updated_at"],
-        "concepts": concepts,
-        "counts": {
-            "concepts": len(concepts),
-            "mapped": sum(1 for c in concepts if c["inventory_concept_id"]),
-            "unresolved": sum(1 for c in concepts if not c["inventory_concept_id"]),
-        },
-    }
+def _artifact_content_hash(doc_path: str) -> str:
+    from artifact_maps import content_hash
+    return content_hash(doc_path, VAULT_ROOT)
 
 
 def artifact_map_get(
@@ -1471,20 +1124,14 @@ def artifact_map_get(
     doc_path: str,
     current_hash: str = "",
 ) -> dict[str, object]:
-    row, match_type = _artifact_map_row_for_doc(conn, doc_path)
-    if row is None:
-        return {
-            "status": "missing",
-            "doc_path": doc_path,
-            "cache_status": "missing",
-            "concepts": [],
-            "counts": {"concepts": 0, "mapped": 0, "unresolved": 0},
-            "next_action": (
-                "After reading the full artifact, map artifact concepts to scoped inventory ids "
-                "and save them with artifact-map-upsert."
-            ),
-        }
-    return _artifact_map_payload_from_row(conn, row, current_hash=current_hash, match_type=match_type)
+    from artifact_maps import get
+    return get(
+        conn,
+        doc_path=doc_path,
+        current_hash=current_hash or _artifact_content_hash(doc_path),
+        schema_version=ARTIFACT_MAP_SCHEMA_VERSION,
+        doc_family_alias=_doc_family_alias,
+    )
 
 
 def artifact_map_upsert(
@@ -1496,87 +1143,22 @@ def artifact_map_upsert(
     content_hash: str = "",
     created_by: str = "agent",
 ) -> dict[str, object]:
-    if not doc_path:
-        raise ValueError("artifact map requires --doc")
-    concepts = payload.get("concepts")
-    if not isinstance(concepts, list) or not concepts:
-        raise ValueError("artifact map payload must contain a non-empty `concepts` list")
-    resolution = resolve_topic(conn, topic or str(payload.get("topic", "")), doc_path)
-    topic_id = _ensure_topic(conn, resolution, doc_path)
-    now = datetime.now(timezone.utc).isoformat()
-    artifact_title = str(payload.get("artifact_title") or Path(doc_path).stem).strip()
-    schema_version = str(payload.get("schema_version") or ARTIFACT_MAP_SCHEMA_VERSION)
-    map_status = _controlled_value(str(payload.get("map_status") or "complete"))
-    if map_status not in {"complete", "partial", "needs_review"}:
-        map_status = "complete"
-    final_hash = content_hash or str(payload.get("content_hash") or "")
-    conn.execute(
-        """INSERT INTO artifact_maps
-           (doc_path, topic_id, artifact_title, content_hash, schema_version, map_status,
-            created_by, notes, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-           ON CONFLICT(doc_path) DO UPDATE SET
-             topic_id = excluded.topic_id,
-             artifact_title = excluded.artifact_title,
-             content_hash = excluded.content_hash,
-             schema_version = excluded.schema_version,
-             map_status = excluded.map_status,
-             created_by = excluded.created_by,
-             notes = excluded.notes,
-             updated_at = excluded.updated_at""",
-        (
-            doc_path,
-            topic_id,
-            artifact_title,
-            final_hash,
-            schema_version,
-            map_status,
-            created_by or "agent",
-            str(payload.get("notes") or ""),
-            now,
-            now,
-        ),
+    from artifact_maps import upsert
+    final_hash = (
+        content_hash
+        or str(payload.get("content_hash") or "")
+        or _artifact_content_hash(doc_path)
     )
-    row = conn.execute("SELECT id FROM artifact_maps WHERE doc_path = ?", (doc_path,)).fetchone()
-    assert row is not None
-    map_id = int(row["id"])
-    conn.execute("DELETE FROM artifact_map_concepts WHERE artifact_map_id = ?", (map_id,))
-    for idx, raw in enumerate(concepts):
-        if not isinstance(raw, dict):
-            raise ValueError(f"concepts[{idx}] must be an object")
-        artifact_concept = str(raw.get("artifact_concept") or raw.get("concept") or "").strip()
-        if not artifact_concept:
-            raise ValueError(f"concepts[{idx}] missing artifact_concept")
-        inventory_id = str(raw.get("inventory_concept_id") or "").strip()
-        role = _normalize_artifact_role(raw.get("role"))
-        confidence = _normalize_artifact_confidence(raw.get("confidence"))
-        status = _normalize_mapping_status(inventory_id, raw.get("mapping_status"))
-        conn.execute(
-            """INSERT INTO artifact_map_concepts
-               (artifact_map_id, artifact_concept, inventory_concept_id, mapping_status,
-                confidence, role, evidence_json, source_sections_json, source_anchors_json,
-                unresolved_reason, notes, ordinal)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                map_id,
-                artifact_concept,
-                inventory_id,
-                status,
-                confidence,
-                role,
-                json.dumps(_json_array(raw.get("evidence")), sort_keys=True),
-                json.dumps(_json_array(raw.get("source_sections")), sort_keys=True),
-                json.dumps(_json_array(raw.get("source_anchors")), sort_keys=True),
-                str(raw.get("unresolved_reason") or ""),
-                str(raw.get("notes") or ""),
-                idx,
-            ),
-        )
-    conn.commit()
-    saved = artifact_map_get(conn, doc_path=doc_path, current_hash=final_hash)
-    saved["ok"] = True
-    saved["resolved_topic"] = resolution.slug
-    return saved
+    return upsert(
+        conn,
+        doc_path=doc_path,
+        topic=topic,
+        payload=payload,
+        content_hash_value=final_hash,
+        created_by=created_by,
+        schema_version=ARTIFACT_MAP_SCHEMA_VERSION,
+        engine=sys.modules[__name__],
+    )
 
 
 def _artifact_entries_by_inventory(artifact_map: dict[str, object]) -> dict[str, list[dict[str, object]]]:
@@ -1821,7 +1403,12 @@ def _learner_overlay_for_inventory_id(
     conn: sqlite3.Connection,
     inventory_concept_id: str,
 ) -> dict[str, object]:
-    from cognitive_ops import mastery_depth_from_evidence, trusted_operation_from_signal  # noqa: PLC0415
+    from cognitive_ops import (  # noqa: PLC0415
+        add_operation_evidence,
+        mastery_depth_from_evidence,
+        serialize_operation_evidence,
+        trusted_operation_from_signal,
+    )
 
     learner_rows = conn.execute(
         """SELECT DISTINCT c.id, c.display_name
@@ -1854,19 +1441,13 @@ def _learner_overlay_for_inventory_id(
         )
         if not op:
             continue
-        bucket = operation_evidence.setdefault(op, {"count": 0, "session_ids": set()})
-        bucket["count"] = int(bucket["count"]) + 1
-        sessions = bucket["session_ids"]
-        if isinstance(sessions, set) and row["session_id"]:
-            sessions.add(str(row["session_id"]))
-    serialized_operation_evidence = {
-        operation: {
-            "count": int(values["count"]),
-            "session_count": len(values["session_ids"]),
-            "session_ids": sorted(values["session_ids"]),
-        }
-        for operation, values in operation_evidence.items()
-    }
+        add_operation_evidence(
+            operation_evidence,
+            operation=op,
+            session_id=str(row["session_id"] or ""),
+            observed_at=str(row["created_at"] or ""),
+        )
+    serialized_operation_evidence = serialize_operation_evidence(operation_evidence)
     successful_operations = sorted(serialized_operation_evidence)
     states = conn.execute(
         """SELECT cs.concept_id, cs.state, cs.priority, cs.stability, cs.gap_type
@@ -2938,6 +2519,8 @@ def _claim_state_for_score(
     score: int,
     existing_state: str | None = None,
     teaching_intent: str = "",
+    *,
+    retention_due: bool = False,
 ) -> tuple[str, str]:
     if existing_state == "durable" and score < 2:
         return "regressed", "regressed"
@@ -2951,7 +2534,9 @@ def _claim_state_for_score(
         "repaired_same_session",
         "regressed",
     }:
-        return "durable", "retention_passed"
+        if retention_due:
+            return "durable", "retention_passed"
+        return "repaired_same_session", "retention_not_due"
     if existing_state in {"missed", "partially_repaired", "repaired_same_session", "regressed"}:
         return "repaired_same_session", "repaired"
     return "durable", "confirmed"
@@ -2963,6 +2548,24 @@ def _parse_ts(value: str) -> datetime | None:
         return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
     except (TypeError, ValueError):
         return None
+
+
+def _retention_check_is_due(
+    existing: sqlite3.Row | None,
+    *,
+    now: str,
+    session_id: str,
+) -> bool:
+    """Require a new session and the claim's scheduled delay before promotion."""
+    if existing is None:
+        return False
+    keys = set(existing.keys())
+    previous_session = str(existing["last_session_id"] or "") if "last_session_id" in keys else ""
+    if not previous_session or previous_session == session_id:
+        return False
+    observed = _parse_ts(now)
+    due = _parse_ts(str(existing["next_due_ts"] or "")) if "next_due_ts" in keys else None
+    return bool(observed is not None and due is not None and observed >= due)
 
 
 def _priority_delay_factor(priority: str) -> float:
@@ -3128,10 +2731,14 @@ def _find_matching_claim_state(
     # Matching is scoped to the same provenance: a service-origin gap never binds
     # to an assessed claim (or vice versa), even when they share a topic and tokens.
     exact = conn.execute(
-        """SELECT id, claim_slug, claim_text, state, reason, difficulty, stability
-           FROM claim_state
-           WHERE topic_id = ? AND claim_slug = ? AND origin = ?
-           ORDER BY last_seen_ts DESC LIMIT 1""",
+        """SELECT cs.id, cs.claim_slug, cs.claim_text, cs.state, cs.reason,
+                  cs.difficulty, cs.stability, cs.last_seen_ts, cs.next_due_ts,
+                  cs.last_result_id, ex.session_id AS last_session_id
+             FROM claim_state cs
+             LEFT JOIN claim_results cr ON cr.id = cs.last_result_id
+             LEFT JOIN exchanges ex ON ex.id = cr.exchange_id
+            WHERE cs.topic_id = ? AND cs.claim_slug = ? AND cs.origin = ?
+            ORDER BY cs.last_seen_ts DESC LIMIT 1""",
         (topic_id, claim_slug, origin),
     ).fetchone()
     if exact:
@@ -3146,13 +2753,17 @@ def _find_matching_claim_state(
     params: list[object] = [topic_id, origin]
     prefix_filter = ""
     if claim_slug_prefix:
-        prefix_filter = " AND claim_slug LIKE ?"
+        prefix_filter = " AND cs.claim_slug LIKE ?"
         params.append(f"{claim_slug_prefix}%")
     rows = conn.execute(
-        f"""SELECT id, claim_slug, claim_text, state, reason, difficulty, stability
-            FROM claim_state
-            WHERE topic_id = ? AND origin = ?{prefix_filter}
-            ORDER BY last_seen_ts DESC LIMIT 30""",
+        f"""SELECT cs.id, cs.claim_slug, cs.claim_text, cs.state, cs.reason,
+                    cs.difficulty, cs.stability, cs.last_seen_ts, cs.next_due_ts,
+                    cs.last_result_id, ex.session_id AS last_session_id
+               FROM claim_state cs
+               LEFT JOIN claim_results cr ON cr.id = cs.last_result_id
+               LEFT JOIN exchanges ex ON ex.id = cr.exchange_id
+              WHERE cs.topic_id = ? AND cs.origin = ?{prefix_filter}
+              ORDER BY cs.last_seen_ts DESC LIMIT 30""",
         params,
     ).fetchall()
     best: tuple[float, sqlite3.Row] | None = None
@@ -3205,7 +2816,7 @@ def _record_repair_episode_transition(
                 WHERE id = ?""",
             (result_id, now, episode_id),
         )
-    elif teaching_intent == "retention_check" or event == "retention_passed":
+    elif event == "retention_passed":
         conn.execute(
             """UPDATE repair_episodes
                   SET retention_result_id = ?, retention_ts = ?, status = 'retained'
@@ -3226,6 +2837,7 @@ def _log_claim_result(
     conn: sqlite3.Connection,
     *,
     exchange_id: int,
+    session_id: str,
     topic_id: int,
     concept_id: int,
     topic_slug: str,
@@ -3290,8 +2902,13 @@ def _log_claim_result(
         existing = None
     elif match_claim_state_id is not None:
         existing = conn.execute(
-            """SELECT id, claim_slug, claim_text, state, reason, difficulty, stability
-               FROM claim_state WHERE id = ? AND topic_id = ?""",
+            """SELECT cs.id, cs.claim_slug, cs.claim_text, cs.state, cs.reason,
+                      cs.difficulty, cs.stability, cs.last_seen_ts, cs.next_due_ts,
+                      cs.last_result_id, ex.session_id AS last_session_id
+                 FROM claim_state cs
+                 LEFT JOIN claim_results cr ON cr.id = cs.last_result_id
+                 LEFT JOIN exchanges ex ON ex.id = cr.exchange_id
+                WHERE cs.id = ? AND cs.topic_id = ?""",
             (int(match_claim_state_id), topic_id),
         ).fetchone()
         if existing is None:
@@ -3345,7 +2962,13 @@ def _log_claim_result(
     )
     result_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
     teaching_intent = _normalize(agent_signal.get("teaching_intent", "")).replace(" ", "_")
-    state, event = _claim_state_for_score(score, existing["state"] if existing else None, teaching_intent)
+    retention_due = _retention_check_is_due(existing, now=now, session_id=session_id)
+    state, event = _claim_state_for_score(
+        score,
+        existing["state"] if existing else None,
+        teaching_intent,
+        retention_due=retention_due,
+    )
     # Priority decides what the next session sees first. The agent, having just
     # judged the clinical stakes of this exact miss in context, sets it directly.
     # The keyword heuristic is only a fallback for when the agent does not assert.
@@ -3671,6 +3294,7 @@ def log_answer(
         result_id = _log_claim_result(
             conn,
             exchange_id=exchange_id,
+            session_id=session_id,
             topic_id=topic_id,
             concept_id=concept_id,
             topic_slug=resolution.slug,
@@ -3750,6 +3374,7 @@ def log_answer(
                     learner_concept_id=concept_id,
                     cognitive_op=cognitive_op,
                     gap_type=turn_gap_type,
+                    observed_at=now,
                 )
                 feedback = probe_feedback(
                     cognitive_op=cognitive_op,
@@ -3796,11 +3421,8 @@ def log_answer(
             except Exception as exc:
                 print(f"WARN policy_event_failed: {exc}", file=sys.stderr)
     if competency_target and service_row:
-        # Touching a rubric target during service learning advances it off 'open'.
-        conn.execute(
-            """UPDATE competency_targets SET status = 'developing'
-               WHERE service_id = ? AND slug = ? AND status = 'open'""",
-            (int(service_row["id"]), _slug(competency_target)),
+        mark_competency_developing(
+            conn, service_id=int(service_row["id"]), target=competency_target
         )
     conn.commit()
     return exchange_id
@@ -3878,11 +3500,13 @@ def _audit_probe_telemetry(conn: sqlite3.Connection, *, session_id: str) -> dict
 
 def end_session(conn: sqlite3.Connection, *, session_id: str, summary: str, next_strategy: str, ended: str | None = None, stats_json: str = "{}") -> dict[str, object]:
     handoff_skeleton: dict[str, object] = {}
+    session_map_present = False
     try:
         from node_recall import session_handoff_from_map  # noqa: PLC0415
-        from session_map import delete as delete_session_map, load as load_session_map  # noqa: PLC0415
+        from session_map import load as load_session_map  # noqa: PLC0415
         smap = load_session_map(session_id)
         if smap:
+            session_map_present = True
             try:
                 audit = json.loads(stats_json) if stats_json.strip() else {}
             except (ValueError, TypeError):
@@ -3898,33 +3522,53 @@ def end_session(conn: sqlite3.Connection, *, session_id: str, summary: str, next
                 audit.setdefault("inventory_scope", smap["scope"])
             audit["probe_telemetry"] = _audit_probe_telemetry(conn, session_id=session_id)
             stats_json = _json_dumps(audit)
-        delete_session_map(session_id)
     except Exception as exc:
-        print(f"WARN session_map_cleanup_failed: {exc}", file=sys.stderr)
+        print(f"WARN session_map_handoff_failed: {exc}", file=sys.stderr)
     now = ended or datetime.now(timezone.utc).isoformat()
-    conn.execute(
-        """INSERT OR IGNORE INTO sessions
-           (session_id, started, ended, summary, next_strategy, stats_json)
-           VALUES (?, ?, ?, ?, ?, ?)""",
-        (session_id, now, now, summary, next_strategy, stats_json),
-    )
-    conn.execute(
-        "UPDATE sessions SET ended = ?, summary = ?, next_strategy = ?, stats_json = ? WHERE session_id = ?",
-        (now, summary, next_strategy, stats_json, session_id),
-    )
-    session_row = conn.execute(
-        "SELECT primary_topic_id, skill FROM sessions WHERE session_id = ?",
-        (session_id,),
-    ).fetchone()
-    session_skill = session_row["skill"] if session_row else ""
-    is_artifact_anchor = session_skill in ARTIFACT_ANCHOR_SKILLS
-    excluded_from_count = session_skill in CURATION_EXCLUDED_SKILLS
-    # Artifact anchors remain discoverable without competing with learner handoffs.
-    if session_row and session_row["primary_topic_id"]:
-        card_type = "artifact_anchor" if is_artifact_anchor else "session_handoff"
-        _upsert_session_card(conn, int(session_row["primary_topic_id"]), session_id, summary, next_strategy, now, card_type=card_type)
-    newly_counted = False if excluded_from_count else mark_session_counted(conn, session_id, now)
-    conn.commit()
+    with conn:
+        _set_study_runtime(
+            conn,
+            session_id=session_id,
+            lifecycle_node="close",
+            now=now,
+        )
+        conn.execute(
+            """INSERT OR IGNORE INTO sessions
+               (session_id, started, ended, summary, next_strategy, stats_json)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (session_id, now, now, summary, next_strategy, stats_json),
+        )
+        conn.execute(
+            "UPDATE sessions SET ended = ?, summary = ?, next_strategy = ?, stats_json = ? WHERE session_id = ?",
+            (now, summary, next_strategy, stats_json, session_id),
+        )
+        session_row = conn.execute(
+            "SELECT primary_topic_id, skill FROM sessions WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        session_skill = session_row["skill"] if session_row else ""
+        is_artifact_anchor = session_skill in ARTIFACT_ANCHOR_SKILLS
+        excluded_from_count = session_skill in CURATION_EXCLUDED_SKILLS
+        # Artifact anchors remain discoverable without competing with learner handoffs.
+        if session_row and session_row["primary_topic_id"]:
+            card_type = "artifact_anchor" if is_artifact_anchor else "session_handoff"
+            _upsert_session_card(conn, int(session_row["primary_topic_id"]), session_id, summary, next_strategy, now, card_type=card_type)
+        newly_counted = False if excluded_from_count else mark_session_counted(conn, session_id, now)
+        _set_study_runtime(
+            conn,
+            session_id=session_id,
+            lifecycle_node="done",
+            now=now,
+        )
+    # Ephemeral state is removed only after the durable handoff and lifecycle
+    # transition commit.  If the transaction fails, the map remains recoverable.
+    if session_map_present:
+        try:
+            from session_map import delete as delete_session_map  # noqa: PLC0415
+
+            delete_session_map(session_id)
+        except Exception as exc:
+            print(f"WARN session_map_cleanup_failed: {exc}", file=sys.stderr)
     # Lightweight per-session maintenance: re-analyze only the tables that have
     # changed enough to matter, keeping planner stats fresh as the model grows.
     try:
@@ -4654,6 +4298,25 @@ def _telemetry_profile_for_summary(
         elif not legacy:
             incomplete_modern_rows += 1
     total = len(rows)
+    dimension_where = ""
+    dimension_params: list[object] = []
+    if topic_id is not None:
+        dimension_where = "WHERE e.topic_id = ?"
+        dimension_params.append(topic_id)
+    dimension_row = conn.execute(
+        f"""SELECT COUNT(*) AS total,
+                   SUM(CASE WHEN ca.assessment_status = 'graded' THEN 1 ELSE 0 END) AS graded,
+                   SUM(CASE WHEN ca.assessment_status = 'pending_adjudication' THEN 1 ELSE 0 END) AS pending,
+                   SUM(CASE WHEN COALESCE(ca.reasoning_depth, '') != '' THEN 1 ELSE 0 END) AS depth,
+                   SUM(CASE WHEN COALESCE(ca.independence, '') != '' THEN 1 ELSE 0 END) AS independence,
+                   SUM(CASE WHEN COALESCE(ca.safety_impact, '') != '' THEN 1 ELSE 0 END) AS safety,
+                   SUM(CASE WHEN COALESCE(ca.verification_status, '') != '' THEN 1 ELSE 0 END) AS verification
+              FROM claim_assessments ca
+              JOIN exchanges e ON e.id = ca.exchange_id
+              {dimension_where}""",
+        dimension_params,
+    ).fetchone()
+    dimension_total = int(dimension_row["total"] or 0)
     return {
         "assessed_claim_results": total,
         "cohorts": {
@@ -4686,6 +4349,15 @@ def _telemetry_profile_for_summary(
             "misses": misses,
             "populated": miss_metadata_complete,
             "rate": round(miss_metadata_complete / max(1, misses), 3),
+        },
+        "typed_assessment_dimensions": {
+            "total": dimension_total,
+            "graded": int(dimension_row["graded"] or 0),
+            "pending_adjudication": int(dimension_row["pending"] or 0),
+            "reasoning_depth_rate": round(int(dimension_row["depth"] or 0) / max(1, dimension_total), 3),
+            "independence_rate": round(int(dimension_row["independence"] or 0) / max(1, dimension_total), 3),
+            "safety_impact_rate": round(int(dimension_row["safety"] or 0) / max(1, dimension_total), 3),
+            "verification_rate": round(int(dimension_row["verification"] or 0) / max(1, dimension_total), 3),
         },
         "guardrail": (
             "Use calibration_grade rows for tutor-efficacy inference. Legacy and incomplete-modern rows remain valid learner-history evidence but are not clean intervention evidence."
@@ -5006,9 +4678,12 @@ def _claim_memory_trace(
                   cr.corrected_rule, cr.clinical_consequence,
                   cr.retest_prompt_shape, cr.teaching_intervention,
                   cr.learning_operation, cr.created_at, ex.raw_answer,
-                  ex.source_json
+                  ex.source_json, ca.independence, ca.reasoning_depth,
+                  ca.safety_impact, ca.operation_demonstrated,
+                  ca.verification_status
              FROM claim_results cr
              JOIN exchanges ex ON ex.id = cr.exchange_id
+             LEFT JOIN claim_assessments ca ON ca.claim_result_id = cr.id
             WHERE cr.topic_id = ? AND cr.concept_id = ? AND cr.claim_slug = ?
               AND COALESCE(cr.origin, 'assessed') = 'assessed'
             ORDER BY cr.created_at DESC, cr.id DESC
@@ -5059,6 +4734,13 @@ def _claim_memory_trace(
         "confidence_observed": str(signal.get("confidence_observed") or ""),
         "teaching_move": str(signal.get("teaching_move") or ""),
         "teaching_intent": str(signal.get("teaching_intent") or ""),
+        "independence": str(latest["independence"] or signal.get("answer_mode") or ""),
+        "reasoning_depth": str(latest["reasoning_depth"] or ""),
+        "safety_impact": str(latest["safety_impact"] or ""),
+        "operation_demonstrated": str(
+            latest["operation_demonstrated"] or latest["learning_operation"] or ""
+        ),
+        "verification_status": str(latest["verification_status"] or ""),
         "last_seen_ts": str(latest["created_at"] or ""),
         "recent_outcomes": [
             {
@@ -5197,7 +4879,12 @@ def _active_prereq_gaps(conn: sqlite3.Connection, cid: int) -> list[str]:
 
 def _build_schema_map(conn: sqlite3.Connection, topic_slug: str) -> list[dict[str, object]]:
     """Deterministic per-concept exposure/mastery map for a topic from the learner model."""
-    from cognitive_ops import mastery_depth_from_evidence, trusted_operation_from_signal  # noqa: PLC0415
+    from cognitive_ops import (  # noqa: PLC0415
+        add_operation_evidence,
+        mastery_depth_from_evidence,
+        serialize_operation_evidence,
+        trusted_operation_from_signal,
+    )
 
     topic_row = conn.execute("SELECT id FROM topics WHERE canonical_slug = ?", (topic_slug,)).fetchone()
     if not topic_row:
@@ -5222,7 +4909,8 @@ def _build_schema_map(conn: sqlite3.Connection, topic_slug: str) -> list[dict[st
     attempts_map = {r[0]: (r[1], r[2], r[3]) for r in attempts_rows}
     operation_evidence: dict[int, dict[str, dict[str, object]]] = {}
     for row in conn.execute(
-        """SELECT cr.concept_id, cr.learning_operation, cr.agent_signal_json, ex.session_id
+        """SELECT cr.concept_id, cr.learning_operation, cr.agent_signal_json,
+                  cr.created_at, ex.session_id
              FROM claim_results cr
              JOIN exchanges ex ON ex.id = cr.exchange_id
             WHERE cr.topic_id = ? AND cr.origin = 'assessed' AND cr.score >= 2.0""",
@@ -5234,11 +4922,12 @@ def _build_schema_map(conn: sqlite3.Connection, topic_slug: str) -> list[dict[st
         )
         if operation:
             concept_evidence = operation_evidence.setdefault(int(row["concept_id"]), {})
-            bucket = concept_evidence.setdefault(operation, {"count": 0, "session_ids": set()})
-            bucket["count"] = int(bucket["count"]) + 1
-            sessions = bucket["session_ids"]
-            if isinstance(sessions, set) and row["session_id"]:
-                sessions.add(str(row["session_id"]))
+            add_operation_evidence(
+                concept_evidence,
+                operation=operation,
+                session_id=str(row["session_id"] or ""),
+                observed_at=str(row["created_at"] or ""),
+            )
     state_rows = conn.execute(
         """SELECT concept_id, state, priority, stability, gap_type
            FROM claim_state
@@ -5302,14 +4991,9 @@ def _build_schema_map(conn: sqlite3.Connection, topic_slug: str) -> list[dict[st
             exposure_status = "exposed_superficial"
         else:
             exposure_status = "exposed_deep"
-        serialized_operation_evidence = {
-            operation: {
-                "count": int(values["count"]),
-                "session_count": len(values["session_ids"]),
-                "session_ids": sorted(values["session_ids"]),
-            }
-            for operation, values in operation_evidence.get(cid, {}).items()
-        }
+        serialized_operation_evidence = serialize_operation_evidence(
+            operation_evidence.get(cid, {})
+        )
         schema_map.append({
             "concept_id": cid,
             "concept": c_display,
@@ -5590,6 +5274,7 @@ def _policy_after_log_answer(
     learner_concept_id: int,
     cognitive_op: str = "",
     gap_type: str = "",
+    observed_at: str = "",
 ) -> tuple[dict[str, object], dict[str, int]]:
     """Patch session knowledge map and return the next-turn policy."""
     from session_map import (  # noqa: PLC0415
@@ -5621,6 +5306,7 @@ def _policy_after_log_answer(
             learner_concept_id=learner_concept_id,
             cognitive_op=cognitive_op,
             gap_type=gap_type,
+            observed_at=observed_at,
         )
         if delta == "unbound":
             plan = _current_policy_for_topic(conn, topic_id=topic_id, topic_slug=topic_slug)
@@ -6626,7 +6312,9 @@ def _compact_memory_review_payload(
             "missing_edge", "corrected_rule", "clinical_consequence",
             "retest_prompt_shape", "prior_teaching_intervention", "cognitive_op",
             "answer_mode", "confidence_observed", "teaching_move",
-            "teaching_intent", "last_seen_ts", "recent_outcomes",
+            "teaching_intent", "independence", "reasoning_depth",
+            "safety_impact", "operation_demonstrated", "verification_status",
+            "last_seen_ts", "recent_outcomes",
         )
         return {key: value[key] for key in keep if key in value}
 
@@ -7377,8 +7065,8 @@ def startup_recall(
         raise ValueError("startup-recall --global cannot be combined with --topic or --doc")
     if not global_mode and not (topic or doc_path):
         raise ValueError("startup-recall requires --topic, --doc, or --global")
-    if profile not in {"auto", "doc", "memory", "audit"}:
-        raise ValueError("startup-recall profile must be one of: auto, doc, memory, audit")
+    if profile not in {"auto", "tutor", "doc", "memory", "audit"}:
+        raise ValueError("startup-recall profile must be one of: auto, tutor, doc, memory, audit")
     if global_mode and profile == "doc":
         raise ValueError("startup-recall --profile doc cannot be combined with --global")
 
@@ -7395,8 +7083,11 @@ def startup_recall(
         novel_topic = not bool(stored_topic)
         recall_topic = resolved.slug if stored_topic else (topic or _doc_alias(doc_path))
 
+    tutor_profile = profile == "tutor"
     effective_profile = profile
     if profile == "auto":
+        effective_profile = "doc" if (doc_path and not global_mode) else "memory"
+    elif tutor_profile:
         effective_profile = "doc" if (doc_path and not global_mode) else "memory"
     retrieval_lens = "formal" if effective_profile == "doc" else lens
     initial_limit = max(0, limit if limit is not None else (12 if global_mode else 8))
@@ -7423,7 +7114,7 @@ def startup_recall(
             )
         )
         omitted_high_signal = payload.get("retrieval_guidance", {}).get("omitted_high_signal", {})
-        if effective_profile == "doc":
+        if effective_profile == "doc" or tutor_profile:
             break
         if not isinstance(omitted_high_signal, dict) or not omitted_high_signal:
             break
@@ -7568,6 +7259,14 @@ def startup_recall(
                 topic_id=int(topic_row[0]) if topic_row else None,
                 plan=brief["sequential_teaching_plan"],  # type: ignore[arg-type]
             )
+            _set_study_runtime(
+                conn,
+                session_id=session_id,
+                lifecycle_node="teach",
+                profile=effective_profile,
+                topic_id=int(topic_row[0]) if topic_row else None,
+                doc_path=doc_path,
+            )
             conn.commit()
         except Exception as exc:
             print(f"WARN policy_event_failed: {exc}", file=sys.stderr)
@@ -7576,7 +7275,11 @@ def startup_recall(
         try:
             from acgme_readiness import build_acgme_readiness_overlay  # noqa: PLC0415
 
-            brief["acgme_readiness"] = build_acgme_readiness_overlay(conn, pgy_target=1)
+            profile_state = learner_profile_get(conn)
+            pgy_target = int(profile_state.get("current_pgy") or 1)
+            brief["acgme_readiness"] = build_acgme_readiness_overlay(
+                conn, pgy_target=pgy_target
+            )
         except Exception as exc:
             print(f"WARN acgme_readiness_failed: {exc}", file=sys.stderr)
 
@@ -7587,7 +7290,9 @@ def startup_recall(
         "anki_feedback_status": anki_feedback_status,
         "resolved_topic": resolved.slug if resolved else "",
         "resolver_confidence": resolved.confidence if resolved else None,
-        "profile": effective_profile,
+        "profile": (
+            f"tutor_{effective_profile}" if tutor_profile else effective_profile
+        ),
         "initial_limit": initial_limit,
         "final_limit": final_limit,
         "auto_expanded": bool(expansions),
@@ -7614,6 +7319,18 @@ def startup_recall(
             )
         ),
     }
+    if tutor_profile:
+        from tutor_state import tutor_state_payload  # noqa: PLC0415
+
+        return _json_dumps(
+            tutor_state_payload(
+                payload,
+                startup_meta=payload["startup_recall"],  # type: ignore[arg-type]
+                profile=effective_profile,
+                session_id=session_id,
+                conn=conn,
+            )
+        )
     if effective_profile == "doc":
         return _json_dumps(
             _compact_doc_review_payload(
@@ -7629,6 +7346,19 @@ def startup_recall(
             )
         )
     return _json_dumps(payload)
+
+
+def anki_card_decision_audit(
+    session_id: str,
+    *,
+    path: Path | None = None,
+) -> list[dict[str, object]]:
+    """Return one row per assessed exchange through the learner-memory API."""
+    conn = _get_db(path)
+    try:
+        return card_decision_rows(conn, session_id)
+    finally:
+        conn.close()
 
 
 def status(conn: sqlite3.Connection) -> str:
@@ -7650,224 +7380,12 @@ def status(conn: sqlite3.Connection) -> str:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Claim-centered study memory ledger")
-    sub = parser.add_subparsers(dest="command")
+    try:
+        from study_memory_cli import build_parser
+    except ModuleNotFoundError:  # pragma: no cover - package import in tests
+        from .study_memory_cli import build_parser
 
-    p_resolve = sub.add_parser("resolve-topic")
-    p_resolve.add_argument("--topic", required=True)
-    p_resolve.add_argument("--doc", default="")
-
-    p_log = sub.add_parser("log-answer")
-    p_log.add_argument("--session", required=True)
-    p_log.add_argument("--topic", required=True)
-    p_log.add_argument("--concept", required=True)
-    p_log.add_argument("--question", required=True)
-    p_log.add_argument("--answer", required=True)
-    p_log.add_argument("--correct", type=int, choices=[0, 1, 2], required=True)
-    p_log.add_argument("--correction", default="")
-    p_log.add_argument("--error-type", default="")
-    p_log.add_argument("--misconception", default="")
-    p_log.add_argument("--doc", default="")
-    p_log.add_argument("--skill", default="")
-    p_log.add_argument("--tested-claim", default="")
-    p_log.add_argument("--learner-claim", default="")
-    p_log.add_argument("--demonstrated-edge", default="", help="What the learner got right in a partial answer")
-    p_log.add_argument("--missing-edge", default="")
-    p_log.add_argument("--corrected-rule", default="")
-    p_log.add_argument("--clinical-consequence", default="")
-    p_log.add_argument("--retest-prompt-shape", default="")
-    p_log.add_argument("--teaching-intervention", default="", help="Compact description of the explanation, contrast, or model used after this answer")
-    p_log.add_argument("--learning-operation", default="")
-    p_log.add_argument("--cognitive-op", default="", help="Alias for --learning-operation: recall|discrimination|quantification|sequencing|mechanism|transfer")
-    p_log.add_argument("--teaching-intent", default="")
-    p_log.add_argument("--expected-answer-edge", default="")
-    p_log.add_argument("--coverage-role", default="")
-    p_log.add_argument("--source-section", default="")
-    p_log.add_argument("--source-anchor", default="")
-    p_log.add_argument("--curriculum-unit", default="")
-    p_log.add_argument("--answer-mode", default="")
-    p_log.add_argument("--confidence-observed", default="")
-    p_log.add_argument("--teaching-move", default="")
-    p_log.add_argument("--strict-telemetry", action="store_true")
-    p_log.add_argument("--priority", default="", help="Agent-asserted priority: urgent|high|medium|low (overrides heuristic)")
-    p_log.add_argument("--match-claim-state-id", type=int, default=None, help="Bind this answer to an existing open claim (agent-asserted recurrence)")
-    p_log.add_argument("--new-claim", action="store_true", help="Force a new claim_state even if a similar one exists")
-    p_log.add_argument("--repairs-claim-state-ids", default="", help="Comma-separated open claim_state ids this correct answer repairs")
-    p_log.add_argument("--origin", choices=["assessed", "service"], default="assessed", help="Provenance: 'service' for service-rotation learning (isolated from formal review)")
-    p_log.add_argument("--rotation", type=int, default=None, help="Rotation id this service-origin answer belongs to (defaults to the active rotation)")
-    p_log.add_argument("--competency-target", default="", help="Service competency_target slug this answer advances")
-    p_log.add_argument("--convention", action="store_true", help="Mark as a (service x site) local convention rather than a portable clinical gap")
-    p_log.add_argument("--shift-debrief-candidate-id", type=int, default=None, help="Mark this pending shift-debrief review candidate as reviewed by the logged answer")
-    p_log.add_argument(
-        "--inventory-concept-id",
-        default="",
-        help="Canonical inventory concept id for the probed concept (required for study-review when resolvable)",
-    )
-
-    p_end = sub.add_parser("end-session")
-    p_end.add_argument("--session", required=True)
-    p_end.add_argument("--summary", required=True)
-    p_end.add_argument("--next-strategy", required=True)
-    p_end.add_argument("--stats-json", default="{}")
-    p_end.add_argument("--json", dest="as_json", action="store_true")
-
-    p_summary = sub.add_parser("summary")
-    p_summary.add_argument("--topic", default="")
-    p_summary.add_argument("--limit", type=int, default=8)
-    p_summary.add_argument("--scaffold-limit", type=int, default=2)
-    p_summary.add_argument("--no-scaffolds", action="store_true")
-    p_summary.add_argument("--include-global-scaffolds", action="store_true")
-    p_summary.add_argument("--include-curated", action="store_true")
-    p_summary.add_argument("--include-due", action="store_true")
-    p_summary.add_argument("--include-model", action="store_true")
-    p_summary.add_argument("--context", default="", help="Optional upcoming case/rotation/context string for relevance weighting")
-    p_summary.add_argument("--brief-only", action="store_true", help="Return the synthesized planning brief plus truncation diagnostics")
-    p_summary.add_argument("--lens", choices=["formal", "general", "service"], default="formal", help="formal doc/audit surface; general includes shift-debrief review candidates; service routes to service memory")
-    p_summary.add_argument("--service", default="", help="Service slug for --lens service")
-    p_summary.add_argument("--site", default="", help="Site slug for --lens service convention scoping")
-    p_summary.add_argument("--rotation", type=int, default=None, help="Rotation id for --lens service")
-
-    p_rotation_start = sub.add_parser("rotation-start")
-    p_rotation_start.add_argument("--service", required=True)
-    p_rotation_start.add_argument("--site", required=True)
-    p_rotation_start.add_argument("--pgy", type=int, default=None)
-    p_rotation_start.add_argument("--block", default="")
-
-    sub.add_parser("rotation-current")
-    sub.add_parser("rotation-list")
-
-    p_rotation_end = sub.add_parser("rotation-end")
-    p_rotation_end.add_argument("--rotation", type=int, required=True)
-
-    p_rubric = sub.add_parser("service-rubric")
-    p_rubric.add_argument("--service", required=True)
-    p_rubric.add_argument("--seed", action="store_true", help="Seed/refresh competency targets from the ACGME catalog domain slice")
-    p_rubric.add_argument("--pgy", type=int, default=None, help="Restrict seeding to targets at or below this PGY")
-
-    p_startup = sub.add_parser("startup-recall")
-    p_startup.add_argument("--topic", default="")
-    p_startup.add_argument("--doc", default="")
-    p_startup.add_argument("--global", dest="global_mode", action="store_true")
-    p_startup.add_argument("--limit", type=int, default=None)
-    p_startup.add_argument("--scaffold-limit", type=int, default=None)
-    p_startup.add_argument("--include-global-scaffolds", action="store_true")
-    p_startup.add_argument("--context", default="", help="Optional upcoming case/rotation/context string for relevance weighting")
-    p_startup.add_argument("--lens", choices=["formal", "general", "service"], default="formal", help="formal seals out service material; general includes shift-debrief review candidates; service leads with rotation gaps")
-    p_startup.add_argument("--service", default="", help="Service slug for --lens service (defaults to the active rotation)")
-    p_startup.add_argument("--site", default="", help="Site slug for --lens service convention scoping")
-    p_startup.add_argument("--rotation", type=int, default=None, help="Rotation id for --lens service")
-    p_startup.add_argument(
-        "--profile",
-        choices=["auto", "doc", "memory", "audit"],
-        default="auto",
-        help="auto chooses compact doc review when --doc is present; audit returns the full rich startup surface",
-    )
-    p_startup.add_argument(
-        "--session",
-        default="",
-        help="Session id; when set, writes the live knowledge map file for per-turn patching",
-    )
-
-    p_node = sub.add_parser("node-recall")
-    p_node.add_argument("--inventory-concept-id", required=True)
-    p_node.add_argument("--topic", default="")
-    p_node.add_argument("--session", default="")
-
-    p_artifact_get = sub.add_parser("artifact-map-get")
-    p_artifact_get.add_argument("--doc", required=True)
-    p_artifact_get.add_argument("--content-hash", default="")
-    p_artifact_get.add_argument("--pretty", action="store_true")
-
-    p_artifact_upsert = sub.add_parser("artifact-map-upsert")
-    p_artifact_upsert.add_argument("--doc", required=True)
-    p_artifact_upsert.add_argument("--topic", default="")
-    p_artifact_upsert.add_argument("--content-hash", default="")
-    p_artifact_upsert.add_argument("--created-by", default="agent")
-    p_artifact_upsert.add_argument("--pretty", action="store_true")
-    p_artifact_src = p_artifact_upsert.add_mutually_exclusive_group(required=True)
-    p_artifact_src.add_argument("--input", dest="input_path", default=None)
-    p_artifact_src.add_argument("--stdin", action="store_true")
-
-    sub.add_parser("status")
-    sub.add_parser("identity-audit")
-    sub.add_parser("telemetry-audit")
-    sub.add_parser("curation-status")
-    p_maintain = sub.add_parser("maintain")
-    p_maintain.add_argument("--vacuum", action="store_true", help="Also VACUUM to reclaim free pages from deletes")
-    p_kmap = sub.add_parser("knowledge-map")
-    p_kmap.add_argument("--domain", default="", help="Scope to one inventory domain (e.g. vascular)")
-    p_kmap.add_argument("--limit", type=int, default=20)
-
-    p_merge_topics = sub.add_parser("merge-topics")
-    p_merge_topics.add_argument("--from-topic", required=True)
-    p_merge_topics.add_argument("--into-topic", required=True)
-    p_merge_topics.add_argument("--apply", action="store_true")
-
-    p_realign_concept = sub.add_parser("realign-concept")
-    p_realign_concept.add_argument("--concept-id", type=int, required=True)
-    p_realign_concept.add_argument("--inventory-concept-id", required=True)
-    p_realign_concept.add_argument("--apply", action="store_true")
-    p_realign_concept.add_argument("--allow-unknown", action="store_true",
-                                   help="apply even if the inventory id is not in the canonical inventory")
-    p_realign_concept.add_argument("--no-restamp-claims", action="store_true",
-                                   help="move only the concept binding; leave each claim's own inventory id intact")
-
-    p_rename_concept = sub.add_parser("rename-concept")
-    p_rename_concept.add_argument("--concept-id", type=int, required=True)
-    p_rename_concept.add_argument("--display-name", required=True)
-    p_rename_concept.add_argument("--apply", action="store_true")
-
-    p_recall_migrate = sub.add_parser("migrate-recall-realignment")
-    p_recall_migrate.add_argument("--apply", action="store_true")
-
-    p_ad_vte_migrate = sub.add_parser("migrate-ad-vte-separation")
-    p_ad_vte_migrate.add_argument("--apply", action="store_true")
-
-    p_shadow_check = sub.add_parser("record-shadow-check")
-    p_shadow_check.add_argument("--rule-id", type=int, required=True)
-    p_shadow_check.add_argument("--claim-result-id", type=int, required=True)
-    p_shadow_check.add_argument("--context-label", required=True)
-    p_shadow_check.add_argument("--check-type", choices=["changed_frame", "transfer"], required=True)
-    p_shadow_check.add_argument("--outcome", choices=["pass", "fail"], required=True)
-    p_shadow_check.add_argument("--apply", action="store_true")
-
-    p_reference_graph = sub.add_parser("load-reference-graph")
-    p_reference_graph.add_argument("--input", required=True)
-    p_reference_graph.add_argument("--apply", action="store_true")
-
-    p_candidates = sub.add_parser("curate-candidates")
-    p_candidates.add_argument("--mode", choices=["compact", "detailed"], default="compact")
-    p_candidates.add_argument("--topic", default="")
-    p_candidates.add_argument("--recent-sessions", type=int, default=5)
-    p_candidates.add_argument("--limit", type=int, default=40)
-
-    p_apply = sub.add_parser("apply-curation")
-    p_apply_src = p_apply.add_mutually_exclusive_group(required=True)
-    p_apply_src.add_argument("--input", dest="input_path", default=None, help="Path to apply payload JSON file")
-    p_apply_src.add_argument("--stdin", action="store_true", help="Read apply payload from stdin")
-
-    p_bd_add = sub.add_parser("shift-debrief-candidate-add")
-    p_bd_add.add_argument("--session", required=True)
-    p_bd_add.add_argument("--topic", required=True)
-    p_bd_add.add_argument("--concept", required=True)
-    p_bd_add.add_argument("--doc", required=True)
-    p_bd_add.add_argument("--prompt", required=True)
-    p_bd_add.add_argument("--claim", default="")
-    p_bd_add.add_argument("--provenance-tier", default="")
-    p_bd_add.add_argument("--origin", choices=["assessed", "service"], default="assessed")
-    p_bd_add.add_argument("--rotation", type=int, default=None)
-    p_bd_add.add_argument("--convention", action="store_true")
-    p_bd_add.add_argument("--detail-json", default="{}")
-
-    p_bd_list = sub.add_parser("shift-debrief-candidate-list")
-    p_bd_list.add_argument("--topic", default="")
-    p_bd_list.add_argument("--status", choices=["pending", "reviewed", "dismissed"], default="pending")
-    p_bd_list.add_argument("--limit", type=int, default=20)
-
-    p_bd_mark = sub.add_parser("shift-debrief-candidate-mark")
-    p_bd_mark.add_argument("--candidate-id", type=int, required=True)
-    p_bd_mark.add_argument("--status", choices=["pending", "dismissed"], required=True)
-
+    parser = build_parser()
     args = parser.parse_args()
     if not args.command:
         parser.print_help()
@@ -7877,6 +7395,21 @@ def main() -> None:
     try:
         if args.command == "resolve-topic":
             print(_json_dumps(resolve_topic(conn, args.topic, args.doc).__dict__))
+        elif args.command in {"start-session", "assess-turn", "close-session"}:
+            try:
+                typed_payload = json.loads(sys.stdin.read())
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"invalid typed session JSON: {exc}") from exc
+            if not isinstance(typed_payload, dict):
+                raise ValueError("typed session input must be a JSON object")
+            if args.command == "start-session":
+                print(_json_dumps(start_session_from_payload(conn, typed_payload)))
+            elif args.command == "assess-turn":
+                from turn_assessment import assess_turn  # noqa: PLC0415
+
+                print(_json_dumps(assess_turn(conn, typed_payload, engine=sys.modules[__name__])))
+            else:
+                print(_json_dumps(close_session_from_payload(conn, typed_payload)))
         elif args.command == "log-answer":
             exchange_id = log_answer(
                 conn,
@@ -7970,6 +7503,17 @@ def main() -> None:
                     "reason": "no_policy_event_for_session",
                     "action": "continue current phase; rerun startup-recall if this persists",
                 }))
+        elif args.command == "record-card-decision":
+            result = record_anki_card_decision(
+                conn,
+                session_id=args.session,
+                exchange_id=args.exchange_id,
+                decision=args.decision,
+                rationale=args.rationale,
+            )
+            print(_json_dumps(result))
+        elif args.command == "session-integrity":
+            print(_json_dumps(study_session_integrity(conn, session_id=args.session)))
         elif args.command == "end-session":
             result = end_session(conn, session_id=args.session, summary=args.summary, next_strategy=args.next_strategy, stats_json=args.stats_json)
             if args.as_json:
@@ -8073,6 +7617,8 @@ def main() -> None:
             print(_json_dumps(result, pretty=args.pretty))
         elif args.command == "status":
             print(status(conn))
+        elif args.command == "health":
+            print(_json_dumps(database_health(conn)))
         elif args.command == "maintain":
             print(_json_dumps(maintain_db(conn, vacuum=args.vacuum)))
         elif args.command == "knowledge-map":
@@ -8081,6 +7627,19 @@ def main() -> None:
             print(_json_dumps(identity_audit(conn)))
         elif args.command == "telemetry-audit":
             print(_json_dumps(_telemetry_profile_for_summary(conn, topic_id=None)))
+        elif args.command == "learner-profile":
+            if args.action == "get":
+                print(_json_dumps(learner_profile_get(conn)))
+            else:
+                if not args.stdin:
+                    raise ValueError("learner-profile upsert requires --stdin")
+                try:
+                    profile_payload = json.loads(sys.stdin.read())
+                except json.JSONDecodeError as exc:
+                    raise ValueError(f"invalid learner profile JSON: {exc}") from exc
+                if not isinstance(profile_payload, dict):
+                    raise ValueError("learner profile input must be a JSON object")
+                print(_json_dumps(learner_profile_upsert(conn, profile_payload)))
         elif args.command == "merge-topics":
             print(_json_dumps(
                 merge_topics(
@@ -8226,6 +7785,12 @@ def main() -> None:
             "Nothing was written. Re-run the same log-answer with the field above added.",
             file=sys.stderr,
         )
+        sys.exit(2)
+    except ValueError as exc:
+        # Typed workflow commands must fail as compact, machine-readable
+        # refusals; tracebacks are neither actionable nor safe to feed back into
+        # the tutoring context.
+        print(_json_dumps({"ok": False, "error": str(exc), "written": False}), file=sys.stderr)
         sys.exit(2)
     finally:
         conn.close()

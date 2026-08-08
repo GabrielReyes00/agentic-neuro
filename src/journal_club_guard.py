@@ -16,6 +16,12 @@ try:
     from vault_schema import parse_frontmatter, split_frontmatter
 except ModuleNotFoundError:  # pragma: no cover - package import in tests
     from .vault_schema import parse_frontmatter, split_frontmatter
+try:
+    from io_utils import atomic_write_text
+    from vault_hooks import refresh_vault_intelligence
+except ModuleNotFoundError:  # pragma: no cover - package import in tests
+    from .io_utils import atomic_write_text
+    from .vault_hooks import refresh_vault_intelligence
 
 
 DEFAULT_VAULT_ROOT = Path("/Users/gabrielreyes/Documents/Obsidian/agentic-neuro")
@@ -370,13 +376,6 @@ def validate_file(
     )
 
 
-def _atomic_write(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    tmp.replace(path)
-
-
 def _copy_pdf(source: Path, target: Path) -> None:
     if not source.is_file():
         raise ValueError(f"source PDF does not exist: {source}")
@@ -395,14 +394,6 @@ def _update_index(vault_root: Path) -> Path:
     except ModuleNotFoundError:
         from . import index_builder
     return index_builder.write_index(vault_root / JOURNAL_CLUB_DIRNAME, vault_root=vault_root)
-
-
-def _refresh_vault_intelligence(vault_root: Path) -> None:
-    try:
-        import vault_index
-    except ModuleNotFoundError:
-        from . import vault_index
-    vault_index.refresh_default_index_after_vault_write(vault_root=vault_root)
 
 
 def install_draft(
@@ -444,13 +435,13 @@ def install_draft(
             source_result.errors.append(str(exc))
             return source_result
 
-    _atomic_write(target, draft.read_text(encoding="utf-8"))
+    atomic_write_text(target, draft.read_text(encoding="utf-8"))
     installed = validate_file(target, vault_root=vault_root, check_physical_source=True)
     installed.source_pdf_path = str(source_target) if source_target.exists() else ""
     if installed.ok:
         index_path = _update_index(vault_root)
         installed.index_path = str(index_path)
-        _refresh_vault_intelligence(vault_root)
+        refresh_vault_intelligence(vault_root)
     return installed
 
 

@@ -1,21 +1,2 @@
-# Core retrieval pipeline
-lancedb>=0.27
-FlagEmbedding>=1.3
-sentence-transformers>=3.4
-transformers>=4.44.2,<5
-fastembed>=0.8,<1
-numpy>=1.26,<2; python_version < "3.13"
-numpy>=2,<3; python_version >= "3.13"
-torch>=2.0
-
-# Optional medical NER (entity-aware filtering)
-# NOTE: SciSpacy is optional and currently not available for every Python release.
-# The retrieval pipeline already falls back to regex/entity heuristics if this is not installed.
-# Optional install on supported Python builds:
-#   pip install "spacy>=3.7,<3.9" "scispacy>=0.5.5,<0.6"
-#   pip install https://s3-us-west-2.amazonaws.com/ai2-s2-scispacy/releases/v0.5.4/en_ner_bc5cdr_md-0.5.4.tar.gz
-
-# Anki integration
-chromadb>=0.6
-Pillow>=10.0
-pydantic>=2.0
+# Compatibility entry point. pyproject.toml is the dependency authority.
+-e .[full]

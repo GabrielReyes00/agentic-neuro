@@ -113,6 +113,16 @@ class BuildTests(_InventoryFixture):
         self.assertTrue(result["ok"])
         self.assertEqual(result["counts"]["concepts"], 5)
         self.assertEqual(result["dropped_edge_count"], 1)
+
+        with sqlite3.connect(self.db_path) as conn:
+            self.assertEqual(
+                conn.execute("PRAGMA foreign_key_check").fetchall(),
+                [],
+            )
+            self.assertEqual(
+                conn.execute("PRAGMA user_version").fetchone()[0],
+                concept_inventory.CONCEPT_INVENTORY_SCHEMA_VERSION,
+            )
         first_hash = result["source_hash"]
         result2 = concept_inventory.build_db(self.inv_dir, self.db_path, force=True)
         self.assertEqual(result2["source_hash"], first_hash)
@@ -410,6 +420,7 @@ class MapLearnerTests(_InventoryFixture):
             study_memory.log_answer(
                 mem,
                 session_id="transfer-one",
+                ts="2026-01-01T00:00:00+00:00",
                 question="Changed frame one?",
                 answer="Clinical grade.",
                 tested_claim="Apply Hunt-Hess in a sedated transfer patient.",
@@ -434,6 +445,7 @@ class MapLearnerTests(_InventoryFixture):
             study_memory.log_answer(
                 mem,
                 session_id="transfer-two",
+                ts="2026-01-10T00:00:00+00:00",
                 question="Changed frame two?",
                 answer="Clinical grade.",
                 tested_claim="Apply Hunt-Hess after an exam change.",
@@ -457,6 +469,10 @@ class MapLearnerTests(_InventoryFixture):
             if item["concept_id"] == "vasc.sah.hunt-hess"
         )
         self.assertEqual(second_node["mastery_depth"], "transfer_ready")
+        self.assertEqual(
+            second_node["successful_operation_evidence"]["transfer"]["span_days"],
+            9.0,
+        )
 
 
 if __name__ == "__main__":

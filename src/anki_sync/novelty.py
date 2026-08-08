@@ -10,6 +10,12 @@ from collections.abc import Iterable, Mapping, Sequence
 import numpy as np
 
 from .schemas import ClaimModel
+try:
+    from store_contracts import ANKI_CACHE_SCHEMA_VERSION
+    from runtime_paths import FASTEMBED_CACHE_DIR
+except ModuleNotFoundError:  # pragma: no cover - package import in tests
+    from ..store_contracts import ANKI_CACHE_SCHEMA_VERSION
+    from ..runtime_paths import FASTEMBED_CACHE_DIR
 
 
 @dataclass
@@ -27,7 +33,10 @@ class NoveltyStore:
 
         self._db_path = str(db_path)
         self._collection_name = collection_name
-        self._embedder = TextEmbedding(model_name=embedding_model, cache_dir="data/Sessions/fastembed_cache")
+        self._embedder = TextEmbedding(
+            model_name=embedding_model,
+            cache_dir=str(FASTEMBED_CACHE_DIR),
+        )
         
         # If the path is a directory (like in Chroma tests/legacy setup), use ChromaDB
         if not self._db_path.endswith(".db"):
@@ -60,6 +69,7 @@ class NoveltyStore:
                 timestamp REAL NOT NULL
             );
         """)
+        cursor.execute(f"PRAGMA user_version={ANKI_CACHE_SCHEMA_VERSION}")
         conn.commit()
         conn.close()
 

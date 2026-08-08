@@ -13,6 +13,7 @@ import contextlib
 import io
 import inspect
 import json
+import os
 import shutil
 import sqlite3
 import sys
@@ -22,6 +23,11 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
+_BENCH_RUNTIME = tempfile.TemporaryDirectory(prefix="agentic-neuro-memory-benchmark-")
+os.environ["NEURO_EPHEMERAL_DIR"] = str(Path(_BENCH_RUNTIME.name) / "runtime")
+os.environ["NEURO_STUDY_MAP_DIR"] = str(
+    Path(_BENCH_RUNTIME.name) / "runtime" / "study_maps"
+)
 sys.path.insert(0, str(ROOT / "src"))
 
 import concept_inventory  # noqa: E402

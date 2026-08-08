@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 import anki_queue
+import study_memory
 from anki_sync.schemas import CardDraft, ClaimModel
 from anki_sync.anki_client import AnkiClient, AnkiDispatchResult
 from anki_sync.novelty import NoveltyDecision
@@ -127,7 +128,6 @@ class EnqueueTests(unittest.TestCase):
         )
         self.assertFalse(ok)
         self.assertFalse(self.queue.exists())
-
     def test_enqueue_multiple_appends(self):
         for i in range(3):
             anki_queue.enqueue(
@@ -602,6 +602,74 @@ class FlushTests(unittest.TestCase):
 
         self.assertEqual(result["queue_size"], 1)
         self.assertEqual(result["quality_warnings"][0]["warnings"], ["feedback_derived_prompt"])
+
+
+class CardDecisionTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.queue = Path(self.tmp.name) / "queue.jsonl"
+        self.memory = Path(self.tmp.name) / "study_memory.db"
+        self.conn = study_memory._get_db(self.memory)
+        self.exchange_id = study_memory.log_answer(
+            self.conn,
+            session_id="decision-session",
+            topic="intracranial pressure",
+            concept="cerebral perfusion pressure",
+            question="How is CPP calculated?",
+            answer="I am not sure.",
+            correct=0,
+            tested_claim="CPP equals MAP minus ICP.",
+            corrected_rule="CPP equals MAP minus ICP.",
+        )
+
+    def tearDown(self):
+        self.conn.close()
+        self.tmp.cleanup()
+
+    def test_missing_decision_blocks_but_explicit_skip_does_not_force_card(self):
+        with patch.object(anki_queue, "STUDY_MEMORY_DB", self.memory):
+            unresolved = anki_queue.check(
+                session="decision-session",
+                queue_path=self.queue,
+                emit=False,
+            )
+            self.assertEqual(
+                unresolved["card_decision_blockers"][0]["reason"],
+                "missing_card_decision",
+            )
+
+            study_memory.record_anki_card_decision(
+                self.conn,
+                session_id="decision-session",
+                exchange_id=self.exchange_id,
+                decision="skip_low_value",
+                rationale="Incidental fact that does not protect a durable clinical trace.",
+            )
+            resolved = anki_queue.check(
+                session="decision-session",
+                queue_path=self.queue,
+                emit=False,
+            )
+            self.assertEqual(resolved["card_decision_blockers"], [])
+            self.assertEqual(resolved["card_decision_counts"], {"skip_low_value": 1})
+
+    def test_enqueue_decision_without_card_blocks_flush(self):
+        study_memory.record_anki_card_decision(
+            self.conn,
+            session_id="decision-session",
+            exchange_id=self.exchange_id,
+            decision="enqueue",
+        )
+        with patch.object(anki_queue, "STUDY_MEMORY_DB", self.memory):
+            result = anki_queue.flush(
+                session="decision-session",
+                queue_path=self.queue,
+            )
+        self.assertEqual(result["error"], "card_decisions_require_resolution")
+        self.assertEqual(
+            result["card_decision_blockers"][0]["reason"],
+            "enqueue_decision_missing_card",
+        )
 
 
 if __name__ == "__main__":

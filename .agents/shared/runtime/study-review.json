@@ -1,0 +1,97 @@
+{
+  "anki_policy": "evaluated_exchange_only",
+  "binary_destination": null,
+  "canonical_workflow": "study-review",
+  "contract": ".agents/shared/commands/study-review-startup.md",
+  "execution": {
+    "entry": "startup",
+    "mode": "conversation_loop",
+    "nodes": [
+      {
+        "context": "conversation",
+        "edges": [
+          {
+            "to": "turn",
+            "when": "question_asked"
+          }
+        ],
+        "id": "startup",
+        "kind": "intake",
+        "load": [
+          ".agents/shared/commands/study-review-startup.md",
+          ".agents/shared/commands/tutor-state.md"
+        ]
+      },
+      {
+        "context": "conversation",
+        "edges": [
+          {
+            "loop": true,
+            "to": "turn",
+            "when": "continue"
+          },
+          {
+            "to": "vault-repair",
+            "when": "vault_repair_needed"
+          },
+          {
+            "to": "end",
+            "when": "end_requested"
+          }
+        ],
+        "id": "turn",
+        "kind": "loop",
+        "load": [
+          ".agents/shared/commands/study-review-turn.md",
+          ".agents/shared/commands/adaptive-teaching-doctrine.md"
+        ]
+      },
+      {
+        "context": "conversation",
+        "edges": [
+          {
+            "loop": true,
+            "to": "turn",
+            "when": "repaired"
+          }
+        ],
+        "id": "vault-repair",
+        "kind": "write",
+        "load": [
+          ".agents/shared/commands/study-review-vault-repair.md"
+        ]
+      },
+      {
+        "context": "conversation",
+        "edges": [
+          {
+            "to": "done",
+            "when": "closed"
+          }
+        ],
+        "id": "end",
+        "kind": "write",
+        "load": [
+          ".agents/shared/commands/study-review-end.md",
+          ".agents/shared/commands/anki-session-workflow.md"
+        ]
+      },
+      {
+        "context": "conversation",
+        "edges": [],
+        "id": "done",
+        "kind": "terminal",
+        "load": []
+      }
+    ],
+    "run_state": "learner_memory"
+  },
+  "generated_from": ".agents/shared/workflow-registry.json",
+  "generation_recall": null,
+  "invoked_as": "study-review",
+  "reviewable": false,
+  "runtime_contract": ".agents/shared/commands/workflow-runtime.md",
+  "schema_version": 1,
+  "vault_destination": null,
+  "write_policy": "learner_memory_only"
+}

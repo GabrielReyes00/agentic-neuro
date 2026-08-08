@@ -368,6 +368,7 @@ class VaultIndexTests(unittest.TestCase):
             vault = self._build_vault(root)
             db = root / "vault_index.db"
             vault_index.sync_vault(vault_root=vault, db_path=db)
+            generation = vault_index.index_status(db_path=db)["indexed_at"]
 
             vector_hit = {
                 "section_id": "semantic-only",
@@ -384,6 +385,7 @@ class VaultIndexTests(unittest.TestCase):
                 "wikilinks": [],
                 "provenance_tier": "curated_vault_context",
                 "source_role": "personalized_supplement",
+                "index_generation": generation,
                 "score": 0.91,
             }
             with mock.patch.object(
@@ -400,14 +402,15 @@ class VaultIndexTests(unittest.TestCase):
             ) as vector_search:
                 packet = vault_index.recall_packet(
                     "ENRICH lobar hemorrhage",
+                    vault_root=vault,
                     db_path=db,
                     task="weak-spot-review",
                     limit=8,
                 )
 
             self.assertTrue(packet["ok"], packet)
-            self.assertEqual(packet["schema"], "vault_intelligence_compact_v1")
-            self.assertEqual(packet["retrieval_status"], "complete")
+            self.assertEqual(packet["schema"], "vault_intelligence_compact_v2")
+            self.assertEqual(packet["retrieval_status"], "complete_fresh")
             self.assertTrue(packet["retrieval_plan"]["combined"])
             self.assertGreaterEqual(packet["sqlite"]["count"], 1)
             self.assertEqual(packet["vector"]["count"], 1)
@@ -432,18 +435,37 @@ class VaultIndexTests(unittest.TestCase):
             ):
                 packet = vault_index.recall_packet(
                     "ENRICH lobar hemorrhage MISTIE",
+                    vault_root=vault,
                     db_path=db,
                     task="concept-repair",
                     limit=5,
                 )
 
             self.assertTrue(packet["ok"], packet)
-            self.assertEqual(packet["retrieval_status"], "partial")
+            self.assertEqual(packet["retrieval_status"], "partial_fresh")
             self.assertTrue(packet["sqlite"]["ok"])
             self.assertFalse(packet["vector"]["ok"])
             self.assertGreaterEqual(packet["sqlite"]["count"], 1)
             self.assertTrue(packet["merged_hits"])
             self.assertTrue(any("LanceDB semantic retrieval failed" in warning for warning in packet["warnings"]))
+
+    def test_freshness_check_detects_changed_moved_and_unindexed_notes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            vault = self._build_vault(root)
+            db = root / "vault_index.db"
+            vault_index.sync_vault(vault_root=vault, db_path=db)
+            before = vault_index.vault_freshness_status(vault_root=vault, db_path=db)
+            self.assertTrue(before["ok"], before)
+
+            indexed_note = next((vault / "Concepts").glob("*.md"))
+            indexed_note.write_text(indexed_note.read_text() + "\nChanged after indexing.\n")
+            new_note = vault / "Concepts" / "New Adjacent Node.md"
+            new_note.write_text("---\ntitle: New Adjacent Node\n---\n\n## Clinical Use\nNew content.\n")
+            after = vault_index.vault_freshness_status(vault_root=vault, db_path=db)
+            self.assertFalse(after["ok"])
+            self.assertEqual(after["counts"]["stale"], 1)
+            self.assertEqual(after["counts"]["unindexed"], 1)
 
     def test_cli_sync_and_search_return_json(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

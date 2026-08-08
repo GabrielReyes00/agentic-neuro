@@ -28,7 +28,12 @@ import re
 from datetime import datetime, timedelta
 
 from pathlib import Path
-SESSIONS_DIR = Path(__file__).resolve().parent.parent / "data" / "Sessions"
+try:
+    from runtime_paths import RETRIEVAL_RUNTIME_DIR
+except ModuleNotFoundError:  # pragma: no cover - package import in tests
+    from .runtime_paths import RETRIEVAL_RUNTIME_DIR
+
+SESSIONS_DIR = RETRIEVAL_RUNTIME_DIR
 
 # ── Venv & working directory guard ───────────────────────────────────────────
 if __name__ == "__main__":

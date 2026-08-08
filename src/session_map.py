@@ -1,8 +1,9 @@
-"""Session-scoped inventory knowledge map: create, patch, policy, and lifecycle.
+"""Session-scoped inventory knowledge-map projection.
 
-The live map is the single source of truth during a study-review session.
-Startup builds it from the concept inventory; each log-answer patches nodes
-incrementally; end-session deletes the file.
+SQLite learner evidence is authoritative.  This file is an atomic, rebuildable
+working projection used to avoid recomputing the full inventory map on every
+turn.  Startup builds it, assessed turns patch it only after their database
+transaction commits, and session closure removes it.
 """
 
 from __future__ import annotations
@@ -14,8 +15,17 @@ import sys
 from pathlib import Path
 from typing import Any
 
-BASE_DIR = Path(__file__).resolve().parents[1]
-SESSIONS_DIR = BASE_DIR / "data" / "Sessions"
+try:
+    from runtime_paths import STUDY_MAP_DIR
+except ModuleNotFoundError:  # pragma: no cover - package import in tests
+    from .runtime_paths import STUDY_MAP_DIR
+
+try:
+    from io_utils import atomic_write_json
+except ModuleNotFoundError:  # pragma: no cover - package import in tests
+    from .io_utils import atomic_write_json
+
+SESSIONS_DIR = STUDY_MAP_DIR
 
 LEARNER_MATCH_THRESHOLD = 0.5
 STABLE_BINDING_COUNT = 2
@@ -89,6 +99,11 @@ def create_from_projection(
 
     knowledge_map = list(projection.get("knowledge_map") or [])
     for entry in knowledge_map:
+        if "successes_count" not in entry:
+            raise ValueError(
+                "knowledge-map projection is missing successes_count; "
+                "regenerate it from the canonical learner-memory projection"
+            )
         entry.setdefault("binding_source", "startup_projection")
         entry.setdefault("session_probed", False)
         entry.setdefault("artifact_native", False)
@@ -124,9 +139,8 @@ def create_from_projection(
 
 def write(session_id: str, data: dict[str, Any]) -> None:
     path = session_map_path(session_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
     data["session_id"] = session_id
-    path.write_text(_json_dumps(data), encoding="utf-8")
+    atomic_write_json(path, data, compact=True)
 
 
 def load(session_id: str) -> dict[str, Any] | None:
@@ -294,9 +308,15 @@ def patch_after_log(
     learner_concept_id: int | None = None,
     cognitive_op: str = "",
     gap_type: str = "",
+    observed_at: str = "",
 ) -> tuple[dict[str, Any], str]:
     """Incrementally update one knowledge-map node after an assessed exchange."""
-    from cognitive_ops import VALID_COGNITIVE_OPS, mastery_depth_from_evidence  # noqa: PLC0415
+    from cognitive_ops import (  # noqa: PLC0415
+        VALID_COGNITIVE_OPS,
+        add_operation_evidence,
+        mastery_depth_from_evidence,
+        serialize_operation_evidence,
+    )
 
     inv_id, binding_tier, match_score = resolve_inventory_id(
         inventory_concept_id=inventory_concept_id,
@@ -326,15 +346,7 @@ def patch_after_log(
     prior_state = str(entry.get("knowledge_state", "untested"))
 
     prior_attempts = int(entry.get("attempts_count", 0))
-    # Prefer the stored integer success count; fall back to the rounded rate only
-    # for nodes created before successes_count existed (round, never truncate).
-    # MIGRATION BRIDGE (retire after Pillar B): once legacy session maps no longer
-    # exist and every projection emits successes_count, delete this fallback and
-    # read entry["successes_count"] directly.
-    prior_successes = int(entry.get(
-        "successes_count",
-        round(float(entry.get("sqlite_success_rate", 0) or 0) * prior_attempts),
-    ))
+    prior_successes = int(entry["successes_count"])
     attempts = prior_attempts + 1
     successes = prior_successes + (1 if correct >= 2 else 0)
     success_rate = round(successes / attempts, 3) if attempts else 0.0
@@ -385,36 +397,32 @@ def patch_after_log(
                 continue
             operation_evidence[str(operation)] = {
                 "count": int(values.get("count", 0) or 0),
-                "session_ids": sorted({
+                "session_ids": {
                     str(item) for item in values.get("session_ids", []) if str(item)
-                }),
-                "session_count": int(values.get("session_count", 0) or 0),
+                },
+                "success_timestamps": {
+                    str(values[key])
+                    for key in ("first_success_ts", "last_success_ts")
+                    if values.get(key)
+                },
             }
     # Legacy session maps carried operation names but no counted evidence. Keep
     # their lower-level signal without inventing cross-session transfer mastery.
     for operation in successful_operations:
         operation_evidence.setdefault(
             operation,
-            {"count": 1, "session_ids": [], "session_count": 0},
+            {"count": 1, "session_ids": set(), "success_timestamps": set()},
         )
     if correct >= 2 and normalized_operation in VALID_COGNITIVE_OPS:
         successful_operations.add(normalized_operation)
-        bucket = operation_evidence.setdefault(
-            normalized_operation,
-            {"count": 0, "session_ids": [], "session_count": 0},
+        add_operation_evidence(
+            operation_evidence,
+            operation=normalized_operation,
+            session_id=str(data.get("session_id") or ""),
+            observed_at=observed_at,
         )
-        bucket["count"] = int(bucket.get("count", 0) or 0) + 1
-        session_ids = {
-            str(item) for item in bucket.get("session_ids", []) if str(item)
-        }
-        current_session = str(data.get("session_id") or "")
-        if current_session:
-            session_ids.add(current_session)
-        bucket["session_ids"] = sorted(session_ids)
-        bucket["session_count"] = max(
-            int(bucket.get("session_count", 0) or 0),
-            len(session_ids),
-        )
+
+    serialized_operation_evidence = serialize_operation_evidence(operation_evidence)
 
     entry.update({
         "exposure_status": new_exposure,
@@ -433,9 +441,9 @@ def patch_after_log(
         "stuck_probe_count": stuck_probe_count,
         "last_cognitive_op": cognitive_op or entry.get("last_cognitive_op", ""),
         "successful_operations": sorted(successful_operations),
-        "successful_operation_evidence": operation_evidence,
+        "successful_operation_evidence": serialized_operation_evidence,
         "mastery_depth": mastery_depth_from_evidence(
-            operation_evidence,
+            serialized_operation_evidence,
             active_gap=is_gap,
         ),
     })
@@ -636,10 +644,16 @@ def bootstrap_session_map(
     try:
         profile = "doc" if doc_path else "memory"
         query = doc_path or topic
-        from study_memory import DB_PATH  # noqa: PLC0415
+        main_db_path = ""
+        for row in conn.execute("PRAGMA database_list").fetchall():
+            if str(row[1]) == "main":
+                main_db_path = str(row[2] or "")
+                break
+        if not main_db_path:
+            return None
         projection = map_learner(
             inventory_conn=inv,
-            memory_db=DB_PATH,
+            memory_db=Path(main_db_path),
             learner_topics=[topic] if topic else [],
             query=query,
             budget=80,

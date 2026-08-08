@@ -24,6 +24,13 @@ from pathlib import Path
 from typing import Any, Iterable
 
 try:
+    from runtime_paths import VAULT_INDEX_DB, VAULT_LANCE_DIR
+    from store_contracts import VAULT_INDEX_SCHEMA_VERSION, VAULT_MARKDOWN_COMPONENT
+except ModuleNotFoundError:  # pragma: no cover - package import in tests
+    from .runtime_paths import VAULT_INDEX_DB, VAULT_LANCE_DIR
+    from .store_contracts import VAULT_INDEX_SCHEMA_VERSION, VAULT_MARKDOWN_COMPONENT
+
+try:
     from vault_schema import parse_frontmatter, split_frontmatter
 except ModuleNotFoundError:  # pragma: no cover - package import in tests
     from .vault_schema import parse_frontmatter, split_frontmatter
@@ -32,8 +39,8 @@ except ModuleNotFoundError:  # pragma: no cover - package import in tests
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
 DEFAULT_VAULT_ROOT = Path("/Users/gabrielreyes/Documents/Obsidian/agentic-neuro")
-DEFAULT_INDEX_DB = DATA_DIR / "vault_index.db"
-DEFAULT_LANCE_DIR = Path(os.environ.get("NEURO_VAULT_LANCE_DIR", BASE_DIR / "neurosurgery_v4.lance"))
+DEFAULT_INDEX_DB = VAULT_INDEX_DB
+DEFAULT_LANCE_DIR = VAULT_LANCE_DIR
 DEFAULT_LANCE_TABLE = os.environ.get("NEURO_VAULT_LANCE_TABLE", "vault_notes")
 MODEL_CACHE_DIR = Path(os.environ.get("NEURO_MODEL_CACHE_DIR", DATA_DIR / "models" / "huggingface"))
 BGE_M3_MODEL_ID = os.environ.get("NEURO_BGE_MODEL_ID", "BAAI/bge-m3")
@@ -97,6 +104,21 @@ SECTION_ALIASES: dict[str, str] = {
     "historical and current context": "evidence_card",
     "presentation core": "execution_check",
     "faculty defense": "execution_check",
+    "complications and troubleshooting": "execution_check",
+    "complications & troubleshooting": "execution_check",
+    "complications": "execution_check",
+    "pitfalls": "critical_discriminators",
+    "pearls and pitfalls": "critical_discriminators",
+    "pearls & pitfalls": "critical_discriminators",
+    "differential diagnosis": "critical_discriminators",
+    "operative considerations": "surgical_coordinates",
+    "surgical anatomy": "surgical_coordinates",
+    "anatomy": "surgical_coordinates",
+    "management": "clinical_use",
+    "management algorithm": "bedside_decision_rule",
+    "treatment algorithm": "bedside_decision_rule",
+    "monitoring and follow-up": "clinical_use",
+    "monitoring & follow-up": "clinical_use",
     "source trace": "references",
 }
 
@@ -204,7 +226,8 @@ TOKEN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_./+-]{1,}")
 STOPWORDS = frozenset(
     "the a an and or of in to for with without on by from into onto this that "
     "what when where why how should would could about patient patients after "
-    "before during using use uses"
+    "before during using use uses management review clinical patient patients "
+    "neurosurgery neurosurgical icu guide report approach treatment"
     .split()
 )
 
@@ -502,6 +525,7 @@ def _connect(db_path: Path) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys=ON")
     ensure_schema(conn)
     return conn
 
@@ -563,6 +587,11 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_vault_sections_folder ON vault_sections(folder);
         CREATE INDEX IF NOT EXISTS idx_vault_sections_type ON vault_sections(section_type);
         CREATE INDEX IF NOT EXISTS idx_vault_sections_note_type ON vault_sections(note_type);
+        CREATE TABLE IF NOT EXISTS store_meta (
+            component TEXT PRIMARY KEY,
+            schema_version INTEGER NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
         """
     )
     conn.execute(
@@ -584,6 +613,15 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     ):
         if column not in existing_columns:
             conn.execute(f"ALTER TABLE vault_notes ADD COLUMN {column} {declaration}")
+    conn.execute(
+        """INSERT INTO store_meta (component, schema_version, updated_at)
+           VALUES (?, ?, CURRENT_TIMESTAMP)
+           ON CONFLICT(component) DO UPDATE SET
+             schema_version=excluded.schema_version,
+             updated_at=CURRENT_TIMESTAMP""",
+        (VAULT_MARKDOWN_COMPONENT, VAULT_INDEX_SCHEMA_VERSION),
+    )
+    conn.execute(f"PRAGMA user_version={VAULT_INDEX_SCHEMA_VERSION}")
     conn.commit()
 
 
@@ -1183,6 +1221,81 @@ def index_status(*, db_path: Path = DEFAULT_INDEX_DB) -> dict[str, object]:
     }
 
 
+def vault_freshness_status(
+    *,
+    vault_root: Path = DEFAULT_VAULT_ROOT,
+    db_path: Path = DEFAULT_INDEX_DB,
+    folders: Iterable[str] = INDEX_FOLDERS,
+) -> dict[str, object]:
+    """Compare every managed markdown note with the persisted SQLite index."""
+    current: dict[str, str] = {}
+    parse_errors: list[dict[str, str]] = []
+    for path in _iter_note_paths(vault_root, folders):
+        try:
+            note, _sections = parse_note(path, vault_root)
+            current[note.note_path] = note.content_hash
+        except Exception as exc:  # pragma: no cover - malformed notes are surfaced
+            parse_errors.append({"path": str(path), "error": str(exc)})
+    if not db_path.is_file():
+        return {
+            "ok": False,
+            "status": "not_provisioned",
+            "vault_root": str(vault_root),
+            "db_path": str(db_path),
+            "indexed_at": "",
+            "counts": {
+                "current": len(current), "indexed": 0, "fresh": 0,
+                "stale": 0, "missing": 0, "unindexed": len(current),
+                "parse_errors": len(parse_errors),
+            },
+            "stale_paths": [], "missing_paths": [],
+            "unindexed_paths": sorted(current), "parse_errors": parse_errors,
+            "fresh_paths": [],
+        }
+    conn = sqlite3.connect(f"file:{db_path.resolve()}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        indexed = {
+            str(row["note_path"]): str(row["content_hash"] or "")
+            for row in conn.execute("SELECT note_path, content_hash FROM vault_notes")
+        }
+        indexed_at = str(
+            conn.execute("SELECT MAX(indexed_at) FROM vault_notes").fetchone()[0] or ""
+        )
+    finally:
+        conn.close()
+    stale = sorted(
+        path for path in current.keys() & indexed.keys() if current[path] != indexed[path]
+    )
+    missing = sorted(indexed.keys() - current.keys())
+    unindexed = sorted(current.keys() - indexed.keys())
+    fresh = sorted(
+        path for path in current.keys() & indexed.keys() if current[path] == indexed[path]
+    )
+    ok = not stale and not missing and not unindexed and not parse_errors
+    return {
+        "ok": ok,
+        "status": "fresh" if ok else "stale",
+        "vault_root": str(vault_root),
+        "db_path": str(db_path),
+        "indexed_at": indexed_at,
+        "counts": {
+            "current": len(current),
+            "indexed": len(indexed),
+            "fresh": len(fresh),
+            "stale": len(stale),
+            "missing": len(missing),
+            "unindexed": len(unindexed),
+            "parse_errors": len(parse_errors),
+        },
+        "stale_paths": stale,
+        "missing_paths": missing,
+        "unindexed_paths": unindexed,
+        "parse_errors": parse_errors,
+        "fresh_paths": fresh,
+    }
+
+
 def _embedding_text(row: sqlite3.Row) -> str:
     return "\n".join(
         [
@@ -1287,6 +1400,7 @@ def sync_lance(
                 "references_json": row["references_json"],
                 "provenance_tier": row["provenance_tier"],
                 "source_role": row["source_role"],
+                "index_generation": row["indexed_at"],
                 "dense_vec": vector,
             }
         )
@@ -1318,6 +1432,7 @@ def sync_lance(
                 pa.field("references_json", pa.string()),
                 pa.field("provenance_tier", pa.string()),
                 pa.field("source_role", pa.string()),
+                pa.field("index_generation", pa.string()),
                 pa.field("dense_vec", pa.list_(pa.float32(), vector_dim)),
             ]
         )
@@ -1381,6 +1496,7 @@ def search_lance(
                 "wikilinks": json.loads(row.get("wikilinks_json") or "[]"),
                 "provenance_tier": row.get("provenance_tier", ""),
                 "source_role": row.get("source_role", ""),
+                "index_generation": row.get("index_generation", ""),
                 "score": round(similarity, 4),
             }
         )
@@ -1514,6 +1630,7 @@ def _hit_refs(hits: list[dict[str, object]]) -> list[dict[str, object]]:
 def recall_packet(
     query: str,
     *,
+    vault_root: Path = DEFAULT_VAULT_ROOT,
     db_path: Path = DEFAULT_INDEX_DB,
     lance_dir: Path = DEFAULT_LANCE_DIR,
     table_name: str = DEFAULT_LANCE_TABLE,
@@ -1534,6 +1651,8 @@ def recall_packet(
     limit: int = 8,
     device: str = "",
 ) -> dict[str, object]:
+    freshness = vault_freshness_status(vault_root=vault_root, db_path=db_path)
+    fresh_paths = set(str(path) for path in freshness.get("fresh_paths", []))
     preferred = _preferred_section_types(task)
     sqlite = search_sections(
         query,
@@ -1573,19 +1692,41 @@ def recall_packet(
             "error": str(exc),
             "knowledge_boundary": KNOWLEDGE_BOUNDARY,
         }
+    sqlite_hits = [
+        hit
+        for hit in list(sqlite.get("hits", []))
+        if str(hit.get("note_path") or "") in fresh_paths
+    ]
+    vector_hits = [
+        hit
+        for hit in list(vector.get("hits", []))
+        if str(hit.get("note_path") or "") in fresh_paths
+    ]
     merged_hits = _merge_retrieval_hits(
-        sqlite_hits=list(sqlite.get("hits", [])),
-        vector_hits=list(vector.get("hits", [])),
+        sqlite_hits=sqlite_hits,
+        vector_hits=vector_hits,
         limit=limit,
     )
     sqlite_ok = bool(sqlite.get("ok"))
     vector_ok = bool(vector.get("ok"))
-    if sqlite_ok and vector_ok:
-        retrieval_status = "complete"
-    elif merged_hits and (sqlite_ok or vector_ok):
-        retrieval_status = "partial"
+    sqlite_generation = str(freshness.get("indexed_at") or "")
+    vector_generations = {
+        str(hit.get("index_generation") or "") for hit in vector_hits
+    }
+    vector_generations.discard("")
+    generation_match = (
+        not vector_hits
+        or (len(vector_generations) == 1 and sqlite_generation in vector_generations)
+    )
+    index_fresh = bool(freshness.get("ok")) and generation_match
+    if sqlite_ok and vector_ok and index_fresh:
+        retrieval_status = "complete_fresh"
+    elif merged_hits and index_fresh:
+        retrieval_status = "partial_fresh"
+    elif merged_hits:
+        retrieval_status = "partial_stale"
     else:
-        retrieval_status = "failed"
+        retrieval_status = "failed_stale" if not index_fresh else "failed"
     warnings: list[str] = []
     if not sqlite_ok:
         warnings.append("SQLite field-aware retrieval failed.")
@@ -1595,12 +1736,31 @@ def recall_packet(
             "LanceDB semantic retrieval failed"
             + (f": {vector_error}" if vector_error else ".")
         )
+    if not freshness.get("ok"):
+        counts = freshness.get("counts", {})
+        warnings.append(
+            "Vault index is stale; stale, moved, or deleted note hits were discarded "
+            f"(stale={counts.get('stale', 0)}, missing={counts.get('missing', 0)}, "
+            f"unindexed={counts.get('unindexed', 0)})."
+        )
+    if not generation_match:
+        warnings.append(
+            "Vault SQLite and LanceDB generations do not match; semantic hits are advisory until sync-lance completes."
+        )
     return {
-        "ok": retrieval_status != "failed",
-        "schema": "vault_intelligence_compact_v1",
+        "ok": retrieval_status not in {"failed", "failed_stale"},
+        "schema": "vault_intelligence_compact_v2",
         "query": query,
         "task": task,
         "retrieval_status": retrieval_status,
+        "retrieval_freshness": {
+            "vault": freshness.get("status"),
+            "sqlite_generation": sqlite_generation,
+            "lance_generations": sorted(vector_generations),
+            "generation_match": generation_match,
+            "discarded_sqlite_hits": int(sqlite.get("count", 0)) - len(sqlite_hits),
+            "discarded_vector_hits": int(vector.get("count", 0)) - len(vector_hits),
+        },
         "warnings": warnings,
         "retrieval_plan": {
             "sqlite": "field-aware FTS over data/vault_index.db",
@@ -1612,14 +1772,14 @@ def recall_packet(
         "preferred_section_types": list(preferred),
         "sqlite": {
             "ok": bool(sqlite.get("ok")),
-            "count": sqlite.get("count", 0),
-            "refs": _hit_refs(list(sqlite.get("hits", []))),
+            "count": len(sqlite_hits),
+            "refs": _hit_refs(sqlite_hits),
         },
         "vector": {
             "ok": bool(vector.get("ok")),
-            "count": vector.get("count", 0),
+            "count": len(vector_hits),
             "error": vector.get("error", ""),
-            "refs": _hit_refs(list(vector.get("hits", []))),
+            "refs": _hit_refs(vector_hits),
         },
         "merged_hits": merged_hits,
         "field_context": _field_context(merged_hits),
@@ -1702,6 +1862,9 @@ def main() -> None:
     status_parser = sub.add_parser("status")
     status_parser.add_argument("--pretty", action="store_true", default=argparse.SUPPRESS)
 
+    check_parser = sub.add_parser("check")
+    check_parser.add_argument("--pretty", action="store_true", default=argparse.SUPPRESS)
+
     lance_sync = sub.add_parser("sync-lance")
     lance_sync.add_argument("--lance-dir", default=str(DEFAULT_LANCE_DIR))
     lance_sync.add_argument("--table", default=DEFAULT_LANCE_TABLE)
@@ -1746,6 +1909,7 @@ def main() -> None:
     elif args.command == "recall":
         payload = recall_packet(
             args.query,
+            vault_root=Path(args.vault_root),
             db_path=db_path,
             lance_dir=Path(args.lance_dir),
             table_name=args.table,
@@ -1784,6 +1948,10 @@ def main() -> None:
         payload = task_plan(args.task)
     elif args.command == "status":
         payload = index_status(db_path=db_path)
+    elif args.command == "check":
+        payload = vault_freshness_status(
+            vault_root=Path(args.vault_root), db_path=db_path
+        )
     elif args.command == "sync-lance":
         payload = sync_lance(
             db_path=db_path,
