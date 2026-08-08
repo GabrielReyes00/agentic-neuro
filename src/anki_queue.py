@@ -531,18 +531,17 @@ def flush(
         to_flush = all_entries
         remaining = []
 
-    preflight = check(session=session, queue_path=queue_path, emit=False)
-    decision_blockers = preflight.get("card_decision_blockers", [])
-    if decision_blockers:
-        result = {
-            "error": "card_decisions_require_resolution",
-            "queue_size": len(to_flush),
-            "card_decision_blockers": decision_blockers,
-        }
-        print(_json_dumps(result))
-        return result
-
     if not to_flush:
+        preflight = check(session=session, queue_path=queue_path, emit=False)
+        decision_blockers = preflight.get("card_decision_blockers", [])
+        if decision_blockers:
+            result = {
+                "error": "card_decisions_require_resolution",
+                "queue_size": 0,
+                "card_decision_blockers": decision_blockers,
+            }
+            print(_json_dumps(result))
+            return result
         result = {"queue_size": 0, "card_decision_counts": preflight.get("card_decision_counts", {})}
         print(_json_dumps(result))
         return result
@@ -554,6 +553,17 @@ def flush(
             print(f"AnkiConnect unavailable: {err}", file=sys.stderr)
             print(_json_dumps({"error": f"AnkiConnect unavailable: {err}"}))
             return {"error": err}
+
+    preflight = check(session=session, queue_path=queue_path, emit=False)
+    decision_blockers = preflight.get("card_decision_blockers", [])
+    if decision_blockers:
+        result = {
+            "error": "card_decisions_require_resolution",
+            "queue_size": len(to_flush),
+            "card_decision_blockers": decision_blockers,
+        }
+        print(_json_dumps(result))
+        return result
 
     duplicate_candidates = preflight.get("duplicate_candidates", [])
     if duplicate_candidates and not allow_duplicate_candidates:

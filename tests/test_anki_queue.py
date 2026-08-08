@@ -380,8 +380,9 @@ class FlushTests(unittest.TestCase):
         remaining = anki_queue._read_queue(self.queue)
         self.assertEqual(len(remaining), 0)
 
+    @patch.object(anki_queue, "NoveltyStore")
     @patch.object(anki_queue, "AnkiClient")
-    def test_flush_preserves_queue_on_anki_unavailable(self, MockClient):
+    def test_flush_preserves_queue_on_anki_unavailable(self, MockClient, MockStore):
         self._enqueue_sample()
 
         mock_client = MockClient.return_value
@@ -390,6 +391,7 @@ class FlushTests(unittest.TestCase):
         result = anki_queue.flush(queue_path=self.queue)
 
         self.assertIn("error", result)
+        MockStore.assert_not_called()
         remaining = anki_queue._read_queue(self.queue)
         self.assertEqual(len(remaining), 2)
 
